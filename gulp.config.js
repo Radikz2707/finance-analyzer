@@ -5,8 +5,8 @@ const buildFolder = 'dist';
 
 export const config = {
   // Имя вашего нового репозитория на GitHub (поменяйте на свое при деплое)
-  repoPath: 'Radikz2707/empty-template',
-  siteName: 'universal-blank-site',
+   repoPath: 'Radikz2707/finance-analyzer',
+  siteName: 'finance-ai-platform',
   siteUrl: '',
   scssExtension: 'scss',
   srcFolder,

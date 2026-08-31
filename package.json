@@ -7,6 +7,10 @@
   ],
   "author": "",
   "license": "ISC",
+    "name": "finance-analyzer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI-Platform for financial analysis and portfolio rebalancing",
   "scripts": {
     "admin": "npx @staticcms/proxy-server",
     "dev": "cross-env NODE_NO_WARNINGS=1 G_MESSAGES_DEBUG=none gulp",
@@ -21,18 +25,16 @@
     "clean": "gulp cleandist",
     "update-modules": "npx npm-check-updates -i --no-cache && npm install --legacy-peer-deps",
     "prepare": "husky",
-    "push:main": "git add . && git commit -m \"Updates\" && git push origin main",
-    "deploy:gh": "npm run build && npx gh-pages -d dist --dotfiles -f",
-    "deploy:hosting": "cross-env DEPLOY_TARGET=hosting npm run build && gulp deploy",
-    "create-post": "node gulp/system/gulp.post.js",
     "test": "vitest",
     "test:run": "cross-env LANG=en_US.UTF-8 vitest run",
     "audit": "node run-audit.js",
-    "blueprint": "node generate-blueprint.js"
+    "blueprint": "node generate-blueprint.js",
+    "push:main": "git add . && git commit -m \"Updates\" && git push origin main"
   },
   "lint-staged": {
     "src/**/*.scss": "npx stylelint --fix"
   },
+
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@prettier/plugin-xml": "^3.4.2",
