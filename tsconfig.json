@@ -3,7 +3,11 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "lib": [
+      "DOM",
+      "DOM.Iterable",
+      "ES2022"
+    ],
     "allowJs": true,
     "checkJs": false,
     "noEmit": true,
@@ -20,12 +24,24 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": [],
+    "types": [
+      "node"
+    ],
     "paths": {
-      "@/*": ["./src/js/*"],
-      "@components/*": ["./src/components/*"]
+      "@/*": [
+        "./src/js/*"
+      ],
+      "@components/*": [
+        "./src/components/*"
+      ]
     }
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "archives"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "archives"
+  ]
 }

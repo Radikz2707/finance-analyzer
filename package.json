@@ -9,7 +9,6 @@
   ],
   "author": "",
   "license": "ISC",
-
   "scripts": {
     "admin": "npx @staticcms/proxy-server",
     "dev": "cross-env NODE_NO_WARNINGS=1 G_MESSAGES_DEBUG=none gulp",
@@ -33,7 +32,6 @@
   "lint-staged": {
     "src/**/*.scss": "npx stylelint --fix"
   },
-
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@prettier/plugin-xml": "^3.4.2",
@@ -121,6 +119,7 @@
     "esbuild@0.28.1": true
   },
   "dependencies": {
-    "@staticcms/core": "^4.3.0"
+    "@staticcms/core": "^4.3.0",
+    "xlsx": "^0.18.5"
   }
 }
