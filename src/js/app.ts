@@ -3,6 +3,8 @@ import { main } from '../components/main/main';
 import { footer } from '../components/footer/footer';
 import { isWebp } from './modules/isWebp';
 
+import { runFullPortfolioAnalysis } from './modules/cli-interface/cli-interface';
+
 // Инициализация компонентов
 const initApp = () => {
   document.body.classList.add('_js-ready');
@@ -19,3 +21,6 @@ if (document.readyState === 'loading') {
 }
 
 console.log('🚀 Radik.Dev: TypeScript успешно инициализирован');
+
+
+runFullPortfolioAnalysis();
