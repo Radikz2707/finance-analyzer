@@ -1,16 +1,15 @@
 {
-  "name": "your-universal-template",
+  "name": "finance-analyzer",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
+  "description": "AI-Platform for financial analysis and portfolio rebalancing",
   "sideEffects": [
     "src/js/app.ts"
   ],
   "author": "",
   "license": "ISC",
-    "name": "finance-analyzer",
-  "version": "1.0.0",
-  "private": true,
-  "description": "AI-Platform for financial analysis and portfolio rebalancing",
+
   "scripts": {
     "admin": "npx @staticcms/proxy-server",
     "dev": "cross-env NODE_NO_WARNINGS=1 G_MESSAGES_DEBUG=none gulp",

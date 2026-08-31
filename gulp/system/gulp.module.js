@@ -113,3 +113,5 @@ export const createModule = (done) => {
   console.log(`\n✅ Модуль "${name}" (TS: ${camelName}) успешно создан!\n`);
   done();
 };
+
+export { createModule as module };

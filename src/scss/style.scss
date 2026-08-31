@@ -5,3 +5,4 @@
 @use "../components/main/main";
 @use "../components/footer/footer";
 @import "base/fonts";
+@use '../js/modules/portfolio-math/portfolio-math' as portfolioMath;
