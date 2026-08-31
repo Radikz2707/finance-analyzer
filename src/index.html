@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Универсальный стартовый шаблон</title>
+    @@include("parts/favicon-links.html")
+    <link rel="stylesheet" href="css/app.min.css?v=1" />
+    <script>
+      document.body
+        ? document.body.classList.add("_js-ready")
+        : document.addEventListener("DOMContentLoaded", () =>
+            document.body.classList.add("_js-ready"),
+          );
+    </script>
+  </head>
+
+  <body>
+    @@include('components/header/header.html')
+    @@include('components/main/main.html')
+    @@include('components/footer/footer.html')
+
+    <script src="js/app.min.js" defer></script>
+  </body>
+</html>

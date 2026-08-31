@@ -1,0 +1,42 @@
+@use '../base/vars' as v;
+
+/* Глобальные стили проекта с абсолютным прижатием футера */
+html {
+  box-sizing: border-box;
+  height: 100%;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100%;
+  overflow-x: hidden;
+  font-family: v.$font-main;
+  color: v.$color-text-main;
+  background-color: v.$bg-dark;
+}
+
+/* Корневая обертка для управления прижатием футера */
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Сетка и контейнер */
+.container {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1180px;
+  padding: 0 20px;
+  margin: 0 auto;
+}
+
+.main {
+  flex: 1 1 auto;
+}
