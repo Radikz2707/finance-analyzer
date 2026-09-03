@@ -10,6 +10,7 @@
   "author": "",
   "license": "ISC",
   "scripts": {
+    "analyze": "tsx index.ts",
     "admin": "npx @staticcms/proxy-server",
     "dev": "cross-env NODE_NO_WARNINGS=1 G_MESSAGES_DEBUG=none gulp",
     "build": "npm run test:run && gulp build",
@@ -95,6 +96,7 @@
     "stylelint-order": "^8.1.1",
     "terser-webpack-plugin": "^5.6.1",
     "through2": "^5.0.11",
+    "tsx": "^4.23.13",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-eslint": "^8.68.0",
     "vinyl-ftp": "^0.6.1",
@@ -119,7 +121,10 @@
     "esbuild@0.28.1": true
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@staticcms/core": "^4.3.0",
+    "axios": "^1.20.0",
+    "exceljs": "^4.4.0",
     "xlsx": "^0.18.5"
   }
 }

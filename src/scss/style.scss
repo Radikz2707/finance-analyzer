@@ -4,8 +4,10 @@
 @use "../components/header/header";
 @use "../components/main/main";
 @use "../components/footer/footer";
-@import "base/fonts";
 @use '../js/modules/portfolio-math/portfolio-math' as portfolioMath;
 @use '../js/modules/xlsx-parser/xlsx-parser' as xlsxParser;
 @use '../js/modules/ai-advisor/ai-advisor' as aiAdvisor;
 @use '../js/modules/cli-interface/cli-interface' as cliInterface;
+
+// Перенесли в самый конец, после всех директив @use
+@import "base/fonts";

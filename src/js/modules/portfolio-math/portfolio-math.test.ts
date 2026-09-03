@@ -1,62 +1,71 @@
 import { describe, it, expect } from 'vitest';
-import {
-  IAsset,
-  calculateGlobalAllocation,
-  calculateRebalanceDelta,
-  analyzeAssetLimits
-} from './portfolio-math';
+import { PortfolioMathModule } from './portfolio-math';
+import { MacroGoals, CurrentAsset } from '../xlsx-parser/xlsx-parser';
 
-describe('Тестирование математического ядра ребалансировки портфеля', () => {
+describe('Инвестиционная математика и жесткие лимиты стратегии', () => {
+  it('Должен корректно рассчитывать дефициты, свободный пул и выставлять статусы активов', () => {
+    // 1. Инициализируем мок для макроцелей со всеми обязательными полями
+    const mockMacro: MacroGoals = {
+      totalBalance: 100000,
+      freeCash: 5000,
+      stocksPercent: 52, // Целевой ориентир сплита по вашей стратегии
+      bondsPercent: 48,
+      stocksDeficitRub: 0,
+      bondsDeficitRub: 0,
+      iisOrdersSum: 0,
+      brokerOrdersSum: 0,
+      activeOrdersListText: '',
+    };
 
-  // 1. Моделируем тестовый слепок вашего реального портфеля из Excel-отчета QUIK
-  const mockAssets: IAsset[] = [
-    { instrument: 'ИнтерРАОао', position: 17100, price: 2.2260, costValue: 38090.25, marketValue: 38064.60, assetClass: 'stock', accountType: 'brokerage' },
-    { instrument: 'Брус 2P04', position: 100, price: 1014.59, costValue: 101539.00, marketValue: 101459.00, assetClass: 'bond', accountType: 'iis' },
-    { instrument: 'Селигдар 10', position: 94, price: 1007.23, costValue: 94670.22, marketValue: 94679.62, assetClass: 'bond', accountType: 'iis' },
-    { instrument: 'ѕГТЛК2P-14', position: 6, price: 996.06, costValue: 5977.56, marketValue: 5976.36, assetClass: 'bond', accountType: 'iis' },
-    { instrument: 'Сбербанк', position: 140, price: 267.54, costValue: 37457.00, marketValue: 37455.60, assetClass: 'stock', accountType: 'brokerage' },
-    { instrument: 'STME ETF', position: 6801, price: 4.17, costValue: 28428.18, marketValue: 28360.17, assetClass: 'stock', accountType: 'brokerage' },
-    { instrument: 'Татифт Зао', position: 79, price: 547.00, costValue: 43220.90, marketValue: 43213.00, assetClass: 'stock', accountType: 'iis' },
-    { instrument: 'КЦ ИКС 5', position: 26, price: 1747.50, costValue: 45422.00, marketValue: 45435.00, assetClass: 'stock', accountType: 'brokerage' },
-    { instrument: 'Полюс', position: 100, price: 1051.40, costValue: 105140.00, marketValue: 105140.00, assetClass: 'stock', accountType: 'iis' }
-  ];
+    // 2. Инициализируем мок для массива активов с обязательным полем targetPercent
+    const mockAssets: CurrentAsset[] = [
+      {
+        name: 'Полюс',
+        targetPercent: 20.0, // Лимит из вашей стратегии
+        liquidationPercent: 25.0, // Симулируем профицит доли
+        balancePercent: 30.0, // Цена сильно упала ниже балансовой стоимости
+        unrealizedProfitRub: -5000,
+        dynamicsPercent: -56.34,
+      },
+      {
+        name: 'Сбербанк',
+        targetPercent: 15.0, // Лимит из вашей стратегии
+        liquidationPercent: 10.0, // Симулируем дефицит доли (нужно докупить)
+        balancePercent: 10.0,
+        unrealizedProfitRub: 4000,
+        dynamicsPercent: 0.1,
+      },
+    ];
 
-  it('1. Должен корректно рассчитывать общие балансы акций и облигаций', () => {
-    const allocation = calculateGlobalAllocation(mockAssets);
+    // 3. Запускаем тестирование комплексного метода analyzePortfolio
+    const math = new PortfolioMathModule();
+    const result = math.analyzePortfolio(mockMacro, mockAssets);
 
-    // Проверяем, что общая рыночная стоимость портфеля около 500 007 рублей
-    expect(allocation.totalValue).toBeCloseTo(499783.35, 1);
-    // Проверяем, что котел разделился на две части
-    expect(allocation.stockValue).toBeGreaterThan(0);
-    expect(allocation.bondValue).toBeGreaterThan(0);
-  });
+    // 4. Проверяем расчет адаптивного свободного пула акций для ИИ
+    // Жесткие лимиты в стратегии: Полюс (20%) + Сбербанк (15%) + Татнефть (15%) + ИнтерРАО (15%) + X5 (15%) = 80%
+    // Так как макро-цель акций 52%, а жестко распределено 80%, свободный пул должен быть равен 0
+    expect(result.freeStocksPoolPercent).toBe(0);
 
-  it('2. Должен выявлять дисбаланс сплита верхнего уровня (текущие доли vs 52/48)', () => {
-    const allocation = calculateGlobalAllocation(mockAssets);
-    const delta = calculateRebalanceDelta(allocation);
+    // 5. Проверяем работу защитных предохранителей (Статусы)
+    const polyusAnalysis = result.assetsAnalysis.find(
+      (a) => a.name === 'Полюс',
+    );
+    const sberAnalysis = result.assetsAnalysis.find(
+      (a) => a.name === 'Сбербанк',
+    );
 
-    // У вас сейчас акций ~59.5%, а должно быть 52%. Значит, система должна зафиксировать перебор по акциям
-    expect(delta.currentShares.stock).toBeCloseTo(0.595, 2);
-    // Проверяем, что дельта для облигаций положительная (требует докупки)
-    expect(delta.actions.bondDelta).toBeGreaterThan(0);
-  });
+    expect(polyusAnalysis).toBeDefined();
+    expect(sberAnalysis).toBeDefined();
 
-  it('3. Должен жестко БЛОКИРОВАТЬ Полюс (>20%) и давать сигнал BUY для ГТЛК (<10%)', () => {
-    const allocation = calculateGlobalAllocation(mockAssets);
-    const analysis = analyzeAssetLimits(mockAssets, allocation.totalValue);
+    if (polyusAnalysis && sberAnalysis) {
+      // Предохранитель 1: Для «Полюса» всегда должен принудительно возвращаться статус HOLD
+      expect(polyusAnalysis.status).toBe('HOLD');
 
-    const polyus = analysis.find(a => a.instrument === 'Полюс');
-    const gtlk = analysis.find(a => a.instrument === 'ѕГТЛК2P-14');
+      // Предохранитель 2: Если дефицит Сбербанка существенный, должен быть статус BUY
+      expect(sberAnalysis.status).toBe('BUY');
 
-    // Проверяем вердикт по Полюсу
-    expect(polyus).toBeDefined();
-    expect(polyus!.status).toBe('BLOCK');
-    expect(polyus!.suggestedQuantityToBuy).toBe(0);
-
-    // Проверяем вердикт по ГТЛК
-    expect(gtlk).toBeDefined();
-    expect(gtlk!.status).toBe('BUY');
-    // Система должна предложить докупить штуки, так как текущая доля всего 1.2% вместо 10%
-    expect(gtlk!.suggestedQuantityToBuy).toBeGreaterThan(0);
+      // Проверяем, что дефицит в рублях рассчитался корректно: (15% - 10%) * 100 000 общего баланса = 5 000 руб.
+      expect(sberAnalysis.deficitRub).toBe(5000);
+    }
   });
 });

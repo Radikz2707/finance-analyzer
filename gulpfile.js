@@ -125,6 +125,24 @@ export default series(
   runTask('startwatch'),
 );
 
+// 📊 Автоматический инвестиционный конвейер аналитики QUIK и GigaChat
+export const analyze = async (done) => {
+  // Активируем поддержку TypeScript на лету для Node.js внутри Gulp
+  const { register } = await import('ts-node');
+  register({
+    compilerOptions: { module: 'NodeNext' },
+    esm: true
+  });
+
+  // Импортируем напрямую исходный файл .ts без привязки к сборке Webpack
+  const { parseExcelAndFetchRecommendations } = await import('./src/js/modules/ai-advisor/ai-advisor.ts');
+
+  await parseExcelAndFetchRecommendations();
+  done();
+};
+
+
+
 // Системный экспорт для CLI-регистрации
 export {
   create,

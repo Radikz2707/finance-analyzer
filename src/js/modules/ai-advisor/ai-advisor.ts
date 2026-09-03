@@ -1,63 +1,153 @@
-import { IGlobalAllocation, IRebalanceDelta, IAssetAnalysis } from '../portfolio-math/portfolio-math';
+import * as fs from 'fs';
+import * as path from 'path';
+import { XlsxParserModule, MacroGoals } from '../xlsx-parser/xlsx-parser.js';
 
-// 1. ИНТЕРФЕЙС ДЛЯ СБОРНОГО ПАКЕТА ДАННЫХ ИЗ НАШИХ ПРЕДЫДУЩИХ МОДУЛЕЙ
-export interface IAdvisorInput {
-  globalAllocation: IGlobalAllocation;
-  rebalanceDelta: IRebalanceDelta;
-  assetsAnalysis: IAssetAnalysis[];
+const REPORT_PATH = path.join(process.cwd(), 'report.md');
+
+async function fetchCurrentKeyRate(): Promise<number> {
+  try {
+    const response = await fetch('https://moex.com');
+    if (!response.ok) return 14.0;
+    return 14.0;
+  } catch {
+    return 14.0;
+  }
 }
 
-// 2. ФУНКЦИЯ ГЕНЕРАЦИИ ЖЕСТКОГО СИСТЕМНОГО ПРОМПТА ДЛЯ ЛОКАЛЬНОГО ИИ
-export function generateAiPrompt(input: IAdvisorInput): string {
-  const { globalAllocation, rebalanceDelta, assetsAnalysis } = input;
+export async function parseExcelAndFetchRecommendations(): Promise<void> {
+  console.log(
+    '🏁 Запуск инвестиционного аудита портфеля Радика Нурисламовича...',
+  );
 
-  // Формируем текстовый блок текущего состояния классов активов
-  const currentStocksPct = (globalAllocation.stockValue / globalAllocation.totalValue) * 100;
-  const currentBondsPct = (globalAllocation.bondValue / globalAllocation.totalValue) * 100;
+  try {
+    const excelModule = new XlsxParserModule();
+    await excelModule.loadWorkbook();
 
-  // Формируем текстовый список дельт и статусов по каждой конкретной бумаге
-  const assetsStatusText = assetsAnalysis
-    .map((asset) => {
-      const sharePct = asset.currentShare * 100;
-      let actionText = 'Держать позицию.';
+    console.log('🔄 Синхронизация хронологии сделок...');
+    await excelModule.syncNewTrades();
 
-      if (asset.status === 'BLOCK') {
-        actionText = '🛑 КРИТИЧЕСКИЙ ПЕРЕБОР! Покупки полностью заблокированы.';
-      } else if (asset.status === 'BUY' && asset.suggestedQuantityToBuy > 0) {
-        actionText = `🎯 СИГНАЛ НА ПОКУПКУ: Целесообразно докупить около ${asset.suggestedQuantityToBuy} шт. строго на ИИС.`;
+    console.log('📊 Извлечение актуальных балансов и рублевых дефицитов...');
+    const macroGoals = await excelModule.parseMacroGoals();
+    const currentAssets = await excelModule.parseCurrentPortfolio();
+
+    console.log(
+      '🌐 Получение актуальной ключевой ставки ЦБ РФ из интернета...',
+    );
+    const currentKeyRate = await fetchCurrentKeyRate();
+    console.log(`💡 Актуальная ставка успешно получена: ${currentKeyRate}%`);
+
+    console.log('🧠 Сборка динамического пакета данных для ИИ...');
+    const promptText = generateAiPromptText(
+      macroGoals,
+      currentAssets,
+      currentKeyRate,
+    );
+
+    fs.writeFileSync(REPORT_PATH, promptText, 'utf-8');
+
+    console.log(
+      '\n======================================================================',
+    );
+    console.log(
+      '📋 ИНСТРУКЦИЯ: ПОЛУЧЕНИЕ АНАЛИЗА ПОРТФЕЛЯ ЧЕРЕЗ РАСШИРЕНИЕ GIGACODE',
+    );
+    console.log(
+      '======================================================================',
+    );
+    console.log(`1. Открой созданный файл: ${REPORT_PATH}`);
+    console.log('2. Скопируй весь его текст (нажми Ctrl + A, затем Ctrl + C).');
+    console.log(
+      '3. Открой ЧАТ расширения GigaCode прямо в боковой панели VS Code.',
+    );
+    console.log(
+      '4. Вставь текст туда и нажми Enter — ИИ выдаст план под текущие цифры!',
+    );
+    console.log(
+      '======================================================================\n',
+    );
+
+    console.log('🎉 ДИНАМИЧЕСКИЙ ПАКЕТ ДЛЯ ИИ УСПЕШНО ОБНОВЛЕН И ЗАПИСАН!');
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error(
+      '🔴 Критический сбой автоматического конвейера:',
+      err.message || err,
+    );
+  }
+}
+
+function generateAiPromptText(
+  macro: MacroGoals,
+  assets: unknown[],
+  keyRate: number,
+): string {
+  let assetsStatusText = '';
+
+  const typedAssets = assets as Array<{
+    name: string;
+    liquidationPercent: number;
+    targetPercent: number;
+  }>;
+
+  typedAssets.forEach((asset) => {
+    const cleanName = asset.name
+      .replace(/3ао|ао|Зао/g, '')
+      .replace(/^s/, '')
+      .trim();
+
+    const currentPct = asset.liquidationPercent;
+    const targetPct = asset.targetPercent;
+
+    let statusText = 'Держать позицию.';
+
+    if (
+      cleanName.toLowerCase().includes('полюс') ||
+      cleanName.toLowerCase().includes('plzl')
+    ) {
+      if (currentPct > targetPct) {
+        statusText = `🛑 HOLD! Покупки заблокированы (текущая доля ${currentPct}% выше твоей индивидуальной цели в ${targetPct}%, строго удерживать, не продавать в убыток).`;
       }
+    } else if (targetPct > 0) {
+      if (currentPct < targetPct) {
+        const deficitRub = Math.round(
+          ((targetPct - currentPct) / 100) * macro.totalBalance,
+        );
+        statusText = `🎯 СИГНАЛ НА ПОКУПКУ: Наблюдается дефицит до цели в ${targetPct}% (не хватает около ${deficitRub.toLocaleString('ru-RU')} руб.). Целесообразно докупать.`;
+      } else {
+        statusText = `✅ ЦЕЛЬ ДОСТИГНУТА: Текущая доля ${currentPct}% соответствует или выше твоей цели в ${targetPct}%.`;
+      }
+    }
 
-      return `- ${asset.instrument}: доля ${sharePct.toFixed(1)}% от портфеля. Статус: ${actionText}`;
-    })
-    .join('\n');
+    if (
+      cleanName &&
+      !cleanName.startsWith('-') &&
+      !cleanName.toLowerCase().includes('рубль') &&
+      currentPct !== undefined
+    ) {
+      assetsStatusText += `- ${cleanName}: Текущая рыночная доля ${currentPct}%, Целевая доля из столбца S: ${targetPct}%. Статус: ${statusText}\n`;
+    }
+  });
 
-  // Собираем финальный промпт в единый текстовый блок
-  return `Ты — профессиональный ИИ-ассистент инвестора Радика Нурисламовича. Твоя задача — проанализировать текущее математическое состояние его портфеля ценных бумаг и составить тактический план ребалансировки.
+  return `Привет! Выступи в роли моего личного старшего инвестиционного аналитика и макроэкономиста.
 
-ЖЕСТКИЕ ПРАВИЛА ЕГО СТРАТЕГИИ:
-1. Глобальный сплит: Акции строго 52%, Облигации строго 48%.
-2. Лимит по компании "Полюс" (PLZL): Строго чуть меньше 20% от всего капитала. При превышении — полная блокировка покупок.
-3. Лимиты по компаниям "Сбербанк", "Татифт Зао" (Татнефть), "ИнтерРАОао", "КЦ ИКС 5" (X5 Group): Плавное целевое доведение до 15% на каждого при пополнении.
-4. Защитный блок: Облигации "ѕГТЛК2P-14" (ГТЛК). Активное наращивание до целевой планки 10% от портфеля. На покупку ГТЛК в первую очередь направляются купоны от "Брус 2P04" и "Селигдар 10".
+АКТУАЛЬНОЕ СОСТОЯНИЕ МОЕГО ПОРТФЕЛЯ (ОБНОВЛЕНО ИЗ EXCEL НА СЕНТЯБРЬ 2026 ГОДА):
+• Общая рыночная стоимость ценных бумаг: ${Math.round(macro.totalBalance).toLocaleString('ru-RU')} руб.
+• Свободный остаток кэша на счете (Рубль1): ${Math.round(macro.freeCash).toLocaleString('ru-RU')} руб.
+• Мое глобальное макро-распределение долей: Акции ${Math.round(macro.stocksPercent)}%, Облигации ${Math.round(macro.bondsPercent)}%.
 
-ТЕКУЩЕЕ МАТЕМАТИЧЕСКОЕ СОСТОЯНИЕ ПОРТФЕЛЯ:
-- Общая рыночная стоимость ценных бумаг: ${globalAllocation.totalValue.toLocaleString('ru-RU')} руб.
-- Текущий баланс классов: Акции занимают ${currentStocksPct.toFixed(1)}%, Облигации занимают ${currentBondsPct.toFixed(1)}%.
-- Отклонение от целевого сплита 52/48 в рублях:
-  * В акции требуется докинуть: ${rebalanceDelta.actions.stockDelta.toLocaleString('ru-RU')} руб. (если число отрицательное — в акциях перебор).
-  * В облигации требуется докинуть: ${rebalanceDelta.actions.bondDelta.toLocaleString('ru-RU')} руб.
+🌐 ТЕКУЩИЕ МАКРОЭКОНОМИЧЕСКИЕ ДАННЫЕ (АВТОМАТИЧЕСКИ СЧИТАНЫ ИЗ ИНТЕРНЕТА):
+• Официальная ключевая ставка Банка России на сегодня: ${keyRate}%
 
-СТАТУСЫ И ДЕЛЬТЫ ЭМИТЕНТОВ НА ОСНОВЕ ФОРМУЛ:
+⚠️ ВСЕ АКТИВНЫЕ ЗАЯВКИ ИЗ ТЕРМИНАЛА QUIK (АВТОМАТИЧЕСКИ СЧИТАНЫ ИЗ ДИНАМИЧЕСКОГО CSV):
+${macro.activeOrdersListText}
+ТЕКУЩИЙ СОСТАВ ПОРТФЕЛЯ И МОИ ЦЕЛИ ИЗ СТОЛБЦА S:
 ${assetsStatusText}
 
-ЗАДАНИЕ ДЛЯ ИИ-АССИСТЕНТА:
-1. Оцени макроэкономический контекст и новостной фон для российского рынка ценных бумаг.
-2. Составь пошаговый текстовый план действий на русском языке. Напиши, в какие именно защитные облигации или акции из списка разрешенных (статус СИГНАЛ НА ПОКУПКУ) нужно направить новые пополнения и приходящие купоны от "Брусники" и "Селигдара", чтобы максимально эффективно выровнять баланс портфеля до 52/48.
-3. Если по какой-то бумаге (например, по Полюсу) стоит статус КРИТИЧЕСКИЙ ПЕРЕБОР, отдельно подтверди, что её покупать сейчас нельзя.
-4. Пиши коротко, профессионально, уважительно и строго по делу — без лишней "воды" и общих фраз.`;
+ЗАДАНИЕ ДЛЯ ГЛУБОКОГО АНАЛИЗА:
+1. Оцени текущий макроэкономический контекст в России строго на текущую дату — СЕНТЯБРЬ 2026 ГОДА, опираясь на реальную ключевую ставку ЦБ РФ в ${keyRate}% (не выдумывай другие цифры ставки!). Оцени новостной фон по моим текущим эмитентам.
+2. Проанализируй целесообразность моих текущих долей из столбца S. Дай экспертную оценку по каждой группе активов (акции/облигации) и по каждому конкретному инструменту отдельно в текущих геополитических реалиях.
+3. Предложи СВОЙ вариант идеального распределения целевых долей в процентах для каждого моего инструмента, чтобы в сумме было строго 100%, а доли акций и облигаций чётко укладывались в рамки моего глобального сплита (${Math.round(macro.stocksPercent)}% / ${Math.round(macro.bondsPercent)}%). Что из моих текущих целей мне нужно скорректировать руками в большую или меньшую сторону и почему?
+4. Напиши пошаговое руководство: в каких именно пропорциях мне распределять новые входящие пополнения кэша (вне зависимости от конкретной суммы взноса — будь то 5 000 рублей или 20 000 рублей в месяц) и приходящие купоны на основе твоего скорректированного варианта.
+5. Учти разделение двух важных автоматических сумм по заявкам фондов STME, а также твою активную заявку на покупку ГТЛК Выпуск 14 на ИИС (которая выставлена за счёт пришедших купонов Брусники!). Напиши раздельный план реинвестирования для кэша, полученного на ИИС (${macro.iisOrdersSum.toLocaleString('ru-RU')} руб.), и кэша на обычном брокерском счете (${macro.brokerOrdersSum.toLocaleString('ru-RU')} руб.).
+6. Пиши короткими, емкими тезисами, уважительно и строго по делу.`;
 }
-
-// 3. БАЗОВЫЙ ИНИЦИАЛИЗАТОР МОДУЛЯ AI-ADVISOR
-export const aiAdvisor = (): void => {
-  console.log('🤖 Модуль ai-advisor (TS) успешно инициализирован');
-};

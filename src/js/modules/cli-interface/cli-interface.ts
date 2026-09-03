@@ -1,67 +1,75 @@
 import fs from 'fs';
 import path from 'path';
-import { parsePortfolioExcel } from '../xlsx-parser/xlsx-parser';
-import { calculateGlobalAllocation, calculateRebalanceDelta, analyzeAssetLimits } from '../portfolio-math/portfolio-math';
-import { generateAiPrompt } from '../ai-advisor/ai-advisor';
+import { exec } from 'child_process';
+import { XlsxParserModule } from '../xlsx-parser/xlsx-parser';
+import { PortfolioMathModule } from '../portfolio-math/portfolio-math';
+// Импортируем вашу главную функцию-конвейер
+import { parseExcelAndFetchRecommendations } from '../ai-advisor/ai-advisor';
 
-// ГЛАВНАЯ ФУНКЦИЯ ЗАПУСКА АНАЛИЗА ПОРТФЕЛЯ
-export function runFullPortfolioAnalysis(): void {
+export async function runFullPortfolioAnalysis(): Promise<void> {
   console.log('\n==================================================');
-  console.log('🚀 ЗАПУСК ПОЛНОГО АВТОМАТИЧЕСКОГО АНАЛИЗА ПОРТФЕЛЯ');
+  console.log('🚀 ЗАПУСК АВТОМАТИЧЕСКОГО АНАЛИЗА ПОРТФЕЛЯ');
   console.log('==================================================\n');
 
-  // 1. Шаг 1: Автоматически парсим реальный Excel-файл из вашей бухгалтерии
-  const assets = parsePortfolioExcel();
+  // 1. Инициализируем парсер и собираем данные из Excel
+  const parser = new XlsxParserModule();
+  const assets = await parser.parseCurrentPortfolio();
+  const macroGoals = await parser.parseMacroGoals();
 
   if (assets.length === 0) {
-    console.error('❌ [CLI ERROR]: Массив активов пуст. Анализ прерван.');
+    console.error('❌ [ОШИБКА]: Массив активов пуст.');
     return;
   }
 
-  // 2. Шаг 2: Прогоняем данные через математические формулы ребалансировки
-  const globalAllocation = calculateGlobalAllocation(assets);
-  const rebalanceDelta = calculateRebalanceDelta(globalAllocation);
-  const assetsAnalysis = analyzeAssetLimits(assets, globalAllocation.totalValue);
+  // 2. Запускаем комплексный аналитический метод вашей инвестиционной математики
+  const math = new PortfolioMathModule();
+  const analysisResult = math.analyzePortfolio(macroGoals, assets);
 
-  // 3. Шаг 3: Генерируем структурированный промпт для локального ИИ
-  const aiPromptText = generateAiPrompt({
-    globalAllocation,
-    rebalanceDelta,
-    assetsAnalysis
-  });
+  // 3. Запускаем ваш главный конвейер аналитики без аргументов, так как он сам управляет процессами
+  if (typeof parseExcelAndFetchRecommendations === 'function') {
+    await parseExcelAndFetchRecommendations();
+  }
 
-  // 4. Шаг 4: Формируем красивый итоговый Markdown-файл отчета
+  // 4. Обновляем файл report.md на диске для локального логирования
+  const reportPath = path.join(process.cwd(), 'report.md');
+
+  const totalVal = analysisResult.macro.totalBalance;
+  const currentStocksPct = analysisResult.macro.stocksPercent;
+  const currentBondsPct = analysisResult.macro.bondsPercent;
+
   const reportContent = `# 📊 ОТЧЕТ ПО РЕБАЛАНСИРОВКЕ ПОРТФЕЛЯ
 Дата анализа: ${new Date().toLocaleDateString('ru-RU')}
-Рыночная стоимость ценных бумаг: ${globalAllocation.totalValue.toLocaleString('ru-RU')} руб.
+Общий баланс портфеля: ${totalVal.toLocaleString('ru-RU')} руб.
+Свободные средства: ${analysisResult.macro.freeCash.toLocaleString('ru-RU')} руб.
 
-## 📈 Текущий сплит классов активов (Цель 52% Акции / 48% Облигации)
-- **Акции**: ${((globalAllocation.stockValue / globalAllocation.totalValue) * 100).toFixed(1)}%
-- **Облигации**: ${((globalAllocation.bondValue / globalAllocation.totalValue) * 100).toFixed(1)}%
+## 📈 Текущий сплит классов активов (Целевой ориентир стратегии)
+- **Целевая доля Акций**: ${currentStocksPct}% (Свободный пул для ИИ: ${analysisResult.freeStocksPoolPercent}%)
+- **Целевая доля Облигаций**: ${currentBondsPct}%
 
-### Необходимые изменения в рублях:
-- **В Акции**: ${rebalanceDelta.actions.stockDelta.toLocaleString('ru-RU')} руб.
-- **В Облигации**: ${rebalanceDelta.actions.bondDelta.toLocaleString('ru-RU')} руб.
-
-## 🔍 Сформированное техническое задание для ИИ (Промпт):
-\`\`\`text
-${aiPromptText}
-\`\`\`
+### Анализ защитных лимитов и дефицитов по инструментам:
+${analysisResult.assetsAnalysis.map((a) => `- **${a.name}**: Доля ${a.currentPercent}% (Цель: ${a.targetPercent}%), Дефицит: ${a.deficitRub.toLocaleString('ru-RU')} руб. [Статус: ${a.status}]`).join('\n')}
 `;
 
-  // 5. Шаг 5: Сохраняем файл отчета в корень вашего проекта
-  try {
-    const reportPath = path.join(process.cwd(), 'report.md');
-    fs.writeFileSync(reportPath, reportContent, 'utf-8');
-    console.log(`\n✨ [CLI SUCCESS]: Итоговый отчет успешно сгенерирован и сохранен по пути: ${reportPath}`);
-    console.log('💡 Откройте файл report.md, скопируйте блок ТЗ и отправьте его в локальный ИИ!\n');
-  } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : 'Неизвестная ошибка';
-    console.error(`❌ [CLI ERROR]: Не удалось сохранить файл отчета. Причина: ${errMsg}`);
-  }
+  fs.writeFileSync(reportPath, reportContent, 'utf-8');
+  console.log(
+    `✨ [УСПЕХ]: Математика портфеля посчитана! Локальный отчет обновлен: ${reportPath}`,
+  );
+
+  // 5. Открываем веб-интерфейс нейросети в браузере
+  const targetUrl = 'https://chatgpt.com';
+  console.log('⏳ Автоматически открываем нейросеть в вашем браузере...');
+
+  exec('start ' + targetUrl, (error) => {
+    if (error) {
+      console.log(
+        '💡 Если браузер не открылся сам, перейдите на сайт вручную.',
+      );
+    } else {
+      console.log('🚀 БРАУЗЕР УСПЕШНО ОТКРЫТ!');
+    }
+  });
 }
 
-// БАЗОВЫЙ ИНИЦИАЛИЗАТОР МОДУЛЯ
 export const cliInterface = (): void => {
   console.log('📌 Модуль cli-interface (TS) успешно инициализирован');
 };

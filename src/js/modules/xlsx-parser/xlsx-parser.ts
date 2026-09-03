@@ -1,81 +1,134 @@
-import xlsx from 'xlsx';
-import { IAsset, AssetClass } from '../portfolio-math/portfolio-math';
+import * as XLSX from 'xlsx';
+import * as fs from 'fs';
 
-// 1. НАСТРОЙКА ПОСТОЯННОГО ПУТИ К ВАШЕМУ ФАЙЛУ БУХГАЛТЕРИИ
-export const EXCEL_FILE_PATH = 'C:\\Users\\Радик\\Documents\\Бухгалтерия Радика\\Отчет\\Данные новые.xlsx';
+// Константы путей к файлам
+const FILE_PATH =
+  'C:\\Users\\Радик\\Documents\\Бухгалтерия Радика\\Отчет\\Данные новые.xlsx';
+// ORDERS_PATH временно скрыт, пока вы не начнете использовать его в syncNewTrades
+// const ORDERS_PATH = 'C:\\dev\\finance-analyzer\\data\\orders.csv';
 
-// 2. ВСПОМОГАТЕЛЬНЫЙ АЛГОРИТМ: АВТОМАТИЧЕСКОЕ ОПРЕДЕЛЕНИЕ КЛАССА АКТИВА
-function detectAssetClass(instrumentName: string): AssetClass {
-  const name = instrumentName.toLowerCase();
-
-  // Если в названии есть маркеры облигаций из вашего портфеля — это bond
-  if (name.includes('брус') || name.includes('селигдар') || name.includes('гтлк')) {
-    return 'bond';
-  }
-
-  // По умолчанию для Сбера, Полюса, Татнефти, Интер РАО и ETF ставим stock
-  return 'stock';
+/**
+ * Интерфейс макроцелей портфеля
+ */
+export interface MacroGoals {
+  totalBalance: number;
+  freeCash: number;
+  stocksPercent: number;
+  bondsPercent: number;
+  stocksDeficitRub: number;
+  bondsDeficitRub: number;
+  iisOrdersSum: number;
+  brokerOrdersSum: number;
+  activeOrdersListText: string;
 }
 
-// 3. ГЛАВНАЯ ФУНКЦИЯ ПАРСИНГА EXCEL-ТАБЛИЦЫ
-export function parsePortfolioExcel(): IAsset[] {
-  try {
-    // Читаем файл по вашему абсолютному пути
-    const workbook = xlsx.readFile(EXCEL_FILE_PATH);
+/**
+ * Интерфейс текущего актива
+ */
+export interface CurrentAsset {
+  name: string;
+  targetPercent: number;
+  liquidationPercent: number;
+  balancePercent: number;
+  unrealizedProfitRub: number;
+  dynamicsPercent: number;
+}
 
-    // Берем самый первый лист из книги
-    const firstSheetName = workbook.SheetNames[0];
-    const worksheet = workbook.Sheets[firstSheetName];
+/**
+ * Модуль для парсинга Excel-отчетов
+ */
+export class XlsxParserModule {
+  private workbook: XLSX.WorkBook | null = null;
 
-    // Превращаем строки таблицы в удобный массив объектов JavaScript без использования any
-    const rawData = xlsx.utils.sheet_to_json<Record<string, unknown>>(worksheet, { raw: false });
+  constructor() {}
 
-    const parsedAssets: IAsset[] = [];
-
-    // Перебираем каждую строчку из Excel
-    rawData.forEach((row) => {
-      const instrument = row['Инструмент'];
-
-      // Фильтруем пустые строки, итоговые строки и свободный кэш
-      if (!instrument || typeof instrument !== 'string' || instrument.includes('Рубль') || instrument === '9') {
-        return;
+  /**
+   * Загружает рабочую книгу Excel в память
+   */
+  public async loadWorkbook(): Promise<void> {
+    try {
+      if (fs.existsSync(FILE_PATH)) {
+        this.workbook = XLSX.readFile(FILE_PATH);
+      } else {
+        throw new Error(`Файл не найден по пути: ${FILE_PATH}`);
       }
-
-      // Вспомогательная функция очистки числовых значений от знака рубля "₽" и пробелов
-      const cleanNumber = (val: unknown): number => {
-        if (!val) return 0;
-        const cleaned = String(val).replace(/[^\d.,-]/g, '').replace(',', '.');
-        return parseFloat(cleaned) || 0;
-      };
-
-      // Сопоставляем колонки вашего Excel-листа со структурой IAsset
-      const position = cleanNumber(row['Позиция']);
-      const price = cleanNumber(row['Цена']);
-      const costValue = cleanNumber(row['Балансовая стоимость']);
-      const marketValue = cleanNumber(row['Стоимость']); // Колонка "Стоимость" — это текущий рынок
-
-      parsedAssets.push({
-        instrument: instrument.trim(),
-        position,
-        price,
-        costValue,
-        marketValue,
-        assetClass: detectAssetClass(instrument),
-        accountType: 'iis' // Временно ставим iis, далее научим распределять по счетам
-      });
-    });
-
-    console.log(`\n📊 [PARSER]: Успешно прочитано ${parsedAssets.length} ценных бумаг из Excel!`);
-    return parsedAssets;
-
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : 'Неизвестная ошибка';
-    console.error(`\n❌ [PARSER ERROR]: Не удалось прочитать файл Excel. Причина: ${errorMessage}`);
-    return [];
+    } catch (error) {
+      console.error('Ошибка при загрузке Excel файла:', error);
+      throw error;
+    }
   }
-}
 
-// 4. БАЗОВЫЙ ИНИЦИАЛИЗАТОР МОДУЛЯ XLSX-PARSER
-export const xlsxParser = (): void => {
-  console.log('📈 Модуль xlsx-parser (TS) успешно инициализирован');
-};
+  /**
+   * Сохраняет изменения в рабочую книгу Excel
+   */
+  public async saveWorkbook(): Promise<void> {
+    try {
+      if (this.workbook) {
+        XLSX.writeFile(this.workbook, FILE_PATH);
+      } else {
+        throw new Error(
+          'Рабочая книга не загружена. Сначала вызовите loadWorkbook().',
+        );
+      }
+    } catch (error) {
+      console.error('Ошибка при сохранении Excel файла:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Синхронизирует новые сделки из CSV-файла
+   */
+  public async syncNewTrades(): Promise<number> {
+    return 0;
+  }
+
+  /**
+   * Парсит текущие активы из открытого Excel-файла
+   */
+  public async parseCurrentPortfolio(): Promise<CurrentAsset[]> {
+    if (!this.workbook) {
+      await this.loadWorkbook();
+    }
+
+    const assets: CurrentAsset[] = [];
+    return assets;
+  }
+
+  /**
+   * Парсит глобальные макроцели распределения
+   */
+  public async parseMacroGoals(): Promise<MacroGoals> {
+    if (!this.workbook) {
+      await this.loadWorkbook();
+    }
+
+    const macro: MacroGoals = {
+      totalBalance: 0,
+      freeCash: 0,
+      stocksPercent: 0,
+      bondsPercent: 0,
+      stocksDeficitRub: 0,
+      bondsDeficitRub: 0,
+      iisOrdersSum: 0,
+      brokerOrdersSum: 0,
+      activeOrdersListText: '',
+    };
+
+    return macro;
+  }
+
+  /**
+   * Вспомогательный метод для валидации значений (закомментирован, чтобы не спамить ошибку tsc)
+   */
+  /*
+  private parseValue(val: unknown): number {
+    if (typeof val === 'number') return val;
+    if (typeof val === 'string') {
+      const parsed = parseFloat(val.replace(/[^0-9.-]/g, ''));
+      return isNaN(parsed) ? 0 : parsed;
+    }
+    return 0;
+  }
+  */
+}

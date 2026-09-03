@@ -3,7 +3,7 @@ import { main } from '../components/main/main';
 import { footer } from '../components/footer/footer';
 import { isWebp } from './modules/isWebp';
 
-import { runFullPortfolioAnalysis } from './modules/cli-interface/cli-interface';
+// import { runFullPortfolioAnalysis } from './modules/cli-interface/cli-interface';
 
 // Инициализация компонентов
 const initApp = () => {
@@ -23,4 +23,4 @@ if (document.readyState === 'loading') {
 console.log('🚀 Radik.Dev: TypeScript успешно инициализирован');
 
 
-runFullPortfolioAnalysis();
+// runFullPortfolioAnalysis();
