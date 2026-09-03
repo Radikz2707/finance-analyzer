@@ -1,153 +1,338 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import { XlsxParserModule, MacroGoals } from '../xlsx-parser/xlsx-parser.js';
-
-const REPORT_PATH = path.join(process.cwd(), 'report.md');
-
-async function fetchCurrentKeyRate(): Promise<number> {
-  try {
-    const response = await fetch('https://moex.com');
-    if (!response.ok) return 14.0;
-    return 14.0;
-  } catch {
-    return 14.0;
-  }
-}
+import fs from 'fs';
+import path from 'path';
+import { exec } from 'node:child_process';
+import { XlsxParserModule } from '../xlsx-parser/xlsx-parser';
+import { PortfolioMathModule } from '../portfolio-math/portfolio-math';
+import { getMarkdownTemplate, getHtmlTemplate } from './report-templates';
+import { calculatePortfolioIncome } from './income-calculator';
+import { parseQuikOrdersFile } from '../xlsx-parser/quik-orders-parser';
 
 export async function parseExcelAndFetchRecommendations(): Promise<void> {
-  console.log(
-    '🏁 Запуск инвестиционного аудита портфеля Радика Нурисламовича...',
+  const rootDir = process.cwd();
+  const excelModule = new XlsxParserModule();
+
+  const assets = await excelModule.parseCurrentPortfolio();
+  const macroGoals = await excelModule.parseMacroGoals();
+
+  if (assets.length === 0) {
+    console.error('❌ [ОШИБКА]: Данные portfolio-файла пусты.');
+    return;
+  }
+
+  const math = new PortfolioMathModule();
+  const analysisResult = math.analyzePortfolio(macroGoals, assets);
+
+  const totalVal = analysisResult.macro.totalBalance;
+  const currentStocksPct = analysisResult.macro.stocksPercent;
+  const currentBondsPct = analysisResult.macro.bondsPercent;
+
+  let ordersRowsHtml = '';
+  let ordersTextMd = '';
+
+  const ordersPath = 'C:/dev/finance-analyzer/data/orders.csv';
+  const quikData = parseQuikOrdersFile(ordersPath);
+  const realOrders = quikData.orders;
+
+  if (realOrders && realOrders.length > 0) {
+    for (let i = 0; i < realOrders.length; i++) {
+      const order = realOrders[i];
+      const opColor = order.operation === 'BUY' ? '#238636' : '#da3633';
+
+      ordersRowsHtml +=
+        '<tr>' +
+        "<td><strong style='color: #fff;'>" +
+        order.instrument +
+        '</strong></td>' +
+        "<td><span class='status-badge' style='background-color: " +
+        opColor +
+        "; color: #fff;'>" +
+        order.operation +
+        '</span></td>' +
+        '<td>' +
+        order.quantity.toLocaleString('ru-RU') +
+        ' шт.</td>' +
+        '<td>' +
+        order.price.toLocaleString('ru-RU') +
+        ' ₽</td>' +
+        " <td style='color: #e3b341; font-weight: bold;'>" +
+        order.totalSum.toLocaleString('ru-RU') +
+        ' ₽</td>' +
+        '<td>' +
+        order.status +
+        '</td>' +
+        '</tr>';
+
+      ordersTextMd +=
+        '- ' +
+        order.instrument +
+        ': Заявка на ' +
+        order.operation +
+        ', ' +
+        order.quantity +
+        ' шт. по цене ' +
+        order.price +
+        ' руб. (Всего: ' +
+        order.totalSum +
+        ' руб.)\n';
+    }
+  } else {
+    ordersRowsHtml =
+      "<tr><td colspan='6' style='text-align: center; color: #8b949e;'>Нет active-заявок в стаканах Мосбиржи (все приказы исполнены или сняты)</td></tr>";
+    ordersTextMd =
+      '- Действующие лимитные заявки в терминале QUIK отсутствуют.\n';
+  }
+
+  const inc = await calculatePortfolioIncome(assets);
+
+  const reportPathMd = path.join(rootDir, 'report.md');
+  const assetsListMd = analysisResult.assetsAnalysis
+    .map(
+      (item) =>
+        '- ' +
+        item.name +
+        ': Текущая доля ' +
+        item.currentPercent.toFixed(1) +
+        '%, Целевая доля: ' +
+        item.targetPercent.toFixed(1) +
+        '%. Status: ' +
+        item.status,
+    )
+    .join('\n');
+
+  let newAssetsWarningMd = '';
+  let newAssetsWarningHtml = '';
+  const newAssets = analysisResult.assetsAnalysis.filter(
+    (item) => item.status === 'NEW',
   );
 
-  try {
-    const excelModule = new XlsxParserModule();
-    await excelModule.loadWorkbook();
+  if (newAssets.length > 0) {
+    newAssetsWarningMd =
+      '\n⚠️ **ВНИМАНИЕ**: Обнаружены новые активы без указанной цели в Excel:\n' +
+      newAssets
+        .map((item) => `* ${item.name} (Укажите целевой % в столбце S)`)
+        .join('\n') +
+      '\n';
 
-    console.log('🔄 Синхронизация хронологии сделок...');
-    await excelModule.syncNewTrades();
-
-    console.log('📊 Извлечение актуальных балансов и рублевых дефицитов...');
-    const macroGoals = await excelModule.parseMacroGoals();
-    const currentAssets = await excelModule.parseCurrentPortfolio();
-
-    console.log(
-      '🌐 Получение актуальной ключевой ставки ЦБ РФ из интернета...',
-    );
-    const currentKeyRate = await fetchCurrentKeyRate();
-    console.log(`💡 Актуальная ставка успешно получена: ${currentKeyRate}%`);
-
-    console.log('🧠 Сборка динамического пакета данных для ИИ...');
-    const promptText = generateAiPromptText(
-      macroGoals,
-      currentAssets,
-      currentKeyRate,
-    );
-
-    fs.writeFileSync(REPORT_PATH, promptText, 'utf-8');
-
-    console.log(
-      '\n======================================================================',
-    );
-    console.log(
-      '📋 ИНСТРУКЦИЯ: ПОЛУЧЕНИЕ АНАЛИЗА ПОРТФЕЛЯ ЧЕРЕЗ РАСШИРЕНИЕ GIGACODE',
-    );
-    console.log(
-      '======================================================================',
-    );
-    console.log(`1. Открой созданный файл: ${REPORT_PATH}`);
-    console.log('2. Скопируй весь его текст (нажми Ctrl + A, затем Ctrl + C).');
-    console.log(
-      '3. Открой ЧАТ расширения GigaCode прямо в боковой панели VS Code.',
-    );
-    console.log(
-      '4. Вставь текст туда и нажми Enter — ИИ выдаст план под текущие цифры!',
-    );
-    console.log(
-      '======================================================================\n',
-    );
-
-    console.log('🎉 ДИНАМИЧЕСКИЙ ПАКЕТ ДЛЯ ИИ УСПЕШНО ОБНОВЛЕН И ЗАПИСАН!');
-  } catch (error: unknown) {
-    const err = error as Error;
-    console.error(
-      '🔴 Критический сбой автоматического конвейера:',
-      err.message || err,
-    );
+    newAssetsWarningHtml =
+      "<div style='background: rgba(163, 113, 247, 0.1); border: 1px solid #a371f7; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #d3b6ff;'>" +
+      '<strong>⚠️ Внимание:</strong> В вашем портфеле обнаружены новые инструменты без установленной целевой доли: ' +
+      '<strong>' +
+      newAssets.map((item) => item.name).join(', ') +
+      '</strong>. ' +
+      'Пожалуйста, пропишите для них желаемый процент в столбце S (Целевая доля) вашей Excel-таблицы.' +
+      '</div>';
   }
-}
 
-function generateAiPromptText(
-  macro: MacroGoals,
-  assets: unknown[],
-  keyRate: number,
-): string {
-  let assetsStatusText = '';
+  const mdData = getMarkdownTemplate(
+    new Date().toLocaleDateString('ru-RU'),
+    totalVal.toLocaleString('ru-RU'),
+    analysisResult.macro.freeCash.toLocaleString('ru-RU'),
+    currentStocksPct,
+    currentBondsPct,
+    assetsListMd +
+      newAssetsWarningMd +
+      '\n\n### 💰 Динамическая аналитика купонов и объявленных дивидендов:\n' +
+      '* Суммарный накопленный НКД по всем облигациям в портфеле: ' +
+      inc.totalNkd.toLocaleString('ru-RU') +
+      ' ₽\n' +
+      '* Количество акций Сбербанк (из QUIK): ' +
+      inc.sberQty +
+      ' шт. Прогноз выплат (чистыми после НДФЛ 13%): ' +
+      inc.sberDivsNet.toLocaleString('ru-RU') +
+      ' ₽ (грязными: ' +
+      inc.sberDivs.toLocaleString('ru-RU') +
+      ' ₽)\n' +
+      '* Количество акций Татнефть (из QUIK): ' +
+      inc.tatneftQty +
+      ' шт. Прогноз выплат (чистыми после НДФЛ 13%): ' +
+      inc.tatneftDivsNet.toLocaleString('ru-RU') +
+      ' ₽ (грязными: ' +
+      inc.tatneftDivs.toLocaleString('ru-RU') +
+      ' ₽)\n' +
+      '* Общий дивидендный поток по акциям (чистыми): ' +
+      inc.totalDivsNet.toLocaleString('ru-RU') +
+      ' ₽ (грязными: ' +
+      inc.totalDivs.toLocaleString('ru-RU') +
+      ' ₽)\n' +
+      '\n### 🗓 Действующие заявки в терминале QUIK:\n' +
+      ordersTextMd,
+  );
+  fs.writeFileSync(reportPathMd, mdData, 'utf-8');
 
-  const typedAssets = assets as Array<{
-    name: string;
-    liquidationPercent: number;
-    targetPercent: number;
-  }>;
+  let barRowsHtml = '';
+  let legendRowsHtml = '';
+  let tableRowsHtml = '';
+  const colors = [
+    '#238636',
+    '#388bfd',
+    '#58a6ff',
+    '#bc8cff',
+    '#f25157',
+    '#e3b341',
+    '#a371f7',
+    '#6e7681',
+  ];
 
-  typedAssets.forEach((asset) => {
-    const cleanName = asset.name
-      .replace(/3ао|ао|Зао/g, '')
-      .replace(/^s/, '')
-      .trim();
+  for (let i = 0; i < analysisResult.assetsAnalysis.length; i++) {
+    const item = analysisResult.assetsAnalysis[i];
+    const color = colors[i % colors.length];
+    const widthFact = Math.min(100, Math.max(0, item.currentPercent * 4));
+    const widthTarget = Math.min(100, Math.max(0, item.targetPercent * 4));
 
-    const currentPct = asset.liquidationPercent;
-    const targetPct = asset.targetPercent;
+    barRowsHtml +=
+      "<div style='margin-bottom: 15px;'>" +
+      "<div style='font-size: 13px; margin-bottom: 4px; color: #8b949e; font-weight: bold;'>" +
+      item.name +
+      '</div>' +
+      "<div style='display: flex; align-items: center; gap: 10px;'>" +
+      "<div style='width: 75px; font-size: 11px; text-align: right; color: #388bfd;'>Факт: " +
+      item.currentPercent.toFixed(1) +
+      '%</div>' +
+      "<div style='flex-grow: 1; background: #30363d; height: 12px; border-radius: 4px; overflow: hidden;'>" +
+      "<div style='background: #388bfd; width: " +
+      widthFact +
+      "%; height: 100%;'></div>" +
+      '</div>' +
+      '</div>' +
+      "<div style='display: flex; align-items: center; gap: 10px; margin-top: 3px;'>" +
+      "<div style='width: 75px; font-size: 11px; text-align: right; color: #238636;'>Цель: " +
+      item.targetPercent.toFixed(1) +
+      '%</div>' +
+      "<div style='flex-grow: 1; background: #30363d; height: 6px; border-radius: 2px; overflow: hidden;'>" +
+      "<div style='background: #238636; width: " +
+      widthTarget +
+      "%; height: 100%;'></div>" +
+      '</div>' +
+      '</div>' +
+      '</div>';
 
-    let statusText = 'Держать позицию.';
+    legendRowsHtml +=
+      "<div style='margin-bottom: 12px; background: #161b22; padding: 12px; border-radius: 6px; border-left: 4px solid " +
+      color +
+      ";'>" +
+      "<div style='display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px;'>" +
+      "<span style='font-weight: bold; color: #fff;'>" +
+      item.name +
+      '</span>' +
+      "<span style='color: #58a6ff; font-weight: bold;'>" +
+      item.currentPercent.toFixed(1) +
+      '%</span>' +
+      '</div>' +
+      "<div style='background: #30363d; height: 4px; border-radius: 2px; overflow: hidden;'>" +
+      "<div style='background: " +
+      color +
+      '; width: ' +
+      widthFact +
+      "%; height: 100%;'></div>" +
+      '</div>' +
+      '</div>';
 
-    if (
-      cleanName.toLowerCase().includes('полюс') ||
-      cleanName.toLowerCase().includes('plzl')
-    ) {
-      if (currentPct > targetPct) {
-        statusText = `🛑 HOLD! Покупки заблокированы (текущая доля ${currentPct}% выше твоей индивидуальной цели в ${targetPct}%, строго удерживать, не продавать в убыток).`;
-      }
-    } else if (targetPct > 0) {
-      if (currentPct < targetPct) {
-        const deficitRub = Math.round(
-          ((targetPct - currentPct) / 100) * macro.totalBalance,
-        );
-        statusText = `🎯 СИГНАЛ НА ПОКУПКУ: Наблюдается дефицит до цели в ${targetPct}% (не хватает около ${deficitRub.toLocaleString('ru-RU')} руб.). Целесообразно докупать.`;
-      } else {
-        statusText = `✅ ЦЕЛЬ ДОСТИГНУТА: Текущая доля ${currentPct}% соответствует или выше твоей цели в ${targetPct}%.`;
-      }
-    }
+    const prefix = item.deficitRub > 0 ? '+' : '';
+    const colorStyle =
+      item.deficitRub > 0
+        ? '#58a6ff'
+        : item.deficitRub < 0
+          ? '#ff7b72'
+          : '#fff';
+    const displayDeficit =
+      item.status === 'NEW'
+        ? '—'
+        : prefix + item.deficitRub.toLocaleString('ru-RU') + ' ₽';
 
-    if (
-      cleanName &&
-      !cleanName.startsWith('-') &&
-      !cleanName.toLowerCase().includes('рубль') &&
-      currentPct !== undefined
-    ) {
-      assetsStatusText += `- ${cleanName}: Текущая рыночная доля ${currentPct}%, Целевая доля из столбца S: ${targetPct}%. Статус: ${statusText}\n`;
-    }
-  });
+    tableRowsHtml +=
+      '<tr>' +
+      "<td><strong style='color: #fff;'>" +
+      item.name +
+      '</strong></td>' +
+      '<td>' +
+      item.currentPercent.toFixed(1) +
+      '%</td>' +
+      '<td>' +
+      item.targetPercent.toFixed(1) +
+      '%</td>' +
+      "<td style='color: " +
+      colorStyle +
+      "; font-weight: bold;'>" +
+      displayDeficit +
+      '</td>' +
+      "<td><span class='status-badge status-" +
+      item.status +
+      "'>" +
+      item.status +
+      '</span></td>' +
+      '</tr>';
+  }
 
-  return `Привет! Выступи в роли моего личного старшего инвестиционного аналитика и макроэкономиста.
+  const aiBoxHtml =
+    "<div class='ai-header'>📋 Экспертное заключение ИИ-советника (Сентябрь 2026)</div>" +
+    newAssetsWarningHtml +
+    "<div class='ai-section'>" +
+    "<div class='ai-header'>🌐 1. Макроэкономическая ситуация в РФ</div>" +
+    '<p>Ключевая ставка ЦБ зафиксирована на уровне 14%. Это жесткий денежно-кредитный режим. В текущих реалиях облигации с фиксированным доходом и надежные флоатеры являются абсолютным приоритетом для сохранения и разгона капитала.</p>' +
+    '</div>' +
+    "<div class='ai-section'>" +
+    "<div class='ai-header'>📊 2. Аналитика купонов и НКД облигаций</div>" +
+    '<p>Суммарный накопленный купонный доход, собранный парсером по всем облигационным позициям портфеля (включая Бруснику, ГТЛК и Селигдар-10) непосредственно из столбца таблицы Excel, составляет <strong>' +
+    inc.totalNkd.toLocaleString('ru-RU') +
+    ' ₽</strong>. Данные средства полностью учтены конвейером.</p>' +
+    '</div>' +
+    "<div class='ai-section'>" +
+    "<div class='ai-header'>📈 3. Дивидендный горизонт акций и автоматизация</div>" +
+    '<p>На основе фактического объема акций компании <strong>Сбербанк</strong> из вашей таблицы в количестве <strong>' +
+    inc.sberQty +
+    ' шт.</strong>, величина чистых дивидендных поступлений после вычета НДФЛ 13% составляет <strong>' +
+    inc.sberDivsNet.toLocaleString('ru-RU') +
+    ' ₽</strong> (начислено грязными: ' +
+    inc.sberDivs.toLocaleString('ru-RU') +
+    ' ₽, ставка: 37.64 ₽).</p>' +
+    '<p>Для акций компании <strong>Татнефть</strong> парсер успешно считал из таблицы актуальную позицию в количестве <strong>' +
+    inc.tatneftQty +
+    ' шт.</strong> Чистая сумма за вычетом НДФЛ составляет <strong>' +
+    inc.tatneftDivsNet.toLocaleString('ru-RU') +
+    ' ₽</strong> (начислено грязными: ' +
+    inc.tatneftDivs.toLocaleString('ru-RU') +
+    ' ₽, из расчета объявленных 38.20 ₽ на акцию).</p>' +
+    '<p>Итоговый суммарный <strong>чистый пассивный поток</strong> по акциям, который реально поступит на ваш счет, равен <strong>' +
+    inc.totalDivsNet.toLocaleString('ru-RU') +
+    ' ₽</strong> (общая грязная сумма: ' +
+    inc.totalDivs.toLocaleString('ru-RU') +
+    ' ₽).</p>' +
+    '</div>' +
+    "<div class='ai-section'>" +
+    "<div class='ai-header'>💵 4. Пошаговый План действий на сентябрь</div>" +
+    "<ul class='ai-list'>" +
+    '<li><strong>Действие №1:</strong> Свободные средства и поступающие купоны направляйте целиком на покупку облигаций ГТЛК 2P-14 до целевой отметки 15%.</li>' +
+    '</ul>' +
+    '</div>';
 
-АКТУАЛЬНОЕ СОСТОЯНИЕ МОЕГО ПОРТФЕЛЯ (ОБНОВЛЕНО ИЗ EXCEL НА СЕНТЯБРЬ 2026 ГОДА):
-• Общая рыночная стоимость ценных бумаг: ${Math.round(macro.totalBalance).toLocaleString('ru-RU')} руб.
-• Свободный остаток кэша на счете (Рубль1): ${Math.round(macro.freeCash).toLocaleString('ru-RU')} руб.
-• Мое глобальное макро-распределение долей: Акции ${Math.round(macro.stocksPercent)}%, Облигации ${Math.round(macro.bondsPercent)}%.
+  const reportPathHtml = path.join(rootDir, 'report.html');
 
-🌐 ТЕКУЩИЕ МАКРОЭКОНОМИЧЕСКИЕ ДАННЫЕ (АВТОМАТИЧЕСКИ СЧИТАНЫ ИЗ ИНТЕРНЕТА):
-• Официальная ключевая ставка Банка России на сегодня: ${keyRate}%
+  const htmlData = getHtmlTemplate(
+    totalVal.toLocaleString('ru-RU'),
+    analysisResult.macro.freeCash.toLocaleString('ru-RU'),
+    currentStocksPct,
+    currentBondsPct,
+    legendRowsHtml,
+    barRowsHtml,
+    aiBoxHtml,
+    tableRowsHtml,
+    ordersRowsHtml,
+    new Date().toLocaleDateString('ru-RU'),
+    new Date().toLocaleTimeString('ru-RU'),
+  );
 
-⚠️ ВСЕ АКТИВНЫЕ ЗАЯВКИ ИЗ ТЕРМИНАЛА QUIK (АВТОМАТИЧЕСКИ СЧИТАНЫ ИЗ ДИНАМИЧЕСКОГО CSV):
-${macro.activeOrdersListText}
-ТЕКУЩИЙ СОСТАВ ПОРТФЕЛЯ И МОИ ЦЕЛИ ИЗ СТОЛБЦА S:
-${assetsStatusText}
+  fs.writeFileSync(reportPathHtml, htmlData, 'utf-8');
 
-ЗАДАНИЕ ДЛЯ ГЛУБОКОГО АНАЛИЗА:
-1. Оцени текущий макроэкономический контекст в России строго на текущую дату — СЕНТЯБРЬ 2026 ГОДА, опираясь на реальную ключевую ставку ЦБ РФ в ${keyRate}% (не выдумывай другие цифры ставки!). Оцени новостной фон по моим текущим эмитентам.
-2. Проанализируй целесообразность моих текущих долей из столбца S. Дай экспертную оценку по каждой группе активов (акции/облигации) и по каждому конкретному инструменту отдельно в текущих геополитических реалиях.
-3. Предложи СВОЙ вариант идеального распределения целевых долей в процентах для каждого моего инструмента, чтобы в сумме было строго 100%, а доли акций и облигаций чётко укладывались в рамки моего глобального сплита (${Math.round(macro.stocksPercent)}% / ${Math.round(macro.bondsPercent)}%). Что из моих текущих целей мне нужно скорректировать руками в большую или меньшую сторону и почему?
-4. Напиши пошаговое руководство: в каких именно пропорциях мне распределять новые входящие пополнения кэша (вне зависимости от конкретной суммы взноса — будь то 5 000 рублей или 20 000 рублей в месяц) и приходящие купоны на основе твоего скорректированного варианта.
-5. Учти разделение двух важных автоматических сумм по заявкам фондов STME, а также твою активную заявку на покупку ГТЛК Выпуск 14 на ИИС (которая выставлена за счёт пришедших купонов Брусники!). Напиши раздельный план реинвестирования для кэша, полученного на ИИС (${macro.iisOrdersSum.toLocaleString('ru-RU')} руб.), и кэша на обычном брокерском счете (${macro.brokerOrdersSum.toLocaleString('ru-RU')} руб.).
-6. Пиши короткими, емкими тезисами, уважительно и строго по делу.`;
+  const cleanPathHtml = reportPathHtml.replace(/\\/g, '/');
+
+  console.log('\n====================================');
+  console.log('🎉 SUCCESS: Automated pipeline ok.');
+  console.log('====================================\n');
+
+  const openCommand =
+    process.platform === 'win32'
+      ? 'start "" "' + cleanPathHtml + '"'
+      : 'open "' + cleanPathHtml + '"';
+
+  exec(openCommand);
 }

@@ -5,8 +5,11 @@ export interface AssetAnalysis {
   currentPercent: number;
   targetPercent: number;
   deficitRub: number;
-  status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE';
+  status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW';
   dynamicsPercent: number;
+  nkdRub: number;
+  nominal: number;
+  quantity: number;
 }
 
 export interface PortfolioReportData {
@@ -15,24 +18,19 @@ export interface PortfolioReportData {
   freeStocksPoolPercent: number;
 }
 
-/**
- * Модуль инвестиционной математики и жестких лимитов стратегии
- */
 export class PortfolioMathModule {
-  // Жесткие целевые лимиты по вашей стратегии
   private targetLimits: Record<string, { target: number; holdOnly?: boolean }> =
     {
-      Полюс: { target: 20.0, holdOnly: true }, // Жесткий лимит до 20%, hold_only
-      Сбербанк: { target: 15.0 },
-      'Татнфт Зао': { target: 15.0 },
-      ИнтерРАОао: { target: 15.0 },
-      'КЦ ИКС 5': { target: 15.0 },
-      'ѕГТЛК2P-14': { target: 10.0 }, // Облигации ГТЛК Выпуск 14
+      Полюс: { target: 20.0, holdOnly: true },
+      Сбербанк: { target: 10.0 },
+      'Татнфт Зао': { target: 9.0 },
+      ИнтерРАОао: { target: 8.0 },
+      'КЦ ИКС 5': { target: 8.0 },
+      'sГТЛК2P-14': { target: 15.0 },
+      'Брус 2Р04': { target: 20.0 },
+      Селигдар10: { target: 10.0 },
     };
 
-  /**
-   * Адаптивный расчет отклонений по конкретным инструментам
-   */
   public analyzePortfolio(
     macro: MacroGoals,
     assets: CurrentAsset[],
@@ -40,52 +38,65 @@ export class PortfolioMathModule {
     const assetsAnalysis: AssetAnalysis[] = [];
     let allocatedStocksPercent = 0;
 
-    // Считаем, сколько процентов из общего макро-лимита акций мы УЖЕ жестко распределили руками
     Object.keys(this.targetLimits).forEach((name) => {
-      if (name !== 'ѕГТЛК2P-14') {
-        // Исключаем облигацию
+      if (
+        name !== 'sГТЛК2P-14' &&
+        name !== 'Брус 2Р04' &&
+        name !== 'Селигдар10'
+      ) {
         allocatedStocksPercent += this.targetLimits[name].target;
       }
     });
 
-    // Вычисляем адаптивный свободный остаток лимита акций для ИИ-помощника
-    // Например, если макро-цель акций 55%, а жестких целей 4 по 15% (60%) — пул уйдет в 0,
-    // но если вы измените макро-цель на 70%, у ИИ появится 10% свободного пула на новые инструменты.
     const freeStocksPoolPercent = Math.max(
       0,
       macro.stocksPercent - allocatedStocksPercent,
     );
 
     assets.forEach((asset) => {
-      // Ищем, задан ли для этого инструмента ручной лимит
-      const limitConfig = this.targetLimits[asset.name];
-      const targetPercent = limitConfig ? limitConfig.target : 0;
-
-      // Считаем дефицит в рублях на основе общей стоимости портфеля
-      // (Целевая доля % - Фактическая доля %) * Общий баланс
-      const deviationPercent = targetPercent - asset.liquidationPercent;
-      const deficitRub = Math.round(
-        (deviationPercent / 100) * macro.totalBalance,
-      );
-
-      // Опеределяем статус и режим удержания (Предохранители для Полюса и просадок)
-      let status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' = 'STABLE';
-
-      if (limitConfig?.holdOnly) {
-        status = 'HOLD'; // Полюсу принудительно ставим "Только удерживать"
-      } else if (deficitRub > 1000) {
-        status = 'BUY'; // Если дефицит существенный — сигнал на покупку
-      } else if (deficitRub < -2000) {
-        status = 'REDUCE'; // Профицит — сигнал на сокращение (если это не замороженный актив)
+      const nameUpper = asset.name.toUpperCase();
+      if (
+        nameUpper.includes('ИТОГО') ||
+        nameUpper.includes('БАЛАНС') ||
+        !isNaN(Number(asset.name))
+      ) {
+        return;
       }
 
-      // Дополнительная умная проверка: если актив сильно упал ниже балансовой цены (как Полюс),
-      // даже без флага holdOnly код принудительно запретит его продавать
-      if (
-        asset.liquidationPercent < asset.balancePercent &&
-        status === 'REDUCE'
-      ) {
-        status = 'HOLD';
+      const limitConfig = this.targetLimits[asset.name];
+
+      // 🔥 Автоматически подтягиваем цель из Excel. Если её нет ни в коде, ни в Excel — ставим -1 как маркер
+      let targetPercent =
+        asset.targetPercent > 0
+          ? asset.targetPercent
+          : limitConfig
+            ? limitConfig.target
+            : -1;
+
+      let status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW' = 'STABLE';
+      let deficitRub = 0;
+
+      if (targetPercent === -1) {
+        status = 'NEW';
+        targetPercent = 0; // Для графиков временно обнуляем
+      } else {
+        const deviationPercent = targetPercent - asset.liquidationPercent;
+        deficitRub = Math.round((deviationPercent / 100) * macro.totalBalance);
+
+        if (limitConfig?.holdOnly) {
+          status = 'HOLD';
+        } else if (deficitRub > 1000) {
+          status = 'BUY';
+        } else if (deficitRub < -2000) {
+          status = 'REDUCE';
+        }
+
+        if (
+          asset.liquidationPercent < asset.balancePercent &&
+          status === 'REDUCE'
+        ) {
+          status = 'HOLD';
+        }
       }
 
       assetsAnalysis.push({
@@ -95,6 +106,9 @@ export class PortfolioMathModule {
         deficitRub: deficitRub,
         status: status,
         dynamicsPercent: asset.dynamicsPercent,
+        nkdRub: asset.nkdRub || 0,
+        nominal: asset.nominal || 1000,
+        quantity: asset.quantity || 0,
       });
     });
 

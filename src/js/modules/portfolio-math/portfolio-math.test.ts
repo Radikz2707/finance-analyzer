@@ -8,7 +8,7 @@ describe('Инвестиционная математика и жесткие л
     const mockMacro: MacroGoals = {
       totalBalance: 100000,
       freeCash: 5000,
-      stocksPercent: 52, // Целевой ориентир сплита по вашей стратегии
+      stocksPercent: 52,
       bondsPercent: 48,
       stocksDeficitRub: 0,
       bondsDeficitRub: 0,
@@ -21,16 +21,16 @@ describe('Инвестиционная математика и жесткие л
     const mockAssets: CurrentAsset[] = [
       {
         name: 'Полюс',
-        targetPercent: 20.0, // Лимит из вашей стратегии
-        liquidationPercent: 25.0, // Симулируем профицит доли
-        balancePercent: 30.0, // Цена сильно упала ниже балансовой стоимости
+        targetPercent: 20.0,
+        liquidationPercent: 25.0,
+        balancePercent: 30.0,
         unrealizedProfitRub: -5000,
         dynamicsPercent: -56.34,
       },
       {
         name: 'Сбербанк',
-        targetPercent: 15.0, // Лимит из вашей стратегии
-        liquidationPercent: 10.0, // Симулируем дефицит доли (нужно докупить)
+        targetPercent: 15.0,
+        liquidationPercent: 10.0,
         balancePercent: 10.0,
         unrealizedProfitRub: 4000,
         dynamicsPercent: 0.1,
@@ -42,8 +42,6 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, mockAssets);
 
     // 4. Проверяем расчет адаптивного свободного пула акций для ИИ
-    // Жесткие лимиты в стратегии: Полюс (20%) + Сбербанк (15%) + Татнефть (15%) + ИнтерРАО (15%) + X5 (15%) = 80%
-    // Так как макро-цель акций 52%, а жестко распределено 80%, свободный пул должен быть равен 0
     expect(result.freeStocksPoolPercent).toBe(0);
 
     // 5. Проверяем работу защитных предохранителей (Статусы)
