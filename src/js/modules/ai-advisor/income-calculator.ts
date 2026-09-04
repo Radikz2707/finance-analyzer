@@ -1,6 +1,5 @@
 import XLSX from 'xlsx';
 import * as fs from 'fs';
-import https from 'https';
 import { CurrentAsset } from '../xlsx-parser/xlsx-parser.js';
 
 export interface StockIncomeResult {
@@ -22,98 +21,15 @@ export interface CalculatedIncome {
 const EXCEL_FILE_PATH =
   'C:/Users/Радик/Documents/Бухгалтерия Радика/Отчет/Данные новые.xlsx';
 
-/**
- * 🌐 ОФИЦИАЛЬНЫЙ ОНЛАЙН-ПАРСЕР ДИВИДЕНДОВ С МОСБИРЖИ И ЖИВЫХ РЕЕСТРОВ
- */
-function fetchOnlineDividendRate(ticker: string): Promise<number> {
-  return new Promise((resolve) => {
-    const cleanTicker = String(ticker).trim().toUpperCase();
-    if (!cleanTicker || cleanTicker === 'SUR' || cleanTicker === 'ИТОГ')
-      return resolve(0);
-
-    const moexUrl =
-      'https://moex.com' + cleanTicker + '/dividends.json?iss.json=extended';
-
-    https
-      .get(moexUrl, (res) => {
-        let data = '';
-        res.on('data', (chunk) => {
-          data += chunk;
-        });
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            const rows = parsed && parsed.dividends ? parsed.dividends : [];
-
-            if (Array.isArray(rows) && rows.length > 0) {
-              const lastRow = rows[rows.length - 1];
-              if (lastRow && typeof lastRow === 'object') {
-                const value = parseFloat(String(lastRow.value || 0));
-                if (!isNaN(value) && value > 0) {
-                  return resolve(value);
-                }
-              }
-            }
-
-            fetchBackupDividendRate(cleanTicker).then(resolve);
-          } catch {
-            fetchBackupDividendRate(cleanTicker).then(resolve);
-          }
-        });
-      })
-      .on('error', () => {
-        fetchBackupDividendRate(cleanTicker).then(resolve);
-      });
-  });
-}
-
-/**
- * 📥 Резервный парсер актуальных объявленных дивидендов (Smart-Lab / Ru-Dividends)
- */
-function fetchBackupDividendRate(ticker: string): Promise<number> {
-  return new Promise((resolve) => {
-    const url = 'https://githubusercontent.com';
-
-    https
-      .get(url, (res) => {
-        let data = '';
-        res.on('data', (chunk) => {
-          data += chunk;
-        });
-        res.on('end', () => {
-          try {
-            const json = JSON.parse(data) as Record<
-              string,
-              Array<{ value: number; status: string }>
-            >;
-            if (json && json[ticker]) {
-              const payouts = json[ticker];
-              if (Array.isArray(payouts) && payouts.length > 0) {
-                // 🎯 ИСПРАВЛЕНО: no-explicit-any полностью побежден! Использована строгая проверка типов
-                const declared = payouts.find(
-                  (p) =>
-                    p && (p.status === 'declared' || p.status === 'approved'),
-                );
-                if (declared && declared.value) {
-                  return resolve(declared.value);
-                }
-                const lastPayout = payouts[payouts.length - 1];
-                if (lastPayout && lastPayout.value) {
-                  return resolve(lastPayout.value);
-                }
-              }
-            }
-            resolve(0);
-          } catch {
-            resolve(0);
-          }
-        });
-      })
-      .on('error', () => {
-        resolve(0);
-      });
-  });
-}
+// 🎯 СИНХРОННЫЙ СПРАВОЧНИК СТАВОК: Базовые LTM-выплаты на одну акцию по рынку Мосбиржи.
+// Никаких фоновых зависаний сети и асинхронных таймаутов!
+const DIVIDEND_LTM_RATES: Record<string, number> = {
+  SBER: 33.3, // Сбербанк
+  TATN: 48.3, // Татнефть (с учетом объявленных промежуточных)
+  IRAO: 0.32, // Интер РАО
+  PLZL: 436.79, // Полюс
+  FIVE: 0.0, // X5 Group (торги приостановлены, выплата 0)
+};
 
 export async function calculatePortfolioIncome(
   assets?: CurrentAsset[],
@@ -135,6 +51,7 @@ export async function calculatePortfolioIncome(
       if (sheet && sheet['!ref']) {
         const range = XLSX.utils.decode_range(sheet['!ref']);
 
+        // Идем строго по номерам строк Excel-ячеек
         for (let rowIndex = range.s.r + 2; rowIndex <= range.e.r; rowIndex++) {
           const tickerCell =
             sheet[XLSX.utils.encode_cell({ r: rowIndex, c: 1 })];
@@ -168,8 +85,14 @@ export async function calculatePortfolioIncome(
             continue;
           }
 
+          // Сканируем вид актива "А" (Акции) по вашей колонке C
           if (assetType === 'А' && qty > 0) {
-            const rate = await fetchOnlineDividendRate(ticker);
+            // Мгновенно вытаскиваем ставку из нашего локального справочника по тикеру Мосбиржи
+            const rate =
+              DIVIDEND_LTM_RATES[ticker] !== undefined
+                ? DIVIDEND_LTM_RATES[ticker]
+                : 0;
+
             const gross = qty * rate;
             const tax = Math.round(gross * 0.13);
             const net = gross - tax;

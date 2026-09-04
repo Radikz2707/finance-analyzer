@@ -1,5 +1,5 @@
-import { PortfolioReportData } from '../portfolio-math/portfolio-math';
-import { ValidationResult } from '../portfolio-math/portfolio-validator';
+import { PortfolioReportData } from '../portfolio-math/portfolio-math.js';
+import { ValidationResult } from '../portfolio-math/portfolio-validator.js';
 import { CalculatedIncome } from './income-calculator.js';
 
 export interface UIOrdersData {
@@ -11,7 +11,7 @@ export class AiClient {
 
   public async generateDynamicReport(
     analysis: PortfolioReportData,
-    inc: CalculatedIncome, // 🎯 ИСПРАВЛЕНО: Теперь принимает чистый тип с динамическим массивом акций
+    inc: CalculatedIncome,
     validation: ValidationResult,
     orders: UIOrdersData,
   ): Promise<string> {
@@ -73,11 +73,19 @@ export class AiClient {
         '<br><br>'
       : '<strong>📋 Активные заявки в QUIK:</strong> В стакане нет выставленных ордеров, весь кэш свободен.<br><br>';
 
-    // 🎯 ТОТАЛЬНАЯ АВТОМАТИЗАЦИЯ: генерируем список для абсолютно ВСЕХ акций портфеля динамически из массива
+    // Генерируем красивую строчку штук для ВСЕХ акций портфеля динамически из массива
     const stocksSummaryText =
       inc.stocks && inc.stocks.length > 0
         ? inc.stocks.map((s) => s.name + ': ' + s.quantity + ' шт.').join(', ')
         : 'Позиции по акциям в выгрузке QUIK отсутствуют';
+
+    // 🎯 АВТОМАТИЧЕСКАЯ КОРРЕКТИРОВКА ПОДПИСИ:
+    // Если Мосбиржа по будущим реестрам выдала 0, мы честно предупреждаем на экране, что считаем LTM (возможный доход)
+    const isLtmActive =
+      inc.totalDivsNet > 0 && inc.stocks.some((s) => s.rate > 0);
+    const divIncomeLabel = isLtmActive
+      ? 'Общий чистый возможный прогнозный пассивный доход (на основе LTM-выплат Мосбиржи)'
+      : 'Общий чистый ожидаемый официально объявленный пассивный доход по текущим реестрам';
 
     return (
       validationBlock +
@@ -102,7 +110,8 @@ export class AiClient {
       ' ₽</strong>. ' +
       'Этот поток формирует внутреннюю автономную ликвидность портфеля, позволяя гасить дефициты за счет регулярных выплат эмитентов без привлечения личных средств.<br><br>' +
       '<strong>📈 3. Дивидендный поток и контроль лимитов</strong><br>' +
-      'Общий чистый ожидаемый пассивный доход по ключевым долевым позициям (' +
+      divIncomeLabel +
+      ' по ключевым долевым позициям (' +
       stocksSummaryText +
       ') составляет <strong>' +
       inc.totalDivsNet.toLocaleString('ru-RU') +
