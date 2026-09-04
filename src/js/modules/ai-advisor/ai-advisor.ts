@@ -1,40 +1,20 @@
 import 'dotenv/config';
-
-// ============================================================================
-// SYSTEM & INFRASTRUCTURE IMPORTS (Системные модули Node.js)
-// ============================================================================
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'node:child_process';
-
-// ============================================================================
-// EXCEL PARSING & DATA INPUTS MODULES (Парсинг отчетов QUIK и Excel)
-// ============================================================================
-import { XlsxParserModule } from '../xlsx-parser/xlsx-parser';
+import { XlsxParserModule } from '../xlsx-parser/xlsx-parser.js';
 import {
   buildOrdersHtmlAndMd,
   buildAssetsTablesAndBars,
-} from './report-builders';
+} from './report-builders.js';
+import { PortfolioMathModule } from '../portfolio-math/portfolio-math.js';
+import { PortfolioValidator } from '../portfolio-math/portfolio-validator.js';
+import { calculatePortfolioIncome } from './income-calculator.js';
+import { getMarkdownTemplate, getHtmlTemplate } from './report-templates.js';
+import { AiClient } from './ai-client.js';
 
-// ============================================================================
-// PORTFOLIO MATHEMATICS & VALIDATION (Финансовая математика и лимиты)
-// ============================================================================
-import { PortfolioMathModule } from '../portfolio-math/portfolio-math';
-import { PortfolioValidator } from '../portfolio-math/portfolio-validator';
-import { calculatePortfolioIncome } from './income-calculator';
-
-// ============================================================================
-// REPORT GENERATION & VISUALIZATION TEMPLATES (Шаблоны дашборда)
-// ============================================================================
-import { getMarkdownTemplate, getHtmlTemplate } from './report-templates';
-import { AiClient } from './ai-client';
-
-// ============================================================================
-// CORE ANALYTICS ENGINE (Главный конвейер инвестиционного советника)
-// ============================================================================
 export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const excelModule = new XlsxParserModule();
-
   await excelModule.syncNewTrades();
   const assets = await excelModule.parseCurrentPortfolio();
   const macroGoals = await excelModule.parseMacroGoals();
@@ -46,7 +26,6 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   const validator = new PortfolioValidator();
   const validation = validator.validateLimits(macroGoals, assets);
-
   const investedData = await excelModule.parseInvestedFunds();
   const historicalTrades = await excelModule.parseHistoricalTradesAnalysis();
 
@@ -57,30 +36,23 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const currentStocksPct = analysisResult.macro.stocksPercent;
   const currentBondsPct = analysisResult.macro.bondsPercent;
 
-  // 🎯 СТРОГО ВАША ИСТОРИЧЕСКАЯ БУХГАЛТЕРИЯ (Сквозной итог за весь период инвестирования):
-  // tradeDifferenceRub = Продажа - Купля (Спекулятивный результат на листе "все сделки")
   const tradeDifferenceRub =
     historicalTrades.totalSalesSum - historicalTrades.totalPurchasesSum;
-
-  // currentTradingResultRub = Результат рынка за весь период со всеми прошлыми сделками (Ваши -291 тыс. ₽)
   const currentTradingResultRub =
     tradeDifferenceRub + totalVal - historicalTrades.totalHistoricalCommission;
-
-  // totalNetProfitRub = Реальный минус по текущему балансу относительно внесенных 744 тыс. ₽ (Ваши -100 тыс. ₽)
   const totalNetProfitRub = totalVal - investedData.totalNet;
   const totalNetProfitPercent =
     investedData.totalNet > 0
       ? (totalNetProfitRub / investedData.totalNet) * 100
       : 0;
 
-  // Вычисляем цветовые индикаторы для карточек дашборда (зеленый / красный)
   const c10Color = currentTradingResultRub >= 0 ? '#56d364' : '#ff7b72';
   const c11Color = totalNetProfitRub >= 0 ? '#56d364' : '#ff7b72';
 
   console.log('==================================================');
-  console.log('📊 СКВОЗНОЙ ИСТОРИЧЕСКИЙ АНАЛИЗ ДЕЯТЕЛЬНОСТИ (EXCEL MODEL):');
+  console.log('📊 СКВОЗНОЙ ИСТОРИЧЕСКИЙ АНАЛИЗ ДЕЯТЕЛЬНОСТИ (EXCEL MODEL)');
   console.log(
-    '🗒️ Всего проведено сделок с начала учета: ' +
+    '▪️ Всего проведено сделок с начала учета: ' +
       historicalTrades.tradesCount +
       ' шт.',
   );
@@ -100,7 +72,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       ' ₽',
   );
   console.log(
-    '🛡️ Всего уплачено комиссий брокера (C6): ' +
+    '▪️ Всего уплачено комиссий брокера (C6): ' +
       historicalTrades.totalHistoricalCommission.toLocaleString('ru-RU') +
       ' ₽',
   );
@@ -136,6 +108,8 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   const ordersData = buildOrdersHtmlAndMd(excelModule.parsedActiveOrders);
   const uiTables = buildAssetsTablesAndBars(analysisResult.assetsAnalysis);
+
+  // Вызов калькулятора доходов, который возвращает чистый динамический массив .stocks
   const inc = await calculatePortfolioIncome(assets);
 
   const reportPathMd = path.join(process.cwd(), 'report.md');
@@ -166,15 +140,16 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
         .map((item) => '* ' + item.name + ' (Укажите целевой % в столбце S)')
         .join('\n') +
       '\n';
-
     newAssetsWarningHtml =
-      "<div style='background: rgba(163, 113, 247, 0.1); border: 1px solid #a371f7; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #d3b6ff;'>" +
-      '<strong>⚠️ Внимание:</strong> В вашем портфеле обнаружены новые инструменты без установленной целевой доли: ' +
-      '<strong>' +
+      "<div style='background: rgba(163, 113, 247, 0.1); border: 1px solid #a371f7; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #d3b6ff;'><strong>⚠️ Внимание:</strong> В вашем портфеле обнаружены новые инструменты без установленной целевой доли: <strong>" +
       newAssets.map((item) => item.name).join(', ') +
-      '</strong>. ' +
-      'Пожалуйста, пропишите для них желаемый процент в столбце S вашей Excel-таблицы.</div>';
+      '</strong>. Пожалуйста, пропишите желаемый процент в столбце S вашей Excel-таблицы.</div>';
   }
+
+  // 🎯 ЧЕСТНАЯ АВТОМАТИЗАЦИЯ: Динамически собираем строчку для ВСЕХ акций из полученного массива
+  const stocksListText = inc.stocks
+    .map((s) => s.name + ' (' + s.ticker + '): ' + s.quantity + ' шт.')
+    .join(', ');
 
   const mdData = getMarkdownTemplate(
     new Date().toLocaleDateString('ru-RU'),
@@ -188,21 +163,29 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       '* Суммарный накопленный НКД по всем облигациям в портфеле: ' +
       inc.totalNkd.toLocaleString('ru-RU') +
       ' ₽\n' +
+      '* Действующие долевые позиции: ' +
+      (stocksListText || 'Данные не получены') +
+      '\n' +
+      '* Суммарный чистый ожидаемый дивидендный поток: ' +
+      inc.totalDivsNet.toLocaleString('ru-RU') +
+      ' ₽\n' +
       '\n### 🗓 Действующие заявки в терминале QUIK:\n' +
       ordersData.md,
   );
+
   fs.writeFileSync(reportPathMd, mdData, 'utf-8');
 
   let validationAlertsHtml = '';
   if (!validation.isValid) {
     validationAlertsHtml =
-      "<div style='background: rgba(242, 81, 87, 0.1); border: 1px solid #f25157; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #ff7b72;'>" +
-      '<strong>⚠️ Превышение лимитов с листа "Цели":</strong><br>' +
+      "<div style='background: rgba(255, 123, 114, 0.1); border: 1px solid #ff7b72; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #ff7b72;'>⚠️ Превышение лимитов с листа 'Цели':<br>" +
       validation.errors.map((err) => '• ' + err).join('<br>') +
       '</div>';
   }
 
   const aiClient = new AiClient();
+
+  // 🎯 Передаем чистый универсальный объект ИИ-клиенту без хардкодных заглушек
   const dynamicAiContent = await aiClient.generateDynamicReport(
     analysisResult,
     inc,
@@ -214,7 +197,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     '📋 Экспертное заключение ИИ-советника (Сентябрь 2026)\n' +
     newAssetsWarningHtml +
     validationAlertsHtml +
-    '<br>' +
+    '\n' +
     dynamicAiContent;
 
   const reportPathHtml = path.join(process.cwd(), 'report.html');
@@ -231,18 +214,17 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     new Date().toLocaleDateString('ru-RU'),
     new Date().toLocaleTimeString('ru-RU'),
     investedData.totalNet.toLocaleString('ru-RU'),
-    currentTradingResultRub.toLocaleString('ru-RU'), // Результат за весь период (-291 тыс. ₽)
+    currentTradingResultRub.toLocaleString('ru-RU'),
     totalNetProfitRub.toLocaleString('ru-RU') +
       ' (' +
       totalNetProfitPercent.toFixed(2) +
-      '%)', // Текущий инвест-результат (-100 тыс. ₽)
+      '%)',
     c10Color,
     c11Color,
   );
 
   fs.writeFileSync(reportPathHtml, htmlData, 'utf-8');
   const cleanPathHtml = reportPathHtml.replace(/\\/g, '/');
-
   const openCommand =
     process.platform === 'win32'
       ? 'start "" "' + cleanPathHtml + '"'

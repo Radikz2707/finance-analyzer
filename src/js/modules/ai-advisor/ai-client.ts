@@ -1,14 +1,6 @@
 import { PortfolioReportData } from '../portfolio-math/portfolio-math';
 import { ValidationResult } from '../portfolio-math/portfolio-validator';
-
-export interface IncomeData {
-  totalNkd: number;
-  sberQty: number;
-  sberDivsNet: number;
-  tatneftQty: number;
-  tatneftDivsNet: number;
-  totalDivsNet: number;
-}
+import { CalculatedIncome } from './income-calculator.js';
 
 export interface UIOrdersData {
   md: string;
@@ -19,34 +11,30 @@ export class AiClient {
 
   public async generateDynamicReport(
     analysis: PortfolioReportData,
-    inc: IncomeData,
+    inc: CalculatedIncome, // 🎯 ИСПРАВЛЕНО: Теперь принимает чистый тип с динамическим массивом акций
     validation: ValidationResult,
     orders: UIOrdersData,
   ): Promise<string> {
-    // 1. АВТОМАТИЧЕСКИЙ АНАЛИЗ ДЕФИЦИТОВ (Фильтруем по чистому рублевому недобору)
     const buyAssets = analysis.assetsAnalysis
       .filter((a) => a.deficitRub > 0)
       .sort((a, b) => b.deficitRub - a.deficitRub);
 
-    // 2. АВТОМАТИЧЕСКИЙ АНАЛИЗ ИЗБЫТКОВ ИЛИ НОВЫХ ПОЗИЦИЙ (ts(2367) УСТРАНЕНА: используем 'REDUCE' вместо 'SELL')
     const sellAssets = analysis.assetsAnalysis.filter(
       (a) => a.status === 'REDUCE' || a.status === 'NEW' || a.deficitRub < 0,
     );
 
-    // 3. АВТОМАТИЧЕСКАЯ ИНТЕРПРЕТАЦИЯ ВАЛИДАЦИИ С ЛИСТА "ЦЕЛИ"
     const validationBlock = !validation.isValid
       ? '<strong>⚠️ Нарушение риск-менеджмента:</strong><br>' +
         validation.errors.join('<br>') +
         '<br><br>'
       : "<strong>✅ Риск-менеджмент:</strong> Все ручные коэффициенты в столбце S строго соответствуют глобальным лимитам с листа 'Цели'.<br><br>";
 
-    // 4. ДИНАМИЧЕСКОЕ ФОРМИРОВАНИЕ ПЛАНА ПОКУПОК
     const buyInstructions =
       buyAssets.length > 0
         ? buyAssets
             .map(
               (a, index) =>
-                '   ' +
+                ' ' +
                 (index + 1) +
                 '. Докупить <strong>' +
                 a.name +
@@ -59,16 +47,15 @@ export class AiClient {
                 '%).',
             )
             .join('<br>')
-        : '   Портфель идеально сбалансирован, докупка активов не требуется.';
+        : ' Портфель идеально сбалансирован, докупка активов не требуется.';
 
-    // 5. ДИНАМИЧЕСКОЕ ФОРМИРОВАНИЕ ПЛАНА ЛИКВИДАЦИИ / ОПТИМИЗАЦИИ
     const sellInstructions =
       sellAssets.length > 0
         ? '<strong>📍 Обнаружены избыточные или внесистемные позиции:</strong><br>' +
           sellAssets
             .map(
               (a) =>
-                '   • Инструмент <strong>' +
+                ' • Инструмент <strong>' +
                 a.name +
                 '</strong> занимает ' +
                 a.currentPercent.toFixed(1) +
@@ -80,14 +67,18 @@ export class AiClient {
           '<br><br>'
         : '';
 
-    // 6. УЧЕТ АКТИВНЫХ ОРДЕРОВ В СТАКАНЕ
     const ordersBlock = orders.md
-      ? '<strong>🗓️ Текущие лимитные заявки в терминале QUIK:</strong><br>' +
+      ? '<strong>📋 Текущие лимитные заявки в терминале QUIK:</strong><br>' +
         orders.md.replace(/\n/g, '<br>') +
         '<br><br>'
-      : '<strong>🗓️ Активные заявки в QUIK:</strong> В стакане нет выставленных ордеров, весь кэш свободен.<br><br>';
+      : '<strong>📋 Активные заявки в QUIK:</strong> В стакане нет выставленных ордеров, весь кэш свободен.<br><br>';
 
-    // 7. СБОРКА ИТОГОВОГО ОТЧЕТА (ts(2339) УСТРАНЕНЫ: заменены на stocksPercent и bondsPercent)
+    // 🎯 ТОТАЛЬНАЯ АВТОМАТИЗАЦИЯ: генерируем список для абсолютно ВСЕХ акций портфеля динамически из массива
+    const stocksSummaryText =
+      inc.stocks && inc.stocks.length > 0
+        ? inc.stocks.map((s) => s.name + ': ' + s.quantity + ' шт.').join(', ')
+        : 'Позиции по акциям в выгрузке QUIK отсутствуют';
+
     return (
       validationBlock +
       ordersBlock +
@@ -111,11 +102,9 @@ export class AiClient {
       ' ₽</strong>. ' +
       'Этот поток формирует внутреннюю автономную ликвидность портфеля, позволяя гасить дефициты за счет регулярных выплат эмитентов без привлечения личных средств.<br><br>' +
       '<strong>📈 3. Дивидендный поток и контроль лимитов</strong><br>' +
-      'Общий чистый ожидаемый пассивный доход по ключевым долевым позициям (Сбербанк: ' +
-      inc.sberQty +
-      ' шт., Татнефть: ' +
-      inc.tatneftQty +
-      ' шт.) составляет <strong>' +
+      'Общий чистый ожидаемый пассивный доход по ключевым долевым позициям (' +
+      stocksSummaryText +
+      ') составляет <strong>' +
       inc.totalDivsNet.toLocaleString('ru-RU') +
       ' ₽</strong> после вычета НДФЛ. ' +
       'Все целевые значения долей берутся автоматически из вашего ручного столбца S. Система контролирует верхние границы ограничений для защиты от переконцентрации.<br><br>' +

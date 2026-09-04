@@ -21,6 +21,8 @@ describe('Инвестиционная математика и жесткие л
     const mockAssets: CurrentAsset[] = [
       {
         name: 'Полюс',
+        ticker: 'PLZL',
+        assetType: 'А',
         targetPercent: 20.0,
         liquidationPercent: 25.0,
         balancePercent: 30.0,
@@ -29,6 +31,8 @@ describe('Инвестиционная математика и жесткие л
       },
       {
         name: 'Сбербанк',
+        ticker: 'SBER',
+        assetType: 'А',
         targetPercent: 15.0,
         liquidationPercent: 10.0,
         balancePercent: 10.0,
