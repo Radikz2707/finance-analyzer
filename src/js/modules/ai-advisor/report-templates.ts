@@ -32,142 +32,135 @@ export function getMarkdownTemplate(
 export function getHtmlTemplate(
   totalVal: string,
   freeCash: string,
-  stocks: number,
-  bonds: number,
-  legend: string,
-  bars: string,
-  aiBox: string,
-  table: string,
-  orders: string,
-  date: string,
-  time: string,
+  stocksPct: number,
+  bondsPct: number,
+  legendRows: string,
+  barRows: string,
+  aiBoxHtml: string,
+  tableRows: string,
+  ordersRows: string,
+  dateStr: string,
+  timeStr: string,
+  totalInvested: string,
+  resultC10: string,
+  profitC11: string,
+  c10Color: string,
+  c11Color: string,
 ): string {
   return (
-    '<!DOCTYPE html>\n' +
-    "<html lang='ru'>\n" +
-    '<head>\n' +
-    "  <meta charset='UTF-8'>\n" +
-    '  <title>Инвестиционный Дашборд Радика</title>\n' +
-    '  <style>\n' +
-    "    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 20px; }\n" +
-    '    .container { max-width: 1200px; margin: 0 auto; }\n' +
-    '    h1 { color: #fff; border-bottom: 1px solid #21262d; padding-bottom: 10px; font-size: 24px; }\n' +
-    '    h2 { color: #fff; font-size: 18px; margin-top: 30px; }\n' +
-    '    .update-time { font-size: 13px; color: #8b949e; margin-bottom: 20px; }\n' +
-    '    .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 20px; }\n' +
-    '    .card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 15px; }\n' +
-    '    .card .value { font-size: 22px; font-weight: bold; color: #58a6ff; margin-top: 5px; }\n' +
-    '    .visual-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }\n' +
-    '    .chart-container { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 20px; }\n' +
-    '    .chart-title { font-size: 14px; font-weight: bold; color: #fff; margin-bottom: 15px; }\n' +
-    '    .ai-box { background: #0f141c; border: 1px solid #388bfd; border-radius: 6px; padding: 20px; margin-bottom: 25px; }\n' +
-    '    .ai-header { font-size: 16px; font-weight: bold; color: #58a6ff; margin-bottom: 15px; display: flex; align-items: center; gap: 8px; }\n' +
-    '    .ai-section { margin-bottom: 15px; }\n' +
-    '    .ai-section:last-child { margin-bottom: 0; }\n' +
-    '    .ai-section .ai-header { font-size: 14px; color: #fff; margin-bottom: 5px; }\n' +
-    '    .ai-list { margin: 5px 0; padding-left: 20px; }\n' +
-    '    .ai-list li { margin-bottom: 5px; }\n' +
-    '    table { width: 100%; border-collapse: collapse; margin-top: 10px; background: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }\n' +
-    '    th, td { padding: 12px; text-align: left; border-bottom: 1px solid #30363d; font-size: 13px; }\n' +
-    '    th { background: #21262d; color: #fff; font-weight: bold; }\n' +
-    '    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }\n' +
-    '    .status-BUY { background: rgba(35, 134, 54, 0.2); color: #56d364; border: 1px solid #238636; }\n' +
-    '    .status-HOLD { background: rgba(158, 106, 3, 0.2); color: #e3b341; border: 1px solid #9e6a03; }\n' +
-    '    .status-STABLE { background: rgba(110, 118, 129, 0.2); color: #8b949e; border: 1px solid #6e7681; }\n' +
-    '    .status-REDUCE { background: rgba(218, 54, 51, 0.2); color: #ff7b72; border: 1px solid #da3633; }\n' +
-    '  </style>\n' +
-    '</head>\n' +
-    '<body>\n' +
-    "<div class='container'>\n" +
-    '  <h1>📊 Инвестиционный Дашборд Радика Нурисламовича</h1>\n' +
-    "  <div class='update-time'>Дата обновления данных: " +
-    date +
-    ' в ' +
-    time +
-    '</div>\n' +
-    '  \n' +
-    "  <div class='summary-grid'>\n" +
-    "    <div class='card'>\n" +
-    '      <div>Общий баланс портфеля</div>\n' +
-    "      <div class='value'>" +
+    '<!DOCTYPE html>' +
+    "<html lang='ru'>" +
+    '<head>' +
+    "<meta charset='UTF-8'>" +
+    '<title>Инвестиционный ИИ-Советник</title>' +
+    '<style>' +
+    'body { background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; padding: 20px; }' +
+    '.container { max-width: 1200px; margin: 0 auto; }' +
+    '.header-panel { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }' +
+    '.card { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 15px; text-align: center; }' +
+    '.card-title { font-size: 12px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 5px; }' +
+    '.card-value { font-size: 20px; font-weight: bold; color: #fff; }' +
+    '.card-sub { font-size: 11px; color: #8b949e; margin-top: 4px; }' +
+    '.grid-main { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 25px; }' +
+    '.block-box { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 20px; margin-bottom: 20px; }' +
+    'h2 { font-size: 16px; margin-top: 0; margin-bottom: 15px; border-bottom: 1px solid #30363d; padding-bottom: 8px; color: #fff; }' +
+    'table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }' +
+    'th, td { padding: 10px; border-bottom: 1px solid #30363d; }' +
+    'th { color: #8b949e; font-weight: normal; }' +
+    '.status-badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }' +
+    '.status-OK { background-color: rgba(35, 134, 54, 0.15); color: #56d364; border: 1px solid #238636; }' +
+    '.status-BUY { background-color: rgba(56, 139, 253, 0.15); color: #58a6ff; border: 1px solid #388bfd; }' +
+    '.status-SELL { background-color: rgba(242, 81, 87, 0.15); color: #ff7b72; border: 1px solid #f25157; }' +
+    '.status-NEW { background-color: rgba(163, 113, 247, 0.15); color: #d3b6ff; border: 1px solid #a371f7; }' +
+    '</style>' +
+    '</head>' +
+    '<body>' +
+    "<div class='container'>" +
+    '<!-- 📊 ИСТОРИЧЕСКИЕ КАРТОЧКИ ЭФФЕКТИВНОСТИ -->' +
+    "<div class='header-panel'>" +
+    "<div class='card'>" +
+    "<div class='card-title'>Текущие активы (C9)</div>" +
+    "<div class='card-value' style='color: #e3b341;'>" +
     totalVal +
-    ' ₽</div>\n' +
-    '    </div>\n' +
-    "    <div class='card'>\n" +
-    '      <div>Свободный кэш (ИИС)</div>\n' +
-    "      <div class='value'>" +
+    ' ₽</div>' +
+    "<div class='card-sub'>Свободный кэш: " +
     freeCash +
-    ' ₽</div>\n' +
-    '    </div>\n' +
-    "    <div class='card'>\n" +
-    '      <div>Макро-сплит стратегии</div>\n' +
-    "      <div class='value'>Акции " +
-    stocks +
-    '% / Облигации ' +
-    bonds +
-    '%</div>\n' +
-    '    </div>\n' +
-    '  </div>\n' +
-    '\n' +
-    "  <div class='visual-grid'>\n" +
-    "    <div class='chart-container'>\n" +
-    "      <div class='chart-title'>Текущее распределение долей инструментов (%)</div>\n" +
-    '      ' +
-    legend +
-    '\n' +
-    '    </div>\n' +
-    "    <div class='chart-container'>\n" +
-    "      <div class='chart-title'>Сравнение долей: Текущая доля vs Стратегия (Столбец S)</div>\n" +
-    '      ' +
-    bars +
-    '\n' +
-    '    </div>\n' +
-    '  </div>\n' +
-    '\n' +
-    "  <div class='ai-box'>\n" +
-    '    ' +
-    aiBox +
-    '\n' +
-    '  </div>\n' +
-    '\n' +
-    '  <h2>📋 Действующие заявки в терминале QUIK</h2>\n' +
-    '  <table>\n' +
-    '    <thead>\n' +
-    '      <tr>\n' +
-    '        <th>Инструмент</th>\n' +
-    '        <th>Операция</th>\n' +
-    '        <th>Количество</th>\n' +
-    '        <th>Цена заявки</th>\n' +
-    '        <th>Общая сумма</th>\n' +
-    '        <th>Статус</th>\n' +
-    '      </tr>\n' +
-    '    </thead>\n' +
-    '    <tbody>\n' +
-    '      ' +
-    orders +
-    '\n' +
-    '    </tbody>\n' +
-    '  </table>\n' +
-    '\n' +
-    '  <h2>🔍 Детальный анализ защитных лимитов и дефицитов</h2>\n' +
-    '  <table>\n' +
-    '    <thead>\n' +
-    '      <tr>\n' +
-    '        <th>Инструмент</th>\n' +
-    '        <th>Текущая доля</th>\n' +
-    '        <th>Целевая доля (S)</th>\n' +
-    '        <th>Дефицит / Профицит</th>\n' +
-    '        <th>Рекомендуемый статус</th>\n' +
-    '      </tr>\n' +
-    '    </thead>\n' +
-    '    <tbody>\n' +
-    '      ' +
-    table +
-    '\n' +
-    '    </tbody>\n' +
-    '  </table>\n' +
-    '</div>\n' +
-    '</body>\n' +
-    '</html>\n'
+    ' ₽</div>' +
+    '</div>' +
+    "<div class='card'>" +
+    "<div class='card-title'>Лично внесено (C12)</div>" +
+    "<div class='card-value'>" +
+    totalInvested +
+    ' ₽</div>' +
+    "<div class='card-sub'>Собственный капитал</div>" +
+    '</div>' +
+    "<div class='card'>" +
+    "<div class='card-title'>Результат рынка (C10)</div>" +
+    "<div class='card-value' style='color: " +
+    c10Color +
+    ";'>" +
+    resultC10 +
+    ' ₽</div>' +
+    "<div class='card-sub'>Спекуляции + портфель</div>" +
+    '</div>' +
+    "<div class='card'>" +
+    "<div class='card-title'>Чистый итог (C11)</div>" +
+    "<div class='card-value' style='color: " +
+    c11Color +
+    ";'>" +
+    profitC11 +
+    ' ₽</div>' +
+    "<div class='card-sub'>Реальный инвест-профит</div>" +
+    '</div>' +
+    '</div>' +
+    "<div class='grid-main'>" +
+    '<div>' +
+    "<div class='block-box' style='border-left: 4px solid #388bfd; white-space: pre-wrap; line-height: 1.6; font-size: 13px;'>" +
+    aiBoxHtml +
+    '</div>' +
+    "<div class='block-box'>" +
+    '<h2>Текущий состав портфеля</h2>' +
+    '<table>' +
+    '<thead><tr><th>Инструмент</th><th>Текущая доля</th><th>Целевая доля</th><th>Дефицит/Профицит</th><th>Статус</th></tr></thead>' +
+    '<tbody>' +
+    tableRows +
+    '</tbody>' +
+    '</table>' +
+    '</div>' +
+    '</div>' +
+    '<div>' +
+    "<div class='block-box'>" +
+    '<h2>Макро-структура</h2>' +
+    "<div style='font-size: 13px; color: #8b949e; margin-bottom: 15px;'>Акции: <strong>" +
+    stocksPct +
+    '%</strong> | Облигации: <strong>' +
+    bondsPct +
+    '%</strong></div>' +
+    barRows +
+    '</div>' +
+    "<div class='block-box'><h2>Распределение долей</h2>" +
+    legendRows +
+    '</div>' +
+    '</div>' +
+    '</div>' +
+    "<div class='block-box'>" +
+    '<h2>Действующие лимитные заявки в терминале QUIK</h2>' +
+    '<table>' +
+    '<thead><tr><th>Инструмент</th><th>Операция</th><th>Количество</th><th>Цена за ед.</th><th>Общая сумма</th><th>Статус заявки</th></tr></thead>' +
+    '<tbody>' +
+    ordersRows +
+    '</tbody>' +
+    '</table>' +
+    '</div>' +
+    "<div style='text-align: center; font-size: 11px; color: #8b949e; margin-top: 20px;'>" +
+    'Конвейер успешно обновлен: ' +
+    dateStr +
+    ' в ' +
+    timeStr +
+    ' | finance-analyzer v2.1.0' +
+    '</div>' +
+    '</div>' +
+    '</body>' +
+    '</html>'
   );
 }

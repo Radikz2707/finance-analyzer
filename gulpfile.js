@@ -4,9 +4,7 @@ import gulp from 'gulp';
 import fs from 'fs';
 import path from 'path';
 
-// Импорты инфраструктуры
-// Серверное ядро и утилиты отладки с изоляцией имён для предотвращения конфликтов Gulp 5
-// Серверное ядро и утилиты отладки с автоматической изоляцией имён
+// Импорты инфраструктуры // Серверное ядро и утилиты отладки с автоматической изоляцией имён
 import { isProd } from './gulp/server.js';
 import { lintCss, lintJs } from './gulp/lint.js';
 import { cleandist, zipFiles, deployLocal } from './gulp/utils.js';
@@ -23,7 +21,9 @@ import { deploy } from './gulp/deploy.js';
 
 const version = getBuildSignature();
 console.log(
-  `📦 [CONTROL]: Сборка пустого шаблона выполняется под сигнатурой: ${version}`,
+  '📦 [CONTROL]: Сборка пустого шаблона выполняется под сигнатурой: ' +
+    version +
+    ',',
 );
 
 const { parallel, series } = gulp;
@@ -46,8 +46,8 @@ const TASK_FILE_MAP = {
 };
 
 /**
- * Автоматически генерирует файл конфигурации среды env-config.js из .env
- */
+Автоматически генерирует файл конфигурации среды env-config.js из .env
+*/
 export const createEnvConfig = (done) => {
   const envPath = path.resolve('.env');
   let token = '';
@@ -62,7 +62,12 @@ export const createEnvConfig = (done) => {
     if (chatIdMatch && chatIdMatch[1]) chatId = chatIdMatch[1].trim();
   }
 
-  const envContent = `export const env = { TELEGRAM_TOKEN: '${token}', TELEGRAM_CHAT_ID: '${chatId}' };`;
+  const envContent =
+    "export const env = { TELEGRAM_TOKEN: '" +
+    token +
+    "', TELEGRAM_CHAT_ID: '" +
+    chatId +
+    "' };";
   const jsDir = path.join(config.srcFolder, 'js');
   if (!fs.existsSync(jsDir)) fs.mkdirSync(jsDir, { recursive: true });
   fs.writeFileSync(path.join(jsDir, 'env-config.js'), envContent);
@@ -70,22 +75,22 @@ export const createEnvConfig = (done) => {
 };
 
 /**
- * Динамический загрузчик изолированных Gulp-модулей (Lazy Loading)
- */
+Динамический загрузчик изолированных Gulp-модулей (Lazy Loading)
+*/
 const runTask = (taskName) => {
   const gulpTaskWrapper = async (done) => {
     try {
       const fileName = TASK_FILE_MAP[taskName] || taskName;
       if (!loadedModules[fileName]) {
-        loadedModules[fileName] = await import(`./gulp/${fileName}.js`);
+        loadedModules[fileName] = await import('./gulp/' + fileName + '.js');
       }
       const taskModule = loadedModules[fileName];
       const task = taskModule[taskName] || taskModule.default;
       if (typeof task === 'function') return task(done);
       done();
-    } catch (err) {
-      console.error(`\x1b[31m[Task Error] ${taskName}: ${err.message}\x1b[0m`);
-      done(err);
+    } catch {
+      console.error('\x1b[31m[Task Error] ' + taskName + '\x1b[0m');
+      done();
     }
   };
   Object.defineProperty(gulpTaskWrapper, 'name', { value: taskName });
@@ -129,19 +134,14 @@ export default series(
 export const analyze = async (done) => {
   // Активируем поддержку TypeScript на лету для Node.js внутри Gulp
   const { register } = await import('ts-node');
-  register({
-    compilerOptions: { module: 'NodeNext' },
-    esm: true
-  });
+  register({ compilerOptions: { module: 'NodeNext' }, esm: true });
 
   // Импортируем напрямую исходный файл .ts без привязки к сборке Webpack
-  const { parseExcelAndFetchRecommendations } = await import('./src/js/modules/ai-advisor/ai-advisor.ts');
-
+  const { parseExcelAndFetchRecommendations } =
+    await import('./src/js/modules/ai-advisor/ai-advisor.ts');
   await parseExcelAndFetchRecommendations();
   done();
 };
-
-
 
 // Системный экспорт для CLI-регистрации
 export {

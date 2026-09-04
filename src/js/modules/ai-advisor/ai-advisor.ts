@@ -1,16 +1,41 @@
+import 'dotenv/config';
+
+// ============================================================================
+// SYSTEM & INFRASTRUCTURE IMPORTS (Системные модули Node.js)
+// ============================================================================
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'node:child_process';
-import { XlsxParserModule } from '../xlsx-parser/xlsx-parser';
-import { PortfolioMathModule } from '../portfolio-math/portfolio-math';
-import { getMarkdownTemplate, getHtmlTemplate } from './report-templates';
-import { calculatePortfolioIncome } from './income-calculator';
-import { parseQuikOrdersFile } from '../xlsx-parser/quik-orders-parser';
 
+// ============================================================================
+// EXCEL PARSING & DATA INPUTS MODULES (Парсинг отчетов QUIK и Excel)
+// ============================================================================
+import { XlsxParserModule } from '../xlsx-parser/xlsx-parser';
+import {
+  buildOrdersHtmlAndMd,
+  buildAssetsTablesAndBars,
+} from './report-builders';
+
+// ============================================================================
+// PORTFOLIO MATHEMATICS & VALIDATION (Финансовая математика и лимиты)
+// ============================================================================
+import { PortfolioMathModule } from '../portfolio-math/portfolio-math';
+import { PortfolioValidator } from '../portfolio-math/portfolio-validator';
+import { calculatePortfolioIncome } from './income-calculator';
+
+// ============================================================================
+// REPORT GENERATION & VISUALIZATION TEMPLATES (Шаблоны дашборда)
+// ============================================================================
+import { getMarkdownTemplate, getHtmlTemplate } from './report-templates';
+import { AiClient } from './ai-client';
+
+// ============================================================================
+// CORE ANALYTICS ENGINE (Главный конвейер инвестиционного советника)
+// ============================================================================
 export async function parseExcelAndFetchRecommendations(): Promise<void> {
-  const rootDir = process.cwd();
   const excelModule = new XlsxParserModule();
 
+  await excelModule.syncNewTrades();
   const assets = await excelModule.parseCurrentPortfolio();
   const macroGoals = await excelModule.parseMacroGoals();
 
@@ -19,6 +44,12 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     return;
   }
 
+  const validator = new PortfolioValidator();
+  const validation = validator.validateLimits(macroGoals, assets);
+
+  const investedData = await excelModule.parseInvestedFunds();
+  const historicalTrades = await excelModule.parseHistoricalTradesAnalysis();
+
   const math = new PortfolioMathModule();
   const analysisResult = math.analyzePortfolio(macroGoals, assets);
 
@@ -26,65 +57,88 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const currentStocksPct = analysisResult.macro.stocksPercent;
   const currentBondsPct = analysisResult.macro.bondsPercent;
 
-  let ordersRowsHtml = '';
-  let ordersTextMd = '';
+  // 🎯 СТРОГО ВАША ИСТОРИЧЕСКАЯ БУХГАЛТЕРИЯ (Сквозной итог за весь период инвестирования):
+  // tradeDifferenceRub = Продажа - Купля (Спекулятивный результат на листе "все сделки")
+  const tradeDifferenceRub =
+    historicalTrades.totalSalesSum - historicalTrades.totalPurchasesSum;
 
-  const ordersPath = 'C:/dev/finance-analyzer/data/orders.csv';
-  const quikData = parseQuikOrdersFile(ordersPath);
-  const realOrders = quikData.orders;
+  // currentTradingResultRub = Результат рынка за весь период со всеми прошлыми сделками (Ваши -291 тыс. ₽)
+  const currentTradingResultRub =
+    tradeDifferenceRub + totalVal - historicalTrades.totalHistoricalCommission;
 
-  if (realOrders && realOrders.length > 0) {
-    for (let i = 0; i < realOrders.length; i++) {
-      const order = realOrders[i];
-      const opColor = order.operation === 'BUY' ? '#238636' : '#da3633';
+  // totalNetProfitRub = Реальный минус по текущему балансу относительно внесенных 744 тыс. ₽ (Ваши -100 тыс. ₽)
+  const totalNetProfitRub = totalVal - investedData.totalNet;
+  const totalNetProfitPercent =
+    investedData.totalNet > 0
+      ? (totalNetProfitRub / investedData.totalNet) * 100
+      : 0;
 
-      ordersRowsHtml +=
-        '<tr>' +
-        "<td><strong style='color: #fff;'>" +
-        order.instrument +
-        '</strong></td>' +
-        "<td><span class='status-badge' style='background-color: " +
-        opColor +
-        "; color: #fff;'>" +
-        order.operation +
-        '</span></td>' +
-        '<td>' +
-        order.quantity.toLocaleString('ru-RU') +
-        ' шт.</td>' +
-        '<td>' +
-        order.price.toLocaleString('ru-RU') +
-        ' ₽</td>' +
-        " <td style='color: #e3b341; font-weight: bold;'>" +
-        order.totalSum.toLocaleString('ru-RU') +
-        ' ₽</td>' +
-        '<td>' +
-        order.status +
-        '</td>' +
-        '</tr>';
+  // Вычисляем цветовые индикаторы для карточек дашборда (зеленый / красный)
+  const c10Color = currentTradingResultRub >= 0 ? '#56d364' : '#ff7b72';
+  const c11Color = totalNetProfitRub >= 0 ? '#56d364' : '#ff7b72';
 
-      ordersTextMd +=
-        '- ' +
-        order.instrument +
-        ': Заявка на ' +
-        order.operation +
-        ', ' +
-        order.quantity +
-        ' шт. по цене ' +
-        order.price +
-        ' руб. (Всего: ' +
-        order.totalSum +
-        ' руб.)\n';
-    }
-  } else {
-    ordersRowsHtml =
-      "<tr><td colspan='6' style='text-align: center; color: #8b949e;'>Нет active-заявок в стаканах Мосбиржи (все приказы исполнены или сняты)</td></tr>";
-    ordersTextMd =
-      '- Действующие лимитные заявки в терминале QUIK отсутствуют.\n';
+  console.log('==================================================');
+  console.log('📊 СКВОЗНОЙ ИСТОРИЧЕСКИЙ АНАЛИЗ ДЕЯТЕЛЬНОСТИ (EXCEL MODEL):');
+  console.log(
+    '🗒️ Всего проведено сделок с начала учета: ' +
+      historicalTrades.tradesCount +
+      ' шт.',
+  );
+  console.log(
+    '🛒 Общий объем покупок (Купля): ' +
+      historicalTrades.totalPurchasesSum.toLocaleString('ru-RU') +
+      ' ₽',
+  );
+  console.log(
+    '💰 Общий объем продаж (Продажа): ' +
+      historicalTrades.totalSalesSum.toLocaleString('ru-RU') +
+      ' ₽',
+  );
+  console.log(
+    '📉 Торговая разница (C5): ' +
+      tradeDifferenceRub.toLocaleString('ru-RU') +
+      ' ₽',
+  );
+  console.log(
+    '🛡️ Всего уплачено комиссий брокера (C6): ' +
+      historicalTrades.totalHistoricalCommission.toLocaleString('ru-RU') +
+      ' ₽',
+  );
+  console.log(
+    '📈 Текущая оценка активов в наличии (C9): ' +
+      totalVal.toLocaleString('ru-RU') +
+      ' ₽',
+  );
+  console.log(
+    '📊 Результат за весь период (C10): ' +
+      currentTradingResultRub.toLocaleString('ru-RU') +
+      ' ₽',
+  );
+  console.log(
+    '💰 Чистый объем лично вложенных средств (C12): ' +
+      investedData.totalNet.toLocaleString('ru-RU') +
+      ' ₽',
+  );
+  console.log(
+    '🌟 Текущий инвест-результат (C11): ' +
+      (totalNetProfitRub >= 0 ? '+' : '') +
+      totalNetProfitRub.toLocaleString('ru-RU') +
+      ' ₽ (' +
+      totalNetProfitPercent.toFixed(2) +
+      '%)',
+  );
+
+  if (!validation.isValid) {
+    console.warn('⚠️ ОБНАРУЖЕНЫ НАРУШЕНИЯ РИСК-МЕНЕДЖМЕНТА:');
+    validation.errors.forEach((err) => console.warn('- ' + err));
   }
+  console.log('==================================================');
 
+  const ordersData = buildOrdersHtmlAndMd(excelModule.parsedActiveOrders);
+  const uiTables = buildAssetsTablesAndBars(analysisResult.assetsAnalysis);
   const inc = await calculatePortfolioIncome(assets);
 
-  const reportPathMd = path.join(rootDir, 'report.md');
+  const reportPathMd = path.join(process.cwd(), 'report.md');
   const assetsListMd = analysisResult.assetsAnalysis
     .map(
       (item) =>
@@ -107,9 +161,9 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   if (newAssets.length > 0) {
     newAssetsWarningMd =
-      '\n⚠️ **ВНИМАНИЕ**: Обнаружены новые активы без указанной цели в Excel:\n' +
+      '\n⚠️ ВНИМАНИЕ: Обнаружены новые активы без указанной цели в Excel:\n' +
       newAssets
-        .map((item) => `* ${item.name} (Укажите целевой % в столбце S)`)
+        .map((item) => '* ' + item.name + ' (Укажите целевой % в столбце S)')
         .join('\n') +
       '\n';
 
@@ -119,8 +173,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       '<strong>' +
       newAssets.map((item) => item.name).join(', ') +
       '</strong>. ' +
-      'Пожалуйста, пропишите для них желаемый процент в столбце S (Целевая доля) вашей Excel-таблицы.' +
-      '</div>';
+      'Пожалуйста, пропишите для них желаемый процент в столбце S вашей Excel-таблицы.</div>';
   }
 
   const mdData = getMarkdownTemplate(
@@ -135,204 +188,64 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       '* Суммарный накопленный НКД по всем облигациям в портфеле: ' +
       inc.totalNkd.toLocaleString('ru-RU') +
       ' ₽\n' +
-      '* Количество акций Сбербанк (из QUIK): ' +
-      inc.sberQty +
-      ' шт. Прогноз выплат (чистыми после НДФЛ 13%): ' +
-      inc.sberDivsNet.toLocaleString('ru-RU') +
-      ' ₽ (грязными: ' +
-      inc.sberDivs.toLocaleString('ru-RU') +
-      ' ₽)\n' +
-      '* Количество акций Татнефть (из QUIK): ' +
-      inc.tatneftQty +
-      ' шт. Прогноз выплат (чистыми после НДФЛ 13%): ' +
-      inc.tatneftDivsNet.toLocaleString('ru-RU') +
-      ' ₽ (грязными: ' +
-      inc.tatneftDivs.toLocaleString('ru-RU') +
-      ' ₽)\n' +
-      '* Общий дивидендный поток по акциям (чистыми): ' +
-      inc.totalDivsNet.toLocaleString('ru-RU') +
-      ' ₽ (грязными: ' +
-      inc.totalDivs.toLocaleString('ru-RU') +
-      ' ₽)\n' +
       '\n### 🗓 Действующие заявки в терминале QUIK:\n' +
-      ordersTextMd,
+      ordersData.md,
   );
   fs.writeFileSync(reportPathMd, mdData, 'utf-8');
 
-  let barRowsHtml = '';
-  let legendRowsHtml = '';
-  let tableRowsHtml = '';
-  const colors = [
-    '#238636',
-    '#388bfd',
-    '#58a6ff',
-    '#bc8cff',
-    '#f25157',
-    '#e3b341',
-    '#a371f7',
-    '#6e7681',
-  ];
-
-  for (let i = 0; i < analysisResult.assetsAnalysis.length; i++) {
-    const item = analysisResult.assetsAnalysis[i];
-    const color = colors[i % colors.length];
-    const widthFact = Math.min(100, Math.max(0, item.currentPercent * 4));
-    const widthTarget = Math.min(100, Math.max(0, item.targetPercent * 4));
-
-    barRowsHtml +=
-      "<div style='margin-bottom: 15px;'>" +
-      "<div style='font-size: 13px; margin-bottom: 4px; color: #8b949e; font-weight: bold;'>" +
-      item.name +
-      '</div>' +
-      "<div style='display: flex; align-items: center; gap: 10px;'>" +
-      "<div style='width: 75px; font-size: 11px; text-align: right; color: #388bfd;'>Факт: " +
-      item.currentPercent.toFixed(1) +
-      '%</div>' +
-      "<div style='flex-grow: 1; background: #30363d; height: 12px; border-radius: 4px; overflow: hidden;'>" +
-      "<div style='background: #388bfd; width: " +
-      widthFact +
-      "%; height: 100%;'></div>" +
-      '</div>' +
-      '</div>' +
-      "<div style='display: flex; align-items: center; gap: 10px; margin-top: 3px;'>" +
-      "<div style='width: 75px; font-size: 11px; text-align: right; color: #238636;'>Цель: " +
-      item.targetPercent.toFixed(1) +
-      '%</div>' +
-      "<div style='flex-grow: 1; background: #30363d; height: 6px; border-radius: 2px; overflow: hidden;'>" +
-      "<div style='background: #238636; width: " +
-      widthTarget +
-      "%; height: 100%;'></div>" +
-      '</div>' +
-      '</div>' +
+  let validationAlertsHtml = '';
+  if (!validation.isValid) {
+    validationAlertsHtml =
+      "<div style='background: rgba(242, 81, 87, 0.1); border: 1px solid #f25157; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #ff7b72;'>" +
+      '<strong>⚠️ Превышение лимитов с листа "Цели":</strong><br>' +
+      validation.errors.map((err) => '• ' + err).join('<br>') +
       '</div>';
-
-    legendRowsHtml +=
-      "<div style='margin-bottom: 12px; background: #161b22; padding: 12px; border-radius: 6px; border-left: 4px solid " +
-      color +
-      ";'>" +
-      "<div style='display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px;'>" +
-      "<span style='font-weight: bold; color: #fff;'>" +
-      item.name +
-      '</span>' +
-      "<span style='color: #58a6ff; font-weight: bold;'>" +
-      item.currentPercent.toFixed(1) +
-      '%</span>' +
-      '</div>' +
-      "<div style='background: #30363d; height: 4px; border-radius: 2px; overflow: hidden;'>" +
-      "<div style='background: " +
-      color +
-      '; width: ' +
-      widthFact +
-      "%; height: 100%;'></div>" +
-      '</div>' +
-      '</div>';
-
-    const prefix = item.deficitRub > 0 ? '+' : '';
-    const colorStyle =
-      item.deficitRub > 0
-        ? '#58a6ff'
-        : item.deficitRub < 0
-          ? '#ff7b72'
-          : '#fff';
-    const displayDeficit =
-      item.status === 'NEW'
-        ? '—'
-        : prefix + item.deficitRub.toLocaleString('ru-RU') + ' ₽';
-
-    tableRowsHtml +=
-      '<tr>' +
-      "<td><strong style='color: #fff;'>" +
-      item.name +
-      '</strong></td>' +
-      '<td>' +
-      item.currentPercent.toFixed(1) +
-      '%</td>' +
-      '<td>' +
-      item.targetPercent.toFixed(1) +
-      '%</td>' +
-      "<td style='color: " +
-      colorStyle +
-      "; font-weight: bold;'>" +
-      displayDeficit +
-      '</td>' +
-      "<td><span class='status-badge status-" +
-      item.status +
-      "'>" +
-      item.status +
-      '</span></td>' +
-      '</tr>';
   }
 
+  const aiClient = new AiClient();
+  const dynamicAiContent = await aiClient.generateDynamicReport(
+    analysisResult,
+    inc,
+    validation,
+    ordersData,
+  );
+
   const aiBoxHtml =
-    "<div class='ai-header'>📋 Экспертное заключение ИИ-советника (Сентябрь 2026)</div>" +
+    '📋 Экспертное заключение ИИ-советника (Сентябрь 2026)\n' +
     newAssetsWarningHtml +
-    "<div class='ai-section'>" +
-    "<div class='ai-header'>🌐 1. Макроэкономическая ситуация в РФ</div>" +
-    '<p>Ключевая ставка ЦБ зафиксирована на уровне 14%. Это жесткий денежно-кредитный режим. В текущих реалиях облигации с фиксированным доходом и надежные флоатеры являются абсолютным приоритетом для сохранения и разгона капитала.</p>' +
-    '</div>' +
-    "<div class='ai-section'>" +
-    "<div class='ai-header'>📊 2. Аналитика купонов и НКД облигаций</div>" +
-    '<p>Суммарный накопленный купонный доход, собранный парсером по всем облигационным позициям портфеля (включая Бруснику, ГТЛК и Селигдар-10) непосредственно из столбца таблицы Excel, составляет <strong>' +
-    inc.totalNkd.toLocaleString('ru-RU') +
-    ' ₽</strong>. Данные средства полностью учтены конвейером.</p>' +
-    '</div>' +
-    "<div class='ai-section'>" +
-    "<div class='ai-header'>📈 3. Дивидендный горизонт акций и автоматизация</div>" +
-    '<p>На основе фактического объема акций компании <strong>Сбербанк</strong> из вашей таблицы в количестве <strong>' +
-    inc.sberQty +
-    ' шт.</strong>, величина чистых дивидендных поступлений после вычета НДФЛ 13% составляет <strong>' +
-    inc.sberDivsNet.toLocaleString('ru-RU') +
-    ' ₽</strong> (начислено грязными: ' +
-    inc.sberDivs.toLocaleString('ru-RU') +
-    ' ₽, ставка: 37.64 ₽).</p>' +
-    '<p>Для акций компании <strong>Татнефть</strong> парсер успешно считал из таблицы актуальную позицию в количестве <strong>' +
-    inc.tatneftQty +
-    ' шт.</strong> Чистая сумма за вычетом НДФЛ составляет <strong>' +
-    inc.tatneftDivsNet.toLocaleString('ru-RU') +
-    ' ₽</strong> (начислено грязными: ' +
-    inc.tatneftDivs.toLocaleString('ru-RU') +
-    ' ₽, из расчета объявленных 38.20 ₽ на акцию).</p>' +
-    '<p>Итоговый суммарный <strong>чистый пассивный поток</strong> по акциям, который реально поступит на ваш счет, равен <strong>' +
-    inc.totalDivsNet.toLocaleString('ru-RU') +
-    ' ₽</strong> (общая грязная сумма: ' +
-    inc.totalDivs.toLocaleString('ru-RU') +
-    ' ₽).</p>' +
-    '</div>' +
-    "<div class='ai-section'>" +
-    "<div class='ai-header'>💵 4. Пошаговый План действий на сентябрь</div>" +
-    "<ul class='ai-list'>" +
-    '<li><strong>Действие №1:</strong> Свободные средства и поступающие купоны направляйте целиком на покупку облигаций ГТЛК 2P-14 до целевой отметки 15%.</li>' +
-    '</ul>' +
-    '</div>';
+    validationAlertsHtml +
+    '<br>' +
+    dynamicAiContent;
 
-  const reportPathHtml = path.join(rootDir, 'report.html');
-
+  const reportPathHtml = path.join(process.cwd(), 'report.html');
   const htmlData = getHtmlTemplate(
     totalVal.toLocaleString('ru-RU'),
     analysisResult.macro.freeCash.toLocaleString('ru-RU'),
     currentStocksPct,
     currentBondsPct,
-    legendRowsHtml,
-    barRowsHtml,
+    uiTables.legendRows,
+    uiTables.barRows,
     aiBoxHtml,
-    tableRowsHtml,
-    ordersRowsHtml,
+    uiTables.tableRows,
+    ordersData.html,
     new Date().toLocaleDateString('ru-RU'),
     new Date().toLocaleTimeString('ru-RU'),
+    investedData.totalNet.toLocaleString('ru-RU'),
+    currentTradingResultRub.toLocaleString('ru-RU'), // Результат за весь период (-291 тыс. ₽)
+    totalNetProfitRub.toLocaleString('ru-RU') +
+      ' (' +
+      totalNetProfitPercent.toFixed(2) +
+      '%)', // Текущий инвест-результат (-100 тыс. ₽)
+    c10Color,
+    c11Color,
   );
 
   fs.writeFileSync(reportPathHtml, htmlData, 'utf-8');
-
   const cleanPathHtml = reportPathHtml.replace(/\\/g, '/');
-
-  console.log('\n====================================');
-  console.log('🎉 SUCCESS: Automated pipeline ok.');
-  console.log('====================================\n');
 
   const openCommand =
     process.platform === 'win32'
       ? 'start "" "' + cleanPathHtml + '"'
       : 'open "' + cleanPathHtml + '"';
-
   exec(openCommand);
 }

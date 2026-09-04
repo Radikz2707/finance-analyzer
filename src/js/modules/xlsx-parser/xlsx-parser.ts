@@ -36,7 +36,6 @@ export class XlsxParserModule {
   private cachedIisOrdersSum: number = 0;
   private cachedBrokerOrdersSum: number = 0;
   private cachedFreeCashFromQuikSheet: number = 0;
-
   public parsedActiveOrders: QuikOrder[] = [];
 
   constructor() {}
@@ -79,6 +78,7 @@ export class XlsxParserModule {
         name.toUpperCase().includes('БАЛАНС')
       )
         return;
+
       if (name.startsWith('-') || !isNaN(Number(name)) || name.length > 30)
         return;
 
@@ -91,12 +91,10 @@ export class XlsxParserModule {
         return;
       }
 
-      // Синхронизируем имя ГТЛК строго по вашему скриншоту
       if (name.toUpperCase().includes('ГТЛК')) {
         name = 'sГТЛК2P-14';
       }
 
-      // Безопасное чтение долей из колонок
       let liqPercent = this.parseValue(
         row['%, активов, по ликвидационной стоимости'] || row['Доля'],
       );
@@ -111,20 +109,50 @@ export class XlsxParserModule {
         balPercent = Math.round(balPercent * 100 * 100) / 100;
       }
 
-      let targetPct = this.parseValue(
-        row['Целевая доля, %'] || row['Целевая доля,  %'] || row['S'] || 0,
-      );
+      let targetPct = this.parseValue(row['Целевая доля, %'] || row['S'] || 0);
       if (targetPct > 0 && targetPct <= 1) {
         targetPct = Math.round(targetPct * 100 * 100) / 100;
       }
 
       const nkd = this.parseValue(row['НКД'] || row['Накопленный купон']);
-      const quantity = this.parseValue(row['Количество'] || row['Кол-во']);
+
+      const quantityKey = Object.keys(row).find((k) =>
+        k.toUpperCase().includes('КОЛ'),
+      );
+      const quantity = quantityKey ? this.parseValue(row[quantityKey]) : 0;
+
+      if (targetPct !== 0) {
+        const isDrasticMismatch = Math.abs(targetPct - liqPercent) > 1;
+
+        if (quantity > 0 && liqPercent <= 0) {
+          console.warn(
+            "⚠️ [Parser Warning]: Аномалия данных для актива '" +
+              name +
+              "'. " +
+              'В таблице Количество = ' +
+              quantity +
+              ', а Доля ликв. = ' +
+              liqPercent +
+              '%.',
+          );
+        }
+
+        if (quantity <= 0 && liqPercent > 0 && isDrasticMismatch) {
+          console.warn(
+            "⚠️ [Parser Warning]: Аномалия данных для актива '" +
+              name +
+              "'. " +
+              'Позиция пуста (0 шт), но доля в таблице составляет ' +
+              liqPercent +
+              '%.',
+          );
+        }
+      }
 
       assets.push({
         name,
-        targetPercent: targetPct > 0 ? targetPct : 0,
-        liquidationPercent: liqPercent > 0 ? liqPercent : 0,
+        targetPercent: targetPct,
+        liquidationPercent: liqPercent,
         balancePercent: balPercent > 0 ? balPercent : liqPercent,
         unrealizedProfitRub: this.parseValue(row['Нереализованная прибыль']),
         dynamicsPercent: this.parseValue(row['Динамика актива']),
@@ -136,6 +164,7 @@ export class XlsxParserModule {
 
     return assets;
   }
+
   public async parseMacroGoals(): Promise<MacroGoals> {
     await this.loadWorkbook();
     const sheetName = this.workbook?.SheetNames.find(
@@ -148,14 +177,54 @@ export class XlsxParserModule {
         this.cachedFreeCashFromQuikSheet > 0
           ? this.cachedFreeCashFromQuikSheet
           : 106.59,
-      stocksPercent: 52,
-      bondsPercent: 48,
+      stocksPercent: 55,
+      bondsPercent: 45,
       stocksDeficitRub: 0,
       bondsDeficitRub: 0,
       iisOrdersSum: this.cachedIisOrdersSum,
       brokerOrdersSum: this.cachedBrokerOrdersSum,
       activeOrdersListText: this.cachedActiveOrdersText,
     };
+
+    try {
+      const goalsSheet = this.workbook?.Sheets['Цели'];
+      if (goalsSheet) {
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(
+          goalsSheet,
+          { defval: '' },
+        );
+
+        rows.forEach((row) => {
+          const values = Object.values(row);
+          const hasStocks = values.some(
+            (v) => String(v).trim().toUpperCase() === 'АКЦИИ',
+          );
+          const hasBonds = values.some(
+            (v) => String(v).trim().toUpperCase() === 'ОБЛИГАЦИИ',
+          );
+
+          if (hasStocks || hasBonds) {
+            const percent = values.find(
+              (v) =>
+                typeof v === 'number' ||
+                (typeof v === 'string' && !isNaN(parseFloat(v))),
+            );
+
+            if (percent !== undefined) {
+              if (hasStocks) {
+                defaultMacro.stocksPercent = this.parseValue(percent);
+              } else {
+                defaultMacro.bondsPercent = this.parseValue(percent);
+              }
+            }
+          }
+        });
+      }
+    } catch {
+      console.warn(
+        '⚠️ Ошибка умного поиска целей на листе Excel, применены дефолты 55/45.',
+      );
+    }
 
     if (!sheetName || !this.workbook) return defaultMacro;
 
@@ -189,6 +258,128 @@ export class XlsxParserModule {
     });
 
     return defaultMacro;
+  }
+
+  public async parseInvestedFunds(): Promise<{ totalNet: number }> {
+    await this.loadWorkbook();
+    let totalDeposits = 0;
+    let totalWithdrawals = 0;
+
+    const exactName = this.workbook?.SheetNames.find(
+      (name) => name.toLowerCase().trim() === 'средства',
+    );
+
+    if (!exactName || !this.workbook) return { totalNet: 0 };
+
+    const sheet = this.workbook.Sheets[exactName];
+    const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
+
+    // Бежим строго по физическим строкам таблицы со 2-й строки до начала итоговой плашки
+    for (let rowIndex = range.s.r + 1; rowIndex <= range.e.r; rowIndex++) {
+      // Читаем первую ячейку строки, чтобы вовремя остановиться перед ячейкой "Итог"
+      const checkCellRef = XLSX.utils.encode_cell({ r: rowIndex, c: 0 });
+      const checkCell = sheet[checkCellRef];
+      if (checkCell && String(checkCell.v).toUpperCase().includes('ИТОГ')) {
+        break;
+      }
+
+      // Индекс 3 — это столбец D (ввод средств), Индекс 4 — это столбец E (вывод средств)
+      const depositCellRef = XLSX.utils.encode_cell({ r: rowIndex, c: 3 });
+      const withdrawalCellRef = XLSX.utils.encode_cell({ r: rowIndex, c: 4 });
+
+      const depositCell = sheet[depositCellRef];
+      const withdrawalCell = sheet[withdrawalCellRef];
+
+      if (depositCell && depositCell.v !== undefined) {
+        totalDeposits += this.parseValue(depositCell.v);
+      }
+      if (withdrawalCell && withdrawalCell.v !== undefined) {
+        totalWithdrawals += this.parseValue(withdrawalCell.v);
+      }
+    }
+
+    return { totalNet: totalDeposits - totalWithdrawals };
+  }
+
+  public async parseHistoricalTradesAnalysis(): Promise<{
+    tradesCount: number;
+    totalPurchasesSum: number;
+    totalSalesSum: number;
+    totalHistoricalCommission: number;
+  }> {
+    await this.loadWorkbook();
+    const exactName = this.workbook?.SheetNames.find(
+      (name) => name.toLowerCase().trim() === 'все сделки',
+    );
+
+    if (!exactName || !this.workbook) {
+      return {
+        tradesCount: 0,
+        totalPurchasesSum: 0,
+        totalSalesSum: 0,
+        totalHistoricalCommission: 0,
+      };
+    }
+
+    const sheet = this.workbook.Sheets[exactName];
+    const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
+
+    let totalPurchasesSum = 0;
+    let totalSalesSum = 0;
+    let totalCommissionSum = 0;
+    let activeTradesCount = 0;
+    let isTableStarted = false;
+
+    for (let rowIndex = range.s.r; rowIndex <= range.e.r; rowIndex++) {
+      const cellA = sheet[XLSX.utils.encode_cell({ r: rowIndex, c: 0 })];
+      if (!cellA || cellA.v === undefined) continue;
+
+      const cellValueStr = String(cellA.v).trim().toUpperCase();
+
+      // Пропускаем техническую шапку брокера
+      if (!isTableStarted) {
+        if (cellValueStr === '1' || cellValueStr === '№, П/П') {
+          isTableStarted = true;
+          if (cellValueStr === '№, П/П') continue;
+        } else {
+          continue;
+        }
+      }
+
+      if (cellValueStr.includes('ИТОГ')) break;
+
+      activeTradesCount++;
+
+      // 1. Собираем комиссии по всем строкам без исключения (столбец P, индекс 15)
+      const commCell = sheet[XLSX.utils.encode_cell({ r: rowIndex, c: 15 })];
+      if (commCell && commCell.v !== undefined) {
+        totalCommissionSum += this.parseValue(commCell.v);
+      }
+
+      // 2. Разделяем финансовые потоки Купли и Продажи (столбец H, индекс 7)
+      const opCell = sheet[XLSX.utils.encode_cell({ r: rowIndex, c: 7 })];
+      if (!opCell || opCell.v === undefined) continue;
+
+      const opType = String(opCell.v).toUpperCase().trim();
+      const volumeCell = sheet[XLSX.utils.encode_cell({ r: rowIndex, c: 11 })]; // Столбец N (Объём)
+
+      if (volumeCell && volumeCell.v !== undefined) {
+        const volume = this.parseValue(volumeCell.v);
+
+        if (opType === 'КУПЛЯ' || opType === 'BUY') {
+          totalPurchasesSum += volume;
+        } else if (opType === 'ПРОДАЖА' || opType === 'SELL') {
+          totalSalesSum += volume;
+        }
+      }
+    }
+
+    return {
+      tradesCount: activeTradesCount,
+      totalPurchasesSum: Math.round(totalPurchasesSum * 100) / 100,
+      totalSalesSum: Math.round(totalSalesSum * 100) / 100,
+      totalHistoricalCommission: Math.round(totalCommissionSum * 100) / 100,
+    };
   }
 
   private parseValue(val: unknown): number {

@@ -13,7 +13,7 @@ const webpackStream = require('webpack-stream');
 const webpack = require('webpack');
 const { EsbuildPlugin } = require('esbuild-loader');
 
-import { onError, isProd, safeReload } from './server.js'; // Используем безопасный safeReload
+import { onError, isProd, safeReload } from './server.js';
 const { src, dest } = gulp;
 
 export function scripts() {
@@ -65,14 +65,14 @@ export function scripts() {
       minimizer: [
         new EsbuildPlugin({
           target: 'esnext',
-          css: true, // Дополнительно сожмет CSS, если Webpack его обрабатывает
+          css: true,
         }),
       ],
       splitChunks: isProd
         ? {
             cacheGroups: {
               vendor: {
-                test: /[/[ ]node_modules[/]/,
+                test: /[\\/]node_modules[\\/]/,
                 name: 'vendor',
                 chunks: 'all',
               },
@@ -87,38 +87,34 @@ export function scripts() {
   // Локальная копия потока для безопасной трансляции контекста ошибок
   let gulpStream;
 
-    const pipeline = [
-      src(config.paths.scripts.src, { encoding: false }),
-      plumber({ errorHandler: onError }),
-
-      // Передаем кастомный обработчик логирования Webpack-статистики
-      webpackStream(webpackConfig, webpack, function (err, stats) {
-        if (err) return;
-
-        if (stats.hasErrors()) {
-          const info = stats.toJson();
-          console.error(
-            '\n🔴 \x1b[31m[Webpack Error]\x1b[0m',
-            info.errors[0].message,
-          );
-
-          if (gulpStream && typeof gulpStream.emit === 'function') {
-            gulpStream.emit('end');
-          }
+  const pipeline = [
+    src(config.paths.scripts.src, { encoding: false }),
+    plumber({ errorHandler: onError }),
+    // Передаем кастомный обработчик логирования Webpack-статистики
+    webpackStream(webpackConfig, webpack, (err, stats) => {
+      if (err) return;
+      if (stats && stats.hasErrors()) {
+        const info = stats.toJson();
+        console.error(
+          '\n🔴 \x1b[31m[Webpack Error]\x1b[0m',
+          info.errors[0].message,
+        );
+        if (gulpStream && typeof gulpStream.emit === 'function') {
+          gulpStream.emit('end');
         }
-      }),
+      }
+    }),
+    // Запись готовых файлов в локальный dist
+    dest(config.paths.scripts.dest),
+  ];
 
-      // Запись готовых файлов в локальный dist
-      dest(config.paths.scripts.dest),
-    ];
-
-    // 🔥 СИНХРОНИЗАЦИЯ С ЛОКАЛЬНЫМ СЕРВЕРОМ (копируем, только если путь задан в .env)
-    if (config.localServerFolder) {
-      pipeline.push(dest(path.join(config.localServerFolder, 'js')));
-    }
+  // 🔥 СИНХРОНИЗАЦИЯ С ЛОКАЛЬНЫМ СЕРВЕРОМ (копируем, только если путь задан в .env)
+  if (config.localServerFolder) {
+    pipeline.push(dest(path.join(config.localServerFolder, 'js')));
+  }
 
   // Сохраняем ссылку на собранный конвейер до возврата в Gulp планировщик
-  gulpStream = pipeline.reduce((stream, plugin) => stream.pipe(plugin));
+  gulpStream = pipeline.reduce((stream, currPlugin) => stream.pipe(currPlugin));
 
   // Возвращаем детерминированный поток с безопасной перезагрузкой
   return gulpStream.on('end', () => {
