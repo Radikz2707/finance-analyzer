@@ -73,19 +73,50 @@ export class AiClient {
         '<br><br>'
       : '<strong>📋 Активные заявки в QUIK:</strong> В стакане нет выставленных ордеров, весь кэш свободен.<br><br>';
 
-    // Генерируем красивую строчку штук для ВСЕХ акций портфеля динамически из массива
-    const stocksSummaryText =
-      inc.stocks && inc.stocks.length > 0
-        ? inc.stocks.map((s) => s.name + ': ' + s.quantity + ' шт.').join(', ')
-        : 'Позиции по акциям в выгрузке QUIK отсутствуют';
+    // 📊 ГЕНЕРАЦИЯ ДИНАМИЧЕСКОЙ HTML-ТАБЛИЦЫ ДЛЯ РАСШИФРОВКИ ДОХОДА:
+    let stocksTableHtml = '';
+    if (inc.stocks && inc.stocks.length > 0) {
+      stocksTableHtml =
+        "<table style='width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 15px; color: #c9d1d9; font-size: 13px; background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden;'>" +
+        "<thead style='background-color: #21262d; border-bottom: 2px solid #30363d;'>" +
+        '<tr>' +
+        "<th style='padding: 8px 12px; text-align: left;'>Актив</th>" +
+        "<th style='padding: 8px 12px; text-align: center;'>Количество</th>" +
+        "<th style='padding: 8px 12px; text-align: right;'>Ставка LTM</th>" +
+        "<th style='padding: 8px 12px; text-align: right;'>Грязными</th>" +
+        "<th style='padding: 8px 12px; text-align: right;'>Чистыми (-13%)</th>" +
+        '</tr>' +
+        '</thead>' +
+        '<tbody>';
 
-    // 🎯 АВТОМАТИЧЕСКАЯ КОРРЕКТИРОВКА ПОДПИСИ:
-    // Если Мосбиржа по будущим реестрам выдала 0, мы честно предупреждаем на экране, что считаем LTM (возможный доход)
-    const isLtmActive =
-      inc.totalDivsNet > 0 && inc.stocks.some((s) => s.rate > 0);
-    const divIncomeLabel = isLtmActive
-      ? 'Общий чистый возможный прогнозный пассивный доход (на основе LTM-выплат Мосбиржи)'
-      : 'Общий чистый ожидаемый официально объявленный пассивный доход по текущим реестрам';
+      inc.stocks.forEach((s) => {
+        stocksTableHtml +=
+          "<tr style='border-bottom: 1px solid #21262d;'>" +
+          "<td style='padding: 8px 12px; text-align: left; font-weight: bold; color: #58a6ff;'>" +
+          s.name +
+          ' (' +
+          s.ticker +
+          ')</td>' +
+          "<td style='padding: 8px 12px; text-align: center;'>" +
+          s.quantity.toLocaleString('ru-RU') +
+          ' шт.</td>' +
+          "<td style='padding: 8px 12px; text-align: right;'>" +
+          s.rate.toFixed(2) +
+          ' ₽</td>' +
+          "<td style='padding: 8px 12px; text-align: right;'>" +
+          Math.round(s.grossIncome).toLocaleString('ru-RU') +
+          ' ₽</td>' +
+          "<td style='padding: 8px 12px; text-align: right; font-weight: bold; color: #56d364;'>+ " +
+          Math.round(s.netIncome).toLocaleString('ru-RU') +
+          ' ₽</td>' +
+          '</tr>';
+      });
+
+      stocksTableHtml += '</tbody></table>';
+    } else {
+      stocksTableHtml =
+        "<div style='color: #8b949e; font-style: italic; margin-bottom: 15px;'>Позиции по акциям в выгрузке QUIK отсутствуют.</div>";
+    }
 
     return (
       validationBlock +
@@ -110,12 +141,11 @@ export class AiClient {
       ' ₽</strong>. ' +
       'Этот поток формирует внутреннюю автономную ликвидность портфеля, позволяя гасить дефициты за счет регулярных выплат эмитентов без привлечения личных средств.<br><br>' +
       '<strong>📈 3. Дивидендный поток и контроль лимитов</strong><br>' +
-      divIncomeLabel +
-      ' по ключевым долевым позициям (' +
-      stocksSummaryText +
-      ') составляет <strong>' +
+      'Ниже представлена детальная расшифровка возможного прогнозного пассивного дохода на основе LTM-выплат Мосбиржи по вашим текущим долевым позициям:<br>' +
+      stocksTableHtml + // 🎯 ВСТАВЛЯЕМ НАШУ ТАБЛИЦУ ТАК СЮДА
+      'Итоговый чистый поток составляет <strong>' +
       inc.totalDivsNet.toLocaleString('ru-RU') +
-      ' ₽</strong> после вычета НДФЛ. ' +
+      ' ₽</strong> после автоматического удержания НДФЛ. ' +
       'Все целевые значения долей берутся автоматически из вашего ручного столбца S. Система контролирует верхние границы ограничений для защиты от переконцентрации.<br><br>' +
       '<strong>💵 4. Автоматический пошаговый план ребалансировки</strong><br>' +
       sellInstructions +
