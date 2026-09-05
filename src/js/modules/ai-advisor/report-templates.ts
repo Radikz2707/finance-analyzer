@@ -34,7 +34,6 @@ export function getHtmlTemplate(
   freeCash: string,
   stocksPct: number,
   bondsPct: number,
-  legendRows: string,
   barRows: string,
   aiBoxHtml: string,
   tableRows: string,
@@ -46,6 +45,9 @@ export function getHtmlTemplate(
   profitC11: string,
   c10Color: string,
   c11Color: string,
+  priorityBlock: string,
+  concentrationBlock: string,
+  rebalanceBlock: string,
 ): string {
   return (
     '<!DOCTYPE html>' +
@@ -119,9 +121,9 @@ export function getHtmlTemplate(
     aiBoxHtml +
     '</div>' +
     "<div class='block-box'>" +
-    '<h2>Текущий состав портфеля</h2>' +
+    '<h2>Портфель: состав и приоритеты</h2>' +
     '<table>' +
-    '<thead><tr><th>Инструмент</th><th>Текущая доля</th><th>Целевая доля</th><th>Дефицит/Профицит</th><th>Статус</th></tr></thead>' +
+    '<thead><tr><th>Инструмент</th><th>Текущая доля</th><th>Целевая доля</th><th>Дефицит/Профицит</th><th>Статус</th><th>Цена входа / Текущая</th><th>Изменение</th></tr></thead>' +
     '<tbody>' +
     tableRows +
     '</tbody>' +
@@ -138,8 +140,10 @@ export function getHtmlTemplate(
     '%</strong></div>' +
     barRows +
     '</div>' +
-    "<div class='block-box'><h2>Распределение долей</h2>" +
-    legendRows +
+    "<div class='block-box'>" +
+    priorityBlock +
+    concentrationBlock +
+    rebalanceBlock +
     '</div>' +
     '</div>' +
     '</div>' +

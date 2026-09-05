@@ -2,6 +2,7 @@ import { MacroGoals, CurrentAsset } from '../xlsx-parser/xlsx-parser.js';
 
 export interface AssetAnalysis {
   name: string;
+  ticker: string;
   currentPercent: number;
   targetPercent: number;
   deficitRub: number;
@@ -10,6 +11,11 @@ export interface AssetAnalysis {
   nkdRub: number;
   nominal: number;
   quantity: number;
+  balancePrice: number;
+  currentPrice: number;
+  unrealizedProfitRub: number;
+  priority: number;
+  isConcentrated: boolean;
 }
 
 export interface PortfolioReportData {
@@ -65,7 +71,6 @@ export class PortfolioMathModule {
 
       const limitConfig = this.targetLimits[asset.name];
 
-      // 🔥 Автоматически подтягиваем цель из Excel. Если её нет ни в коде, ни в Excel — ставим -1 как маркер
       let targetPercent =
         asset.targetPercent > 0
           ? asset.targetPercent
@@ -78,7 +83,7 @@ export class PortfolioMathModule {
 
       if (targetPercent === -1) {
         status = 'NEW';
-        targetPercent = 0; // Для графиков временно обнуляем
+        targetPercent = 0;
       } else {
         const deviationPercent = targetPercent - asset.liquidationPercent;
         deficitRub = Math.round((deviationPercent / 100) * macro.totalBalance);
@@ -99,8 +104,28 @@ export class PortfolioMathModule {
         }
       }
 
+      // Рассчитываем среднюю цену входа и текущую цену
+      const qty = asset.quantity ?? 0;
+      const balancePrice =
+        qty > 0 && asset.balancePercent > 0
+          ? Math.round(
+              ((asset.balancePercent / 100) * macro.totalBalance) / qty,
+            ) * 100
+          : 0;
+
+      const currentPrice =
+        qty > 0 && asset.liquidationPercent > 0
+          ? Math.round(
+              ((asset.liquidationPercent / 100) * macro.totalBalance) / qty,
+            ) * 100
+          : 0;
+
+      // Проверяем концентрацию (позиция > 20% — риск)
+      const isConcentrated = asset.liquidationPercent > 20;
+
       assetsAnalysis.push({
         name: asset.name,
+        ticker: asset.ticker,
         currentPercent: asset.liquidationPercent,
         targetPercent: targetPercent,
         deficitRub: deficitRub,
@@ -109,8 +134,16 @@ export class PortfolioMathModule {
         nkdRub: asset.nkdRub || 0,
         nominal: asset.nominal || 1000,
         quantity: asset.quantity || 0,
+        balancePrice: balancePrice,
+        currentPrice: currentPrice,
+        unrealizedProfitRub: asset.unrealizedProfitRub || 0,
+        priority: deficitRub,
+        isConcentrated: isConcentrated,
       });
     });
+
+    // Сортируем по приоритету покупок (больший дефицит = выше приоритет)
+    assetsAnalysis.sort((a, b) => b.deficitRub - a.deficitRub);
 
     return {
       macro,

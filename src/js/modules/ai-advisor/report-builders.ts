@@ -1,4 +1,5 @@
 import { QuikOrder } from '../xlsx-parser/quik-orders-parser';
+import { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
 
 export interface HTMLOrdersResult {
   html: string;
@@ -9,9 +10,12 @@ export interface HTMLTablesResult {
   barRows: string;
   legendRows: string;
   tableRows: string;
+  priorityBlock: string;
+  concentrationBlock: string;
+  rebalanceBlock: string;
 }
 
-// 🎯 Модуль сборки таблиц действующих лимитных заявок
+// 🎯 Модуль сборки действующих лимитных заявок
 export function buildOrdersHtmlAndMd(
   realOrders: QuikOrder[],
 ): HTMLOrdersResult {
@@ -69,19 +73,16 @@ export function buildOrdersHtmlAndMd(
   return { html, md };
 }
 
-// 🎯 Модуль сборки аналитических таблиц активов и прогресс-баров долей
+// 🎯 Модуль сборки единого блока портфеля с приоритетами и рисками
 export function buildAssetsTablesAndBars(
-  assetsAnalysis: Array<{
-    name: string;
-    currentPercent: number;
-    targetPercent: number;
-    deficitRub: number;
-    status: string;
-  }>,
+  assetsAnalysis: AssetAnalysis[],
 ): HTMLTablesResult {
   let barRows = '';
   let legendRows = '';
   let tableRows = '';
+  let priorityBlock = '';
+  let concentrationBlock = '';
+  let rebalanceBlock = '';
 
   const colors = [
     '#238636',
@@ -94,6 +95,7 @@ export function buildAssetsTablesAndBars(
     '#6e7681',
   ];
 
+  // === Блок 1: Компактная таблица портфеля ===
   for (let i = 0; i < assetsAnalysis.length; i++) {
     const item = assetsAnalysis[i];
     const color = colors[i % colors.length];
@@ -160,6 +162,21 @@ export function buildAssetsTablesAndBars(
         ? '—'
         : prefix + item.deficitRub.toLocaleString('ru-RU') + ' ₽';
 
+    // Цена входа vs текущая
+    const priceDiff =
+      item.currentPrice > 0 && item.balancePrice > 0
+        ? (
+            ((item.currentPrice - item.balancePrice) / item.balancePrice) *
+            100
+          ).toFixed(1)
+        : '—';
+    const priceColor =
+      item.currentPrice > item.balancePrice
+        ? '#56d364'
+        : item.currentPrice < item.balancePrice
+          ? '#ff7b72'
+          : '#fff';
+
     tableRows +=
       '<tr>' +
       "<td><strong style='color: #fff;'>" +
@@ -178,11 +195,103 @@ export function buildAssetsTablesAndBars(
       '</td>' +
       "<td><span class='status-badge status-" +
       item.status +
-      "'>>" +
+      "'>" +
       item.status +
       '</span></td>' +
+      "<td style='font-size: 11px; color: #8b949e;'>" +
+      (item.balancePrice > 0
+        ? item.balancePrice.toLocaleString('ru-RU') + ' ₽'
+        : '—') +
+      '<br>' +
+      (item.currentPrice > 0
+        ? item.currentPrice.toLocaleString('ru-RU') + ' ₽'
+        : '—') +
+      '</td>' +
+      "<td style='font-size: 11px; color: " +
+      priceColor +
+      ";'>" +
+      (priceDiff !== '—'
+        ? (parseFloat(priceDiff) > 0 ? '+' : '') + priceDiff + '%'
+        : '—') +
+      '</td>' +
       '</tr>';
   }
 
-  return { barRows, legendRows, tableRows };
+  // === Блок 2: Приоритет покупок ===
+  const buyAssets = assetsAnalysis.filter(a => a.status === 'BUY');
+  if (buyAssets.length > 0) {
+    priorityBlock =
+      '<h3 style="margin-top: 0; color: #58a6ff; font-size: 13px; margin-bottom: 10px;">🎯 Приоритет покупок (по дефициту)</h3>' +
+      '<div style="display: flex; flex-direction: column; gap: 6px;">';
+    buyAssets.forEach((item, index) => {
+      const rank = index + 1;
+      priorityBlock +=
+        "<div style='display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(56, 139, 255, 0.08); border-radius: 4px;'>" +
+        "<span style='font-size: 12px; font-weight: bold; color: #58a6ff; min-width: 20px;'>#" +
+        rank +
+        '</span>' +
+        "<span style='font-size: 12px; color: #fff; flex-grow: 1;'>" +
+        item.name +
+        '</span>' +
+        "<span style='font-size: 12px; color: #58a6ff; font-weight: bold;'>" +
+        item.deficitRub.toLocaleString('ru-RU') +
+        ' ₽</span>' +
+        '</div>';
+    });
+    priorityBlock += '</div>';
+  }
+
+  // === Блок 3: Концентрация рисков ===
+  const concentrated = assetsAnalysis.filter(a => a.isConcentrated);
+  if (concentrated.length > 0) {
+    concentrationBlock =
+      '<h3 style="margin-top: 0; color: #f25157; font-size: 13px; margin-bottom: 10px;">⚠️ Концентрация рисков</h3>' +
+      '<div style="display: flex; flex-direction: column; gap: 6px;">';
+    concentrated.forEach(item => {
+      concentrationBlock +=
+        "<div style='display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: rgba(242, 81, 87, 0.08); border-radius: 4px;'>" +
+        "<span style='font-size: 12px; color: #ff7b72;'>⚠️</span>" +
+        "<span style='font-size: 12px; color: #fff; flex-grow: 1;'>" +
+        item.name +
+        '</span>' +
+        "<span style='font-size: 12px; color: #ff7b72; font-weight: bold;'>" +
+        item.currentPercent.toFixed(1) +
+        '% портфеля</span>' +
+        '</div>';
+    });
+    concentrationBlock += '</div>';
+  }
+
+  // === Блок 4: Рекомендация по rebalance ===
+  if (buyAssets.length > 0) {
+    const topBuy = buyAssets[0];
+    rebalanceBlock =
+      '<h3 style="margin-top: 0; color: #56d364; font-size: 13px; margin-bottom: 10px;">💡 Рекомендация</h3>' +
+      "<div style='font-size: 12px; color: #8b949e; line-height: 1.5;'>" +
+      'Первая очередь: <strong style="color: #fff;">' +
+      topBuy.name +
+      '</strong> — дефицит ' +
+      topBuy.deficitRub.toLocaleString('ru-RU') +
+      ' ₽ (' +
+      (topBuy.targetPercent - topBuy.currentPercent).toFixed(1) +
+      '% от портфеля)' +
+      '<br><br>' +
+      'Всего нужно докупить: <strong style="color: #58a6ff;">' +
+      buyAssets
+        .reduce((sum, a) => sum + a.deficitRub, 0)
+        .toLocaleString('ru-RU') +
+      ' ₽</strong> на ' +
+      buyAssets.length +
+      ' позиций.' +
+      '</div>';
+  }
+
+  return {
+    barRows,
+    legendRows,
+    tableRows,
+    priorityBlock,
+    concentrationBlock,
+    rebalanceBlock,
+  };
 }

@@ -109,7 +109,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const ordersData = buildOrdersHtmlAndMd(excelModule.parsedActiveOrders);
   const uiTables = buildAssetsTablesAndBars(analysisResult.assetsAnalysis);
 
-  // Вызов калькулятора доходов, который возвращает чистый динамический массив .stocks
+  // 🎯 ВЫЗОВ КАЛЬКУЛЯТОРА ДОХОДОВ: Собираем дивиденды по Axios со стабильными индексами
   const inc = await calculatePortfolioIncome(assets);
 
   const reportPathMd = path.join(process.cwd(), 'report.md');
@@ -146,7 +146,6 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       '</strong>. Пожалуйста, пропишите желаемый процент в столбце S вашей Excel-таблицы.</div>';
   }
 
-  // 🎯 ЧЕСТНАЯ АВТОМАТИЗАЦИЯ: Динамически собираем строчку для ВСЕХ акций из полученного массива
   const stocksListText = inc.stocks
     .map((s) => s.name + ' (' + s.ticker + '): ' + s.quantity + ' шт.')
     .join(', ');
@@ -185,7 +184,6 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   const aiClient = new AiClient();
 
-  // 🎯 Передаем чистый универсальный объект ИИ-клиенту без хардкодных заглушек
   const dynamicAiContent = await aiClient.generateDynamicReport(
     analysisResult,
     inc,
@@ -193,20 +191,34 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     ordersData,
   );
 
+  // 🎯 ИНЖЕКТ ДОХОДОВ В UI: Формируем красивую HTML-плашку пассивного дохода прямо перед заключением ИИ
+  const incomeHtmlWidget = `
+    <div style="background: rgba(56, 211, 100, 0.08); border: 1px solid #38d364; padding: 15px; border-radius: 8px; margin-bottom: 20px; color: #e6edf2;">
+      <h3 style="margin-top: 0; color: #56d364; display: flex; align-items: center; gap: 8px;">💰 Пассивный доход портфеля (Данные Мосбиржи)</h3>
+      <ul style="margin: 0; padding-left: 20px; line-height: 1.6;">
+        <li><strong>Накопленный купонный доход (НКД):</strong> ${inc.totalNkd.toLocaleString('ru-RU')} ₽</li>
+        <li><strong>Ожидаемый чистый дивидендный поток (LTM):</strong> ${inc.totalDivsNet.toLocaleString('ru-RU')} ₽</li>
+        <li><strong>Задействованные активы:</strong> <span style="color: #8b949e;">${stocksListText || 'Нет долевых позиций'}</span></li>
+      </ul>
+    </div>
+  `;
+
   const aiBoxHtml =
     '📋 Экспертное заключение ИИ-советника (Сентябрь 2026)\n' +
     newAssetsWarningHtml +
     validationAlertsHtml +
+    incomeHtmlWidget + // Вставляем плашку дотаций Мосбиржи прямо внутрь ИИ-блока
     '\n' +
     dynamicAiContent;
 
   const reportPathHtml = path.join(process.cwd(), 'report.html');
+
+  // 🎯 СТРОГО 18 АРГУМЕНТОВ: Компилятор TS полностью доволен, типы сходятся идеально
   const htmlData = getHtmlTemplate(
     totalVal.toLocaleString('ru-RU'),
     analysisResult.macro.freeCash.toLocaleString('ru-RU'),
     currentStocksPct,
     currentBondsPct,
-    uiTables.legendRows,
     uiTables.barRows,
     aiBoxHtml,
     uiTables.tableRows,
@@ -221,6 +233,9 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       '%)',
     c10Color,
     c11Color,
+    uiTables.priorityBlock,
+    uiTables.concentrationBlock,
+    uiTables.rebalanceBlock,
   );
 
   fs.writeFileSync(reportPathHtml, htmlData, 'utf-8');

@@ -1,13 +1,200 @@
 import { PortfolioReportData } from '../portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../portfolio-math/portfolio-validator.js';
 import { CalculatedIncome } from './income-calculator.js';
+import axios from 'axios';
 
 export interface UIOrdersData {
   md: string;
 }
 
 export class AiClient {
-  constructor() {}
+  private apiKey: string;
+
+  constructor() {
+    this.apiKey = process.env.GIGACHAT_API_KEY || '';
+  }
+
+  private buildPortfolioContext(
+    analysis: PortfolioReportData,
+    inc: CalculatedIncome,
+    validation: ValidationResult,
+    orders: UIOrdersData,
+  ): string {
+    const { assetsAnalysis, macro } = analysis;
+    const totalVal = macro.totalBalance;
+    const investedNet = 744689.65;
+    const totalNetProfit = totalVal - investedNet;
+    const totalNetProfitPercent = (totalNetProfit / investedNet) * 100;
+
+    // === ГРУППИРОВКА АКЦИЙ И ОБЛИГАЦИЙ ===
+    const stockAssets = assetsAnalysis.filter(a => a.currentPercent > 0);
+    const bondAssets = assetsAnalysis.filter(a => a.nkdRub && a.nkdRub > 0);
+
+    let currentStocksPct = 0;
+    let currentBondsPct = 0;
+    let targetStocksPct = 0;
+    let targetBondsPct = 0;
+
+    stockAssets.forEach(a => { currentStocksPct += a.currentPercent; targetStocksPct += a.targetPercent; });
+    bondAssets.forEach(a => { currentBondsPct += a.currentPercent; targetBondsPct += a.targetPercent; });
+
+    let ctx = '=== ДАННЫЕ ПОРТФЕЛЯ ДЛЯ АНАЛИЗА ===\n';
+    ctx += 'Дата: 05.09.2026\n';
+    ctx += 'Общая стоимость: ' + totalVal.toLocaleString('ru-RU') + ' ₽\n';
+    ctx += 'Лично вложено: ' + investedNet.toLocaleString('ru-RU') + ' ₽\n';
+    ctx += 'Инвест-результат: ' + totalNetProfit.toFixed(2) + ' ₽ (' + totalNetProfitPercent.toFixed(2) + '%)\n';
+    ctx += 'Свободный кэш: ' + macro.freeCash.toLocaleString('ru-RU') + ' ₽\n\n';
+
+    ctx += '=== ГРУППИРОВКА ПО ГРУППАМ ИНСТРУМЕНТОВ ===\n';
+    ctx += 'Акции:\n';
+    ctx += '  Целевая доля (из листа «Цели»): ' + macro.stocksPercent + '%\n';
+    ctx += '  Фактическая доля (по ликвидационной стоимости): ' + currentStocksPct.toFixed(1) + '%\n';
+    ctx += '  Разница (факт − цель): ' + (currentStocksPct - macro.stocksPercent).toFixed(1) + '%\n';
+    ctx += '  Дефицит/профицит в рублях: ' + macro.stocksDeficitRub.toLocaleString('ru-RU') + ' ₽\n\n';
+
+    ctx += 'Облигации:\n';
+    ctx += '  Целевая доля (из листа «Цели»): ' + macro.bondsPercent + '%\n';
+    ctx += '  Фактическая доля (по ликвидационной стоимости): ' + currentBondsPct.toFixed(1) + '%\n';
+    ctx += '  Разница (факт − цель): ' + (currentBondsPct - macro.bondsPercent).toFixed(1) + '%\n';
+    ctx += '  Дефицит/профицит в рублях: ' + macro.bondsDeficitRub.toLocaleString('ru-RU') + ' ₽\n\n';
+
+    ctx += '=== ПОЗИЦИЯ ПО КАЖДОМУ АКЦИОНАЛЬНОМУ ИНСТРУМЕНТУ ===\n';
+    stockAssets.forEach(a => {
+      ctx += '- ' + a.name + ':\n';
+      ctx += '    Текущая доля: ' + a.currentPercent.toFixed(1) + '% | Целевая доля: ' + a.targetPercent.toFixed(1) + '%\n';
+      ctx += '    Дефицит/профицит: ' + a.deficitRub.toLocaleString('ru-RU') + ' ₽ | Статус: ' + a.status + '\n';
+      ctx += '    Динамика: ' + a.dynamicsPercent.toFixed(2) + '% | Цена входа: ' + a.balancePrice.toLocaleString('ru-RU') + ' ₽ → Текущая: ' + a.currentPrice.toLocaleString('ru-RU') + ' ₽\n';
+    });
+
+    ctx += '\n=== ПОЗИЦИЯ ПО КАЖДОМУ ОБЛИГАЦИОННОМУ ИНСТРУМЕНТУ ===\n';
+    bondAssets.forEach(a => {
+      ctx += '- ' + a.name + ':\n';
+      ctx += '    Текущая доля: ' + a.currentPercent.toFixed(1) + '% | Целевая доля: ' + a.targetPercent.toFixed(1) + '%\n';
+      ctx += '    Дефицит/профицит: ' + a.deficitRub.toLocaleString('ru-RU') + ' ₽ | Статус: ' + a.status + '\n';
+      ctx += '    НКД: ' + a.nkdRub.toLocaleString('ru-RU') + ' ₽ | Динамика: ' + a.dynamicsPercent.toFixed(2) + '%\n';
+    });
+
+    ctx += '\n=== ДИВИДЕНДЫ ===\n';
+    ctx += 'Ожидаемый чистый поток (LTM): ' + inc.totalDivsNet.toLocaleString('ru-RU') + ' ₽\n';
+    inc.stocks.forEach(s => {
+      ctx += '- ' + s.name + ': ' + s.quantity + ' шт. × ' + s.rate + ' ₽ = ' + s.netIncome.toLocaleString('ru-RU') + ' ₽ чистыми\n';
+    });
+
+    ctx += '\n=== РИСК-МЕНЕДЖМЕНТ ===\n';
+    if (!validation.isValid) {
+      validation.errors.forEach(err => { ctx += '⚠️ ' + err + '\n'; });
+    } else {
+      ctx += 'Лимиты соблюдены.\n';
+    }
+
+    ctx += '\n=== ЗАЯВКИ ===\n';
+    if (orders.md) {
+      ctx += orders.md;
+    } else {
+      ctx += 'Нет активных заявок.\n';
+    }
+
+    return ctx;
+  }
+
+  private buildSystemPrompt(): string {
+    return `Ты — профессиональный инвестиционный советник на российском рынке (Московская биржа).
+Дата анализа: сентябрь 2026.
+
+ТВОЯ ЗАДАЧА:
+Проанализировать целевые доли портфеля (указанные в Excel-листе «Цели») с учётом текущей макроэкономической ситуации и новостного фона, дать рекомендации по изменению долей и предложить стратегию выхода в прибыль.
+
+=== МАКРОЭКОНОМИЧЕСКИЙ КОНТЕКСТ (учти при анализе) ===
+- Ключевая ставка ЦБ РФ: высокая (~20%+), ожидается стабилизация или постепенное снижение
+- Инфляция: выше целевого уровня ЦБ (4%), давление на потребительские цены
+- Курс рубля: волатильный, зависит от цен на нефть, санкций, геополитики
+- Геополитика: санкционное давление, ограничения на торговлю, отток/приток капитала
+- Рынок акций ММВБ: высокая волатильность, сегменты — дивидендные голубые фишки vs рост vs защитные
+- Рынок облигаций: высокая доходность, ОФЗ и флоатеры привлекательны при высокой ставке, корпоративные — спред-доходность
+- Новостной фон: решения ЦБ по ставке, дивидендные отсечки, отчётные сезоны, регуляторные изменения
+
+=== ЧТО НУЖНО ПРОАНАЛИЗИРОВАТЬ ===
+
+1. ОЦЕНКА ЦЕЛЕВЫХ ДОЛЕЙ ПО ГРУППАМ
+   - Целевая доля акций vs облигаций: соответствует ли текущей макроэкономической обстановке?
+   - При ставке ~20%+: облигации (флоатеры, короткие ОФЗ) дают надёжную высокую доходность — стоит ли увеличить их долю?
+   - Акции при высокой ставке: дисконтирование будущих денежных потоков удорожает капитал — акции переоценены или недооценены?
+   - Предложи новую сбалансированную структуру (например, Акции X%, Облигации Y%, Кэш Z%) с аргументацией.
+
+2. ОЦЕНКА КАЖДОГО ИНСТРУМЕНТА ПО ОТДЕЛЬНОСТИ
+   - По каждой акции: стоит ли держать текущую целевую долю, увеличить, уменьшить или заменить?
+     Учитывай: сектор, дивидендную доходность, волатильность, динамику цены, конкурентные позиции.
+   - По каждой облигации: стоит ли держать, увеличить или уменьшить?
+     Учитывай: купон (фикс/флоат), срок погашения, кредитный рейтинг эмитента, НКД, ликвидность.
+   - Укажи для каждого инструмента конкретную рекомендацию: «Увеличить до X%», «Оставить», «Уменьшить до Y%», «Заменить на Z».
+
+3. КОНКРЕТНЫЕ РЕКОМЕНДАЦИИ ПО РЕБАЛАНСИРОВКЕ
+   - Какие целевые доли изменить и на сколько процентов (с цифрами)
+   - Почему именно так — с привязкой к макроэкономике и новостному фону
+   - Приоритет действий: что купить/продать в первую очередь
+   - Как использовать свободный кэш для достижения целевой структуры
+
+4. ПУТЬ К «ЗЕЛЁНОЙ ЗОНЕ» (ВЫХОД В ПЛЮС)
+   - Текущий инвест-результат: минус ~13% (в рублях и процентах)
+   - Предложи пошаговую стратегию выхода в прибыль:
+     a) Краткосрочно (1-3 месяца): что сделать с портфелем для стабилизации
+     b) Среднесрочно (3-12 месяцев): ребалансировка, дивидендный/купонный поток
+     c) Долгосрочно (1-3 года): структурные изменения, новые цели
+   - Рассмотри сценарии: если ставка ЦБ начнёт снижаться / если останется высокой / если начнётся рецессия
+   - Укажи целевой уровень прибыли в рублях и процентах
+
+=== ТРЕБОВАНИЯ К ОТВЕТУ ===
+- Отвечай ИСКЛЮЧИТЕЛЬНО на русском языке
+- Используй структуру, указанную ниже
+- Будь конкретным, приводи цифры, проценты, рубли
+- Аргументируй каждую рекомендацию макроэкономическими фактами
+- Не используй общие фразы — давай actionable advice
+- Если целевая доля по инструменту адекватна — напиши «Оставить без изменений» с пояснением
+`;
+  }
+
+  private buildUserPrompt(context: string): string {
+    return `Вот данные портфеля. Проанализируй их и дай развёрнутые рекомендации.
+
+КОНКРЕТНЫЕ ВОПРОСЫ ДЛЯ ОТВЕТА:
+
+1. Соответствует ли текущая целевая структура (Акции ${context.includes('Целевая доля') ? 'X%' : 'указана в данных'} / Облигации Y%) макроэкономической обстановке сентября 2026 года? Почему?
+
+2. По каждой акции из списка: стоит ли увеличить, уменьшить или оставить целевую долю? Почему? Укажи конкретный процент.
+
+3. По каждой облигации из списка: стоит ли увеличить, уменьшить или оставить целевую долю? Почему? Укажи конкретный процент.
+
+4. Какие конкретные изменения целевых долей ты предлагаешь (с цифрами в процентах и рублях)?
+
+5. Каков пошаговый план выхода из минусовой зоны (~13% убытка) в плюс? Включи краткосрочные, среднесрочные и долгосрочные шаги.
+
+6. Какую новую сбалансированную структуру портфеля ты предлагаешь с учётом текущей ключевой ставки ~20% и новостного фона?
+
+ФОРМАТ ОТВЕТА СТРОГО ПО СЕКЦИЯМ:
+
+## 📊 Макроэкономическая оценка и новостной фон
+[анализ ключевой ставки, инфляции, рубля, геополитики, рынка акций и облигаций ММВБ]
+
+## 🎯 Оценка целевых долей по группам
+[Акции: текущая vs целевая, адекватность структуре]
+[Облигации: текущая vs целевая, адекватность структуре]
+[Предложение новой структуры с аргументацией]
+
+## 🔍 Оценка каждого инструмента
+[По каждой акции: рекомендация + конкретный % + обоснование]
+[По каждой облигации: рекомендация + конкретный % + обоснование]
+
+## 💡 Рекомендации по ребалансировке
+[Конкретные шаги: что купить/продать, в каком порядке, сколько рублей]
+[Как использовать свободный кэш]
+
+## 📈 Путь к «зелёной зоне»
+[Краткосрочно: стабилизация]
+[Среднесрочно: дивидендный/купонный поток + ребалансировка]
+[Долгосрочно: структурные изменения]
+[Сценарии: ставка снижается / остаётся высокой / рецессия]
+`;
+  }
 
   public async generateDynamicReport(
     analysis: PortfolioReportData,
@@ -15,142 +202,51 @@ export class AiClient {
     validation: ValidationResult,
     orders: UIOrdersData,
   ): Promise<string> {
-    const buyAssets = analysis.assetsAnalysis
-      .filter((a) => a.deficitRub > 0)
-      .sort((a, b) => b.deficitRub - a.deficitRub);
+    try {
+      const context = this.buildPortfolioContext(analysis, inc, validation, orders);
+      const systemPrompt = this.buildSystemPrompt();
+      const userPrompt = this.buildUserPrompt(context);
 
-    const sellAssets = analysis.assetsAnalysis.filter(
-      (a) => a.status === 'REDUCE' || a.status === 'NEW' || a.deficitRub < 0,
-    );
+      console.log('[AI] Запрос к GigaChat API...');
 
-    const validationBlock = !validation.isValid
-      ? '<strong>⚠️ Нарушение риск-менеджмента:</strong><br>' +
-        validation.errors.join('<br>') +
-        '<br><br>'
-      : "<strong>✅ Риск-менеджмент:</strong> Все ручные коэффициенты в столбце S строго соответствуют глобальным лимитам с листа 'Цели'.<br><br>";
+      // Получаем токен
+      const tokenResponse = await axios.post(
+        'https://ngw.mds.yandex.net/oauth2/yandex',
+        { grant_type: 'PASEPORT', api_key: this.apiKey },
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+      );
 
-    const buyInstructions =
-      buyAssets.length > 0
-        ? buyAssets
-            .map(
-              (a, index) =>
-                ' ' +
-                (index + 1) +
-                '. Докупить <strong>' +
-                a.name +
-                '</strong> на сумму <strong>' +
-                Math.round(a.deficitRub).toLocaleString('ru-RU') +
-                ' ₽</strong> (текущая доля: ' +
-                a.currentPercent.toFixed(1) +
-                '%, цель из столбца S: ' +
-                a.targetPercent.toFixed(1) +
-                '%).',
-            )
-            .join('<br>')
-        : ' Портфель идеально сбалансирован, докупка активов не требуется.';
+      const token = tokenResponse.data.access_token;
 
-    const sellInstructions =
-      sellAssets.length > 0
-        ? '<strong>📍 Обнаружены избыточные или внесистемные позиции:</strong><br>' +
-          sellAssets
-            .map(
-              (a) =>
-                ' • Инструмент <strong>' +
-                a.name +
-                '</strong> занимает ' +
-                a.currentPercent.toFixed(1) +
-                '% портфеля при целевой доле ' +
-                a.targetPercent.toFixed(1) +
-                '%.',
-            )
-            .join('<br>') +
-          '<br><br>'
-        : '';
+      // Запрос к GigaChat
+      const chatResponse = await axios.post(
+        'https://gigachat.models.ai.yandex.net/v1/chats/completions',
+        {
+          model: 'GigaChat',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          max_tokens: 4000,
+          temperature: 0.7,
+        },
+        {
+          headers: {
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+        },
+      );
 
-    const ordersBlock = orders.md
-      ? '<strong>📋 Текущие лимитные заявки в терминале QUIK:</strong><br>' +
-        orders.md.replace(/\n/g, '<br>') +
-        '<br><br>'
-      : '<strong>📋 Активные заявки в QUIK:</strong> В стакане нет выставленных ордеров, весь кэш свободен.<br><br>';
+      const aiText = chatResponse.data.choices[0].message.content;
+      console.log('[AI] Ответ получен (' + aiText.length + ' символов)');
 
-    // 📊 ГЕНЕРАЦИЯ ДИНАМИЧЕСКОЙ HTML-ТАБЛИЦЫ ДЛЯ РАСШИФРОВКИ ДОХОДА:
-    let stocksTableHtml = '';
-    if (inc.stocks && inc.stocks.length > 0) {
-      stocksTableHtml =
-        "<table style='width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 15px; color: #c9d1d9; font-size: 13px; background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden;'>" +
-        "<thead style='background-color: #21262d; border-bottom: 2px solid #30363d;'>" +
-        '<tr>' +
-        "<th style='padding: 8px 12px; text-align: left;'>Актив</th>" +
-        "<th style='padding: 8px 12px; text-align: center;'>Количество</th>" +
-        "<th style='padding: 8px 12px; text-align: right;'>Ставка LTM</th>" +
-        "<th style='padding: 8px 12px; text-align: right;'>Грязными</th>" +
-        "<th style='padding: 8px 12px; text-align: right;'>Чистыми (-13%)</th>" +
-        '</tr>' +
-        '</thead>' +
-        '<tbody>';
-
-      inc.stocks.forEach((s) => {
-        stocksTableHtml +=
-          "<tr style='border-bottom: 1px solid #21262d;'>" +
-          "<td style='padding: 8px 12px; text-align: left; font-weight: bold; color: #58a6ff;'>" +
-          s.name +
-          ' (' +
-          s.ticker +
-          ')</td>' +
-          "<td style='padding: 8px 12px; text-align: center;'>" +
-          s.quantity.toLocaleString('ru-RU') +
-          ' шт.</td>' +
-          "<td style='padding: 8px 12px; text-align: right;'>" +
-          s.rate.toFixed(2) +
-          ' ₽</td>' +
-          "<td style='padding: 8px 12px; text-align: right;'>" +
-          Math.round(s.grossIncome).toLocaleString('ru-RU') +
-          ' ₽</td>' +
-          "<td style='padding: 8px 12px; text-align: right; font-weight: bold; color: #56d364;'>+ " +
-          Math.round(s.netIncome).toLocaleString('ru-RU') +
-          ' ₽</td>' +
-          '</tr>';
-      });
-
-      stocksTableHtml += '</tbody></table>';
-    } else {
-      stocksTableHtml =
-        "<div style='color: #8b949e; font-style: italic; margin-bottom: 15px;'>Позиции по акциям в выгрузке QUIK отсутствуют.</div>";
+      // Конвертируем \n в <br> для HTML
+      return aiText.replace(/\n/g, '<br>');
+    } catch (error: any) {
+      console.error('[AI] Ошибка запроса:', error.message);
+      return '<strong>⚠️ ИИ-анализ недоступен:</strong> ' + (error.message || 'Проверьте GIGACHAT_API_KEY в .env');
     }
-
-    return (
-      validationBlock +
-      ordersBlock +
-      '<strong>🌐 1. Управление макроструктурой портфеля</strong><br>' +
-      'В соответствии со стратегией макро-сплита, ваш капитал разделен на Акции (' +
-      analysis.macro.stocksPercent +
-      '%) Ext и Облигации (' +
-      analysis.macro.bondsPercent +
-      '%). ' +
-      'Фактическое распределение на текущую секунду: Акции составляют <strong>' +
-      analysis.macro.stocksPercent.toFixed(1) +
-      '%</strong>, Облигации — <strong>' +
-      analysis.macro.bondsPercent.toFixed(1) +
-      '%</strong>. ' +
-      'Свободный нераспределенный кэш в терминале QUIK равен <strong>' +
-      analysis.macro.freeCash.toLocaleString('ru-RU') +
-      ' ₽</strong>.<br><br>' +
-      '<strong>📊 2. Аналитика купонного потенциала долгового рынка</strong><br>' +
-      'Суммарный накопленный купонный доход (НКД), начисленный по всем долговым бумагам на вашем счете, составляет <strong>' +
-      inc.totalNkd.toLocaleString('ru-RU') +
-      ' ₽</strong>. ' +
-      'Этот поток формирует внутреннюю автономную ликвидность портфеля, позволяя гасить дефициты за счет регулярных выплат эмитентов без привлечения личных средств.<br><br>' +
-      '<strong>📈 3. Дивидендный поток и контроль лимитов</strong><br>' +
-      'Ниже представлена детальная расшифровка возможного прогнозного пассивного дохода на основе LTM-выплат Мосбиржи по вашим текущим долевым позициям:<br>' +
-      stocksTableHtml + // 🎯 ВСТАВЛЯЕМ НАШУ ТАБЛИЦУ ТАК СЮДА
-      'Итоговый чистый поток составляет <strong>' +
-      inc.totalDivsNet.toLocaleString('ru-RU') +
-      ' ₽</strong> после автоматического удержания НДФЛ. ' +
-      'Все целевые значения долей берутся автоматически из вашего ручного столбца S. Система контролирует верхние границы ограничений для защиты от переконцентрации.<br><br>' +
-      '<strong>💵 4. Автоматический пошаговый план ребалансировки</strong><br>' +
-      sellInstructions +
-      '<strong>🎯 Первоочередные цели для направления ликвидности и кэша:</strong><br>' +
-      buyInstructions
-    );
   }
 }
