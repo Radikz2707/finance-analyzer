@@ -12,6 +12,7 @@ import { PortfolioValidator } from '../portfolio-math/portfolio-validator.js';
 import { calculatePortfolioIncome } from './income-calculator.js';
 import { getMarkdownTemplate, getHtmlTemplate } from './report-templates.js';
 import { AiClient } from './ai-client.js';
+import { getCbrKeyRate } from './cbr-rate.js';
 
 export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const excelModule = new XlsxParserModule();
@@ -112,6 +113,16 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   // 🎯 ВЫЗОВ КАЛЬКУЛЯТОРА ДОХОДОВ: Собираем дивиденды по Axios со стабильными индексами
   const inc = await calculatePortfolioIncome(assets);
 
+  // 🏦 КЛЮЧЕВАЯ СТАВКА ЦБ: Получаем актуальное значение с автоматическим обновлением
+  const cbrRate = await getCbrKeyRate();
+  console.log(
+    '🏦 Ключевая ставка ЦБ РФ: ' +
+      cbrRate.rate +
+      '% (от ' +
+      cbrRate.date + ', ' +
+      cbrRate.source + ')',
+  );
+
   const reportPathMd = path.join(process.cwd(), 'report.md');
   const assetsListMd = analysisResult.assetsAnalysis
     .map(
@@ -189,6 +200,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     inc,
     validation,
     ordersData,
+    cbrRate.rate,
   );
 
   // 🎯 ИНЖЕКТ ДОХОДОВ В UI: Формируем красивую HTML-плашку пассивного дохода прямо перед заключением ИИ
@@ -200,6 +212,46 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
         <li><strong>Ожидаемый чистый дивидендный поток (LTM):</strong> ${inc.totalDivsNet.toLocaleString('ru-RU')} ₽</li>
         <li><strong>Задействованные активы:</strong> <span style="color: #8b949e;">${stocksListText || 'Нет долевых позиций'}</span></li>
       </ul>
+      <table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px;">
+        <thead>
+          <tr style="border-bottom: 1px solid #30363d; color: #8b949e; text-align: left;">
+            <th style="padding: 8px 12px;">Актив</th>
+            <th style="padding: 8px 12px;">Количество</th>
+            <th style="padding: 8px 12px;">Ставка LTM</th>
+            <th style="padding: 8px 12px;">Грязными</th>
+            <th style="padding: 8px 12px;">Чистыми (-13%)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${inc.stocks
+            .map(
+              (s) =>
+                '<tr style="border-bottom: 1px solid #21262d;">' +
+                '<td style="padding: 8px 12px; color: #58a6ff;"><strong>' +
+                s.name +
+                ' (' +
+                s.ticker +
+                ')</strong></td>' +
+                '<td style="padding: 8px 12px;">' +
+                s.quantity +
+                ' шт.</td>' +
+                '<td style="padding: 8px 12px;">' +
+                s.rate.toLocaleString('ru-RU') +
+                ' ₽</td>' +
+                '<td style="padding: 8px 12px;">' +
+                s.grossIncome.toLocaleString('ru-RU') +
+                ' ₽</td>' +
+                '<td style="padding: 8px 12px; color: #56d364;"><strong>+ ' +
+                s.netIncome.toLocaleString('ru-RU') +
+                ' ₽</strong></td>' +
+                '</tr>',
+            )
+            .join('\n          ')}
+        </tbody>
+      </table>
+      <p style="margin-top: 12px; margin-bottom: 0; color: #8b949e; font-size: 13px;">
+        Итоговый чистый поток составляет <strong style="color: #56d364;">${inc.totalDivsNet.toLocaleString('ru-RU')} ₽</strong> после автоматического удержания НДФЛ. Все целевые значения долей берутся автоматически из вашего ручного столбца S. Система контролирует верхние границы ограничений для защиты от перегруппировки.
+      </p>
     </div>
   `;
 
@@ -213,12 +265,13 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   const reportPathHtml = path.join(process.cwd(), 'report.html');
 
-  // 🎯 СТРОГО 18 АРГУМЕНТОВ: Компилятор TS полностью доволен, типы сходятся идеально
+  // 🎯 СТРОГО 19 АРГУМЕНТОВ: Компилятор TS полностью доволен, типы сходятся идеально
   const htmlData = getHtmlTemplate(
     totalVal.toLocaleString('ru-RU'),
     analysisResult.macro.freeCash.toLocaleString('ru-RU'),
     currentStocksPct,
     currentBondsPct,
+    cbrRate.rate,
     uiTables.barRows,
     aiBoxHtml,
     uiTables.tableRows,

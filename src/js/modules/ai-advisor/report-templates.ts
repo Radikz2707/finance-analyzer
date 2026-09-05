@@ -34,6 +34,7 @@ export function getHtmlTemplate(
   freeCash: string,
   stocksPct: number,
   bondsPct: number,
+  cbrRate: number,
   barRows: string,
   aiBoxHtml: string,
   tableRows: string,
@@ -58,7 +59,7 @@ export function getHtmlTemplate(
     '<style>' +
     'body { background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; padding: 20px; }' +
     '.container { max-width: 1200px; margin: 0 auto; }' +
-    '.header-panel { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }' +
+    '.header-panel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 25px; }' +
     '.card { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 15px; text-align: center; }' +
     '.card-title { font-size: 12px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 5px; }' +
     '.card-value { font-size: 20px; font-weight: bold; color: #fff; }' +
@@ -113,6 +114,13 @@ export function getHtmlTemplate(
     profitC11 +
     ' ₽</div>' +
     "<div class='card-sub'>Реальный инвест-профит</div>" +
+    '</div>' +
+    "<div class='card' style='border-color: #a371f7;'>" +
+    "<div class='card-title'>Ключевая ставка ЦБ</div>" +
+    "<div class='card-value' style='color: #d3b6ff;'>" +
+    cbrRate +
+    '%</div>' +
+    "<div class='card-sub'>Макро-контекст портфеля</div>" +
     '</div>' +
     '</div>' +
     "<div class='grid-main'>" +

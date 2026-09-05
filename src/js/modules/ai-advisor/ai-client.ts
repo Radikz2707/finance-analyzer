@@ -97,7 +97,7 @@ export class AiClient {
     return ctx;
   }
 
-  private buildSystemPrompt(): string {
+  private buildSystemPrompt(cbrRate: number): string {
     return `Ты — профессиональный инвестиционный советник на российском рынке (Московская биржа).
 Дата анализа: сентябрь 2026.
 
@@ -105,7 +105,7 @@ export class AiClient {
 Проанализировать целевые доли портфеля (указанные в Excel-листе «Цели») с учётом текущей макроэкономической ситуации и новостного фона, дать рекомендации по изменению долей и предложить стратегию выхода в прибыль.
 
 === МАКРОЭКОНОМИЧЕСКИЙ КОНТЕКСТ (учти при анализе) ===
-- Ключевая ставка ЦБ РФ: высокая (~20%+), ожидается стабилизация или постепенное снижение
+- Ключевая ставка ЦБ РФ: ${cbrRate}% (высокая), ожидается стабилизация или постепенное снижение
 - Инфляция: выше целевого уровня ЦБ (4%), давление на потребительские цены
 - Курс рубля: волатильный, зависит от цен на нефть, санкций, геополитики
 - Геополитика: санкционное давление, ограничения на торговлю, отток/приток капитала
@@ -153,7 +153,7 @@ export class AiClient {
 `;
   }
 
-  private buildUserPrompt(context: string): string {
+  private buildUserPrompt(context: string, cbrRate: number): string {
     return `Вот данные портфеля. Проанализируй их и дай развёрнутые рекомендации.
 
 КОНКРЕТНЫЕ ВОПРОСЫ ДЛЯ ОТВЕТА:
@@ -168,7 +168,7 @@ export class AiClient {
 
 5. Каков пошаговый план выхода из минусовой зоны (~13% убытка) в плюс? Включи краткосрочные, среднесрочные и долгосрочные шаги.
 
-6. Какую новую сбалансированную структуру портфеля ты предлагаешь с учётом текущей ключевой ставки ~20% и новостного фона?
+6. Какую новую сбалансированную структуру портфеля ты предлагаешь с учётом текущей ключевой ставки ${cbrRate}% и новостного фона?
 
 ФОРМАТ ОТВЕТА СТРОГО ПО СЕКЦИЯМ:
 
@@ -201,11 +201,12 @@ export class AiClient {
     inc: CalculatedIncome,
     validation: ValidationResult,
     orders: UIOrdersData,
+    cbrRate: number,
   ): Promise<string> {
     try {
       const context = this.buildPortfolioContext(analysis, inc, validation, orders);
-      const systemPrompt = this.buildSystemPrompt();
-      const userPrompt = this.buildUserPrompt(context);
+      const systemPrompt = this.buildSystemPrompt(cbrRate);
+      const userPrompt = this.buildUserPrompt(context, cbrRate);
 
       console.log('[AI] Запрос к GigaChat API...');
 
@@ -246,7 +247,7 @@ export class AiClient {
       return aiText.replace(/\n/g, '<br>');
     } catch (error: any) {
       console.error('[AI] Ошибка запроса:', error.message);
-      return '<strong>⚠️ ИИ-анализ недоступен:</strong> ' + (error.message || 'Проверьте GIGACHAT_API_KEY в .env');
+      return '';
     }
   }
 }
