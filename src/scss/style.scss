@@ -11,3 +11,4 @@
 
 // Перенесли в самый конец, после всех директив @use
 @import "base/fonts";
+@use '../components/dashboard-report/dashboard-report';

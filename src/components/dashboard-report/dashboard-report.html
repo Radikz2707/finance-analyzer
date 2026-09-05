@@ -1,0 +1,142 @@
+<section class="dashboard-report">
+  <div class="dashboard-report__container container">
+    <h2 class="dashboard-report__title">Отчёт по ребалансировке портфеля</h2>
+
+    <!-- Карточки метрик -->
+    <div class="dashboard-report__metrics header-panel">
+      <div class="dashboard-report__card card">
+        <div class="card-title">Текущие активы (C9)</div>
+        <div class="card-value card-value--accent">0 ₽</div>
+        <div class="card-sub">Свободный кэш: 0 ₽</div>
+      </div>
+      <div class="dashboard-report__card card">
+        <div class="card-title">Лично внесено (C12)</div>
+        <div class="card-value">0 ₽</div>
+        <div class="card-sub">Собственный капитал</div>
+      </div>
+      <div class="dashboard-report__card card">
+        <div class="card-title">Результат рынка (C10)</div>
+        <div class="card-value">0 ₽</div>
+        <div class="card-sub">Спекуляции + портфель</div>
+      </div>
+      <div class="dashboard-report__card card">
+        <div class="card-title">Чистый итог (C11)</div>
+        <div class="card-value">0 ₽</div>
+        <div class="card-sub">Реальный инвест-профит</div>
+      </div>
+      <div class="dashboard-report__card card card--accent">
+        <div class="card-title">Ключевая ставка ЦБ</div>
+        <div class="card-value card-value--purple">0%</div>
+        <div class="card-sub">Макро-контекст портфеля</div>
+      </div>
+    </div>
+
+    <!-- Основная сетка -->
+    <div class="dashboard-report__grid grid-main">
+      <div class="dashboard-report__primary">
+        <!-- AI-блок -->
+        <div class="dashboard-report__ai-box block-box block-box--accent">
+          <p>Экспертное заключение ИИ-советника...</p>
+        </div>
+
+        <!-- Таблица портфеля -->
+        <div class="block-box">
+          <h2>Портфель: состав и приоритеты</h2>
+          <table class="portfolio-table">
+            <thead>
+              <tr>
+                <th>Инструмент</th>
+                <th>Текущая доля</th>
+                <th>Целевая доля</th>
+                <th>Дефицит/Профицит</th>
+                <th>Статус</th>
+                <th>Цена входа / Текущая</th>
+                <th>Изменение</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="asset-name"><strong>GAZP</strong></td>
+                <td>25.3%</td>
+                <td>30.0%</td>
+                <td class="deficit-cell" style="color: #58a6ff;">+500 ₽</td>
+                <td><span class="status-badge status-BUY">BUY</span></td>
+                <td class="price-info">160 ₽<br>165 ₽</td>
+                <td class="price-diff" style="color: #56d364;">+3.1%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="dashboard-report__secondary">
+        <!-- Макро-структура -->
+        <div class="block-box">
+          <h2>Макро-структура</h2>
+          <p class="dashboard-report__macro-info">Акции: <strong>40%</strong> | Облигации: <strong>60%</strong></p>
+          <div class="asset-bars">
+            <div class="asset-label">GAZP</div>
+            <div class="bar-row">
+              <div class="bar-label">Факт: 25.3%</div>
+              <div class="bar-track">
+                <div class="bar-fill bar-fill--blue" style="width: 50%;"></div>
+              </div>
+            </div>
+            <div class="bar-row" style="margin-top: 3px;">
+              <div class="bar-label bar-label--target">Цель: 30%</div>
+              <div class="bar-track bar-track--small">
+                <div class="bar-fill bar-fill--green" style="width: 60%;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Приоритеты -->
+        <div class="block-box">
+          <div class="priority-list">
+            <h3>🎯 Приоритет покупок</h3>
+            <div class="priority-items">
+              <div class="priority-item">
+                <span class="priority-rank">#1</span>
+                <span class="priority-name">SBER</span>
+                <span class="priority-deficit">+12 000 ₽</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Заявки -->
+    <div class="block-box">
+      <h2>Действующие лимитные заявки в терминале QUIK</h2>
+      <table class="orders-table">
+        <thead>
+          <tr>
+            <th>Инструмент</th>
+            <th>Операция</th>
+            <th>Количество</th>
+            <th>Цена за ед.</th>
+            <th>Общая сумма</th>
+            <th>Статус заявки</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="instrument-name"><strong>GAZP</strong></td>
+            <td><span class="status-badge status-BUY" style="background-color: #238636; color: #fff;">BUY</span></td>
+            <td>100 шт.</td>
+            <td>160 ₽</td>
+            <td class="sum-cell">16 000 ₽</td>
+            <td>Active</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Футер -->
+    <div class="dashboard-report__footer">
+      <p>Конвейер успешно обновлен: 05.09.2026 | finance-analyzer v2.1.0</p>
+    </div>
+  </div>
+</section>

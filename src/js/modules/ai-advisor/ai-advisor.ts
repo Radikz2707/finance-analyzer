@@ -10,7 +10,8 @@ import {
 import { PortfolioMathModule } from '../portfolio-math/portfolio-math.js';
 import { PortfolioValidator } from '../portfolio-math/portfolio-validator.js';
 import { calculatePortfolioIncome } from './income-calculator.js';
-import { getMarkdownTemplate, getHtmlTemplate } from './report-templates.js';
+import { getMarkdownTemplate } from './report-templates.js';
+import { DashboardReportBuilder } from '../../../components/dashboard-report/dashboard-report.js';
 import { AiClient } from './ai-client.js';
 import { getCbrKeyRate } from './cbr-rate.js';
 
@@ -265,31 +266,34 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   const reportPathHtml = path.join(process.cwd(), 'report.html');
 
-  // 🎯 СТРОГО 19 АРГУМЕНТОВ: Компилятор TS полностью доволен, типы сходятся идеально
-  const htmlData = getHtmlTemplate(
-    totalVal.toLocaleString('ru-RU'),
-    analysisResult.macro.freeCash.toLocaleString('ru-RU'),
-    currentStocksPct,
-    currentBondsPct,
-    cbrRate.rate,
-    uiTables.barRows,
-    aiBoxHtml,
-    uiTables.tableRows,
-    ordersData.html,
-    new Date().toLocaleDateString('ru-RU'),
-    new Date().toLocaleTimeString('ru-RU'),
-    investedData.totalNet.toLocaleString('ru-RU'),
-    currentTradingResultRub.toLocaleString('ru-RU'),
-    totalNetProfitRub.toLocaleString('ru-RU') +
+  // 🎯 Генерация HTML-отчёта через DashboardReportBuilder
+  const reportBuilder = new DashboardReportBuilder({
+    totalVal: totalVal.toLocaleString('ru-RU'),
+    freeCash: analysisResult.macro.freeCash.toLocaleString('ru-RU'),
+    stocksPct: currentStocksPct,
+    bondsPct: currentBondsPct,
+    cbrRate: cbrRate.rate,
+    barRows: uiTables.barRows,
+    aiBoxHtml: aiBoxHtml,
+    tableRows: uiTables.tableRows,
+    ordersRows: ordersData.html,
+    dateStr: new Date().toLocaleDateString('ru-RU'),
+    timeStr: new Date().toLocaleTimeString('ru-RU'),
+    totalInvested: investedData.totalNet.toLocaleString('ru-RU'),
+    resultC10: currentTradingResultRub.toLocaleString('ru-RU'),
+    profitC11:
+      totalNetProfitRub.toLocaleString('ru-RU') +
       ' (' +
       totalNetProfitPercent.toFixed(2) +
       '%)',
-    c10Color,
-    c11Color,
-    uiTables.priorityBlock,
-    uiTables.concentrationBlock,
-    uiTables.rebalanceBlock,
-  );
+    c10Color: c10Color,
+    c11Color: c11Color,
+    priorityBlock: uiTables.priorityBlock,
+    concentrationBlock: uiTables.concentrationBlock,
+    rebalanceBlock: uiTables.rebalanceBlock,
+  });
+
+  const htmlData = reportBuilder.buildHtml();
 
   fs.writeFileSync(reportPathHtml, htmlData, 'utf-8');
   const cleanPathHtml = reportPathHtml.replace(/\\/g, '/');

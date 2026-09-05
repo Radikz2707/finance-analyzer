@@ -7,6 +7,12 @@ export interface CbrRateData {
   lastUpdated: string;
 }
 
+interface FinamApiResponse {
+  keyRate?: number;
+  cbrRate?: number;
+  rate?: number;
+}
+
 // Кэш в памяти: ставка + время последнего получения
 let cachedRate: CbrRateData | null = null;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 часа
@@ -194,9 +200,9 @@ async function fetchFromFinam(): Promise<CbrRateData | null> {
   if (response.data && typeof response.data === 'object') {
     // Проверяем известные поля
     const rate =
-      (response.data as any).keyRate ||
-      (response.data as any).cbrRate ||
-      (response.data as any).rate;
+      (response.data as FinamApiResponse).keyRate ||
+      (response.data as FinamApiResponse).cbrRate ||
+      (response.data as FinamApiResponse).rate;
 
     if (rate && typeof rate === 'number' && rate > 0 && rate < 100) {
       return {
