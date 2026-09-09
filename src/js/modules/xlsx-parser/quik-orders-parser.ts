@@ -225,6 +225,11 @@ export function parseQuikOrdersFile(
         .replace(/\s+/g, ' ')
         .trim();
 
+      // Определяем, облигация это или акция — для корректного расчёта суммы
+      // QUIK указывает цену облигаций в % от номинала (1000 руб), акции — в рублях
+      const isBond = rawInstrument.toLowerCase().includes('облиг');
+      const pricePerUnit = isBond ? price * 10 : price; // номинал 1000 / 100 = 10
+
       // Фильтруем заявки с нулевым количеством или ценой
       if (qty === 0 || price === 0) continue;
 
@@ -232,7 +237,7 @@ export function parseQuikOrdersFile(
         rawOperation.includes('куп') || rawOperation.includes('buy')
           ? 'BUY'
           : 'SELL';
-      const sum = Math.round(qty * price * 100) / 100;
+      const sum = Math.round(qty * pricePerUnit * 100) / 100;
       const status = parseOrderStatus(rawStatus, rawPeriod);
 
       // Фильтруем: показываем только активные и исполненные заявки
