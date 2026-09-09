@@ -1,5 +1,20 @@
-import { QuikOrder } from '../xlsx-parser/quik-orders-parser';
+import { QuikOrder } from '../xlsx-parser/quik-orders-parser.js';
 import { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
+
+/**
+ * Форматирование цены: показывает копейки только если они есть
+ * 99.25 → "99,25 ₽"
+ * 99.00 → "99 ₽"
+ */
+function formatPrice(value: number): string {
+  const whole = Math.floor(value);
+  const kopecks = Math.round((value - whole) * 100);
+  if (kopecks === 0) {
+    return whole.toLocaleString('ru-RU');
+  }
+  const kopecksStr = kopecks.toString().padStart(2, '0');
+  return whole.toLocaleString('ru-RU') + ',' + kopecksStr;
+}
 
 export interface HTMLOrdersResult {
   html: string;
@@ -15,7 +30,9 @@ export interface HTMLTablesResult {
   rebalanceBlock: string;
 }
 
-// 🎯 Модуль сборки действующих лимитных заявок
+/**
+ * Модуль сборки действующих и завершенных лимитных заявок из QUIK с поддержкой ночных GTC-переносов
+ */
 export function buildOrdersHtmlAndMd(
   realOrders: QuikOrder[],
 ): HTMLOrdersResult {
@@ -25,28 +42,41 @@ export function buildOrdersHtmlAndMd(
   if (realOrders && realOrders.length > 0) {
     for (let i = 0; i < realOrders.length; i++) {
       const order = realOrders[i];
-      const opColor = order.operation === 'BUY' ? '#238636' : '#da3633';
+
+      // Вычисляем базовый цвет операции (Покупка - зеленый, Продажа - красный, Перенос - приглушенный фиолетовый)
+      let opColor = order.operation === 'BUY' ? '#238636' : '#da3633';
+
+      let badgeStatusClass = 'status-' + order.operation;
+      if (order.status === 'ИСПОЛНЕНА') {
+        badgeStatusClass = 'status-FILLED';
+        opColor = '#21262d'; // Серый цвет для исполненных заявок
+      } else if (order.status === 'GTC (ПЕРЕНОС)') {
+        badgeStatusClass = 'status-NEW'; // Использует уже имеющийся фиолетовый класс из scss
+        opColor = '#8a2be2';
+      }
 
       html +=
-        '<tr>' +
+        '<tr class="order-row-' + badgeStatusClass + '">' +
         "<td class='instrument-name'><strong>" +
-        order.instrument +
+        order.ticker +
         '</strong></td>' +
-        "<td><span class='status-badge status-" +
-        order.operation +
+        '<td>' +
+        "<span class='status-badge " +
+        badgeStatusClass +
         "' style='background-color: " +
         opColor +
         "; color: #fff;'>" +
-        order.operation +
-        '</span></td>' +
+        (order.status === 'GTC (ПЕРЕНОС)' ? 'GTC' : order.operation) +
+        '</span>' +
+        '</td>' +
         '<td>' +
-        order.quantity.toLocaleString('ru-RU') +
+        order.qty.toLocaleString('ru-RU') +
         ' шт.</td>' +
         '<td>' +
-        order.price.toLocaleString('ru-RU') +
+        formatPrice(order.price) +
         ' ₽</td>' +
-        " <td class='sum-cell'>" +
-        order.totalSum.toLocaleString('ru-RU') +
+        "<td class='sum-cell'>" +
+        formatPrice(order.sum) +
         ' ₽</td>' +
         '<td>' +
         order.status +
@@ -55,27 +85,32 @@ export function buildOrdersHtmlAndMd(
 
       md +=
         '- ' +
-        order.instrument +
+        order.ticker +
         ': Заявка на ' +
         order.operation +
-        ', ' +
-        order.quantity +
+        ' (' +
+        order.status +
+        '), ' +
+        order.qty +
         ' шт. по цене ' +
         order.price +
         ' руб. (Всего: ' +
-        order.totalSum +
+        order.sum +
         ' руб.)\n';
     }
   } else {
     html =
-      "<tr><td colspan='6' class='no-orders'>Нет active-заявок в стаканах Мосбиржи</td></tr>";
-    md = '- Действующие лимитные заявки в терминале QUIK отсутствуют.\n';
+      "<tr><td colspan='6'>Нет активных или завершенных заявок в стаканах Мосбиржи</td></tr>";
+    md =
+      '- Действующие или завершенные лимитные заявки в терминале QUIK отсутствуют.\n';
   }
 
   return { html, md };
 }
 
-// 🎯 Модуль сборки единого блока портфеля с приоритетами и рисками
+/**
+ * Модуль сборки единого макро-блока распределения активов портфеля
+ */
 export function buildAssetsTablesAndBars(
   assetsAnalysis: AssetAnalysis[],
 ): HTMLTablesResult {
@@ -97,7 +132,6 @@ export function buildAssetsTablesAndBars(
     '#6e7681',
   ];
 
-  // === Блок 1: Компактная таблица портфеля ===
   for (let i = 0; i < assetsAnalysis.length; i++) {
     const item = assetsAnalysis[i];
     const color = colors[i % colors.length];
@@ -159,12 +193,13 @@ export function buildAssetsTablesAndBars(
         : item.deficitRub < 0
           ? '#ff7b72'
           : '#fff';
+
+    // Если целевая доля равна 0 (актив полностью продается, как STME ETF), выводим аккуратный прочерк
     const displayDeficit =
-      item.status === 'NEW'
+      item.targetPercent === 0
         ? '—'
         : prefix + item.deficitRub.toLocaleString('ru-RU') + ' ₽';
 
-    // Цена входа vs текущая
     const priceDiff =
       item.currentPrice > 0 && item.balancePrice > 0
         ? (
@@ -172,6 +207,7 @@ export function buildAssetsTablesAndBars(
             100
           ).toFixed(1)
         : '—';
+
     const priceColor =
       item.currentPrice > item.balancePrice
         ? '#56d364'
@@ -190,15 +226,15 @@ export function buildAssetsTablesAndBars(
       '<td>' +
       item.targetPercent.toFixed(1) +
       '%</td>' +
-      "<td class='deficit-cell' style='color: " +
+      '<td class="deficit-cell" style="color: ' +
       colorStyle +
-      ";'>" +
+      ';">' +
       displayDeficit +
       '</td>' +
       "<td><span class='status-badge status-" +
-      item.status +
+      (item.targetPercent === 0 ? 'SELL' : item.status) +
       "'>" +
-      item.status +
+      (item.targetPercent === 0 ? 'ВЫХОД' : item.status) +
       '</span></td>' +
       "<td class='price-info'>" +
       (item.balancePrice > 0
@@ -219,13 +255,14 @@ export function buildAssetsTablesAndBars(
       '</tr>';
   }
 
-  // === Блок 2: Приоритет покупок ===
-  const buyAssets = assetsAnalysis.filter(a => a.status === 'BUY');
+  const buyAssets = assetsAnalysis.filter(
+    (a) => a.status === 'BUY' && a.targetPercent > 0,
+  );
   if (buyAssets.length > 0) {
     priorityBlock =
-      '<div class="priority-list">' +
-      '<h3>🎯 Приоритет покупок (по дефициту)</h3>' +
-      '<div class="priority-items">';
+      "<div class='priority-section'>" +
+      "<h3 class='section-title section-title--blue'>🎯 Приоритет покупок (по дефициту)</h3>" +
+      "<div class='priority-list'>";
     buyAssets.forEach((item, index) => {
       const rank = index + 1;
       priorityBlock +=
@@ -244,21 +281,19 @@ export function buildAssetsTablesAndBars(
     priorityBlock += '</div></div>';
   }
 
-  // === Блок 3: Концентрация рисков ===
-  const concentrated = assetsAnalysis.filter(a => a.isConcentrated);
+  const concentrated = assetsAnalysis.filter((a) => a.currentPercent > 20); // Задаем лимит концентрации макро-группы
   if (concentrated.length > 0) {
     concentrationBlock =
-      '<div class="risk-concentration">' +
-      '<h3>⚠️ Концентрация рисков</h3>' +
-      '<div class="risk-items">';
-    concentrated.forEach(item => {
+      "<div class='concentration-section'>" +
+      "<h3 class='section-title section-title--red'>⚠️ Концентрация рисков</h3>" +
+      "<div class='concentration-list'>";
+    concentrated.forEach((item) => {
       concentrationBlock +=
-        "<div class='risk-item'>" +
-        "<span class='risk-icon'>⚠️</span>" +
-        "<span class='risk-name'>" +
+        "<div class='concentration-item'>" +
+        "<span class='concentration-name'>" +
         item.name +
         '</span>' +
-        "<span class='risk-percent'>" +
+        "<span class='concentration-value'>" +
         item.currentPercent.toFixed(1) +
         '% портфеля</span>' +
         '</div>';
@@ -266,28 +301,37 @@ export function buildAssetsTablesAndBars(
     concentrationBlock += '</div></div>';
   }
 
-  // === Блок 4: Рекомендация по rebalance ===
   if (buyAssets.length > 0) {
     const topBuy = buyAssets[0];
+    const totalDeficit = buyAssets
+      .reduce((sum, a) => sum + a.deficitRub, 0)
+      .toLocaleString('ru-RU');
+    const totalPositions = buyAssets.length;
+    const topName = topBuy.name;
+    const topDeficit = topBuy.deficitRub.toLocaleString('ru-RU');
+    const topPct = (topBuy.targetPercent - topBuy.currentPercent).toFixed(1);
+
     rebalanceBlock =
-      '<div class="rebalance-advice">' +
-      '<h3>💡 Рекомендация</h3>' +
-      "<div class='advice-text'>" +
-      'Первая очередь: <strong>' +
-      topBuy.name +
-      '</strong> — дефицит ' +
-      topBuy.deficitRub.toLocaleString('ru-RU') +
-      ' ₽ (' +
-      (topBuy.targetPercent - topBuy.currentPercent).toFixed(1) +
+      "<div class='rebalance-section'>" +
+      "<h3 class='section-title section-title--green'>💡 Рекомендация по ребалансировке</h3>" +
+      "<div class='rebalance-content'>" +
+      "<div class='rebalance-main'>" +
+      "<span class='rebalance-highlight'>Первостепенная задача:</span> " +
+      "<strong>" +
+      topName +
+      '</strong> — дефицит <strong>' +
+      topDeficit +
+      ' ₽</strong> (' +
+      topPct +
       '% от портфеля)' +
-      '<br><br>' +
-      'Всего нужно докупить: <strong class="highlight-blue">' +
-      buyAssets
-        .reduce((sum, a) => sum + a.deficitRub, 0)
-        .toLocaleString('ru-RU') +
-      ' ₽</strong> на ' +
-      buyAssets.length +
-      ' позиций.' +
+      '</div>' +
+      "<div class='rebalance-summary'>" +
+      "Всего для приведения портфеля к целям: <strong class='highlight-total'>" +
+      totalDeficit +
+      ' ₽</strong> на <strong>' +
+      totalPositions +
+      ' позиций</strong>.' +
+      '</div>' +
       '</div></div>';
   }
 

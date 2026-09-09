@@ -55,8 +55,7 @@
   text-align: left;
   border-collapse: collapse;
 
-  th,
-  td {
+  th, td {
     padding: 10px;
     border-bottom: 1px solid #30363d;
   }
@@ -68,6 +67,26 @@
 
   td {
     color: #c9d1d9;
+  }
+
+  /* Логика затухания строк для выполненных (исполненных) заявок */
+  tbody tr {
+    &:has(.status-FILLED) {
+      background-color: rgb(0 0 0 / 15%);
+      opacity: 0.45;
+      transition: opacity 0.2s ease, background-color 0.2s ease;
+
+      /* При наведении строка плавно подсвечивается для удобства чтения */
+      &:hover {
+        background-color: rgb(255 255 255 / 2%);
+        opacity: 0.9;
+      }
+
+      /* Смягчаем яркость золотой ячейки суммы для завершенного ордера */
+      .sum-cell {
+        color: #bfa054;
+      }
+    }
   }
 
   .instrument-name {
@@ -104,6 +123,13 @@
       color: #d3b6ff;
       background-color: rgb(163 113 247 / 15%);
       border: 1px solid #a371f7;
+    }
+
+    /* 🟢 Новый статус для исполненных заявок */
+    &.status-FILLED {
+      color: #4ac257;
+      background-color: rgb(35 134 54 / 8%);
+      border: 1px solid rgb(35 134 54 / 35%);
     }
   }
 
@@ -216,8 +242,7 @@
   text-align: left;
   border-collapse: collapse;
 
-  th,
-  td {
+  th, td {
     padding: 10px;
     color: #c9d1d9;
     border-bottom: 1px solid #30363d;
@@ -248,112 +273,156 @@
   }
 }
 
-// === Приоритеты покупок ===
-.priority-list {
-  h3 {
-    margin-top: 0;
-    margin-bottom: 10px;
-    font-size: 13px;
+// === Секции (общие стили) ===
+.priority-section,
+.concentration-section,
+.rebalance-section {
+  margin-bottom: 16px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.section-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+
+  &--blue {
     color: #58a6ff;
   }
 
-  .priority-items {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
+  &--red {
+    color: #f25157;
   }
+
+  &--green {
+    color: #56d364;
+  }
+}
+
+// === Приоритеты покупок ===
+.priority-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 
   .priority-item {
     display: flex;
     gap: 8px;
     align-items: center;
-    padding: 6px 10px;
+    padding: 8px 12px;
     background: rgb(56 139 255 / 8%);
-    border-radius: 4px;
+    border: 1px solid rgb(56 139 255 / 15%);
+    border-radius: 6px;
+    transition: background 0.2s ease;
+
+    &:hover {
+      background: rgb(56 139 255 / 12%);
+    }
 
     .priority-rank {
-      min-width: 20px;
-      font-size: 12px;
-      font-weight: bold;
+      min-width: 22px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-size: 13px;
+      font-weight: 700;
       color: #58a6ff;
     }
 
     .priority-name {
-      flex-grow: 1;
-      font-size: 12px;
+      flex: 1;
+      font-size: 13px;
+      font-weight: 500;
       color: #fff;
     }
 
     .priority-deficit {
-      font-size: 12px;
-      font-weight: bold;
+      font-size: 13px;
+      font-weight: 700;
       color: #58a6ff;
+      white-space: nowrap;
     }
   }
 }
 
 // === Концентрация рисков ===
-.risk-concentration {
-  h3 {
-    margin-top: 0;
-    margin-bottom: 10px;
-    font-size: 13px;
-    color: #f25157;
-  }
+.concentration-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 
-  .risk-items {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .risk-item {
+  .concentration-item {
     display: flex;
     gap: 8px;
     align-items: center;
-    padding: 6px 10px;
+    justify-content: space-between;
+    padding: 8px 12px;
     background: rgb(242 81 87 / 8%);
-    border-radius: 4px;
+    border: 1px solid rgb(242 81 87 / 15%);
+    border-radius: 6px;
+    transition: background 0.2s ease;
 
-    .risk-icon {
-      font-size: 12px;
-      color: #ff7b72;
+    &:hover {
+      background: rgb(242 81 87 / 12%);
     }
 
-    .risk-name {
-      flex-grow: 1;
-      font-size: 12px;
+    .concentration-name {
+      flex: 1;
+      font-size: 13px;
+      font-weight: 500;
       color: #fff;
     }
 
-    .risk-percent {
-      font-size: 12px;
-      font-weight: bold;
-      color: #ff7b72;
+    .concentration-value {
+      font-size: 13px;
+      font-weight: 700;
+      color: #f25157;
+      white-space: nowrap;
     }
   }
 }
 
 // === Рекомендация по ребалансировке ===
-.rebalance-advice {
-  h3 {
-    margin-top: 0;
+.rebalance-content {
+  padding: 12px;
+  background: rgb(86 211 100 / 6%);
+  border: 1px solid rgb(86 211 100 / 20%);
+  border-radius: 8px;
+
+  .rebalance-main {
     margin-bottom: 10px;
     font-size: 13px;
-    color: #56d364;
-  }
-
-  .advice-text {
-    font-size: 12px;
     line-height: 1.5;
-    color: #8b949e;
+    color: #c9d1d9;
+
+    .rebalance-highlight {
+      font-weight: 600;
+      color: #58a6ff;
+    }
 
     strong {
+      font-weight: 600;
+      color: #fff;
+    }
+  }
+
+  .rebalance-summary {
+    padding-top: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: #8b949e;
+    border-top: 1px solid rgb(139 148 158 / 20%);
+
+    strong {
+      font-weight: 600;
       color: #fff;
     }
 
-    .highlight-blue {
-      color: #58a6ff;
+    .highlight-total {
+      font-weight: 700;
+      color: #56d364;
     }
   }
 }

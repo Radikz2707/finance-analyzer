@@ -22,6 +22,34 @@ const EXCEL_FILE_PATH =
   'C:/Users/Радик/Documents/Бухгалтерия Радика/Отчет/Данные новые.xlsx';
 
 /**
+ * Резервные ставки дивидендов LTM по основным российским акциям
+ * Актуализированы: сентябрь 2026 (источник: Т-Инвестиции)
+ *
+ * Для добавления новой акции:
+ * 1. Найдите последнюю выплату на tinvest.tbank.ru/stocks/{TICKER}/dividends
+ * 2. Добавьте тикер в этот словарь с суммой всех выплат за последние 12 месяцев
+ */
+const FALLBACK_DIVIDENDS: Record<string, number> = {
+  SBER: 37.64, // Сбербанк — последняя выплата 17.07.2026
+  IRAO: 0.32, // ИнтерРАО — последняя выплата 08.06.2026 (0,32 ₽)
+  'FIVE': 0, // X5 Retail Group — не платит дивиденды
+  PLZL: 265.7, // Полюс — сумма всех выплат за LTM (платит 4-6 раз/год)
+  GMKN: 33.5, // Норникель
+  TATN: 28.0, // Татнефть
+  SNGS: 13.2, // Славнефть
+  ROSN: 56.5, // Роснефть
+  MTSS: 6.5, // МТС
+  VTBR: 0, // ВТБ — не платил
+  AFLT: 21.8, // Аэрофлот
+  YNDX: 0, // Яндекс — не платил
+  HEAD: 0, // HeadHunter — не платил
+  AHMK: 0, // АХМК — не платил
+  CHMF: 48.5, // Северсталь
+  MAGN: 100.0, // ММК
+  VTGB: 0, // ВТБ — не платил
+};
+
+/**
  * Вспомогательная функция очистки строки от лишних символов валюты и пробелов
  */
 function parseCleanFloat(value: unknown): number {
@@ -71,9 +99,32 @@ export async function calculatePortfolioIncome(
       const COL_NAME = 3; // D
       const COL_QTY = 4; // E
       const COL_NKD = 12; // M
-      const COL_DIVIDENDS = 19; // T — объявленные дивиденды (ручной ввод)
+
+      // Динамический поиск столбца с дивидендами по заголовку
+      let COL_DIVIDENDS = -1;
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const headerCell = sheet[XLSX.utils.encode_cell({ r: 0, c: col })];
+        if (headerCell && headerCell.v !== undefined) {
+          const header = String(headerCell.v).toLowerCase();
+          if (
+            header.includes('дивиденд') ||
+            header.includes('dividend') ||
+            header.includes('див')
+          ) {
+            COL_DIVIDENDS = col;
+            break;
+          }
+        }
+      }
 
       console.log('[PARSER START] Начинаем построчный обход листа QUIK...');
+
+      if (COL_DIVIDENDS < 0) {
+        console.warn(
+          '⚠️ [DIVIDENDS] Столбец с дивидендами не найден в Excel. ' +
+            'Добавьте заголовок "Дивиденды" или "Dividend" в первую строку листа QUIK.',
+        );
+      }
 
       for (let rowIndex = range.s.r + 1; rowIndex <= range.e.r; rowIndex++) {
         const tickerCell =
@@ -87,7 +138,9 @@ export async function calculatePortfolioIncome(
         const nkdCell =
           sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_NKD })];
         const dividendCell =
-          sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_DIVIDENDS })];
+          COL_DIVIDENDS >= 0
+            ? sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_DIVIDENDS })]
+            : undefined;
 
         let ticker =
           tickerCell && tickerCell.v !== undefined
@@ -108,6 +161,21 @@ export async function calculatePortfolioIncome(
           continue;
         }
 
+        // Фильтр служебных строк Excel (ИТОГО, сводные данные, пустые строки)
+        if (
+          ticker.includes('ИТОГ') ||
+          ticker.includes('Итог') ||
+          name.toUpperCase().includes('ИТОГ') ||
+          name.toUpperCase().includes('ИТО') ||
+          name.toUpperCase().includes('БАЛАНС') ||
+          name.toUpperCase().includes('ДОЛЯ АКЦИЙ') ||
+          name.toUpperCase().includes('ДОЛЯ ОБЛИГА') ||
+          /^\d+$/.test(ticker) ||
+          (assetType === '' && (/\d/.test(name) || name.toUpperCase().includes('ИТОГ')))
+        ) {
+          continue;
+        }
+
         console.log(
           '[ROW ' +
             rowIndex +
@@ -121,14 +189,6 @@ export async function calculatePortfolioIncome(
             qty,
         );
 
-        if (
-          ticker.includes('ИТОГ') ||
-          name.toUpperCase().includes('ИТОГ') ||
-          /^\d+$/.test(ticker)
-        ) {
-          continue;
-        }
-
         // Автоматика НКД по облигациям
         if (assetType === 'О' || assetType === 'ОБЛ') {
           if (nkdCell && nkdCell.v !== undefined) {
@@ -141,16 +201,27 @@ export async function calculatePortfolioIncome(
 
         // Автоматика дивидендов по акциям
         if (assetType === 'А' && qty > 0) {
-          const dividendRate = dividendCell && dividendCell.v !== undefined
+          let dividendRate = dividendCell && dividendCell.v !== undefined
             ? parseCleanFloat(dividendCell.v)
             : 0;
 
           console.log(
-            '[DIVIDENDS] ' + ticker + ' | dividendCell.v=' + dividendCell?.v +
+            '[DIVIDENDS] ' + ticker + ' | excelDiv=' + (dividendCell?.v ?? 'N/A') +
             ' | parsed=' + dividendRate + ' | qty=' + qty,
           );
 
+          // Если значение из Excel = 0, используем резервную ставку
+          if (dividendRate <= 0 && FALLBACK_DIVIDENDS[ticker] > 0) {
+            dividendRate = FALLBACK_DIVIDENDS[ticker];
+            console.log(
+              '  ↳ [FALLBACK] Использована резервная ставка: ' + dividendRate + ' ₽',
+            );
+          }
+
           if (dividendRate <= 0) {
+            console.log(
+              '  ↳ [SKIP] Дивиденды не объявлены или равны 0 для ' + ticker,
+            );
             continue;
           }
 

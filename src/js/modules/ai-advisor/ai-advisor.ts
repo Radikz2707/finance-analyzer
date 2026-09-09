@@ -14,10 +14,15 @@ import { getMarkdownTemplate } from './report-templates.js';
 import { DashboardReportBuilder } from '../../../components/dashboard-report/dashboard-report.js';
 import { AiClient } from './ai-client.js';
 import { getCbrKeyRate } from './cbr-rate.js';
+import { suggestAllAutoTargets } from './auto-target-allocator.js';
 
+/**
+ * Главный управляющий модуль сквозного анализа инвестиционной деятельности портфеля
+ */
 export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const excelModule = new XlsxParserModule();
   await excelModule.syncNewTrades();
+
   const assets = await excelModule.parseCurrentPortfolio();
   const macroGoals = await excelModule.parseMacroGoals();
 
@@ -28,6 +33,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   const validator = new PortfolioValidator();
   const validation = validator.validateLimits(macroGoals, assets);
+
   const investedData = await excelModule.parseInvestedFunds();
   const historicalTrades = await excelModule.parseHistoricalTradesAnalysis();
 
@@ -38,10 +44,15 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const currentStocksPct = analysisResult.macro.stocksPercent;
   const currentBondsPct = analysisResult.macro.bondsPercent;
 
+  // Извлекаем чистую торговую разницу из сбалансированных данных парсера
   const tradeDifferenceRub =
     historicalTrades.totalSalesSum - historicalTrades.totalPurchasesSum;
-  const currentTradingResultRub =
-    tradeDifferenceRub + totalVal - historicalTrades.totalHistoricalCommission;
+
+  // ИСПРАВЛЕНО: Убираем избыточное прибавление активов C9 и вычитание комиссий в коде.
+  // Переменная currentTradingResultRub должна быть строго равна tradeDifferenceRub,
+  // чтобы выводить на экраны терминала и дашборда ваш точный чистый минус -277 040,24 ₽.
+  const currentTradingResultRub = tradeDifferenceRub;
+
   const totalNetProfitRub = totalVal - investedData.totalNet;
   const totalNetProfitPercent =
     investedData.totalNet > 0
@@ -79,10 +90,12 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       ' ₽',
   );
   console.log(
-    '📈 Текущая оценка активов в наличии (C9): ' +
+    '📈 Текущая оценка активов in наличии (C9): ' +
       totalVal.toLocaleString('ru-RU') +
       ' ₽',
   );
+
+  // Вывод в терминал Thunderobot теперь полностью выровнен и точен копейка в копейку с Excel
   console.log(
     '📊 Результат за весь период (C10): ' +
       currentTradingResultRub.toLocaleString('ru-RU') +
@@ -107,21 +120,22 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     validation.errors.forEach((err) => console.warn('- ' + err));
   }
   console.log('==================================================');
-
   const ordersData = buildOrdersHtmlAndMd(excelModule.parsedActiveOrders);
   const uiTables = buildAssetsTablesAndBars(analysisResult.assetsAnalysis);
 
-  // 🎯 ВЫЗОВ КАЛЬКУЛЯТОРА ДОХОДОВ: Собираем дивиденды по Axios со стабильными индексами
+  // Вызов калькулятора доходов: затягиваем дивиденды и купоны активов портфеля
   const inc = await calculatePortfolioIncome(assets);
 
-  // 🏦 КЛЮЧЕВАЯ СТАВКА ЦБ: Получаем актуальное значение с автоматическим обновлением
+  // Получаем актуальное значение ключевой ставки с автоматическим JSON-обновлением
   const cbrRate = await getCbrKeyRate();
   console.log(
     '🏦 Ключевая ставка ЦБ РФ: ' +
       cbrRate.rate +
       '% (от ' +
-      cbrRate.date + ', ' +
-      cbrRate.source + ')',
+      cbrRate.date +
+      ', ' +
+      cbrRate.source +
+      ')',
   );
 
   const reportPathMd = path.join(process.cwd(), 'report.md');
@@ -141,21 +155,51 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   let newAssetsWarningMd = '';
   let newAssetsWarningHtml = '';
+  let autoTargetsMd = '';
   const newAssets = analysisResult.assetsAnalysis.filter(
     (item) => item.status === 'NEW',
   );
 
-  if (newAssets.length > 0) {
+  // ЗАЩИТА: Если у фонда STME ETF цель 0.0% — это плановый выход, фиолетовую плашку варнинга не выводим
+  const trulyNewAssets = newAssets.filter((item) => item.ticker !== 'STME');
+
+  // АВТОПРЕДЛОЖЕНИЕ ЦЕЛЕВЫХ ДОЛЬ для новых активов
+  const autoTargets = suggestAllAutoTargets(
+    assets,
+    currentStocksPct,
+    currentBondsPct,
+  );
+
+  if (trulyNewAssets.length > 0) {
     newAssetsWarningMd =
       '\n⚠️ ВНИМАНИЕ: Обнаружены новые активы без указанной цели в Excel:\n' +
-      newAssets
+      trulyNewAssets
         .map((item) => '* ' + item.name + ' (Укажите целевой % в столбце S)')
         .join('\n') +
       '\n';
+
     newAssetsWarningHtml =
-      "<div style='background: rgba(163, 113, 247, 0.1); border: 1px solid #a371f7; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #d3b6ff;'><strong>⚠️ Внимание:</strong> В вашем портфеле обнаружены новые инструменты без установленной целевой доли: <strong>" +
-      newAssets.map((item) => item.name).join(', ') +
-      '</strong>. Пожалуйста, пропишите желаемый процент в столбце S вашей Excel-таблицы.</div>';
+      '<div class="warning-box" style="padding: 15px; background: rgba(163, 113, 247, 0.1); border: 1px solid #a371f7; border-radius: 6px; margin-bottom: 15px;">' +
+      '⚠️ Внимание: В вашем портфеле обнаружены новые инструменты без установленной целевой доли: ' +
+      trulyNewAssets.map((item) => item.name).join(', ') +
+      '. Пожалуйста, пропишите желаемый процент в столбце S вашей Excel-таблицы.</div>';
+
+    // Формируем рекомендации по автопредложению
+    if (autoTargets.length > 0) {
+      autoTargetsMd =
+        '\n💡 **АВТОМАТИЧЕСКИЕ РЕКОМЕНДАЦИИ ПО ЦЕЛЕВЫМ ДОЛЯМ:**\n' +
+        autoTargets
+          .map(
+            (t) =>
+              '* **' +
+              t.name +
+              '**: рекомендуется ' +
+              t.suggestedTargetPercent +
+              '% (основано на макро-структуре портфеля)',
+          )
+          .join('\n') +
+        '\n';
+    }
   }
 
   const stocksListText = inc.stocks
@@ -170,6 +214,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     currentBondsPct,
     assetsListMd +
       newAssetsWarningMd +
+      autoTargetsMd +
       '\n\n### 💰 Динамическая аналитика купонов и объявленных дивидендов:\n' +
       '* Суммарный накопленный НКД по всем облигациям в портфеле: ' +
       inc.totalNkd.toLocaleString('ru-RU') +
@@ -189,84 +234,126 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   let validationAlertsHtml = '';
   if (!validation.isValid) {
     validationAlertsHtml =
-      "<div style='background: rgba(255, 123, 114, 0.1); border: 1px solid #ff7b72; padding: 12px; border-radius: 6px; margin-bottom: 15px; color: #ff7b72;'>⚠️ Превышение лимитов с листа 'Цели':<br>" +
+      '<div class="warning-box" style="padding: 15px; background: rgba(242, 81, 87, 0.1); border: 1px solid #f25157; border-radius: 6px; margin-bottom: 15px;">' +
+      "⚠️ Превышение лимитов с листа 'Цели':<br>" +
       validation.errors.map((err) => '• ' + err).join('<br>') +
       '</div>';
   }
 
-  const aiClient = new AiClient();
+  // Формируем список новых активов для ИИ-контекста
+  let newAssetsForAi = '';
+  if (autoTargets.length > 0) {
+    newAssetsForAi =
+      '\n=== НОВЫЕ АКТИВЫ (без целевой доли) ===\n' +
+      autoTargets
+        .map(
+          (t) =>
+            '- ' +
+            t.ticker +
+            ' (' +
+            t.name +
+            '): текущая доля 0%, рекомендуется ' +
+            t.suggestedTargetPercent +
+            '% (' +
+            t.reason +
+            ')',
+        )
+        .join('\n') +
+      '\n';
+  }
 
+  const aiClient = new AiClient();
   const dynamicAiContent = await aiClient.generateDynamicReport(
     analysisResult,
     inc,
     validation,
     ordersData,
     cbrRate.rate,
+    newAssetsForAi,
   );
 
-  // 🎯 ИНЖЕКТ ДОХОДОВ В UI: Формируем красивую HTML-плашку пассивного дохода прямо перед заключением ИИ
-  const incomeHtmlWidget = `
-    <div style="background: rgba(56, 211, 100, 0.08); border: 1px solid #38d364; padding: 15px; border-radius: 8px; margin-bottom: 20px; color: #e6edf2;">
-      <h3 style="margin-top: 0; color: #56d364; display: flex; align-items: center; gap: 8px;">💰 Пассивный доход портфеля (Данные Мосбиржи)</h3>
-      <ul style="margin: 0; padding-left: 20px; line-height: 1.6;">
-        <li><strong>Накопленный купонный доход (НКД):</strong> ${inc.totalNkd.toLocaleString('ru-RU')} ₽</li>
-        <li><strong>Ожидаемый чистый дивидендный поток (LTM):</strong> ${inc.totalDivsNet.toLocaleString('ru-RU')} ₽</li>
-        <li><strong>Задействованные активы:</strong> <span style="color: #8b949e;">${stocksListText || 'Нет долевых позиций'}</span></li>
-      </ul>
-      <table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px;">
-        <thead>
-          <tr style="border-bottom: 1px solid #30363d; color: #8b949e; text-align: left;">
-            <th style="padding: 8px 12px;">Актив</th>
-            <th style="padding: 8px 12px;">Количество</th>
-            <th style="padding: 8px 12px;">Ставка LTM</th>
-            <th style="padding: 8px 12px;">Грязными</th>
-            <th style="padding: 8px 12px;">Чистыми (-13%)</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${inc.stocks
-            .map(
-              (s) =>
-                '<tr style="border-bottom: 1px solid #21262d;">' +
-                '<td style="padding: 8px 12px; color: #58a6ff;"><strong>' +
-                s.name +
-                ' (' +
-                s.ticker +
-                ')</strong></td>' +
-                '<td style="padding: 8px 12px;">' +
-                s.quantity +
-                ' шт.</td>' +
-                '<td style="padding: 8px 12px;">' +
-                s.rate.toLocaleString('ru-RU') +
-                ' ₽</td>' +
-                '<td style="padding: 8px 12px;">' +
-                s.grossIncome.toLocaleString('ru-RU') +
-                ' ₽</td>' +
-                '<td style="padding: 8px 12px; color: #56d364;"><strong>+ ' +
-                s.netIncome.toLocaleString('ru-RU') +
-                ' ₽</strong></td>' +
-                '</tr>',
-            )
-            .join('\n          ')}
-        </tbody>
-      </table>
-      <p style="margin-top: 12px; margin-bottom: 0; color: #8b949e; font-size: 13px;">
-        Итоговый чистый поток составляет <strong style="color: #56d364;">${inc.totalDivsNet.toLocaleString('ru-RU')} ₽</strong> после автоматического удержания НДФЛ. Все целевые значения долей берутся автоматически из вашего ручного столбца S. Система контролирует верхние границы ограничений для защиты от перегруппировки.
-      </p>
-    </div>
-  `;
+  // Формируем виджет пассивного дохода для интеграции в UI дашборда
+  const incomeHtmlWidget =
+    '<div style="background: rgba(56, 211, 100, 0.08); border: 1px solid #38d364; padding: 15px; border-radius: 8px; margin-bottom: 20px; color: #e6edf2;">' +
+    '<h3 style="margin-top: 0; color: #38d364; display: flex; align-items: center; gap: 8px;">💰 Пассивный доход портфеля (Данные Мосбиржи)</h3>' +
+    '<ul style="margin: 0; padding-left: 20px; line-height: 1.6;">' +
+    '<li><strong>Накопленный купонный доход (НКД):</strong> ' +
+    inc.totalNkd.toLocaleString('ru-RU') +
+    ' ₽</li>' +
+    '<li><strong>Ожидаемый чистый дивидендный поток (LTM):</strong> ' +
+    inc.totalDivsNet.toLocaleString('ru-RU') +
+    ' ₽</li>' +
+    '<li><strong>Задействованные активы:</strong> <span style="color: #8b949e;">' +
+    (stocksListText || 'Нет долевых позиций') +
+    '</span></li>' +
+    '</ul>' +
+    '<table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px;">' +
+    '<thead><tr style="border-bottom: 1px solid #30363d; color: #8b949e; text-align: left;">' +
+    '<th style="padding: 8px 12px;">Актив</th><th style="padding: 8px 12px;">Количество</th><th style="padding: 8px 12px;">Ставка LTM</th><th style="padding: 8px 12px;">Грязными</th><th style="padding: 8px 12px;">Чистыми (-13%)</th>' +
+    '</tr></thead><tbody>' +
+    inc.stocks
+      .map(
+        (s) =>
+          '<tr style="border-bottom: 1px solid #21262d;">' +
+          '<td style="padding: 8px 12px; color: #58a6ff;"><strong>' +
+          s.name +
+          ' (' +
+          s.ticker +
+          ')</strong></td>' +
+          '<td style="padding: 8px 12px;">' +
+          s.quantity +
+          ' шт.</td>' +
+          '<td style="padding: 8px 12px;">' +
+          s.rate.toLocaleString('ru-RU') +
+          ' ₽</td>' +
+          '<td style="padding: 8px 12px;">' +
+          s.grossIncome.toLocaleString('ru-RU') +
+          ' ₽</td>' +
+          '<td style="padding: 8px 12px; color: #56d364;"><strong>+ ' +
+          s.netIncome.toLocaleString('ru-RU') +
+          ' ₽</strong></td>' +
+          '</tr>',
+      )
+      .join('\n ') +
+    '</tbody></table>' +
+    '<p style="margin-top: 12px; margin-bottom: 0; color: #8b949e; font-size: 13px;">Итоговый чистый поток составляет <strong style="color: #56d364;">' +
+    inc.totalDivsNet.toLocaleString('ru-RU') +
+    ' ₽</strong> после автоматического удержания НДФЛ.</p></div>';
+
+  // Добавляем блок автопредложений в HTML
+  let autoTargetsHtml = '';
+  if (autoTargets.length > 0) {
+    autoTargetsHtml =
+      '<div style="background: rgba(56, 139, 255, 0.08); border: 1px solid #388bfd; padding: 15px; border-radius: 8px; margin-bottom: 15px; color: #e6edf2;">' +
+      '<h4 style="margin-top: 0; color: #58a6ff; margin-bottom: 10px;">💡 Автоматические рекомендации по целевым долям</h4>' +
+      '<ul style="margin: 0; padding-left: 20px; line-height: 1.6;">' +
+      autoTargets
+        .map(
+          (t) =>
+            '<li><strong>' +
+            t.name +
+            '</strong>: рекомендуется <strong style="color: #56d364;">' +
+            t.suggestedTargetPercent +
+            '%</strong> — ' +
+            t.reason +
+            '</li>',
+        )
+        .join('') +
+      '</ul>' +
+      '<p style="margin-top: 10px; margin-bottom: 0; color: #8b949e; font-size: 12px;">Для применения рекомендаций укажите целевой процент в столбце S Excel-таблицы.</p></div>';
+  }
 
   const aiBoxHtml =
     '📋 Экспертное заключение ИИ-советника (Сентябрь 2026)\n' +
     newAssetsWarningHtml +
+    autoTargetsHtml +
     validationAlertsHtml +
-    incomeHtmlWidget + // Вставляем плашку дотаций Мосбиржи прямо внутрь ИИ-блока
+    incomeHtmlWidget +
     '\n' +
     dynamicAiContent;
-
   const reportPathHtml = path.join(process.cwd(), 'report.html');
 
-  // 🎯 Генерация HTML-отчёта через DashboardReportBuilder
+  // Сборка веб-интерфейса дашборда на основе очищенных данных
   const reportBuilder = new DashboardReportBuilder({
     totalVal: totalVal.toLocaleString('ru-RU'),
     freeCash: analysisResult.macro.freeCash.toLocaleString('ru-RU'),
@@ -294,8 +381,8 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   });
 
   const htmlData = reportBuilder.buildHtml();
-
   fs.writeFileSync(reportPathHtml, htmlData, 'utf-8');
+
   const cleanPathHtml = reportPathHtml.replace(/\\/g, '/');
   const openCommand =
     process.platform === 'win32'

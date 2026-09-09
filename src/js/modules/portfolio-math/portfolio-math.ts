@@ -104,21 +104,9 @@ export class PortfolioMathModule {
         }
       }
 
-      // Рассчитываем среднюю цену входа и текущую цену
-      const qty = asset.quantity ?? 0;
-      const balancePrice =
-        qty > 0 && asset.balancePercent > 0
-          ? Math.round(
-              ((asset.balancePercent / 100) * macro.totalBalance) / qty,
-            ) * 100
-          : 0;
-
-      const currentPrice =
-        qty > 0 && asset.liquidationPercent > 0
-          ? Math.round(
-              ((asset.liquidationPercent / 100) * macro.totalBalance) / qty,
-            ) * 100
-          : 0;
+      // Используем реальные цены из Excel, если они есть
+      const balancePrice = asset.balancePrice ?? 0;
+      const currentPrice = asset.currentPrice ?? 0;
 
       // Проверяем концентрацию (позиция > 20% — риск)
       const isConcentrated = asset.liquidationPercent > 20;
