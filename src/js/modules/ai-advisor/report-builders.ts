@@ -93,8 +93,9 @@ export function buildOrdersHtmlAndMd(
         '), ' +
         order.qty +
         ' шт. по цене ' +
-        order.price +
-        ' руб. (Всего: ' +
+        (order.isBond ? order.pricePercent : order.price) +
+        (order.isBond ? '% от номинала' : ' руб.') +
+        ' (Всего: ' +
         order.sum +
         ' руб.)\n';
     }

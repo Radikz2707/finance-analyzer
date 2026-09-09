@@ -7,6 +7,8 @@ export interface QuikOrder {
   operation: 'BUY' | 'SELL';
   qty: number;
   price: number;
+  pricePercent: number; // цена в % от номинала (для облигаций)
+  isBond: boolean;
   sum: number;
   status: 'АКТИВНА' | 'ИСПОЛНЕНА' | 'СНЯТА' | 'GTC (ПЕРЕНОС)';
 }
@@ -250,7 +252,9 @@ export function parseQuikOrdersFile(
         ticker,
         operation,
         qty,
-        price,
+        price: pricePerUnit,
+        pricePercent: price,
+        isBond,
         sum,
         status,
       });
