@@ -1,9 +1,7 @@
 import XLSX from 'xlsx';
 import * as fs from 'fs';
 import { QuikOrder, parseQuikOrdersFile } from './quik-orders-parser.js';
-
-const FILE_PATH =
-  'C:/Users/Радик/Documents/Бухгалтерия Радика/Отчет/Данные новые.xlsx';
+import * as config from './xlsx-parser-config.js';
 
 export interface MacroGoals {
   totalBalance: number;
@@ -47,14 +45,14 @@ export class XlsxParserModule {
 
   public async loadWorkbook(): Promise<void> {
     if (this.workbook) return;
-    if (!fs.existsSync(FILE_PATH)) {
+    if (!fs.existsSync(config.EXCEL_FILE_PATH)) {
       throw new Error('Критическая ошибка: Файл таблицы не найден');
     }
-    this.workbook = XLSX.readFile(FILE_PATH);
+    this.workbook = XLSX.readFile(config.EXCEL_FILE_PATH);
   }
 
   public async saveWorkbook(): Promise<void> {
-    if (this.workbook) XLSX.writeFile(this.workbook, FILE_PATH);
+    if (this.workbook) XLSX.writeFile(this.workbook, config.EXCEL_FILE_PATH);
   }
 
   /**
@@ -112,7 +110,9 @@ export class XlsxParserModule {
   public async parseCurrentPortfolio(): Promise<CurrentAsset[]> {
     await this.loadWorkbook();
     const assets: CurrentAsset[] = [];
-    const sheetName = this.workbook?.SheetNames.find((name) => name === 'QUIK');
+    const sheetName = this.workbook?.SheetNames.find(
+      (name) => name === config.QUIK_SHEET_NAME,
+    );
     if (!sheetName || !this.workbook) return [];
 
     const sheet = this.workbook.Sheets[sheetName];
@@ -122,17 +122,15 @@ export class XlsxParserModule {
       const name = String(row['Инструмент'] || '').trim();
       if (
         !name ||
-        name.toUpperCase().includes('ИТОГО') ||
-        name.toUpperCase().includes('ИТОГ') ||
-        name.toUpperCase().includes('БАЛАНС') ||
-        name.toUpperCase().includes('ДОЛЯ АКЦИЙ') ||
-        name.toUpperCase().includes('ДОЛЯ ОБЛИГА')
+        config.EXCLUDED_ROW_KEYWORDS.some((kw) => name.toUpperCase().includes(kw))
       )
         return;
       if (name.startsWith('-') || !isNaN(Number(name)) || name.length > 30)
         return;
 
-      if (name === 'Рубль1' || name === 'Рубль') {
+      if (
+        config.FREE_CASH_ROW_KEYWORDS.some((kw) => name === kw)
+      ) {
         this.cachedFreeCashFromQuikSheet = this.parseValue(
           row['Стоимость'] ||
             row['Ликвидационная стоимость'] ||
@@ -185,7 +183,7 @@ export class XlsxParserModule {
         unrealizedProfitRub: this.parseValue(row['Нереализованная прибыль']),
         dynamicsPercent: dynamicsPercent,
         nkdRub: nkd,
-        nominal: 1000,
+        nominal: config.DEFAULT_BOND_NOMINAL,
         quantity: quantity,
         balancePrice: balancePrice,
         currentPrice: liquidationPrice,
@@ -194,32 +192,21 @@ export class XlsxParserModule {
 
     return assets;
   }
-  /**
-   * Динамическое извлечение макроцелей и ликвидного кэша по текстовым маркерам
-   */
-  public async parseMacroGoals(): Promise<MacroGoals> {
-    await this.loadWorkbook();
-    const defaultMacro: MacroGoals = {
-      totalBalance: 655083.35,
-      freeCash:
-        this.cachedFreeCashFromQuikSheet > 0
-          ? this.cachedFreeCashFromQuikSheet
-          : 3980.82,
-      stocksPercent: 52,
-      bondsPercent: 48,
-      stocksDeficitRub: 0,
-      bondsDeficitRub: 0,
-      iisOrdersSum: this.cachedIisOrdersSum,
-      brokerOrdersSum: this.cachedBrokerOrdersSum,
-      activeOrdersListText: this.cachedActiveOrdersText,
-    };
+    /**
+     * Динамическое извлечение макроцелей и ликвидного кэша по текстовым маркерам
+     * Если данные не найдены — выбрасывает ошибку
+     */
+    public async parseMacroGoals(): Promise<MacroGoals> {
+      await this.loadWorkbook();
+      let stocksPercent: number | undefined;
+      let bondsPercent: number | undefined;
 
-    try {
-      const goalsSheet = this.workbook?.Sheets['Цели'];
+      // 1. Ищем целевые доли на листе «Цели»
+      const goalsSheet = this.workbook?.Sheets[config.GOALS_SHEET_NAME];
       if (goalsSheet) {
         const rows =
           XLSX.utils.sheet_to_json<Record<string, unknown>>(goalsSheet);
-        rows.forEach((row) => {
+        for (const row of rows) {
           const key = String(
             row['Группа инструментов'] || row['Тип'] || '',
           ).toUpperCase();
@@ -227,26 +214,18 @@ export class XlsxParserModule {
             (k) => k.includes('доля') || k.includes('Процент') || k === 'S',
           );
           const val = targetKey ? this.parseValue(row[targetKey]) : 0;
-          if (val === 0) return;
+          if (val === 0) continue;
 
-          if (key.includes('АКЦИ'))
-            defaultMacro.stocksPercent = val > 1 ? val : val * 100;
-          if (key.includes('ОБЛИГ'))
-            defaultMacro.bondsPercent = val > 1 ? val : val * 100;
-        });
-      }
-    } catch {
-      // Безопасный резервный переход
-    }
+          if (key.includes('АКЦИ')) {
+            stocksPercent = val > 1 ? val : val * 100;
+          }
+          if (key.includes('ОБЛИГ')) {
+            bondsPercent = val > 1 ? val : val * 100;
+          }
+        }
 
-    // Альтернативный парсинг: если значения не найдены, ищем по структуре листа "Цели"
-    // где строка "Целевая доля активов, в %" содержит данные в столбцах __EMPTY_5 и __EMPTY_6
-    if (defaultMacro.stocksPercent === 52 && defaultMacro.bondsPercent === 48) {
-      try {
-        const goalsSheet = this.workbook?.Sheets['Цели'];
-        if (goalsSheet) {
-          const rows =
-            XLSX.utils.sheet_to_json<Record<string, unknown>>(goalsSheet);
+        // Альтернативный поиск по строке «Целевая доля»
+        if (stocksPercent === undefined || bondsPercent === undefined) {
           const targetRow = rows.find((row) => {
             const emptyVal = row['__EMPTY'];
             return (
@@ -256,163 +235,347 @@ export class XlsxParserModule {
           });
 
           if (targetRow) {
-            // __EMPTY_5 = Облигации, __EMPTY_6 = Акции
             const bondsVal = this.parseValue(targetRow['__EMPTY_5']);
             const stocksVal = this.parseValue(targetRow['__EMPTY_6']);
 
-            if (stocksVal > 0) {
-              defaultMacro.stocksPercent = stocksVal > 1 ? stocksVal : stocksVal * 100;
+            if (stocksVal > 0 && stocksPercent === undefined) {
+              stocksPercent = stocksVal > 1 ? stocksVal : stocksVal * 100;
             }
-            if (bondsVal > 0) {
-              defaultMacro.bondsPercent = bondsVal > 1 ? bondsVal : bondsVal * 100;
+            if (bondsVal > 0 && bondsPercent === undefined) {
+              bondsPercent = bondsVal > 1 ? bondsVal : bondsVal * 100;
             }
           }
         }
-      } catch {
-        // Игнорируем ошибки альтернативного парсинга
       }
-    }
 
-    try {
-      const reportSheet = this.workbook?.Sheets['Отчет по сделкам'];
-      if (reportSheet) {
-        const rows =
-          XLSX.utils.sheet_to_json<Record<string, unknown>>(reportSheet);
-        rows.forEach((row) => {
-          const rowString = Object.values(row).join(' ').toUpperCase();
-          const targetKey = Object.keys(row).find(
-            (k) =>
-              k.includes('Сумма') ||
-              k.includes('Значение') ||
-              k === 'C' ||
-              k.includes('__EMPTY'),
-          );
-          const numValue = targetKey ? this.parseValue(row[targetKey]) : 0;
-          if (numValue === 0) return;
+      // 2. freeCash и totalBalance берём из листа «Отчет по сделкам»
+      const reportSheet = this.workbook?.Sheets[config.TRADES_SHEET_NAME];
+      let freeCash: number | undefined;
+      let totalBalance: number | undefined;
 
-          if (rowString.includes('ЛИКВИДН') || rowString.includes('СВОБОДН')) {
-            defaultMacro.freeCash = numValue;
+      if (reportSheet && reportSheet['!ref']) {
+        const range = XLSX.utils.decode_range(reportSheet['!ref']);
+
+        for (let row = range.s.r + 1; row <= range.e.r; row++) {
+          const nameCell = reportSheet[XLSX.utils.encode_cell({ r: row, c: 1 })];
+          const name = nameCell && nameCell.v !== undefined
+            ? String(nameCell.v).trim().toUpperCase()
+            : '';
+
+          const valueCell = reportSheet[XLSX.utils.encode_cell({ r: row, c: 2 })];
+          const value = this.parseValue(valueCell?.v);
+
+          if (name.includes('ЛИКВИДН') && name.includes('СРЕДСТВ')) {
+            freeCash = value;
+          } else if (name.includes('ИТОГО АКТИВ')) {
+            totalBalance = value;
           }
-          if (
-            rowString.includes('ИТОГО АКТИВОВ') ||
-            rowString.includes('ОЦЕНКА ПОРТФЕЛЯ')
-          ) {
-            defaultMacro.totalBalance = numValue;
-          }
-        });
+        }
       }
-    } catch {
-      // Игнорируем фоновые ошибки листов
-    }
 
-    return defaultMacro;
-  }
+      // Fallback: если не нашли в «Отчете по сделкам», ищем в QUIK
+      if (freeCash === undefined || freeCash === 0) {
+        freeCash = this.cachedFreeCashFromQuikSheet;
+      }
 
-  /**
-   * Динамический парсинг объема лично внесенных средств по имени категории
-   */
-  public async parseInvestedFunds(): Promise<{ totalNet: number }> {
-    await this.loadWorkbook();
-    try {
-      const reportSheet = this.workbook?.Sheets['Отчет по сделкам'];
-      if (reportSheet) {
-        const rows =
-          XLSX.utils.sheet_to_json<Record<string, unknown>>(reportSheet);
-        let foundValue = 0;
+      if (totalBalance === undefined || totalBalance === 0) {
+        // Считаем как сумму ликвидационных стоимостей всех позиций из QUIK
+        const quikSheet = this.workbook?.Sheets[config.QUIK_SHEET_NAME];
+        if (quikSheet && quikSheet['!ref']) {
+          const quikRows =
+            XLSX.utils.sheet_to_json<Record<string, unknown>>(quikSheet);
 
-        rows.forEach((row) => {
-          const lineText = Object.values(row).join(' ').toUpperCase();
-          if (
-            lineText.includes('ВНЕСЕНО СВОИХ') ||
-            lineText.includes('ЛИЧНО ВНЕСЕНО') ||
-            lineText.includes('ВЛОЖЕННЫХ СРЕДСТВ')
-          ) {
-            const targetKey = Object.keys(row).find(
-              (k) =>
-                k.includes('Сумма') ||
-                k.includes('Значение') ||
-                k === 'C' ||
-                k.includes('__EMPTY'),
+          for (const row of quikRows) {
+            const name = String(row['Инструмент'] || '').trim();
+
+            if (
+              !name ||
+              config.EXCLUDED_ROW_KEYWORDS.some((kw) => name.toUpperCase().includes(kw))
+            ) continue;
+
+            if (config.FREE_CASH_ROW_KEYWORDS.some((kw) => name === kw)) continue;
+
+            const liqCost = this.parseValue(
+              row['Ликвидационная стоимость'] ||
+                row['Стоимость'] ||
+                row['Балансовая стоимость'],
             );
-            if (targetKey) foundValue = this.parseValue(row[targetKey]);
+
+            if (liqCost === 0) {
+              const liqPrice = this.parseValue(row['Ликвидационная цена']);
+              const quantityKey = Object.keys(row).find((k) =>
+                k.toUpperCase().includes('КОЛ'),
+              );
+              const quantity = quantityKey
+                ? this.parseValue(row[quantityKey])
+                : 0;
+              totalBalance = (totalBalance || 0) + liqPrice * quantity;
+            } else {
+              totalBalance = (totalBalance || 0) + liqCost;
+            }
           }
-        });
-        if (foundValue > 0) return { totalNet: foundValue };
+        }
       }
-    } catch {
-      // Использование резервного возврата
+
+      // 3. ВАЛИДАЦИЯ: все значения должны быть найдены в Excel
+      if (stocksPercent === undefined) {
+        throw new Error(
+          'Не найдена целевая доля акций в листе «Цели». Укажите значение в столбце с ключевым словом "доля" или "Процент".',
+        );
+      }
+      if (bondsPercent === undefined) {
+        throw new Error(
+          'Не найдена целевая доля облигаций в листе «Цели». Укажите значение в столбце с ключевым словом "доля" или "Процент".',
+        );
+      }
+      if (freeCash === undefined || freeCash === 0) {
+        throw new Error(
+          'Не найден ликвидный кэш (свободные средства). ' +
+          'Добавьте строку "Ликвидные средства" в лист «Отчет по сделкам» или "Рубль" в лист QUIK.',
+        );
+      }
+      if (totalBalance === undefined || totalBalance === 0) {
+        throw new Error(
+          'Не удалось рассчитать totalBalance. ' +
+          'Добавьте строку "Итого активов" в лист «Отчет по сделкам» или проверьте данные в QUIK.',
+        );
+      }
+
+      return {
+        totalBalance,
+        freeCash,
+        stocksPercent,
+        bondsPercent,
+        stocksDeficitRub: 0,
+        bondsDeficitRub: 0,
+        iisOrdersSum: this.cachedIisOrdersSum,
+        brokerOrdersSum: this.cachedBrokerOrdersSum,
+        activeOrdersListText: this.cachedActiveOrdersText,
+      };
     }
-    return { totalNet: 744689.65 };
-  }
 
-  /**
-   * Сквозной исторический анализ оборотов, полностью согласованный со строкой «Текущая(ий) прибыль (убыток)» вашего Excel
-   */
-  public async parseHistoricalTradesAnalysis(): Promise<{
-    tradesCount: number;
-    totalPurchasesSum: number;
-    totalSalesSum: number;
-    totalHistoricalCommission: number;
-  }> {
-    await this.loadWorkbook();
-    const analysisResult = {
-      tradesCount: 34005073,
-      totalPurchasesSum: 17457980.27,
-      totalSalesSum: 16547092.27,
-      totalHistoricalCommission: 21235.59,
-    };
+    /**
+     * Динамический парсинг объема лично внесенных средств по имени категории
+     * Если данные не найдены — выбрасывает ошибку
+     */
+    public async parseInvestedFunds(): Promise<{ totalNet: number }> {
+      await this.loadWorkbook();
 
-    try {
-      const reportSheet = this.workbook?.Sheets['Отчет по сделкам'];
-      if (reportSheet) {
-        const rows =
-          XLSX.utils.sheet_to_json<Record<string, unknown>>(reportSheet);
-        let rawExcelProfitC10 = -277040.24;
+      // 1. Ищем строку "Внесено своих средств" на листе «Отчет по сделкам»
+      const reportSheet = this.workbook?.Sheets[config.TRADES_SHEET_NAME];
+      if (reportSheet && reportSheet['!ref']) {
+        const range = XLSX.utils.decode_range(reportSheet['!ref']);
 
-        rows.forEach((row) => {
-          const rowString = Object.values(row).join(' ').toUpperCase();
-          const targetKey = Object.keys(row).find(
-            (k) =>
-              k.includes('Сумма') ||
-              k.includes('Значение') ||
-              k === 'C' ||
-              k.includes('__EMPTY'),
+        for (let row = range.s.r + 1; row <= range.e.r; row++) {
+          const nameCell = reportSheet[XLSX.utils.encode_cell({ r: row, c: 1 })];
+          const name = nameCell && nameCell.v !== undefined
+            ? String(nameCell.v).trim().toUpperCase()
+            : '';
+
+          if (name.includes('ВНЕС') && name.includes('СРЕДСТВ')) {
+            const valueCell = reportSheet[XLSX.utils.encode_cell({ r: row, c: 2 })];
+            const value = this.parseValue(valueCell?.v);
+            if (value > 0) {
+              return { totalNet: value };
+            }
+          }
+        }
+      }
+
+      // 2. Если не нашли — считаем totalNet как сумму балансовых стоимостей всех позиций из QUIK
+      const quikSheet = this.workbook?.Sheets[config.QUIK_SHEET_NAME];
+      if (!quikSheet || !quikSheet['!ref']) {
+        throw new Error(
+          'Не найден лист «' + config.QUIK_SHEET_NAME + '» для расчета вложенных средств.',
+        );
+      }
+
+      const range = XLSX.utils.decode_range(quikSheet['!ref']);
+      let totalNet = 0;
+      let positionCount = 0;
+
+      for (let row = range.s.r + 1; row <= range.e.r; row++) {
+        const nameCell = quikSheet[XLSX.utils.encode_cell({ r: row, c: 3 })];
+        const name = nameCell && nameCell.v !== undefined
+          ? String(nameCell.v).trim()
+          : '';
+
+        // Пропускаем служебные строки
+        if (
+          !name ||
+          config.EXCLUDED_ROW_KEYWORDS.some((kw) => name.toUpperCase().includes(kw))
+        ) continue;
+
+        // Пропускаем строку "Рубль" — это свободный кэш, не инвестиция
+        if (config.FREE_CASH_ROW_KEYWORDS.some((kw) => name === kw)) continue;
+
+        // Ищем столбец с балансовой ценой (цена входа)
+        let balancePrice = 0;
+        for (let col = range.s.c; col <= range.e.c; col++) {
+          const cell = quikSheet[XLSX.utils.encode_cell({ r: row, c: col })];
+          if (cell && cell.v !== undefined) {
+            const headerCell = quikSheet[XLSX.utils.encode_cell({ r: 0, c: col })];
+            const header = headerCell && headerCell.v !== undefined
+              ? String(headerCell.v).toLowerCase()
+              : '';
+            if (
+              header.includes('балансов') ||
+              header.includes('цена входа') ||
+              header.includes('цена покупки') ||
+              header.includes('цена')
+            ) {
+              balancePrice = this.parseValue(cell.v);
+              break;
+            }
+          }
+        }
+
+        if (balancePrice > 0) {
+          totalNet += balancePrice;
+          positionCount++;
+        }
+      }
+
+      if (totalNet === 0) {
+        throw new Error(
+          'Не удалось рассчитать вложенные средства. ' +
+          'Проверьте, что в столбце с заголовком "Балансовая цена" или "Цена входа" указаны значения для всех позиций.',
+        );
+      }
+
+      return { totalNet };
+    }
+
+    /**
+     * Сквозной исторический анализ оборотов
+     * Читает данные напрямую из ячеек Excel по названиям строк
+     */
+     public async parseHistoricalTradesAnalysis(): Promise<{
+       tradesCount: number;
+       totalPurchasesSum: number;
+       totalSalesSum: number;
+       totalHistoricalCommission: number;
+       profitC10: number;
+       profitC11: number;
+     }> {
+       await this.loadWorkbook();
+
+       // 1. Читаем данные напрямую из листа «Отчет по сделкам»
+       const reportSheet = this.workbook?.Sheets[config.TRADES_SHEET_NAME];
+       let totalPurchasesSum: number | undefined;
+       let totalSalesSum: number | undefined;
+       let totalHistoricalCommission: number | undefined;
+       let profitC10: number | undefined;
+       let profitC11: number | undefined;
+
+       if (reportSheet && reportSheet['!ref']) {
+         const range = XLSX.utils.decode_range(reportSheet['!ref']);
+
+         for (let row = range.s.r + 1; row <= range.e.r; row++) {
+           // Колонка B (индекс 1) — название строки
+           const nameCell = reportSheet[XLSX.utils.encode_cell({ r: row, c: 1 })];
+           const name = nameCell && nameCell.v !== undefined
+             ? String(nameCell.v).trim().toUpperCase()
+             : '';
+
+           // Колонка C (индекс 2) — значение
+           const valueCell = reportSheet[XLSX.utils.encode_cell({ r: row, c: 2 })];
+           const value = this.parseValue(valueCell?.v);
+
+           if (name.includes('КУПЛЯ') || name.includes('ПОКУПК')) {
+             totalPurchasesSum = value;
+           } else if (name.includes('ПРОДАЖ')) {
+             totalSalesSum = value;
+           } else if (name.includes('КОМИССИ')) {
+             totalHistoricalCommission = value;
+           } else if (name.includes('РАЗНИЦ')) {
+             // C5 — просто разница, не используем как C10
+           } else if (name.includes('ТЕКУЩАЯ') && (name.includes('ПРИБЫЛЬ') || name.includes('УБЫТОК'))) {
+             profitC10 = value;
+           } else if (name.includes('ПРИБЫЛЬ/УБЫТОК')) {
+             profitC11 = value;
+           }
+         }
+       }
+
+       // Если не нашли в «Отчете по сделкам» — считаем из QUIK
+       if (totalPurchasesSum === undefined || totalSalesSum === undefined) {
+         console.log(
+           '\n⚠️ [HISTORICAL] Сводные строки не найдены. Считаем из листа QUIK...',
+         );
+
+         const quikSheet = this.workbook?.Sheets[config.QUIK_SHEET_NAME];
+         if (!quikSheet || !quikSheet['!ref']) {
+           throw new Error(
+             'Не найден лист «' + config.QUIK_SHEET_NAME + '» для расчета исторических данных.',
+           );
+         }
+
+         const quikRows =
+           XLSX.utils.sheet_to_json<Record<string, unknown>>(quikSheet);
+
+         let purchasesSum = 0;
+         let salesSum = 0;
+         let positionCount = 0;
+
+         for (const row of quikRows) {
+           const name = String(row['Инструмент'] || '').trim();
+
+           if (
+             !name ||
+             config.EXCLUDED_ROW_KEYWORDS.some((kw) => name.toUpperCase().includes(kw))
+           ) continue;
+
+           if (config.FREE_CASH_ROW_KEYWORDS.some((kw) => name === kw)) continue;
+
+           const balancePrice = this.parseValue(row['Балансовая цена']);
+           const liquidationPrice = this.parseValue(row['Ликвидационная цена']);
+
+           if (balancePrice > 0) {
+             purchasesSum += balancePrice;
+           }
+           if (liquidationPrice > 0) {
+             salesSum += liquidationPrice;
+           }
+           positionCount++;
+         }
+
+         if (totalPurchasesSum === undefined) totalPurchasesSum = purchasesSum;
+         if (totalSalesSum === undefined) totalSalesSum = salesSum;
+         if (profitC10 === undefined) profitC10 = salesSum - purchasesSum;
+
+        console.log(
+          '  → Позиций: ' + positionCount +
+          ' | Вложено (баланс): ' + purchasesSum.toLocaleString('ru-RU') +
+          ' | Текущая стоимость (ликвид): ' + salesSum.toLocaleString('ru-RU'),
+        );
+       }
+
+        if (totalPurchasesSum === undefined || totalPurchasesSum === 0) {
+          throw new Error(
+            'Не удалось рассчитать объем покупок.',
           );
-          const numValue = targetKey ? this.parseValue(row[targetKey]) : 0;
-          if (numValue === 0) return;
+        }
+        if (totalSalesSum === undefined || totalSalesSum === 0) {
+          throw new Error(
+            'Не удалось рассчитать объем продаж.',
+          );
+        }
 
-          if (
-            rowString.includes('ВСЕГО СДЕЛОК') ||
-            rowString.includes('КОЛИЧЕСТВО СДЕЛОК')
-          ) {
-            analysisResult.tradesCount = Math.round(numValue);
-          } else if (
-            rowString.includes('КУПЛЯ') ||
-            (rowString.includes('ПОКУПК') && !rowString.includes('ПРИОР'))
-          ) {
-            analysisResult.totalPurchasesSum = Math.abs(numValue);
-          } else if (rowString.includes('ПРОДАЖ')) {
-            analysisResult.totalSalesSum = Math.abs(numValue);
-          } else if (rowString.includes('КОМИССИ')) {
-            analysisResult.totalHistoricalCommission = Math.abs(numValue);
-          } else if (
-            rowString.includes('ТЕКУЩАЯ(ИЙ) ПРИБЫЛЬ') ||
-            rowString.includes('ПРИБЫЛЬ (УБЫТОК)')
-          ) {
-            rawExcelProfitC10 = numValue;
-          }
-        });
+        // Если profitC10 не найден в Excel — грубая оценка
+        if (profitC10 === undefined) {
+          profitC10 = totalSalesSum - totalPurchasesSum;
+        }
 
-        // СИНХРОНИЗАЦИЯ ПОД ШАБЛОН ДАШБОРДА И ТЕРМИНАЛА:
-        analysisResult.totalSalesSum =
-          analysisResult.totalPurchasesSum + rawExcelProfitC10;
-      }
-    } catch {
-      // Использование встроенного безопасного фоллбека
-    }
-
-    return analysisResult;
-  }
+       return {
+         tradesCount: 0,
+         totalPurchasesSum,
+         totalSalesSum,
+         totalHistoricalCommission: totalHistoricalCommission || 0,
+         profitC10,
+         profitC11: profitC11 || 0,
+       };
+     }
 
   private parseValue(val: unknown): number {
     if (typeof val === 'number') return val;

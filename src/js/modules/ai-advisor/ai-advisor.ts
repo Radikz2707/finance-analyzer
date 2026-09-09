@@ -44,16 +44,9 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const currentStocksPct = analysisResult.macro.stocksPercent;
   const currentBondsPct = analysisResult.macro.bondsPercent;
 
-  // Извлекаем чистую торговую разницу из сбалансированных данных парсера
-  const tradeDifferenceRub =
-    historicalTrades.totalSalesSum - historicalTrades.totalPurchasesSum;
-
-  // ИСПРАВЛЕНО: Убираем избыточное прибавление активов C9 и вычитание комиссий в коде.
-  // Переменная currentTradingResultRub должна быть строго равна tradeDifferenceRub,
-  // чтобы выводить на экраны терминала и дашборда ваш точный чистый минус -277 040,24 ₽.
-  const currentTradingResultRub = tradeDifferenceRub;
-
-  const totalNetProfitRub = totalVal - investedData.totalNet;
+  // C10 и C11 берём напрямую из Excel
+  const currentTradingResultRub = historicalTrades.profitC10;
+  const totalNetProfitRub = historicalTrades.profitC11;
   const totalNetProfitPercent =
     investedData.totalNet > 0
       ? (totalNetProfitRub / investedData.totalNet) * 100
@@ -80,8 +73,8 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       ' ₽',
   );
   console.log(
-    '📉 Торговая разница (C5): ' +
-      tradeDifferenceRub.toLocaleString('ru-RU') +
+    '📉 Текущая прибыль (C10): ' +
+      historicalTrades.profitC10.toLocaleString('ru-RU') +
       ' ₽',
   );
   console.log(
@@ -343,8 +336,11 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       '<p style="margin-top: 10px; margin-bottom: 0; color: #8b949e; font-size: 12px;">Для применения рекомендаций укажите целевой процент в столбце S Excel-таблицы.</p></div>';
   }
 
+  const currentMonth = new Date().toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
   const aiBoxHtml =
-    '📋 Экспертное заключение ИИ-советника (Сентябрь 2026)\n' +
+    '📋 Экспертное заключение ИИ-советника (' +
+    currentMonth.charAt(0).toUpperCase() + currentMonth.slice(1) +
+    ')\n' +
     newAssetsWarningHtml +
     autoTargetsHtml +
     validationAlertsHtml +
