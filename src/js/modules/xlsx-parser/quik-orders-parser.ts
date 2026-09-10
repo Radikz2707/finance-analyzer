@@ -1,5 +1,7 @@
-import fs from 'fs';
-import path from 'path';
+import 'dotenv/config';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const XLSX = require('xlsx');
 
 export interface QuikOrder {
   number: string;
@@ -36,154 +38,71 @@ export function parseOrderStatus(
 }
 
 /**
- * Парсит русское число: "42 677,50" → 42677.50, "99,25" → 99.25
- */
-function parseRussianNumber(val: string): number {
-  if (!val) return 0;
-  const clean = val.replace(/\s+/g, '').replace(',', '.');
-  return parseFloat(clean) || 0;
-}
-
-/**
- * Парсит целое число из строки (убирает всё кроме цифр)
- */
-function parseIntFromStr(val: string): number {
-  if (!val) return 0;
-  const digits = val.replace(/[^0-9]/g, '');
-  return parseInt(digits, 10) || 0;
-}
-
-/**
- * Динамический парсинг CSV-файла заявок QUIK
- * Учитывает, что QUIK использует запятую как разделитель дробной части в числах
- * (например: "99,25" → цена, "42 677,50" → объём)
+ * Парсит Excel-файл с текущими заявками QUIK
  */
 export function parseQuikOrdersFile(
   _instrumentMap?: Record<string, string>,
   customPath?: string,
 ): QuikOrder[] {
-  const defaultPath = path.join('data', 'orders.csv');
+  const defaultPath = process.env.QUIK_ORDERS_PATH;
   const targetPath = customPath || defaultPath;
   const parsedOrders: QuikOrder[] = [];
 
-  if (!fs.existsSync(targetPath)) {
+  if (!targetPath) {
     console.warn(
-      '⚠️ [Orders Parser]: Локальный файл экспорта QUIK заявок не найден: ' +
-        targetPath,
+      '⚠️ [Orders Parser]: Путь к Excel-файлу не указан',
     );
     return parsedOrders;
   }
 
   try {
-    const fileBuffer = fs.readFileSync(targetPath);
-    const decoder = new TextDecoder('windows-1251');
-    const fileContent = decoder.decode(fileBuffer);
+    const workbook = XLSX.readFile(targetPath);
+    const sheetName = 'Текущие заявки';
 
-    const lines = fileContent.split(/\r?\n/);
-    if (lines.length <= 1) return parsedOrders;
+    if (!workbook.SheetNames.includes(sheetName)) {
+      console.warn(
+        '⚠️ [Orders Parser]: Лист "' +
+          sheetName +
+          '" не найден в файле: ' +
+          targetPath,
+      );
+      return parsedOrders;
+    }
 
-    // Парсим заголовки из первой строки
-    const headers = lines[0]
-      .split(/[;,]/)
-      .map((h: string) => h.trim().toUpperCase());
-
-    // Находим индексы нужных столбцов по заголовкам
-    const colIndex: Record<string, number> = {};
-    headers.forEach((h, idx) => {
-      if (h.includes('НОМЕР') || h.includes('ID') || h === '№') colIndex.number = idx;
-      if (h.includes('ИНСТРУМЕНТ') || h.includes('НАИМЕНОВАНИЕ')) colIndex.instrument = idx;
-      if (h.includes('ОПЕРАЦИЯ') || h.includes('НАПРАВЛ')) colIndex.operation = idx;
-      if (h.includes('ПЕРИОД')) colIndex.period = idx;
-      if (h.includes('КОЛ')) colIndex.qty = idx;
-      if (h.includes('ЦЕНА')) colIndex.price = idx;
-      if (h.includes('СОСТОЯНИ') || h.includes('СТАТУС')) colIndex.status = idx;
+    const worksheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(worksheet, {
+      header: 1,
     });
 
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
+    if (rows.length <= 1) {
+      return parsedOrders;
+    }
 
-      // Разделяем по запятой ИЛИ точке с запятой
-      const rawFields = line.split(/[;,]/);
+    // Индексы столбцов по заголовкам (первая строка)
+    const headers = rows[0].map((h: unknown) => String(h).trim().toUpperCase());
 
-      // QUIK экспортирует числа в русском формате: "42 677,50"
-      // Но запятая также используется как разделитель полей.
-      // Решение: объединяем пары "целое + дробное" которые разделены запятой
-      // два случая:
-      // 1. "42 677" + "50" → "42 677,50" (разделитель тысяч)
-      // 2. "99" + "25" → "99,25" (простая дробная часть)
-      const fields: string[] = [];
-      const rawToFieldMap: number[] = []; // rawToFieldMap[fieldIdx] = startRawIdx
-      let rawIdx = 0;
+    const colIndex: Record<string, number> = {};
+    headers.forEach((h: string, idx: number) => {
+      if (h === 'НОМЕР' || h === 'ID' || h === '№') colIndex.number = idx;
+      if (h === 'ИНСТРУМЕНТ' || h === 'НАИМЕНОВАНИЕ')
+        colIndex.instrument = idx;
+      if (h === 'ОПЕРАЦИЯ' || h === 'НАПРАВЛ') colIndex.operation = idx;
+      if (h === 'ПЕРИОД') colIndex.period = idx;
+      if (h.startsWith('КОЛ') && colIndex.qty === undefined)
+        colIndex.qty = idx;
+      if (h === 'ЦЕНА') colIndex.price = idx;
+      if (h === 'СОСТОЯНИЕ' || h === 'СТАТУС') colIndex.status = idx;
+      if (h === 'ОБЪЕМ') colIndex.sum = idx;
+    });
 
-      while (rawIdx < rawFields.length) {
-        const val = rawFields[rawIdx].trim();
-        let merged = false;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
 
-        // Проверяем, является ли это частью числа с разделителем тысяч
-        if (!merged && rawIdx + 1 < rawFields.length && val.includes(' ')) {
-          const nextVal = rawFields[rawIdx + 1].trim();
-          if (/^\d{1,3}$/.test(nextVal)) {
-            fields.push(val + ',' + nextVal);
-            rawToFieldMap.push(rawIdx); // merge начинается с rawIdx
-            rawIdx += 2;
-            merged = true;
-          }
-        }
-
-        // Проверяем простую дробную часть: "99" + "25" → "99,25"
-        if (!merged && rawIdx + 1 < rawFields.length) {
-          const nextVal = rawFields[rawIdx + 1].trim();
-          if (
-            /^\d{1,3}$/.test(val) &&
-            /^\d{1,2}$/.test(nextVal) &&
-            nextVal !== '0'
-          ) {
-            fields.push(val + ',' + nextVal);
-            rawToFieldMap.push(rawIdx); // merge начинается с rawIdx
-            rawIdx += 2;
-            merged = true;
-          }
-        }
-
-        if (!merged) {
-          fields.push(val);
-          rawToFieldMap.push(rawIdx); // не merge, rawIdx == fieldIdx
-          rawIdx++;
-        }
-      }
-
-      // Пересчитываем colIndex: для каждого столбца ищем, на какой позиции в fields он оказался
-      const adjustedColIndex: Record<string, number> = {};
-      Object.entries(colIndex).forEach(([key, origRawIdx]) => {
-        // Ищем поле, которое началось с этого raw-индекса
-        // Если точного совпадения нет, значит origRawIdx был частью merge-поля
-        // В этом случае берём следующее поле после merge
-        let fieldIdx = -1;
-        for (let f = 0; f < rawToFieldMap.length; f++) {
-          if (rawToFieldMap[f] === origRawIdx) {
-            fieldIdx = f;
-            break;
-          }
-        }
-        // Если не нашли точное совпадение, ищем следующее поле после origRawIdx
-        if (fieldIdx === -1) {
-          for (let f = 0; f < rawToFieldMap.length; f++) {
-            if (rawToFieldMap[f] > origRawIdx) {
-              fieldIdx = f;
-              break;
-            }
-          }
-        }
-        adjustedColIndex[key] = fieldIdx;
-      });
-
-      // Извлекаем значения по известным индексам столбцов
       const getVal = (key: string, fallback = '') => {
-        const idx = adjustedColIndex[key];
-        return idx !== undefined && idx < fields.length
-          ? fields[idx].trim()
-          : fallback;
+        const idx = colIndex[key];
+        if (idx === undefined || idx >= row.length) return fallback;
+        return String(row[idx] ?? fallback).trim();
       };
 
       const orderNumber = getVal('number');
@@ -192,21 +111,8 @@ export function parseQuikOrdersFile(
       const rawPeriod = getVal('period');
       const rawQty = getVal('qty');
       const rawPrice = getVal('price');
-
-      // Статус ищем по содержанию во всех полях — это надёжнее
-      let rawStatus = '';
-      for (let ci = 0; ci < fields.length; ci++) {
-        const candidate = fields[ci].trim().toUpperCase();
-        if (
-          candidate.includes('ИСПОЛН') ||
-          candidate.includes('АКТИВН') ||
-          candidate.includes('СНЯТА') ||
-          candidate.includes('GTC')
-        ) {
-          rawStatus = fields[ci].trim();
-          break;
-        }
-      }
+      const rawSum = getVal('sum');
+      const rawStatus = getVal('status');
 
       const statusUpper = rawStatus.toUpperCase();
       if (
@@ -218,8 +124,9 @@ export function parseQuikOrdersFile(
         continue;
       }
 
-      const qty = parseIntFromStr(rawQty);
-      const price = parseRussianNumber(rawPrice);
+      const qty = parseFloat(rawQty) || 0;
+      const price = parseFloat(rawPrice) || 0;
+      const sum = parseFloat(rawSum) || 0;
 
       // Извлекаем чистое название инструмента из QUIK (без биржевых скобок)
       const ticker = rawInstrument
@@ -227,10 +134,8 @@ export function parseQuikOrdersFile(
         .replace(/\s+/g, ' ')
         .trim();
 
-      // Определяем, облигация это или акция — для корректного расчёта суммы
-      // QUIK указывает цену облигаций в % от номинала (1000 руб), акции — в рублях
+      // Определяем, облигация это или акция
       const isBond = rawInstrument.toLowerCase().includes('облиг');
-      const pricePerUnit = isBond ? price * 10 : price; // номинал 1000 / 100 = 10
 
       // Фильтруем заявки с нулевым количеством или ценой
       if (qty === 0 || price === 0) continue;
@@ -239,7 +144,9 @@ export function parseQuikOrdersFile(
         rawOperation.includes('куп') || rawOperation.includes('buy')
           ? 'BUY'
           : 'SELL';
-      const sum = Math.round(qty * pricePerUnit * 100) / 100;
+
+      // Используем сумму из Excel, если она есть
+      const finalSum = sum > 0 ? sum : Math.round(qty * price * 100) / 100;
       const status = parseOrderStatus(rawStatus, rawPeriod);
 
       // Фильтруем: показываем только активные и исполненные заявки
@@ -252,17 +159,17 @@ export function parseQuikOrdersFile(
         ticker,
         operation,
         qty,
-        price: pricePerUnit,
+        price,
         pricePercent: price,
         isBond,
-        sum,
+        sum: finalSum,
         status,
       });
     }
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error(
-      '❌ [Orders Parser Error]: Сбой динамического анализа кодировок:',
+      '❌ [Orders Parser Error]: Сбой чтения Excel-файла:',
       msg,
     );
   }

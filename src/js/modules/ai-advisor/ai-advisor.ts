@@ -15,6 +15,7 @@ import { DashboardReportBuilder } from '../../../components/dashboard-report/das
 import { AiClient } from './ai-client.js';
 import { getCbrKeyRate } from './cbr-rate.js';
 import { suggestAllAutoTargets } from './auto-target-allocator.js';
+import { PriceAlertsModule } from './price-alerts.js';
 
 /**
  * Главный управляющий модуль сквозного анализа инвестиционной деятельности портфеля
@@ -116,6 +117,12 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const ordersData = buildOrdersHtmlAndMd(excelModule.parsedActiveOrders);
   const uiTables = buildAssetsTablesAndBars(analysisResult.assetsAnalysis);
 
+  // Проверка динамических алертов по котировкам
+  const priceAlertsModule = new PriceAlertsModule();
+  const priceAlerts = priceAlertsModule.checkPriceAlerts(analysisResult.assetsAnalysis);
+  const priceAlertsHtml = priceAlertsModule.formatAlertsHtml(priceAlerts);
+  const priceAlertsMd = priceAlertsModule.formatAlertsMarkdown(priceAlerts);
+
   // Вызов калькулятора доходов: затягиваем дивиденды и купоны активов портфеля
   const inc = await calculatePortfolioIncome(assets);
 
@@ -208,6 +215,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     assetsListMd +
       newAssetsWarningMd +
       autoTargetsMd +
+      priceAlertsMd +
       '\n\n### 💰 Динамическая аналитика купонов и объявленных дивидендов:\n' +
       '* Суммарный накопленный НКД по всем облигациям в портфеле: ' +
       inc.totalNkd.toLocaleString('ru-RU') +
@@ -266,52 +274,75 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   );
 
   // Формируем виджет пассивного дохода для интеграции в UI дашборда
+  const incomeTableRows = inc.stocks
+    .map(
+      (s) =>
+        '<tr>' +
+        '<td class="income-ticker"><strong>' +
+        s.name +
+        ' (' +
+        s.ticker +
+        ')</strong></td>' +
+        '<td>' +
+        s.quantity +
+        ' шт.</td>' +
+        '<td>' +
+        s.rate.toLocaleString('ru-RU') +
+        ' ₽</td>' +
+        '<td class="income-gross">' +
+        s.grossIncome.toLocaleString('ru-RU') +
+        ' ₽</td>' +
+        '<td class="income-net"><strong>+ ' +
+        s.netIncome.toLocaleString('ru-RU') +
+        ' ₽</strong></td>' +
+        '</tr>',
+    )
+    .join('\n');
+
+  const hasStocks = inc.stocks.length > 0;
+
   const incomeHtmlWidget =
-    '<div style="background: rgba(56, 211, 100, 0.08); border: 1px solid #38d364; padding: 15px; border-radius: 8px; margin-bottom: 20px; color: #e6edf2;">' +
-    '<h3 style="margin-top: 0; color: #38d364; display: flex; align-items: center; gap: 8px;">💰 Пассивный доход портфеля (Данные Мосбиржи)</h3>' +
-    '<ul style="margin: 0; padding-left: 20px; line-height: 1.6;">' +
-    '<li><strong>Накопленный купонный доход (НКД):</strong> ' +
+    '<div class="income-widget">' +
+    '<h3 class="income-header"><span class="income-icon">💰</span> Пассивный доход портфеля</h3>' +
+    '<div class="income-metrics">' +
+    '<div class="metric-card">' +
+    '<div class="metric-label">Накопленный купонный доход (НКД)</div>' +
+    '<div class="metric-value">' +
     inc.totalNkd.toLocaleString('ru-RU') +
-    ' ₽</li>' +
-    '<li><strong>Ожидаемый чистый дивидендный поток (LTM):</strong> ' +
+    ' ₽</div>' +
+    '</div>' +
+    '<div class="metric-card">' +
+    '<div class="metric-label">Ожидаемый чистый дивидендный поток (LTM)</div>' +
+    '<div class="metric-value metric-value--green">' +
     inc.totalDivsNet.toLocaleString('ru-RU') +
-    ' ₽</li>' +
-    '<li><strong>Задействованные активы:</strong> <span style="color: #8b949e;">' +
+    ' ₽</div>' +
+    '</div>' +
+    '<div class="metric-card">' +
+    '<div class="metric-label">Задействованные активы</div>' +
+    '<div class="metric-value metric-value--muted">' +
     (stocksListText || 'Нет долевых позиций') +
-    '</span></li>' +
-    '</ul>' +
-    '<table style="width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 14px;">' +
-    '<thead><tr style="border-bottom: 1px solid #30363d; color: #8b949e; text-align: left;">' +
-    '<th style="padding: 8px 12px;">Актив</th><th style="padding: 8px 12px;">Количество</th><th style="padding: 8px 12px;">Ставка LTM</th><th style="padding: 8px 12px;">Грязными</th><th style="padding: 8px 12px;">Чистыми (-13%)</th>' +
-    '</tr></thead><tbody>' +
-    inc.stocks
-      .map(
-        (s) =>
-          '<tr style="border-bottom: 1px solid #21262d;">' +
-          '<td style="padding: 8px 12px; color: #58a6ff;"><strong>' +
-          s.name +
-          ' (' +
-          s.ticker +
-          ')</strong></td>' +
-          '<td style="padding: 8px 12px;">' +
-          s.quantity +
-          ' шт.</td>' +
-          '<td style="padding: 8px 12px;">' +
-          s.rate.toLocaleString('ru-RU') +
-          ' ₽</td>' +
-          '<td style="padding: 8px 12px;">' +
-          s.grossIncome.toLocaleString('ru-RU') +
-          ' ₽</td>' +
-          '<td style="padding: 8px 12px; color: #56d364;"><strong>+ ' +
-          s.netIncome.toLocaleString('ru-RU') +
-          ' ₽</strong></td>' +
-          '</tr>',
-      )
-      .join('\n ') +
-    '</tbody></table>' +
-    '<p style="margin-top: 12px; margin-bottom: 0; color: #8b949e; font-size: 13px;">Итоговый чистый поток составляет <strong style="color: #56d364;">' +
+    '</div>' +
+    '</div>' +
+    '</div>' +
+    (hasStocks
+      ? '<table class="income-table">' +
+        '<thead><tr>' +
+        '<th>Актив</th><th>Количество</th><th>Ставка LTM</th><th>Грязными</th><th>Чистыми (-13%)</th>' +
+        '</tr></thead><tbody>' +
+        incomeTableRows +
+        '</tbody></table>'
+      : '<div class="income-empty">' +
+        '<span class="income-empty-icon">📊</span>' +
+        '<span class="income-empty-text">Нет долевых позиций</span>' +
+        '<span class="income-empty-hint">Дивиденды будут отображаться при наличии акций в портфеле</span>' +
+        '</div>') +
+    '<p class="income-footer">' +
+    'Итоговый чистый поток: <span class="income-total">' +
     inc.totalDivsNet.toLocaleString('ru-RU') +
-    ' ₽</strong> после автоматического удержания НДФЛ.</p></div>';
+    ' ₽</span>' +
+    '<span class="income-tax-note">после удержания НДФЛ 13%</span>' +
+    '</p>' +
+    '</div>';
 
   // Добавляем блок автопредложений в HTML
   let autoTargetsHtml = '';
@@ -341,6 +372,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     '📋 Экспертное заключение ИИ-советника (' +
     currentMonth.charAt(0).toUpperCase() + currentMonth.slice(1) +
     ')\n' +
+    priceAlertsHtml +
     newAssetsWarningHtml +
     autoTargetsHtml +
     validationAlertsHtml +

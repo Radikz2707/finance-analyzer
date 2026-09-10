@@ -7,8 +7,10 @@ import { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
  * 99.00 → "99 ₽"
  */
 function formatPrice(value: number): string {
-  const whole = Math.floor(value);
-  const kopecks = Math.round((value - whole) * 100);
+  const formatted = value.toFixed(2);
+  const parts = formatted.split('.');
+  const whole = parseInt(parts[0], 10);
+  const kopecks = parseInt(parts[1], 10);
   if (kopecks === 0) {
     return whole.toLocaleString('ru-RU');
   }
@@ -93,10 +95,11 @@ export function buildOrdersHtmlAndMd(
         '), ' +
         order.qty +
         ' шт. по цене ' +
-        (order.isBond ? order.pricePercent : order.price) +
-        (order.isBond ? '% от номинала' : ' руб.') +
+        (order.isBond
+          ? formatPrice(order.pricePercent) + '% от номинала'
+          : formatPrice(order.price) + ' руб.') +
         ' (Всего: ' +
-        order.sum +
+        formatPrice(order.sum) +
         ' руб.)\n';
     }
   } else {
@@ -122,6 +125,11 @@ export function buildAssetsTablesAndBars(
   let concentrationBlock = '';
   let rebalanceBlock = '';
 
+  // Сортировка по динамике цены (убывание) — лучшие инструменты сверху
+  const sortedAssets = [...assetsAnalysis].sort(
+    (a, b) => b.dynamicsPercent - a.dynamicsPercent,
+  );
+
   const colors = [
     '#238636',
     '#388bfd',
@@ -133,8 +141,8 @@ export function buildAssetsTablesAndBars(
     '#6e7681',
   ];
 
-  for (let i = 0; i < assetsAnalysis.length; i++) {
-    const item = assetsAnalysis[i];
+  for (let i = 0; i < sortedAssets.length; i++) {
+    const item = sortedAssets[i];
     const color = colors[i % colors.length];
     const widthFact = Math.min(100, Math.max(0, item.currentPercent * 4));
     const widthTarget = Math.min(100, Math.max(0, item.targetPercent * 4));
@@ -214,7 +222,18 @@ export function buildAssetsTablesAndBars(
         ? '#56d364'
         : item.currentPrice < item.balancePrice
           ? '#ff7b72'
-          : '#fff';
+          : '#e3b341';
+
+    // Определяем направление цены для цветовой индикации
+    const priceDirection =
+      item.currentPrice > item.balancePrice
+        ? 'up'
+        : item.currentPrice < item.balancePrice
+          ? 'down'
+          : 'same';
+
+    const arrowSymbol =
+      priceDirection === 'up' ? '↑' : priceDirection === 'down' ? '↓' : '↔';
 
     tableRows +=
       '<tr>' +
@@ -237,14 +256,20 @@ export function buildAssetsTablesAndBars(
       "'>" +
       (item.targetPercent === 0 ? 'ВЫХОД' : item.status) +
       '</span></td>' +
-      "<td class='price-info'>" +
+      "<td class='price-info price-direction--" + priceDirection + "'>" +
+      "<div class='price-pair'>" +
+      "<span class='price-entry'>" +
       (item.balancePrice > 0
         ? item.balancePrice.toLocaleString('ru-RU') + ' ₽'
         : '—') +
-      '<br>' +
+      '</span>' +
+      "<span class='price-current'>" +
       (item.currentPrice > 0
         ? item.currentPrice.toLocaleString('ru-RU') + ' ₽'
         : '—') +
+      '</span>' +
+      '</div>' +
+      "<span class='price-arrow'>" + arrowSymbol + '</span>' +
       '</td>' +
       "<td class='price-diff' style='color: " +
       priceColor +
@@ -318,7 +343,7 @@ export function buildAssetsTablesAndBars(
       "<div class='rebalance-content'>" +
       "<div class='rebalance-main'>" +
       "<span class='rebalance-highlight'>Первостепенная задача:</span> " +
-      "<strong>" +
+      '<strong>' +
       topName +
       '</strong> — дефицит <strong>' +
       topDeficit +

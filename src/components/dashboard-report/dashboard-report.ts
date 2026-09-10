@@ -89,7 +89,23 @@ export class DashboardReportBuilder {
       '.no-orders { color: #8b949e; text-align: center; }' +
       '.sum-cell { color: #e3b341; font-weight: bold; }' +
       '.deficit-cell { font-weight: bold; }' +
-      '.price-info, .price-diff { font-size: 11px; color: #8b949e; }' +
+      '.price-info { display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 6px; font-size: 14px; font-weight: 600; line-height: 1.3; min-width: 110px; }' +
+      '.price-info .price-pair { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }' +
+      '.price-info .price-pair .price-entry { font-size: 12px; color: #8b949e; font-weight: 500; }' +
+      '.price-info .price-pair .price-current { font-size: 14px; font-weight: 700; }' +
+      '.price-info .price-arrow { font-size: 14px; line-height: 1; opacity: 0.9; }' +
+      '.price-info.price-direction--up .price-entry { color: #8b949e; }' +
+      '.price-info.price-direction--up .price-arrow { color: #56d364; }' +
+      '.price-info.price-direction--up .price-current { color: #56d364; }' +
+      '.price-info.price-direction--down .price-entry { color: #8b949e; }' +
+      '.price-info.price-direction--down .price-arrow { color: #ff7b72; }' +
+      '.price-info.price-direction--down .price-current { color: #ff7b72; }' +
+      '.price-info.price-direction--same .price-entry, .price-info.price-direction--same .price-current, .price-info.price-direction--same .price-arrow { color: #e3b341; }' +
+      '.price-diff { font-size: 11px; min-width: 70px; text-align: right; }' +
+      '.portfolio-table th.price-info, .portfolio-table th.price-diff { text-align: right; }' +
+      '.portfolio-table th.price-info { white-space: nowrap; padding-right: 16px; line-height: 1.3; font-size: 12px; }' +
+      '.portfolio-table th.price-diff { text-align: right; padding-right: 16px; font-size: 14px; font-weight: 600; color: #8b949e; }' +
+      '.portfolio-table td.price-info, .portfolio-table td.price-diff { text-align: right; }' +
       '.asset-bars { margin-bottom: 15px; }' +
       '.asset-label { font-size: 13px; margin-bottom: 4px; color: #8b949e; font-weight: bold; }' +
       '.bar-row { display: flex; align-items: center; gap: 10px; }' +
@@ -131,6 +147,35 @@ export class DashboardReportBuilder {
       '.rebalance-summary strong { color: #fff; font-weight: 600; }' +
       '.highlight-total { color: #56d364; font-weight: 700; }' +
       '.ai-box-styled { border-left: 4px solid #388bfd; white-space: pre-wrap; line-height: 1.6; font-size: 13px; }' +
+      // === income-widget ===
+      '.income-widget { background: linear-gradient(135deg, rgba(56, 211, 100, 0.06) 0%, rgba(35, 134, 54, 0.1) 100%); border: 1px solid rgba(56, 211, 100, 0.25); border-radius: 12px; padding: 20px 24px; margin-bottom: 20px; color: #e6edf2; position: relative; overflow: hidden; }' +
+      '.income-widget::before { content: \'\'; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, #38d364, transparent); opacity: 0.6; }' +
+      '.income-widget .income-header { margin: 0 0 16px; font-size: 16px; font-weight: 700; color: #38d364; display: flex; align-items: center; gap: 10px; }' +
+      '.income-widget .income-icon { font-size: 20px; line-height: 1; }' +
+      '.income-widget .income-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 18px; }' +
+      '.income-widget .metric-card { background: rgba(22, 27, 34, 0.6); border: 1px solid rgba(48, 54, 61, 0.6); border-radius: 8px; padding: 12px 14px; transition: border-color 0.2s ease; }' +
+      '.income-widget .metric-card:hover { border-color: rgba(56, 211, 100, 0.3); }' +
+      '.income-widget .metric-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #8b949e; margin-bottom: 4px; font-weight: 500; }' +
+      '.income-widget .metric-value { font-size: 18px; font-weight: 700; color: #fff; line-height: 1.3; }' +
+      '.income-widget .metric-value--green { color: #56d364; }' +
+      '.income-widget .metric-value--muted { color: #8b949e; font-size: 14px; font-weight: 500; }' +
+      '.income-widget .income-table { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 16px; font-size: 13px; border: 1px solid rgba(48, 54, 61, 0.5); border-radius: 8px; overflow: hidden; }' +
+      '.income-widget .income-table thead tr { background: rgba(22, 27, 34, 0.8); }' +
+      '.income-widget .income-table th { padding: 10px 14px; font-weight: 500; color: #8b949e; text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid rgba(48, 54, 61, 0.6); }' +
+      '.income-widget .income-table tbody tr { transition: background 0.15s ease; }' +
+      '.income-widget .income-table tbody tr:hover { background: rgba(56, 139, 255, 0.04); }' +
+      '.income-widget .income-table tbody tr:last-child td { border-bottom: none; }' +
+      '.income-widget .income-table td { padding: 10px 14px; color: #c9d1d9; border-bottom: 1px solid rgba(48, 54, 61, 0.3); vertical-align: middle; }' +
+      '.income-widget .income-ticker { color: #58a6ff; font-weight: 600; font-size: 13px; }' +
+      '.income-widget .income-net { color: #56d364; font-weight: 700; font-size: 14px; white-space: nowrap; }' +
+      '.income-widget .income-gross { color: #8b949e; font-size: 12px; }' +
+      '.income-widget .income-footer { margin-top: 16px; margin-bottom: 0; font-size: 12px; color: #8b949e; padding-top: 12px; border-top: 1px solid rgba(48, 54, 61, 0.4); display: flex; align-items: center; gap: 6px; }' +
+      '.income-widget .income-total { color: #56d364; font-weight: 700; font-size: 14px; }' +
+      '.income-widget .income-tax-note { color: #6e7681; font-size: 11px; }' +
+      '.income-widget .income-empty { margin-top: 8px; font-size: 13px; color: #6e7681; text-align: center; padding: 24px 0; display: flex; flex-direction: column; align-items: center; gap: 8px; }' +
+      '.income-widget .income-empty-icon { font-size: 32px; opacity: 0.4; line-height: 1; }' +
+      '.income-widget .income-empty-text { font-size: 13px; font-weight: 500; color: #8b949e; }' +
+      '.income-widget .income-empty-hint { font-size: 11px; color: #6e7681; }' +
       '</style>' +
       '</head>' +
       '<body>' +
@@ -187,7 +232,7 @@ export class DashboardReportBuilder {
       "<div class='block-box'>" +
       '<h2>Портфель: состав и приоритеты</h2>' +
       '<table>' +
-      '<thead><tr><th>Инструмент</th><th>Текущая доля</th><th>Целевая доля</th><th>Дефицит/Профицит</th><th>Статус</th><th>Цена входа / Текущая</th><th>Изменение</th></tr></thead>' +
+      '<thead><tr><th>Инструмент</th><th>Текущая доля</th><th>Целевая доля</th><th>Дефицит/Профицит</th><th>Статус</th><th class="price-info">Цена входа /<br>Текущая</th><th class="price-diff">Δ</th></tr></thead>' +
       '<tbody>' +
       tableRows +
       '</tbody>' +

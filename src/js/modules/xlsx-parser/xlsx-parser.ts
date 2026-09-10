@@ -392,7 +392,6 @@ export class XlsxParserModule {
 
       const range = XLSX.utils.decode_range(quikSheet['!ref']);
       let totalNet = 0;
-      let positionCount = 0;
 
       for (let row = range.s.r + 1; row <= range.e.r; row++) {
         const nameCell = quikSheet[XLSX.utils.encode_cell({ r: row, c: 3 })];
@@ -432,7 +431,6 @@ export class XlsxParserModule {
 
         if (balancePrice > 0) {
           totalNet += balancePrice;
-          positionCount++;
         }
       }
 

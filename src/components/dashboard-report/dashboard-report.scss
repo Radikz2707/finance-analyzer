@@ -19,14 +19,6 @@
     margin-bottom: 25px;
   }
 
-  &__primary {
-    // left column
-  }
-
-  &__secondary {
-    // right column
-  }
-
   &__ai-box {
     font-size: 13px;
     line-height: 1.6;
@@ -55,7 +47,8 @@
   text-align: left;
   border-collapse: collapse;
 
-  th, td {
+  th,
+  td {
     padding: 10px;
     border-bottom: 1px solid #30363d;
   }
@@ -74,7 +67,9 @@
     &:has(.status-FILLED) {
       background-color: rgb(0 0 0 / 15%);
       opacity: 0.45;
-      transition: opacity 0.2s ease, background-color 0.2s ease;
+      transition:
+        opacity 0.2s ease,
+        background-color 0.2s ease;
 
       /* При наведении строка плавно подсвечивается для удобства чтения */
       &:hover {
@@ -242,7 +237,8 @@
   text-align: left;
   border-collapse: collapse;
 
-  th, td {
+  th,
+  td {
     padding: 10px;
     color: #c9d1d9;
     border-bottom: 1px solid #30363d;
@@ -251,6 +247,36 @@
   th {
     font-weight: normal;
     color: #8b949e;
+
+    // Выравниваем заголовки столбцов цен и изменения по правому краю
+    &.price-info,
+    &.price-diff {
+      text-align: right;
+    }
+  }
+
+  th.price-info {
+    padding-right: 16px;
+    font-size: 12px;
+    line-height: 1.3;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  th.price-diff {
+    padding-right: 16px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #8b949e;
+    text-align: right;
+  }
+
+  td.price-info {
+    text-align: right;
+  }
+
+  td.price-diff {
+    text-align: right;
   }
 
   .asset-name {
@@ -264,12 +290,78 @@
   }
 
   .price-info {
-    font-size: 11px;
-    color: #8b949e;
+    display: flex;
+    flex-direction: row;
+    gap: 6px;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 110px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.3;
+
+    .price-pair {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      align-items: flex-end;
+
+      .price-entry {
+        font-size: 12px;
+        font-weight: 500;
+        color: #8b949e;
+      }
+
+      .price-current {
+        font-size: 14px;
+        font-weight: 700;
+      }
+    }
+
+    .price-arrow {
+      font-size: 14px;
+      line-height: 1;
+      opacity: 0.9;
+    }
+
+    // Направление: вверх (зелёный)
+    &.price-direction--up .price-entry {
+      color: #8b949e;
+    }
+
+    &.price-direction--up .price-arrow {
+      color: #56d364;
+    }
+
+    &.price-direction--up .price-current {
+      color: #56d364;
+    }
+
+    // Направление: вниз (красный)
+    &.price-direction--down .price-entry {
+      color: #8b949e;
+    }
+
+    &.price-direction--down .price-arrow {
+      color: #ff7b72;
+    }
+
+    &.price-direction--down .price-current {
+      color: #ff7b72;
+    }
+
+    // Направление: нет изменений (жёлтый)
+    &.price-direction--same .price-entry,
+    &.price-direction--same .price-current,
+    &.price-direction--same .price-arrow {
+      color: #e3b341;
+    }
   }
 
   .price-diff {
+    min-width: 70px;
     font-size: 11px;
+    text-align: right;
   }
 }
 
@@ -325,7 +417,9 @@
 
     .priority-rank {
       min-width: 22px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-family:
+        -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial,
+        sans-serif;
       font-size: 13px;
       font-weight: 700;
       color: #58a6ff;
@@ -425,4 +519,294 @@
       color: #56d364;
     }
   }
+}
+
+// === Виджет пассивного дохода ===
+.income-widget {
+  position: relative;
+  padding: 20px 24px;
+  margin-bottom: 20px;
+  overflow: hidden;
+  color: #e6edf2;
+  background: linear-gradient(
+    135deg,
+    rgb(56 211 100 / 6%) 0%,
+    rgb(35 134 54 / 10%) 100%
+  );
+  border: 1px solid rgb(56 211 100 / 25%);
+  border-radius: 12px;
+
+  &::before {
+    position: absolute;
+    top: 0;
+    right: 0;
+    left: 0;
+    height: 2px;
+    content: '';
+    background: linear-gradient(90deg, transparent, #38d364, transparent);
+    opacity: 0.6;
+  }
+
+  .income-header {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin: 0 0 16px;
+    font-size: 16px;
+    font-weight: 700;
+    color: #38d364;
+    letter-spacing: 0.01em;
+
+    .income-icon {
+      font-size: 20px;
+      line-height: 1;
+    }
+  }
+
+  .income-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    margin-bottom: 18px;
+
+    .metric-card {
+      padding: 12px 14px;
+      background: rgb(22 27 34 / 60%);
+      border: 1px solid rgb(48 54 61 / 60%);
+      border-radius: 8px;
+      transition: border-color 0.2s ease;
+
+      &:hover {
+        border-color: rgb(56 211 100 / 30%);
+      }
+
+      .metric-label {
+        margin-bottom: 4px;
+        font-size: 11px;
+        font-weight: 500;
+        color: #8b949e;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .metric-value {
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1.3;
+        color: #fff;
+
+        .metric-value--green {
+          color: #56d364;
+        }
+
+        .metric-value--muted {
+          font-size: 14px;
+          font-weight: 500;
+          color: #8b949e;
+        }
+      }
+    }
+  }
+
+  .income-table {
+    width: 100%;
+    margin-top: 16px;
+    overflow: hidden;
+    font-size: 13px;
+    border-spacing: 0;
+    border-collapse: separate;
+    border: 1px solid rgb(48 54 61 / 50%);
+    border-radius: 8px;
+
+    thead {
+      tr {
+        background: rgb(22 27 34 / 80%);
+      }
+    }
+
+    th {
+      padding: 10px 14px;
+      font-size: 11px;
+      font-weight: 500;
+      color: #8b949e;
+      text-align: left;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      border-bottom: 1px solid rgb(48 54 61 / 60%);
+    }
+
+    tbody {
+      tr {
+        transition: background 0.15s ease;
+
+        &:hover {
+          background: rgb(56 139 255 / 4%);
+        }
+
+        &:last-child td {
+          border-bottom: none;
+        }
+      }
+    }
+
+    td {
+      padding: 10px 14px;
+      vertical-align: middle;
+      color: #c9d1d9;
+      border-bottom: 1px solid rgb(48 54 61 / 30%);
+    }
+
+    .income-ticker {
+      font-size: 13px;
+      font-weight: 600;
+      color: #58a6ff;
+    }
+
+    .income-net {
+      font-size: 14px;
+      font-weight: 700;
+      color: #56d364;
+      white-space: nowrap;
+    }
+
+    .income-gross {
+      font-size: 12px;
+      color: #8b949e;
+    }
+  }
+
+  .income-footer {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    padding-top: 12px;
+    margin-top: 16px;
+    margin-bottom: 0;
+    font-size: 12px;
+    color: #8b949e;
+    border-top: 1px solid rgb(48 54 61 / 40%);
+
+    .income-total {
+      font-size: 14px;
+      font-weight: 700;
+      color: #56d364;
+    }
+
+    .income-tax-note {
+      font-size: 11px;
+      color: #6e7681;
+    }
+  }
+
+  .income-empty {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+    padding: 24px 0;
+    margin-top: 8px;
+    font-size: 13px;
+    color: #6e7681;
+    text-align: center;
+
+    .income-empty-icon {
+      font-size: 32px;
+      line-height: 1;
+      opacity: 0.4;
+    }
+
+    .income-empty-text {
+      font-size: 13px;
+      font-weight: 500;
+      color: #8b949e;
+    }
+
+    .income-empty-hint {
+      font-size: 11px;
+      color: #6e7681;
+    }
+  }
+}
+
+.income-summary {
+  padding-left: 20px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+
+  li {
+    margin-bottom: 4px;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+
+  .income-muted {
+    color: #8b949e;
+  }
+}
+
+.income-table {
+  width: 100%;
+  margin-top: 15px;
+  font-size: 13px;
+  border-collapse: collapse;
+
+  thead {
+    tr {
+      border-bottom: 1px solid #30363d;
+    }
+  }
+
+  th {
+    padding: 8px 12px;
+    font-weight: normal;
+    color: #8b949e;
+    text-align: left;
+  }
+
+  tbody {
+    tr {
+      border-bottom: 1px solid #21262d;
+
+      &:last-child {
+        border-bottom: none;
+      }
+    }
+  }
+
+  td {
+    padding: 8px 12px;
+    color: #c9d1d9;
+  }
+
+  .income-ticker {
+    font-weight: 600;
+    color: #58a6ff;
+  }
+
+  .income-net {
+    font-weight: 700;
+    color: #56d364;
+  }
+}
+
+.income-footer {
+  margin-top: 12px;
+  margin-bottom: 0;
+  font-size: 13px;
+  color: #8b949e;
+
+  strong {
+    color: #56d364;
+  }
+}
+
+.income-empty {
+  padding: 12px 0;
+  margin-top: 10px;
+  font-size: 13px;
+  color: #8b949e;
+  text-align: center;
 }
