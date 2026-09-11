@@ -141,8 +141,7 @@ export class DashboardReportBuilder {
       '.quote-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 6px; font-size: 13px; }' +
       '.quote-item--green { background: rgba(35, 134, 54, 0.08); border: 1px solid rgba(35, 134, 54, 0.15); }' +
       '.quote-item--red { background: rgba(242, 81, 87, 0.08); border: 1px solid rgba(242, 81, 87, 0.15); }' +
-      '.quote-item-ticker { font-weight: 700; color: #58a6ff; min-width: 60px; }' +
-      '.quote-item-name { flex: 1; color: #c9d1d9; }' +
+      '.quote-item-ticker { font-weight: 700; color: #58a6ff; flex: 1; }' +
       '.quote-item-value { font-weight: 700; white-space: nowrap; }' +
       '.asset-bars { margin-bottom: 15px; }' +
       '.asset-label { font-size: 13px; margin-bottom: 4px; color: #8b949e; font-weight: bold; }' +
@@ -296,7 +295,7 @@ export class DashboardReportBuilder {
       '</div>' +
       '</div>' +
       "<div class='block-box'>" +
-      "<h2>Макро-структура</h2>" +
+      '<h2>Макро-структура</h2>' +
       "<div style='font-size: 13px; color: #8b949e; margin-bottom: 15px;'>Акции: <strong>" +
       stocksPct +
       '%</strong> | Облигации: <strong>' +

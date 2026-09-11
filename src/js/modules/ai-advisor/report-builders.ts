@@ -307,12 +307,12 @@ export function buildAssetsTablesAndBars(
       "<div class='price-pair'>" +
       "<span class='price-entry'>" +
       (balancePrice > 0
-        ? balancePrice.toLocaleString('ru-RU') + ' ₽'
+        ? balancePrice.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽'
         : '—') +
       '</span>' +
       "<span class='price-current'>" +
       (currentPrice > 0
-        ? currentPrice.toLocaleString('ru-RU') + ' ₽'
+        ? currentPrice.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽'
         : '—') +
       '</span>' +
       '</div>' +
@@ -503,9 +503,6 @@ export function buildQuotesBlock(
         "<span class='quote-item-ticker'>" +
         quote.shortName +
         '</span>' +
-        "<span class='quote-item-name'>" +
-        quote.shortName +
-        '</span>' +
         "<span class='quote-item-value' style='color: #56d364;'>" +
         '+' + quote.dailyDynamicsPercent.toFixed(2) + '%' +
         '</span>' +
@@ -524,9 +521,6 @@ export function buildQuotesBlock(
       topLosers +=
         "<div class='quote-item quote-item--red'>" +
         "<span class='quote-item-ticker'>" +
-        quote.shortName +
-        '</span>' +
-        "<span class='quote-item-name'>" +
         quote.shortName +
         '</span>' +
         "<span class='quote-item-value' style='color: #ff7b72;'>" +

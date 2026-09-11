@@ -217,7 +217,6 @@ export class XlsxParserModule {
             dailyDynamicsPercent = quotesMap[foundTicker].dailyDynamicsPercent;
           }
         }
-      } else if (!isStock) {
       }
 
       assets.push({
