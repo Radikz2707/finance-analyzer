@@ -13,6 +13,7 @@ export interface QuikOrder {
   isBond: boolean;
   sum: number;
   status: 'АКТИВНА' | 'ИСПОЛНЕНА' | 'СНЯТА' | 'GTC (ПЕРЕНОС)';
+  account: string; // код счёта (например: 403GPBT, S04J3LB)
 }
 
 /**
@@ -84,11 +85,15 @@ export function parseQuikOrdersFile(
     const colIndex: Record<string, number> = {};
     headers.forEach((h: string, idx: number) => {
       if (h === 'НОМЕР' || h === 'ID' || h === '№') colIndex.number = idx;
+      if (h === 'КОД_КЛИЕНТА' || h === 'КОД КЛИЕНТА')
+        colIndex.account = idx;
       if (h === 'ИНСТРУМЕНТ' || h === 'НАИМЕНОВАНИЕ')
         colIndex.instrument = idx;
       if (h === 'ОПЕРАЦИЯ' || h === 'НАПРАВЛ') colIndex.operation = idx;
       if (h === 'ПЕРИОД') colIndex.period = idx;
       if (h.startsWith('КОЛ') && colIndex.qty === undefined)
+        colIndex.qty = idx;
+      if (h === 'ОСТАТОК' && colIndex.qty === undefined)
         colIndex.qty = idx;
       if (h === 'ЦЕНА') colIndex.price = idx;
       if (h === 'СОСТОЯНИЕ' || h === 'СТАТУС') colIndex.status = idx;
@@ -106,6 +111,7 @@ export function parseQuikOrdersFile(
       };
 
       const orderNumber = getVal('number');
+      const rawAccount = getVal('account');
       const rawInstrument = getVal('instrument');
       const rawOperation = getVal('operation').toLowerCase();
       const rawPeriod = getVal('period');
@@ -164,6 +170,7 @@ export function parseQuikOrdersFile(
         isBond,
         sum: finalSum,
         status,
+        account: rawAccount || 'НЕИЗВЕСТЕН',
       });
     }
   } catch (error: unknown) {

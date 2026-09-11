@@ -11,7 +11,8 @@ export class AiClient {
 
   constructor() {
     // ProxyAPI: используем весь base64-ключ как есть
-    this.apiKey = process.env.PROXYAPI_KEY || process.env.GIGACHAT_API_KEY || '';
+    this.apiKey =
+      process.env.PROXYAPI_KEY || process.env.GIGACHAT_API_KEY || '';
   }
 
   private buildPortfolioContext(
@@ -23,9 +24,13 @@ export class AiClient {
     const { assetsAnalysis, macro } = analysis;
     const totalVal = macro.totalBalance;
     // investedNet берется из данных анализа, а не хардкодится
-    const investedNet = macro.totalBalance - macro.freeCash - (macro.stocksDeficitRub + macro.bondsDeficitRub);
+    const investedNet =
+      macro.totalBalance -
+      macro.freeCash -
+      (macro.stocksDeficitRub + macro.bondsDeficitRub);
     const totalNetProfit = totalVal - investedNet;
-    const totalNetProfitPercent = investedNet > 0 ? (totalNetProfit / investedNet) * 100 : 0;
+    const totalNetProfitPercent =
+      investedNet > 0 ? (totalNetProfit / investedNet) * 100 : 0;
 
     const stockAssets = assetsAnalysis.filter((a) => a.currentPercent > 0);
     const bondAssets = assetsAnalysis.filter((a) => a.nkdRub && a.nkdRub > 0);
@@ -177,19 +182,24 @@ export class AiClient {
     cbrRate: number,
     newAssetsForAi?: string,
   ): string {
-    const currentMonth = new Date().toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+    const currentMonth = new Date().toLocaleDateString('ru-RU', {
+      month: 'long',
+      year: 'numeric',
+    });
     let prompt =
       'Вот данные портфеля.\nПроанализируй их и дай развёрнутые рекомендации.\n\nКОНКРЕТНЫЕ ВОПРОСЫ ДЛЯ ОТВЕТА:\n1. Соответствует ли текущая целевая структура (Акции ' +
       (context.includes('Целевая доля') ? 'X%' : 'указана в данных') +
       ' / Облигации Y%) макроэкономической обстановке ' +
-      currentMonth.charAt(0).toUpperCase() + currentMonth.slice(1) +
+      currentMonth.charAt(0).toUpperCase() +
+      currentMonth.slice(1) +
       ' года? Почему?\n2. По каждой акции из списка: стоит ли увеличить, уменьшить или оставить целевую долю? Почему? Укажи конкретный процент.\n3. По каждой облигации из списка: стоит ли увеличить, уменьшить или оставить целевую долю? Почему? Укажи конкретный процент.\n4. Какие конкретные изменения целевых долей ты предлагаешь (с цифрами в процентах и рублях)?\n5. Каков пошаговый план выхода из минусовой зоны (~13% убытка) в плюс? Включи краткосрочные, среднесрочные и долгосрочные шаги.\n6. Какую новую сбалансированную структуру портфеля ты предлагаешь с учётом текущей ключевой ставки ' +
       cbrRate +
       '% и новостного фона?\n\nФОРМАТ ОТВЕТА СТРОГО ПО СЕКЦИЯМ:\n';
 
     // Добавляем информацию о новых активах
     if (newAssetsForAi) {
-      prompt += '\n=== ИНФОРМАЦИЯ О НОВЫХ АКТИВАХ ===\n' + newAssetsForAi + '\n';
+      prompt +=
+        '\n=== ИНФОРМАЦИЯ О НОВЫХ АКТИВАХ ===\n' + newAssetsForAi + '\n';
       prompt +=
         '⚡ ВНИМАНИЕ: Для новых активов указаны автоматические рекомендации по целевым долям. Проанализируй их и подтверди/скорректируй с учётом макроэкономической ситуации.\n';
     }
@@ -245,8 +255,18 @@ export class AiClient {
 
       return aiText.replace(/\n/g, '<br>');
     } catch (error: unknown) {
-      console.error('[AI] Ошибка запроса:', error instanceof Error ? error.message : String(error));
-      return buildFallbackReport(analysis, inc, validation, orders, cbrRate, newAssetsForAi);
+      console.error(
+        '[AI] Ошибка запроса:',
+        error instanceof Error ? error.message : String(error),
+      );
+      return buildFallbackReport(
+        analysis,
+        inc,
+        validation,
+        orders,
+        cbrRate,
+        newAssetsForAi,
+      );
     }
   }
 }

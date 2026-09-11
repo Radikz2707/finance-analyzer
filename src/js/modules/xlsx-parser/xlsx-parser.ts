@@ -24,6 +24,7 @@ export interface CurrentAsset {
   balancePercent: number;
   unrealizedProfitRub: number;
   dynamicsPercent: number;
+  dailyDynamicsPercent?: number; // Дневная динамика из листа "Акции"
   nkdRub?: number;
   nominal?: number;
   quantity?: number;
@@ -38,6 +39,7 @@ export class XlsxParserModule {
   private cachedBrokerOrdersSum: number = 0;
   private cachedFreeCashFromQuikSheet: number = 0;
   public parsedActiveOrders: QuikOrder[] = [];
+  private nameToTickerMap: Record<string, string> = {};
 
   constructor() {
     this.parsedActiveOrders = [];
@@ -87,13 +89,19 @@ export class XlsxParserModule {
     this.parsedActiveOrders = orders;
 
     let totalIis = 0;
-    const totalBroker = 0; // Константа для строгого соблюдения правила prefer-const
+    let totalBroker = 0;
     let textSummary = '';
 
     orders.forEach((order) => {
       if (order.status === 'АКТИВНА' || order.status === 'GTC (ПЕРЕНОС)') {
-        totalIis += order.sum;
-        textSummary += `- ${order.ticker}: ${order.operation} ${order.qty} шт. (${order.status})\n`;
+        const isIis = order.account === 'S04J3LB';
+        if (isIis) {
+          totalIis += order.sum;
+        } else {
+          totalBroker += order.sum;
+        }
+        textSummary +=
+          `- ${order.account} | ${order.ticker}: ${order.operation} ${order.qty} шт. (${order.status})\n`;
       }
     });
 
@@ -109,6 +117,10 @@ export class XlsxParserModule {
    */
   public async parseCurrentPortfolio(): Promise<CurrentAsset[]> {
     await this.loadWorkbook();
+
+    // Загружаем котировки из листа "Акции" — мапа тикер -> { currentPrice, dailyDynamicsPercent }
+    const quotesMap = await this.parseQuotesSheet();
+
     const assets: CurrentAsset[] = [];
     const sheetName = this.workbook?.SheetNames.find(
       (name) => name === config.QUIK_SHEET_NAME,
@@ -171,17 +183,53 @@ export class XlsxParserModule {
       const liquidationPrice = this.parseValue(row['Ликвидационная цена']);
       const dynamicsPercent = this.parseValue(row['Динамика актива']);
 
+      // Получаем тикер и тип актива
+      const ticker = String(
+        row['Код工具'] || row['Код инструмента'] || row['Код'] || '',
+      ).trim();
+      const assetType = String(row['Вид активов'] || row['Тип'] || '').trim();
+
+      // Ищем дневную динамику — только для акций
+      const isStock = assetType === 'А' || assetType === 'Акция' || assetType.includes('Акция');
+      let dailyDynamicsPercent: number | undefined = undefined;
+
+      if (isStock && Object.keys(quotesMap).length > 0) {
+        // 1. Точное совпадение по QUIK-тикеру (IRAO → IRAO, SBER → SBER)
+        const upperTicker = ticker.toUpperCase();
+          if (quotesMap[upperTicker]) {
+          dailyDynamicsPercent = quotesMap[upperTicker].dailyDynamicsPercent;
+        } else {
+          // 2. Fuzzy-поиск по названию через nameToTickerMap
+          const cleanName = name.replace(/\s+/g, ' ').trim().toUpperCase();
+          let foundTicker = this.nameToTickerMap[cleanName];
+
+          // Fuzzy: частичное совпадение
+          if (!foundTicker) {
+            for (const [key, val] of Object.entries(this.nameToTickerMap)) {
+              if (cleanName.includes(key) || key.includes(cleanName)) {
+                foundTicker = val;
+                break;
+              }
+            }
+          }
+
+          if (foundTicker && quotesMap[foundTicker]) {
+            dailyDynamicsPercent = quotesMap[foundTicker].dailyDynamicsPercent;
+          }
+        }
+      } else if (!isStock) {
+      }
+
       assets.push({
         name,
-        ticker: String(
-          row['Код工具'] || row['Код инструмента'] || row['Код'] || '',
-        ).trim(),
-        assetType: String(row['Вид активов'] || row['Тип'] || '').trim(),
+        ticker,
+        assetType,
         targetPercent: targetPct,
         liquidationPercent: liqPercent,
         balancePercent: balPercent > 0 ? balPercent : liqPercent,
         unrealizedProfitRub: this.parseValue(row['Нереализованная прибыль']),
         dynamicsPercent: dynamicsPercent,
+        dailyDynamicsPercent,
         nkdRub: nkd,
         nominal: config.DEFAULT_BOND_NOMINAL,
         quantity: quantity,
@@ -191,6 +239,123 @@ export class XlsxParserModule {
     });
 
     return assets;
+  }
+
+  /**
+   * Парсинг листа "Акции" — котировки всех акций Московской биржи.
+   * Структура таблицы:
+   *   L: Код инструмента (тикер: SELG, PLZL, SBER...)
+   *   M: Инструмент сокр. (Селигдар, Полюс, Сбербанк...)
+   *   O: Цена послед.
+   *   Q: % измен.закр.
+   * Возвращает мапу: тикер -> { currentPrice, dailyDynamicsPercent }
+   */
+  public async parseQuotesSheet(): Promise<Record<string, { currentPrice: number; dailyDynamicsPercent: number; shortName: string }>> {
+    await this.loadWorkbook();
+    const quotesMap: Record<string, { currentPrice: number; dailyDynamicsPercent: number; shortName: string }> = {};
+    const nameToTicker: Record<string, string> = {};
+
+    const sheetName = this.workbook?.SheetNames.find(
+      (name) => name === config.QUOTES_SHEET_NAME,
+    );
+    if (!sheetName || !this.workbook) return quotesMap;
+
+    const sheet = this.workbook.Sheets[sheetName];
+    if (!sheet || !sheet['!ref']) return quotesMap;
+
+    const range = XLSX.utils.decode_range(sheet['!ref']);
+
+    // 1. Находим строку с заголовками и столбцы
+    let headerRow = -1;
+    let tickerCol = -1;        // "Код инструмента"
+    let nameCol = -1;          // "Инструмент сокр."
+    let priceCol = -1;         // "Цена послед."
+    let dynamicsCol = -1;      // "% измен.закр."
+
+    for (let r = range.s.r; r <= Math.min(range.e.r, 10); r++) {
+      for (let c = range.s.c; c <= range.e.c; c++) {
+        const cell = sheet[XLSX.utils.encode_cell({ r, c })];
+        if (!cell || cell.v === undefined) continue;
+        const val = String(cell.v).trim().toLowerCase();
+
+        if (val === 'код инструмента') {
+          tickerCol = c;
+          headerRow = r;
+        }
+        if (val.includes('инструмент сокр') || val === 'инструмент') {
+          nameCol = c;
+          headerRow = r;
+        }
+        if (val.includes('цена послед')) {
+          priceCol = c;
+          headerRow = r;
+        }
+        if (val.includes('% изм') || val.includes('% измен')) {
+          dynamicsCol = c;
+          headerRow = r;
+        }
+      }
+    }
+
+    if (headerRow < 0) {
+      console.warn('⚠️ [QUOTES] Заголовки таблицы не найдены на листе "Акции"');
+      return quotesMap;
+    }
+
+    // 2. Читаем данные начиная со строки после заголовков
+    for (let r = headerRow + 1; r <= range.e.r; r++) {
+      // Тикер из столбца "Код инструмента"
+      const tickerCell = sheet[XLSX.utils.encode_cell({ r, c: tickerCol })];
+      if (!tickerCell || tickerCell.v === undefined) continue;
+      const ticker = String(tickerCell.v).trim().toUpperCase();
+      if (!ticker || ticker.length < 2) continue;
+
+      // Название из столбца "Инструмент сокр."
+      let rawName = '';
+      if (nameCol >= 0) {
+        const nameCell = sheet[XLSX.utils.encode_cell({ r, c: nameCol })];
+        if (nameCell && nameCell.v !== undefined) {
+          rawName = String(nameCell.v).trim();
+        }
+      }
+      const cleanName = rawName
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      // Текущая цена
+      let currentPrice = 0;
+      if (priceCol >= 0) {
+        const priceCell = sheet[XLSX.utils.encode_cell({ r, c: priceCol })];
+        if (priceCell && priceCell.v !== undefined) {
+          currentPrice = this.parseValue(priceCell.v);
+        }
+      }
+
+      // Дневная динамика
+      let dailyDynamicsPercent = 0;
+      if (dynamicsCol >= 0) {
+        const dynamicsCell = sheet[XLSX.utils.encode_cell({ r, c: dynamicsCol })];
+        if (dynamicsCell && dynamicsCell.v !== undefined) {
+          dailyDynamicsPercent = this.parseValue(dynamicsCell.v);
+          // Фильтр аномальных значений (лимит Мосбиржи 20%, ставим 25% с запасом)
+          if (dailyDynamicsPercent > 25 || dailyDynamicsPercent < -25) {
+            dailyDynamicsPercent = 0;
+          }
+        }
+      }
+
+      quotesMap[ticker] = { currentPrice, dailyDynamicsPercent, shortName: cleanName };
+
+      // Маппим название → тикер для fuzzy-поиска
+      if (cleanName) {
+        nameToTicker[cleanName.toUpperCase()] = ticker;
+      }
+    }
+
+    // Сохраняем nameToTicker для fuzzy-поиска
+    this.nameToTickerMap = nameToTicker;
+
+    return quotesMap;
   }
     /**
      * Динамическое извлечение макроцелей и ликвидного кэша по текстовым маркерам
@@ -578,7 +743,11 @@ export class XlsxParserModule {
   private parseValue(val: unknown): number {
     if (typeof val === 'number') return val;
     if (typeof val === 'string') {
-      const parsed = parseFloat(val.replace(/[^0-9.-]/g, ''));
+      // Заменяем русскую запятую на точку для десятичных дробей
+      let normalized = val.replace(',', '.');
+      // Удаляем пробелы (разделители тысяч) и символ рубля
+      normalized = normalized.replace(/\s/g, '').replace('₽', '').replace('руб', '');
+      const parsed = parseFloat(normalized);
       return isNaN(parsed) ? 0 : parsed;
     }
     return 0;

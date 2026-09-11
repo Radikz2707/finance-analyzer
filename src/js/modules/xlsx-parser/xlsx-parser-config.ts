@@ -22,6 +22,17 @@ export const GOALS_SHEET_NAME = 'Цели';
 /** Имя листа Excel с историей сделок */
 export const TRADES_SHEET_NAME = 'Отчет по сделкам';
 
+/** Имя листа Excel с котировками всех акций Московской биржи */
+export const QUOTES_SHEET_NAME = 'Акции';
+
+// Столбцы листа "Акции" — левая таблица (сырые данные из QUIK)
+export const QUOTES_COLUMN_INSTRUMENT = 'Инструмент';
+export const QUOTES_COLUMN_TICKER = 'Код工具';
+export const QUOTES_COLUMN_TICKER_ALT = 'Код';
+export const QUOTES_COLUMN_CURRENT_PRICE = 'Цена';
+export const QUOTES_COLUMN_DAILY_DYNAMICS = 'Динамика';
+export const QUOTES_COLUMN_DAILY_DYNAMICS_ALT = 'Изменение';
+
 // ─── Ключевые слова для поиска строк ────────────────────────────────────────
 
 /** Набор ключевых слов для поиска строки «Рубль / Ликвидный кэш» в листе QUIK */

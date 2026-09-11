@@ -1,6 +1,6 @@
 import { QuikOrder } from '../../js/modules/xlsx-parser/quik-orders-parser';
 import { AssetAnalysis } from '../../js/modules/portfolio-math/portfolio-math.js';
-import { buildOrdersHtmlAndMd, buildAssetsTablesAndBars } from '../../js/modules/ai-advisor/report-builders.js';
+import { buildOrdersHtmlAndMd, buildAssetsTablesAndBars, buildQuotesBlock, StockQuote } from '../../js/modules/ai-advisor/report-builders.js';
 
 export interface DashboardReportData {
   totalVal: string;
@@ -22,10 +22,13 @@ export interface DashboardReportData {
   priorityBlock: string;
   concentrationBlock: string;
   rebalanceBlock: string;
+  quotesTableRows: string;
+  topGainers: string;
+  topLosers: string;
 }
 
 export class DashboardReportBuilder {
-  private data: DashboardReportData;
+  public data: DashboardReportData;
 
   constructor(data: DashboardReportData) {
     this.data = data;
@@ -52,6 +55,9 @@ export class DashboardReportBuilder {
       priorityBlock,
       concentrationBlock,
       rebalanceBlock,
+      quotesTableRows,
+      topGainers,
+      topLosers,
     } = this.data;
 
     return (
@@ -88,9 +94,15 @@ export class DashboardReportBuilder {
       '.instrument-name strong, .asset-name strong { color: #fff; }' +
       '.no-orders { color: #8b949e; text-align: center; }' +
       '.sum-cell { color: #e3b341; font-weight: bold; }' +
+      '.account-label { color: #58a6ff; font-weight: 600; font-size: 12px; display: block; }' +
+      '.account-label-cell { text-align: center; vertical-align: middle; background: rgba(56, 139, 255, 0.03); width: 90px; }' +
+      '.grouped-orders { border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }' +
+      '.grouped-orders tbody tr.row-account-start td { border-bottom: 2px solid #58a6ff; }' +
+      '.grouped-orders tbody tr.row-account-end td { border-bottom: 1px solid #30363d; }' +
       '.deficit-cell { font-weight: bold; }' +
-      '.price-info { display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 6px; font-size: 14px; font-weight: 600; line-height: 1.3; min-width: 110px; }' +
+      '.price-info { display: flex; flex-direction: row; align-items: center; justify-content: flex-end; gap: 6px; font-size: 14px; font-weight: 600; line-height: 1.3; min-width: 110px; white-space: nowrap; }' +
       '.price-info .price-pair { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }' +
+      '.price-info .price-arrow { flex-shrink: 0; margin-left: 6px; }' +
       '.price-info .price-pair .price-entry { font-size: 12px; color: #8b949e; font-weight: 500; }' +
       '.price-info .price-pair .price-current { font-size: 14px; font-weight: 700; }' +
       '.price-info .price-arrow { font-size: 14px; line-height: 1; opacity: 0.9; }' +
@@ -106,6 +118,32 @@ export class DashboardReportBuilder {
       '.portfolio-table th.price-info { white-space: nowrap; padding-right: 16px; line-height: 1.3; font-size: 12px; }' +
       '.portfolio-table th.price-diff { text-align: right; padding-right: 16px; font-size: 14px; font-weight: 600; color: #8b949e; }' +
       '.portfolio-table td.price-info, .portfolio-table td.price-diff { text-align: right; }' +
+      // P&L column
+      '.pnl-cell { font-size: 12px; min-width: 80px; text-align: right; white-space: nowrap; padding-right: 16px; }' +
+      '.pnl-rub { font-weight: 700; font-size: 13px; }' +
+      '.pnl-pct { font-size: 12px; font-weight: 600; }' +
+      '.pnl-th { text-align: right; padding-right: 16px; white-space: nowrap; cursor: pointer; user-select: none; }' +
+      '.pnl-th:hover { color: #58a6ff; }' +
+      '#sort-indicator { font-size: 12px; margin-left: 4px; opacity: 0.6; }' +
+      '.pnl-sub { font-size: 10px; color: #6e7681; font-weight: normal; }' +
+      // Quotes table
+      '.quotes-table { width: 100%; border-collapse: collapse; font-size: 13px; }' +
+      '.quotes-table th, .quotes-table td { padding: 8px 10px; border-bottom: 1px solid #30363d; text-align: left; }' +
+      '.quotes-table th { color: #8b949e; font-weight: normal; }' +
+      '.quote-name strong { color: #58a6ff; }' +
+      '.quote-price { color: #fff; font-weight: 600; }' +
+      '.quote-dynamics { font-weight: 700; white-space: nowrap; }' +
+      '.quote-arrow { margin-right: 4px; }' +
+      '.quote-value { font-size: 13px; }' +
+      // Top/anti-top blocks
+      '.quotes-top-block { margin-top: 15px; }' +
+      '.quotes-list { display: flex; flex-direction: column; gap: 6px; }' +
+      '.quote-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 6px; font-size: 13px; }' +
+      '.quote-item--green { background: rgba(35, 134, 54, 0.08); border: 1px solid rgba(35, 134, 54, 0.15); }' +
+      '.quote-item--red { background: rgba(242, 81, 87, 0.08); border: 1px solid rgba(242, 81, 87, 0.15); }' +
+      '.quote-item-ticker { font-weight: 700; color: #58a6ff; min-width: 60px; }' +
+      '.quote-item-name { flex: 1; color: #c9d1d9; }' +
+      '.quote-item-value { font-weight: 700; white-space: nowrap; }' +
       '.asset-bars { margin-bottom: 15px; }' +
       '.asset-label { font-size: 13px; margin-bottom: 4px; color: #8b949e; font-weight: bold; }' +
       '.bar-row { display: flex; align-items: center; gap: 10px; }' +
@@ -231,9 +269,9 @@ export class DashboardReportBuilder {
       '</div>' +
       "<div class='block-box'>" +
       '<h2>Портфель: состав и приоритеты</h2>' +
-      '<table>' +
-      '<thead><tr><th>Инструмент</th><th>Текущая доля</th><th>Целевая доля</th><th>Дефицит/Профицит</th><th>Статус</th><th class="price-info">Цена входа /<br>Текущая</th><th class="price-diff">Δ</th></tr></thead>' +
-      '<tbody>' +
+      '<table id="portfolio-table">' +
+      '<thead><tr><th>Инструмент</th><th>Текущая доля</th><th>Целевая доля</th><th>Дефицит/Профицит</th><th>Статус</th><th class="price-info">Цена входа /<br>Текущая</th><th class="pnl-th" onclick="sortPortfolioTable()" id="pnl-header">P&L <span class="pnl-sub">от цены входа</span> <span id="sort-indicator">↕</span></th></tr></thead>' +
+      '<tbody id="portfolio-tbody">' +
       tableRows +
       '</tbody>' +
       '</table>' +
@@ -241,7 +279,24 @@ export class DashboardReportBuilder {
       '</div>' +
       '<div>' +
       "<div class='block-box'>" +
-      '<h2>Макро-структура</h2>' +
+      '<h2>Котировки акций (Мосбиржа)</h2>' +
+      (quotesTableRows ?
+        "<div class='quotes-table-container'>" +
+        '<table class="quotes-table">' +
+        '<thead><tr><th>Инструмент</th><th>Цена</th><th>Изменение</th></tr></thead>' +
+        '<tbody>' +
+        quotesTableRows +
+        '</tbody>' +
+        '</table>' +
+        '</div>' :
+        "<div style='color: #8b949e; text-align: center; padding: 20px;'>Данные о котировках недоступны</div>"
+      ) +
+      topGainers +
+      topLosers +
+      '</div>' +
+      '</div>' +
+      "<div class='block-box'>" +
+      "<h2>Макро-структура</h2>" +
       "<div style='font-size: 13px; color: #8b949e; margin-bottom: 15px;'>Акции: <strong>" +
       stocksPct +
       '%</strong> | Облигации: <strong>' +
@@ -258,12 +313,7 @@ export class DashboardReportBuilder {
       '</div>' +
       "<div class='block-box'>" +
       '<h2>Действующие лимитные заявки в терминале QUIK</h2>' +
-      '<table>' +
-      '<thead><tr><th>Инструмент</th><th>Операция</th><th>Количество</th><th>Цена за ед.</th><th>Общая сумма</th><th>Статус заявки</th></tr></thead>' +
-      '<tbody>' +
       ordersRows +
-      '</tbody>' +
-      '</table>' +
       '</div>' +
       "<div style='text-align: center; font-size: 11px; color: #8b949e; margin-top: 20px;'>" +
       'Конвейер успешно обновлен: ' +
@@ -274,6 +324,29 @@ export class DashboardReportBuilder {
       '</div>' +
       '</div>' +
       '</body>' +
+      '<script>' +
+      'var _sortDir="desc";' +
+      'function sortPortfolioTable(){' +
+      'var tbody=document.getElementById("portfolio-tbody");' +
+      'if(!tbody)return;' +
+      'var rows=Array.from(tbody.querySelectorAll("tr"));' +
+      'var indicator=document.getElementById("sort-indicator");' +
+      'rows.sort(function(a,b){' +
+      'var aCell=a.querySelectorAll("td")[6];' +
+      'var bCell=b.querySelectorAll("td")[6];' +
+      'var aSpan=aCell?aCell.querySelector(".pnl-pct"):null;' +
+      'var bSpan=bCell?bCell.querySelector(".pnl-pct"):null;' +
+      'var aText=aSpan?aSpan.textContent.trim():"";' +
+      'var bText=bSpan?bSpan.textContent.trim():"";' +
+      'var parsePnl=function(t){if(!t||t==="—")return 0;var m=String(t).match(/[-+]?\\d+\\.?\\d*/);return m?parseFloat(m[0]):0;};' +
+      'return _sortDir==="desc"?parsePnl(bText)-parsePnl(aText):parsePnl(aText)-parsePnl(bText);' +
+      '});' +
+      'while(tbody.firstChild)tbody.removeChild(tbody.firstChild);' +
+      'rows.forEach(function(row){tbody.appendChild(row);});' +
+      '_sortDir=_sortDir==="desc"?"asc":"desc";' +
+      'if(indicator)indicator.textContent=_sortDir==="desc"?"↓":"↑";' +
+      '}' +
+      '</script>' +
       '</html>'
     );
   }
@@ -281,9 +354,11 @@ export class DashboardReportBuilder {
   static fromOrdersAndAssets(
     orders: QuikOrder[],
     assetsAnalysis: AssetAnalysis[],
+    quotes?: StockQuote[],
   ): DashboardReportBuilder {
     const ordersResult = buildOrdersHtmlAndMd(orders);
     const uiTables = buildAssetsTablesAndBars(assetsAnalysis);
+    const quotesBlock = quotes ? buildQuotesBlock(quotes) : { quotesTableRows: '', topGainers: '', topLosers: '' };
 
     return new DashboardReportBuilder({
       totalVal: '',
@@ -305,6 +380,9 @@ export class DashboardReportBuilder {
       priorityBlock: uiTables.priorityBlock,
       concentrationBlock: uiTables.concentrationBlock,
       rebalanceBlock: uiTables.rebalanceBlock,
+      quotesTableRows: quotesBlock.quotesTableRows,
+      topGainers: quotesBlock.topGainers,
+      topLosers: quotesBlock.topLosers,
     });
   }
 }

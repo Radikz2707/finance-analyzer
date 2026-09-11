@@ -8,6 +8,7 @@ export interface AssetAnalysis {
   deficitRub: number;
   status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW';
   dynamicsPercent: number;
+  dailyDynamicsPercent?: number; // Дневная динамика из листа "Акции"
   nkdRub: number;
   nominal: number;
   quantity: number;
@@ -119,6 +120,7 @@ export class PortfolioMathModule {
         deficitRub: deficitRub,
         status: status,
         dynamicsPercent: asset.dynamicsPercent,
+        dailyDynamicsPercent: asset.dailyDynamicsPercent,
         nkdRub: asset.nkdRub || 0,
         nominal: asset.nominal || 1000,
         quantity: asset.quantity || 0,

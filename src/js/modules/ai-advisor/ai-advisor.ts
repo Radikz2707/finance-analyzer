@@ -5,7 +5,6 @@ import { exec } from 'node:child_process';
 import { XlsxParserModule } from '../xlsx-parser/xlsx-parser.js';
 import {
   buildOrdersHtmlAndMd,
-  buildAssetsTablesAndBars,
 } from './report-builders.js';
 import { PortfolioMathModule } from '../portfolio-math/portfolio-math.js';
 import { PortfolioValidator } from '../portfolio-math/portfolio-validator.js';
@@ -26,6 +25,18 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   const assets = await excelModule.parseCurrentPortfolio();
   const macroGoals = await excelModule.parseMacroGoals();
+
+  // Загружаем котировки акций из листа "Акции"
+  const quotesMap = await excelModule.parseQuotesSheet();
+  const quotes = Object.entries(quotesMap)
+    .filter(([, value]) => value.currentPrice > 0)
+    .map(([key, value]) => ({
+      ticker: key,
+      name: key,
+      shortName: value.shortName || key,
+      currentPrice: value.currentPrice,
+      dailyDynamicsPercent: value.dailyDynamicsPercent,
+    }));
 
   if (assets.length === 0) {
     console.error('❌ [ОШИБКА]: Данные portfolio-файла пусты.');
@@ -115,7 +126,6 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   }
   console.log('==================================================');
   const ordersData = buildOrdersHtmlAndMd(excelModule.parsedActiveOrders);
-  const uiTables = buildAssetsTablesAndBars(analysisResult.assetsAnalysis);
 
   // Проверка динамических алертов по котировкам
   const priceAlertsModule = new PriceAlertsModule();
@@ -382,31 +392,30 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const reportPathHtml = path.join(process.cwd(), 'report.html');
 
   // Сборка веб-интерфейса дашборда на основе очищенных данных
-  const reportBuilder = new DashboardReportBuilder({
-    totalVal: totalVal.toLocaleString('ru-RU'),
-    freeCash: analysisResult.macro.freeCash.toLocaleString('ru-RU'),
-    stocksPct: currentStocksPct,
-    bondsPct: currentBondsPct,
-    cbrRate: cbrRate.rate,
-    barRows: uiTables.barRows,
-    aiBoxHtml: aiBoxHtml,
-    tableRows: uiTables.tableRows,
-    ordersRows: ordersData.html,
-    dateStr: new Date().toLocaleDateString('ru-RU'),
-    timeStr: new Date().toLocaleTimeString('ru-RU'),
-    totalInvested: investedData.totalNet.toLocaleString('ru-RU'),
-    resultC10: currentTradingResultRub.toLocaleString('ru-RU'),
-    profitC11:
-      totalNetProfitRub.toLocaleString('ru-RU') +
-      ' (' +
-      totalNetProfitPercent.toFixed(2) +
-      '%)',
-    c10Color: c10Color,
-    c11Color: c11Color,
-    priorityBlock: uiTables.priorityBlock,
-    concentrationBlock: uiTables.concentrationBlock,
-    rebalanceBlock: uiTables.rebalanceBlock,
-  });
+  const reportBuilder = DashboardReportBuilder.fromOrdersAndAssets(
+    excelModule.parsedActiveOrders,
+    analysisResult.assetsAnalysis,
+    quotes,
+  );
+
+  // Переопределяем данные для карточек KPI
+  reportBuilder.data.totalVal = totalVal.toLocaleString('ru-RU');
+  reportBuilder.data.freeCash = analysisResult.macro.freeCash.toLocaleString('ru-RU');
+  reportBuilder.data.stocksPct = currentStocksPct;
+  reportBuilder.data.bondsPct = currentBondsPct;
+  reportBuilder.data.cbrRate = cbrRate.rate;
+  reportBuilder.data.totalInvested = investedData.totalNet.toLocaleString('ru-RU');
+  reportBuilder.data.resultC10 = currentTradingResultRub.toLocaleString('ru-RU');
+  reportBuilder.data.profitC11 =
+    totalNetProfitRub.toLocaleString('ru-RU') +
+    ' (' +
+    totalNetProfitPercent.toFixed(2) +
+    '%)';
+  reportBuilder.data.c10Color = c10Color;
+  reportBuilder.data.c11Color = c11Color;
+  reportBuilder.data.dateStr = new Date().toLocaleDateString('ru-RU');
+  reportBuilder.data.timeStr = new Date().toLocaleTimeString('ru-RU');
+  reportBuilder.data.aiBoxHtml = aiBoxHtml;
 
   const htmlData = reportBuilder.buildHtml();
   fs.writeFileSync(reportPathHtml, htmlData, 'utf-8');
