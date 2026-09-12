@@ -45,6 +45,74 @@ export class XlsxParserModule {
     this.parsedActiveOrders = [];
   }
 
+  /**
+   * Динамическое извлечение информации о счетах из Excel
+   * Ищет листы с префиксом "Портфель_" (например: Портфель_403GPBT, Портфель_S04J3LB)
+   * Извлекает код счета из имени листа и считает сумму позиций на этом листе
+   */
+  public async parseAccountsInfo(): Promise<Array<{ name: string; value: number }>> {
+    await this.loadWorkbook();
+    const accounts: Array<{ name: string; value: number }> = [];
+
+    if (!this.workbook) return accounts;
+
+    const workbook = this.workbook;
+
+    // Ищем все листы, начинающиеся с "Портфель_"
+    const portfolioSheets = workbook.SheetNames.filter(
+      (name) => name.toUpperCase().startsWith('ПОРТФЕЛЬ_') || name.toUpperCase().startsWith('ПОРТФ.')
+    );
+
+    portfolioSheets.forEach((sheetName) => {
+      // Извлекаем код счета из имени листа (например: "Портфель_403GPBT" → "403GPBT")
+      const underscoreIdx = sheetName.indexOf('_');
+      if (underscoreIdx < 0) return;
+
+      const accountCode = sheetName.substring(underscoreIdx + 1).trim();
+      // Проверяем, что код счета — это 5-7 символов (буквы+цифры)
+      if (!accountCode || !/^[A-Z0-9]{5,7}$/i.test(accountCode)) return;
+
+      // Считаем сумму ликвидационных стоимостей на этом листе
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet || !sheet['!ref']) return;
+
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+      let totalValue = 0;
+      const seenNames = new Set<string>();
+
+      rows.forEach((row) => {
+        const name = String(row['Инструмент'] || '').trim();
+        // Пропускаем служебные строки
+        if (
+          !name ||
+          config.EXCLUDED_ROW_KEYWORDS.some((kw) => name.toUpperCase().includes(kw))
+        ) return;
+        if (name.startsWith('-') || !isNaN(Number(name)) || name.length > 30) return;
+
+        // Проверяем дубликаты на одном листе
+        const cleanName = name.toLowerCase().trim();
+        if (seenNames.has(cleanName)) return;
+        seenNames.add(cleanName);
+
+        // Суммируем ликвидационную стоимость
+        const liqCost = this.parseValue(
+          row['Ликвидационная стоимость'] ||
+            row['Стоимость'] ||
+            row['Балансовая стоимость'],
+        );
+        if (liqCost > 0) {
+          totalValue += liqCost;
+        }
+      });
+
+      if (totalValue > 0) {
+        accounts.push({ name: accountCode, value: totalValue });
+      }
+    });
+
+    return accounts;
+  }
+
   public async loadWorkbook(): Promise<void> {
     if (this.workbook) return;
     if (!fs.existsSync(config.EXCEL_FILE_PATH)) {

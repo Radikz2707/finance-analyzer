@@ -3,6 +3,7 @@ import { MacroGoals, CurrentAsset } from '../xlsx-parser/xlsx-parser.js';
 export interface AssetAnalysis {
   name: string;
   ticker: string;
+  assetType: string;
   currentPercent: number;
   targetPercent: number;
   deficitRub: number;
@@ -115,6 +116,7 @@ export class PortfolioMathModule {
       assetsAnalysis.push({
         name: asset.name,
         ticker: asset.ticker,
+        assetType: asset.assetType,
         currentPercent: asset.liquidationPercent,
         targetPercent: targetPercent,
         deficitRub: deficitRub,
@@ -134,6 +136,16 @@ export class PortfolioMathModule {
 
     // Сортируем по приоритету покупок (больший дефицит = выше приоритет)
     assetsAnalysis.sort((a, b) => b.deficitRub - a.deficitRub);
+
+    // Валидация: сумма долей не может превышать 100%
+    const totalPercent = assetsAnalysis.reduce((sum, a) => sum + a.currentPercent, 0);
+    if (totalPercent > 100.01) {
+      console.warn(
+        '⚠️ [VALIDATION] Сумма долей активов: ' +
+        totalPercent.toFixed(1) +
+        '% (должно быть ≤ 100%). Проверьте данные в Excel.',
+      );
+    }
 
     return {
       macro,
