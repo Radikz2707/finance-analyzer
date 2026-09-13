@@ -3,36 +3,32 @@ import { PriceAlertConfig, PriceAlert } from './types.js';
 
 /**
  * Модуль динамического мониторинга критических уровней котировок
- * Проверяет пробитие уровней вверх/вниз и генерирует уведомления
+ * 
+ * Уровни НЕ зашиты в код — они должны приходить из данных:
+ * - Excel (столбцы с уровнями stop-loss/take-profit)
+ * - Внешний конфиг (PortfolioConfig.priceAlerts)
+ * - Пользовательские настройки (customConfigs)
+ * 
+ * Если для актива нет уровней — alert не генерируется.
  */
 export class PriceAlertsModule {
-  private defaultConfigs: Record<string, PriceAlertConfig> = {
-    Полюс: {
-      upperLimit: 1850,   // Критический уровень роста
-      lowerLimit: 1450,   // Критический уровень падения
-      upperMessage: '🔺 ВНИМАНИЕ: Котировки Полюса преодолели критический уровень роста! Рекомендуется рассмотреть возможность фиксации части прибыли или пересмотра целевой доли.',
-      lowerMessage: '🔻 ВНИМАНИЕ: Котировки Полюса опустились ниже критического уровня! Рекомендуется оценить риски и рассмотреть возможность хеджирования позиции.',
-    },
-    Сбербанк: {
-      upperLimit: 320,
-      lowerLimit: 260,
-      upperMessage: '🔺 ВНИМАНИЕ: Котировки Сбербанка преодолели критический уровень роста! Рекомендуется рассмотреть возможность фиксации части прибыли.',
-      lowerMessage: '🔻 ВНИМАНИЕ: Котировки Сбербанка опустились ниже критического уровня! Рекомендуется оценить риски.',
-    },
-  };
-
   /**
-   * Проверяет все активы портфеля на пробитие критических уровней
+   * Проверяет все активы портфеля на пробитие критических уровней.
+   * 
+   * @param assets — массив активов из portfolio-math
+   * @param customConfigs — пользовательские уровни (переопределяют дефолтные)
+   * @returns массив сгенерированных алертов
    */
   public checkPriceAlerts(
     assets: AssetAnalysis[],
     customConfigs?: Record<string, PriceAlertConfig>,
   ): PriceAlert[] {
-    const configs = { ...this.defaultConfigs, ...customConfigs };
+    const configs = { ...customConfigs };
     const alerts: PriceAlert[] = [];
 
     assets.forEach((asset) => {
       const config = configs[asset.name];
+      // Если для актива нет настроенных уровней — пропускаем
       if (!config) {
         return;
       }
@@ -53,7 +49,7 @@ export class PriceAlertsModule {
           upperLimit: config.upperLimit,
           lowerLimit: config.lowerLimit,
           direction: 'upper',
-          message: config.upperMessage,
+          message: config.upperMessage || 'Пробит верхний уровень',
         };
       }
       // Проверяем пробитие вниз
@@ -65,7 +61,7 @@ export class PriceAlertsModule {
           upperLimit: config.upperLimit,
           lowerLimit: config.lowerLimit,
           direction: 'lower',
-          message: config.lowerMessage,
+          message: config.lowerMessage || 'Пробит нижний уровень',
         };
       }
 

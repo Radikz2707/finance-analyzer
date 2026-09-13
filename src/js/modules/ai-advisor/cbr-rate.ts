@@ -4,6 +4,7 @@ export interface CbrRateData {
   date: string;
   source: string;
   lastUpdated: string;
+  isFresh: boolean;
 }
 
 // Кэш в памяти: ставка + время последнего получения
@@ -37,6 +38,7 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
         date: new Date().toLocaleDateString('ru-RU'),
         source: 'ручная настройка (CBK_RATE_OVERRIDE)',
         lastUpdated: new Date().toISOString(),
+        isFresh: true,
       };
       console.log('[ЦБ-СТАВКА] ✅ Ручная настройка:', cachedRate.rate + '%');
       return cachedRate;
@@ -48,8 +50,9 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
   const fallbackRate: CbrRateData = {
     rate: 14.0,
     date: '2026-09-08',
-    source: 'fallback (ручная актуализация)',
+    source: 'fallback (ручная актуализация, НЕ актуальные данные)',
     lastUpdated: new Date().toISOString(),
+    isFresh: false,
   };
 
   cachedRate = fallbackRate;
@@ -77,4 +80,11 @@ export function formatCbrRateDisplay(rateData: CbrRateData): string {
     'Источник: ' +
     rateData.source
   );
+}
+
+/**
+ * Получить текущее значение кэша (для тестирования)
+ */
+export function getCachedRate(): CbrRateData | null {
+  return cachedRate;
 }

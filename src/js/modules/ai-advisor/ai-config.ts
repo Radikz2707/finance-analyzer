@@ -35,7 +35,7 @@ export const AI_MODELS: AiModelConfig[] = [
     id: 'ollama',
     name: 'Ollama (локально)',
     baseUrl: 'http://localhost:11434/api/chat',
-    modelName: 'qwen2.5:14b',
+    modelName: 'qwen3.5:9b',
     maxTokens: 8192,
     temperature: 0.2,
     priority: 1,
@@ -54,8 +54,7 @@ export const AI_MODELS: AiModelConfig[] = [
     priority: 2,
     requiresKey: true,
     envKey: 'GIGACHAT_API_KEY',
-    description:
-      'Бесплатная модель от Сбера, работает в РФ без VPN',
+    description: 'Бесплатная модель от Сбера, работает в РФ без VPN',
   },
   {
     id: 'claude-sonnet-4',
@@ -67,8 +66,7 @@ export const AI_MODELS: AiModelConfig[] = [
     priority: 3,
     requiresKey: true,
     envKey: 'OPENROUTER_API_KEY',
-    description:
-      'Лучшая модель для анализа (нужен VPN)',
+    description: 'Лучшая модель для анализа (нужен VPN)',
   },
   {
     id: 'gpt-4o',
@@ -80,8 +78,7 @@ export const AI_MODELS: AiModelConfig[] = [
     priority: 4,
     requiresKey: true,
     envKey: 'OPENROUTER_API_KEY',
-    description:
-      'Отличная модель для анализа (нужен VPN)',
+    description: 'Отличная модель для анализа (нужен VPN)',
   },
   {
     id: 'yandexgpt',
@@ -93,8 +90,7 @@ export const AI_MODELS: AiModelConfig[] = [
     priority: 5,
     requiresKey: true,
     envKey: 'YANDEXGPT_API_KEY',
-    description:
-      'Бесплатный баланс 5000₽ в Yandex Cloud, работает в РФ',
+    description: 'Бесплатный баланс 5000₽ в Yandex Cloud, работает в РФ',
   },
 ];
 
@@ -122,15 +118,16 @@ export async function isOllamaAvailable(): Promise<boolean> {
   try {
     const ollamaModel = AI_MODELS.find((m) => m.id === 'ollama');
     if (!ollamaModel) return false;
-    
-    const response = await axios.get(
-      'http://localhost:11434/api/tags',
-      { timeout: 3000 },
-    );
-    
+
+    const response = await axios.get('http://localhost:11434/api/tags', {
+      timeout: 3000,
+    });
+
     // Проверяем, что нужная модель установлена
     const models = response.data.models || [];
-    return models.some((m: OllamaModelInfo) => m.name.includes(ollamaModel.modelName));
+    return models.some((m: OllamaModelInfo) =>
+      m.name.includes(ollamaModel.modelName),
+    );
   } catch {
     return false;
   }
@@ -145,19 +142,18 @@ export async function getOllamaStatus(): Promise<{
   recommendedModelInstalled: boolean;
 }> {
   try {
-    const response = await axios.get(
-      'http://localhost:11434/api/tags',
-      { timeout: 3000 },
-    );
-    
+    const response = await axios.get('http://localhost:11434/api/tags', {
+      timeout: 3000,
+    });
+
     const models = response.data.models || [];
     const modelNames = models.map((m: OllamaModelInfo) => m.name);
-    
+
     const ollamaModel = AI_MODELS.find((m) => m.id === 'ollama');
-    const recommendedModelInstalled = models.some(
-      (m: OllamaModelInfo) => m.name.includes(ollamaModel?.modelName || ''),
+    const recommendedModelInstalled = models.some((m: OllamaModelInfo) =>
+      m.name.includes(ollamaModel?.modelName || ''),
     );
-    
+
     return {
       available: true,
       models: modelNames,

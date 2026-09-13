@@ -120,6 +120,17 @@ export const QUIK_COLUMN_COST = 'Стоимость';
 export const QUIK_COLUMN_LIQ_COST = 'Ликвидационная стоимость';
 export const QUIK_COLUMN_BAL_COST = 'Балансовая стоимость';
 
+// Столбцы для флагов позиций (опциональные)
+export const QUIK_COLUMN_HOLD_ONLY = 'Hold Only';
+export const QUIK_COLUMN_HOLD_ONLY_ALT1 = 'Запрет на продажу';
+export const QUIK_COLUMN_HOLD_ONLY_ALT2 = 'hold_only';
+export const QUIK_COLUMN_HOLD_ONLY_ALT3 = 'holdonly';
+
+export const QUIK_COLUMN_EXCLUDE_STOCK_POOL = 'Exclude From Stock Pool';
+export const QUIK_COLUMN_EXCLUDE_STOCK_POOL_ALT1 = 'Исключить из stock pool';
+export const QUIK_COLUMN_EXCLUDE_STOCK_POOL_ALT2 = 'exclude_from_stock_pool';
+export const QUIK_COLUMN_EXCLUDE_STOCK_POOL_ALT3 = 'excludestockpool';
+
 // ─── Константы ──────────────────────────────────────────────────────────────
 
 /** Стандартный номинал российской облигации (₽) */

@@ -16,6 +16,7 @@ import { getCbrKeyRate } from './cbr-rate.js';
 import { suggestAllAutoTargets } from './auto-target-allocator.js';
 import { PriceAlertsModule } from './price-alerts.js';
 import { NewsFetcherModule } from './news-fetcher.js';
+import { buildPortfolioSnapshot } from '../portfolio-snapshot/portfolio-snapshot.js';
 
 /**
  * Главный управляющий модуль сквозного анализа инвестиционной деятельности портфеля
@@ -25,8 +26,34 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const excelModule = new XlsxParserModule();
   await excelModule.syncNewTrades();
 
-  const assets = await excelModule.parseCurrentPortfolio();
+  const aggregated = await excelModule.parseAggregatedPortfolio();
+  const assets = excelModule.aggregatedToCurrentAssets(aggregated);
   const macroGoals = await excelModule.parseMacroGoals();
+
+  // ─── Строим единый PortfolioSnapshot для AI ───
+  const historicalTrades = await excelModule.parseHistoricalTradesAnalysis();
+  const investedData = await excelModule.parseInvestedFunds();
+
+  const portfolioSnapshot = buildPortfolioSnapshot(
+    aggregated,
+    {
+      totalBalance: macroGoals.totalBalance,
+      freeCash: macroGoals.freeCash,
+      stocksDeficitRub: macroGoals.stocksDeficitRub,
+      bondsDeficitRub: macroGoals.bondsDeficitRub,
+    },
+    {
+      profitC10: historicalTrades.profitC10,
+      profitC11: historicalTrades.profitC11,
+      investedNet: investedData.totalNet,
+    },
+  );
+
+  console.log(
+    `[SNAPSHOT] PortfolioSnapshot: ${portfolioSnapshot.assets.length} активов, ` +
+    `${portfolioSnapshot.accounts.length} счетов, ` +
+    `totalLiq=${portfolioSnapshot.totalLiquidationValue.toLocaleString('ru-RU')} ₽`,
+  );
 
   // Динамически извлекаем информацию о счетах из Excel
   const accountsInfo = await excelModule.parseAccountsInfo();
@@ -57,21 +84,26 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const validator = new PortfolioValidator();
   const validation = validator.validateLimits(macroGoals, assets);
 
-  const investedData = await excelModule.parseInvestedFunds();
-  const historicalTrades = await excelModule.parseHistoricalTradesAnalysis();
-
   const math = new PortfolioMathModule();
-  const analysisResult = math.analyzePortfolio(macroGoals, assets);
+  const analysisResult = math.analyzePortfolio(
+    macroGoals,
+    assets,
+    portfolioSnapshot.totalLiquidationValue,
+  );
 
   const totalVal = analysisResult.macro.totalBalance;
 
   // Фактические проценты акций и облигаций из портфеля
-  const actualStocksPct = analysisResult.assetsAnalysis
-    .filter((a) => a.assetType === 'А' || a.assetType === 'Акция')
-    .reduce((sum, a) => sum + a.currentPercent, 0);
-  const actualBondsPct = analysisResult.assetsAnalysis
-    .filter((a) => a.assetType === 'О' || a.assetType === 'Облигация')
-    .reduce((sum, a) => sum + a.currentPercent, 0);
+  const actualStocksPct = Math.round(
+    analysisResult.assetsAnalysis
+      .filter((a) => a.assetType === 'А' || a.assetType === 'Акция')
+      .reduce((sum, a) => sum + a.currentPercent, 0) * 100
+  ) / 100;
+  const actualBondsPct = Math.round(
+    analysisResult.assetsAnalysis
+      .filter((a) => a.assetType === 'О' || a.assetType === 'Облигация')
+      .reduce((sum, a) => sum + a.currentPercent, 0) * 100
+  ) / 100;
 
   // C10 и C11 берём напрямую из Excel
   const currentTradingResultRub = historicalTrades.profitC10;
@@ -153,15 +185,16 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const inc = await calculatePortfolioIncome(assets);
 
   // Получаем актуальное значение ключевой ставки с автоматическим JSON-обновлением
-  const cbrRate = await getCbrKeyRate();
+  const cbrRateData = await getCbrKeyRate();
   console.log(
     '🏦 Ключевая ставка ЦБ РФ: ' +
-      cbrRate.rate +
+      cbrRateData.rate +
       '% (от ' +
-      cbrRate.date +
+      cbrRateData.date +
       ', ' +
-      cbrRate.source +
-      ')',
+      cbrRateData.source +
+      ')' +
+      (cbrRateData.isFresh ? '' : ' ⚠️ ДАННЫЕ СТАЛЫЕ — требуют проверки'),
   );
 
   // Загрузка новостного фона и макроэкономических индикаторов
@@ -192,8 +225,10 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
         ': Текущая доля ' +
         item.currentPercent.toFixed(1) +
         '%, Целевая доля: ' +
-        item.targetPercent.toFixed(1) +
-        '%. Status: ' +
+      (item.targetPercent !== undefined
+        ? item.targetPercent.toFixed(1)
+        : '—') +
+      '%. Status: ' +
         item.status,
     )
     .join('\n');
@@ -205,9 +240,6 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     (item) => item.status === 'NEW',
   );
 
-  // ЗАЩИТА: Если у фонда STME ETF цель 0.0% — это плановый выход, фиолетовую плашку варнинга не выводим
-  const trulyNewAssets = newAssets.filter((item) => item.ticker !== 'STME');
-
   // АВТОПРЕДЛОЖЕНИЕ ЦЕЛЕВЫХ ДОЛЬ для новых активов
   const autoTargets = suggestAllAutoTargets(
     assets,
@@ -215,10 +247,10 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     actualBondsPct,
   );
 
-  if (trulyNewAssets.length > 0) {
+  if (newAssets.length > 0) {
     newAssetsWarningMd =
       '\n⚠️ ВНИМАНИЕ: Обнаружены новые активы без указанной цели в Excel:\n' +
-      trulyNewAssets
+      newAssets
         .map((item) => '* ' + item.name + ' (Укажите целевой % в столбце S)')
         .join('\n') +
       '\n';
@@ -226,7 +258,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     newAssetsWarningHtml =
       '<div class="warning-box" style="padding: 15px; background: rgba(163, 113, 247, 0.1); border: 1px solid #a371f7; border-radius: 6px; margin-bottom: 15px;">' +
       '⚠️ Внимание: В вашем портфеле обнаружены новые инструменты без установленной целевой доли: ' +
-      trulyNewAssets.map((item) => item.name).join(', ') +
+      newAssets.map((item) => item.name).join(', ') +
       '. Пожалуйста, пропишите желаемый процент в столбце S вашей Excel-таблицы.</div>';
 
     // Формируем рекомендации по автопредложению
@@ -305,12 +337,15 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   void (async () => {
     const aiClient = new AiClient();
     try {
+      // ────────────────────────────────────────────────────────────
+
       const aiResult = await aiClient.generateDynamicReport(
         analysisResult,
         inc,
         validation,
         ordersData,
-        cbrRate.rate,
+        portfolioSnapshot,
+        cbrRateData,
         newAssetsForAi,
         combinedContext,
         { stocks: actualStocksPct, bonds: actualBondsPct },
@@ -462,7 +497,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       reportBuilder.data.freeCash = analysisResult.macro.freeCash.toLocaleString('ru-RU');
       reportBuilder.data.stocksPct = actualStocksPct;
       reportBuilder.data.bondsPct = actualBondsPct;
-      reportBuilder.data.cbrRate = cbrRate.rate;
+  reportBuilder.data.cbrRate = cbrRateData.rate;
       reportBuilder.data.totalInvested = investedData.totalNet.toLocaleString('ru-RU');
       reportBuilder.data.resultC10 = currentTradingResultRub.toLocaleString('ru-RU');
       reportBuilder.data.profitC11 =
@@ -480,7 +515,8 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       fs.writeFileSync(reportPathHtml, htmlData, 'utf-8');
       console.log('[AI] ✅ Отчёт обновлён с AI-анализом');
     } catch (error) {
-      console.error('[AI] ❌ Ошибка фоновой генерации:', error);
+      console.error('❌ Ошибка при перегенерации:', error);
+      console.error('STACK:', error instanceof Error ? error.stack : undefined);
     }
   })();
 
@@ -504,7 +540,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   reportBuilder.data.freeCash = analysisResult.macro.freeCash.toLocaleString('ru-RU');
   reportBuilder.data.stocksPct = actualStocksPct;
   reportBuilder.data.bondsPct = actualBondsPct;
-  reportBuilder.data.cbrRate = cbrRate.rate;
+  reportBuilder.data.cbrRate = cbrRateData.rate;
   reportBuilder.data.totalInvested = investedData.totalNet.toLocaleString('ru-RU');
   reportBuilder.data.resultC10 = currentTradingResultRub.toLocaleString('ru-RU');
   reportBuilder.data.profitC11 =

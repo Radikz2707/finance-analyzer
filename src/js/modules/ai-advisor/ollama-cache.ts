@@ -29,6 +29,28 @@ export interface CacheConfig {
   enabled: boolean;
 }
 
+/** Имена AI-моделей, кэш которых считается «AI-кэшем» */
+const AI_MODEL_NAMES = [
+  'ollama',
+  'qwen',
+  'llama',
+  'mistral',
+  'gemma',
+  'deepseek',
+  'giga',
+  'claude',
+  'gpt',
+  'yandex',
+];
+
+/**
+ * Проверяет, относится ли модель к AI-моделям (Ollama / GigaChat / Claude / GPT и т.д.)
+ */
+function isAiModel(model: string): boolean {
+  const lower = model.toLowerCase();
+  return AI_MODEL_NAMES.some((name) => lower.includes(name));
+}
+
 /** Стандартная конфигурация кэша */
 const DEFAULT_CACHE_CONFIG: CacheConfig = {
   maxEntries: 100,
@@ -53,12 +75,25 @@ export class LocalCacheManager {
 
   constructor(config: Partial<CacheConfig> = {}) {
     this.cache = new Map();
-    this.config = { ...DEFAULT_CACHE_CONFIG, ...config };
+
+    // Читаем AI_CACHE_ENABLED из .env
+    const envEnabled = process.env.AI_CACHE_ENABLED;
+    const aiCacheEnabled = envEnabled === undefined
+      ? true  // default
+      : envEnabled.toLowerCase() === 'true';
+
+    this.config = {
+      ...DEFAULT_CACHE_CONFIG,
+      enabled: aiCacheEnabled,
+      ...config,
+    };
 
     if (this.config.enabled) {
       console.log(
         `[LocalCache] Кэш инициализирован: ${this.config.maxEntries} записей, TTL: ${this.config.ttl / 1000 / 60} мин`,
       );
+    } else {
+      console.log('[LocalCache] ⛔ Кэш выключен (AI_CACHE_ENABLED=false)');
     }
   }
 
@@ -91,10 +126,18 @@ export class LocalCacheManager {
   }
 
   /**
-   * Сохранение ответа в кэш
-   */
+    * Сохранение ответа в кэш
+    */
   public set(prompt: string, model: string, content: string): void {
     if (!this.config.enabled) {
+      return;
+    }
+
+    // Не кэшировать пустые ответы
+    if (!content || content.trim().length === 0) {
+      console.log(
+        `[LocalCache] ⛔ Пропущено сохранение в кэш: пустой ответ для ${model}`,
+      );
       return;
     }
 
@@ -116,6 +159,26 @@ export class LocalCacheManager {
     console.log(
       `[LocalCache] 💾 Сохранено в кэш: ${model} (${content.length} символов)`,
     );
+  }
+
+  /**
+    * Удаление всех записей, относящихся к AI-моделям (Ollama, GigaChat, Claude, GPT и т.д.)
+    * Не затрагивает другие данные LocalCache.
+    */
+  public clearAiEntries(): number {
+    let removed = 0;
+    for (const [key, value] of this.cache.entries()) {
+      if (isAiModel(value.model)) {
+        this.cache.delete(key);
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      console.log(`[LocalCache] 🧹 Удалено AI-записей: ${removed}`);
+    } else {
+      console.log('[LocalCache] ℹ️ AI-записей не найдено');
+    }
+    return removed;
   }
 
   /**
@@ -209,17 +272,31 @@ export async function getCachedResponse(
   model: string,
   fetcher: () => Promise<string>,
 ): Promise<{ content: string; fromCache: boolean }> {
-  // Пробуем получить из кэша
-  const cached = localCache.get(prompt, model);
-  if (cached) {
-    return { content: cached, fromCache: true };
-  }
+  try {
+    // Пробуем получить из кэша
+    const cached = localCache.get(prompt, model);
+    if (cached) {
+      return { content: cached, fromCache: true };
+    }
 
-  // Запрашиваем у модели
-  const content = await fetcher();
-  
-  // Сохраняем в кэш
-  localCache.set(prompt, model, content);
-  
-  return { content, fromCache: false };
+    // Запрашиваем у модели
+    const content = await fetcher();
+
+    // Не кэшировать пустые или явно ошибочные ответы
+    if (!content || content.trim().length === 0) {
+      console.log(
+        `[LocalCache] ⛔ Пропущено сохранение в кэш: пустой ответ для ${model}`,
+      );
+      return { content, fromCache: false };
+    }
+
+    // Сохраняем в кэш
+    localCache.set(prompt, model, content);
+
+    return { content, fromCache: false };
+  } catch (error) {
+    console.error('[CACHE_ERROR] FULL:', error);
+    console.error('[CACHE_ERROR] STACK:', error instanceof Error ? error.stack : undefined);
+    throw error;
+  }
 }

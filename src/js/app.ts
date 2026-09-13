@@ -1,7 +1,7 @@
 import { header } from '../components/header/header';
 import { main } from '../components/main/main';
 import { footer } from '../components/footer/footer';
-import { isWebp } from './modules/isWebp';
+import { isWebp } from './modules/is-webp/is-webp';
 
 // import { runFullPortfolioAnalysis } from './modules/cli-interface/cli-interface';
 

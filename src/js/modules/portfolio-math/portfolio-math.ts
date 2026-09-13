@@ -1,13 +1,14 @@
-import { MacroGoals, CurrentAsset } from '../xlsx-parser/xlsx-parser.js';
+import { MacroGoals, CurrentAsset, PriceUnit } from '../xlsx-parser/xlsx-parser.js';
+import { PortfolioConfig } from '../config/portfolio-config.js';
 
 export interface AssetAnalysis {
   name: string;
   ticker: string;
   assetType: string;
   currentPercent: number;
-  targetPercent: number;
+  targetPercent?: number;
   deficitRub: number;
-  status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW';
+  status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW' | 'EXIT' | 'NO_TARGET';
   dynamicsPercent: number;
   dailyDynamicsPercent?: number; // Дневная динамика из листа "Акции"
   nkdRub: number;
@@ -15,6 +16,8 @@ export interface AssetAnalysis {
   quantity: number;
   balancePrice: number;
   currentPrice: number;
+  /** Единица currentPrice: RUB / PERCENT_OF_NOMINAL / UNKNOWN */
+  priceUnit?: PriceUnit;
   unrealizedProfitRub: number;
   priority: number;
   isConcentrated: boolean;
@@ -27,32 +30,22 @@ export interface PortfolioReportData {
 }
 
 export class PortfolioMathModule {
-  private targetLimits: Record<string, { target: number; holdOnly?: boolean }> =
-    {
-      Полюс: { target: 20.0, holdOnly: true },
-      Сбербанк: { target: 10.0 },
-      'Татнфт Зао': { target: 9.0 },
-      ИнтерРАОао: { target: 8.0 },
-      'КЦ ИКС 5': { target: 8.0 },
-      'sГТЛК2P-14': { target: 15.0 },
-      'Брус 2Р04': { target: 20.0 },
-      Селигдар10: { target: 10.0 },
-    };
-
   public analyzePortfolio(
     macro: MacroGoals,
     assets: CurrentAsset[],
+    totalLiquidationValue: number,
   ): PortfolioReportData {
     const assetsAnalysis: AssetAnalysis[] = [];
     let allocatedStocksPercent = 0;
 
-    Object.keys(this.targetLimits).forEach((name) => {
-      if (
-        name !== 'sГТЛК2P-14' &&
-        name !== 'Брус 2Р04' &&
-        name !== 'Селигдар10'
-      ) {
-        allocatedStocksPercent += this.targetLimits[name].target;
+    // Считаем allocatedStocksPercent, исключая активы с excludeFromStockPool
+    // targetPercent === undefined → НЕ учитываем (нет целевой доли)
+    // targetPercent === 0 → EXIT, НЕ учитываем
+    // targetPercent > 0 → учитываем
+    assets.forEach((asset) => {
+      if (asset.holdOnly || asset.excludeFromStockPool) return;
+      if (asset.targetPercent !== undefined && asset.targetPercent > 0) {
+        allocatedStocksPercent += asset.targetPercent;
       }
     });
 
@@ -60,6 +53,9 @@ export class PortfolioMathModule {
       0,
       macro.stocksPercent - allocatedStocksPercent,
     );
+
+    const { buyDeviationPct, reduceDeviationPct, concentrationLimitPct } =
+      PortfolioConfig.rebalance;
 
     assets.forEach((asset) => {
       const nameUpper = asset.name.toUpperCase();
@@ -71,38 +67,94 @@ export class PortfolioMathModule {
         return;
       }
 
-      const limitConfig = this.targetLimits[asset.name];
+      // ─── Логика статусов на основе targetPercent и liquidationPercent ───
 
-      let targetPercent =
-        asset.targetPercent > 0
-          ? asset.targetPercent
-          : limitConfig
-            ? limitConfig.target
-            : -1;
+      // Предохранитель: при конфликте target — НЕ принимаем решение
+      if (asset.targetPercentConflict) {
+        assetsAnalysis.push({
+          name: asset.name,
+          ticker: asset.ticker,
+          assetType: asset.assetType,
+          currentPercent: asset.liquidationPercent,
+          targetPercent: undefined,
+          deficitRub: 0,
+          status: 'HOLD',
+          dynamicsPercent: asset.dynamicsPercent,
+          dailyDynamicsPercent: asset.dailyDynamicsPercent,
+          nkdRub: asset.nkdRub || 0,
+          nominal: asset.nominal ?? 0,
+          quantity: asset.quantity || 0,
+          balancePrice: asset.balancePrice ?? 0,
+          currentPrice: asset.currentPrice ?? 0,
+          priceUnit: asset.priceUnit,
+          unrealizedProfitRub: asset.unrealizedProfitRub || 0,
+          priority: 0,
+          isConcentrated: asset.liquidationPercent > concentrationLimitPct,
+        });
+        return;
+      }
 
-      let status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW' = 'STABLE';
-      let deficitRub = 0;
+      // ─── TARGET_NOT_SET: targetPercent отсутствует в Excel ───
+      if (asset.targetPercent === undefined) {
+        assetsAnalysis.push({
+          name: asset.name,
+          ticker: asset.ticker,
+          assetType: asset.assetType,
+          currentPercent: asset.liquidationPercent,
+          targetPercent: undefined,
+          deficitRub: 0,
+          status: 'NO_TARGET',
+          dynamicsPercent: asset.dynamicsPercent,
+          dailyDynamicsPercent: asset.dailyDynamicsPercent,
+          nkdRub: asset.nkdRub || 0,
+          nominal: asset.nominal ?? 0,
+          quantity: asset.quantity || 0,
+          balancePrice: asset.balancePrice ?? 0,
+          currentPrice: asset.currentPrice ?? 0,
+          priceUnit: asset.priceUnit,
+          unrealizedProfitRub: asset.unrealizedProfitRub || 0,
+          priority: 0,
+          isConcentrated: asset.liquidationPercent > concentrationLimitPct,
+        });
+        return;
+      }
 
-      if (targetPercent === -1) {
-        status = 'NEW';
+      let targetPercent: number;
+      let status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW' | 'EXIT';
+      let deficitRub: number;
+
+      if (asset.targetPercent === 0 && asset.liquidationPercent > 0) {
+        // Целевая доля 0, но актив есть в портфеле → плановый выход
+        status = 'EXIT';
         targetPercent = 0;
+        deficitRub = Math.round(
+          (asset.liquidationPercent / 100) * totalLiquidationValue,
+        );
+      } else if (asset.targetPercent === 0 && asset.liquidationPercent === 0) {
+        // Целевая 0 и текущая 0 → пропускаем (нет позиции)
+        return;
+      } else if (asset.targetPercent > 0 && asset.liquidationPercent === 0) {
+        // Целевая есть, но позиции нет → новый актив
+        status = 'NEW';
+        targetPercent = asset.targetPercent;
+        deficitRub = Math.round((targetPercent / 100) * totalLiquidationValue);
       } else {
-        const deviationPercent = targetPercent - asset.liquidationPercent;
-        deficitRub = Math.round((deviationPercent / 100) * macro.totalBalance);
+        // Оба значения > 0 → считаем отклонение
+        targetPercent = asset.targetPercent;
+        // deviationPct: положительный → перебор (REDUCE), отрицательный → дефицит (BUY)
+        const deviationPct = asset.liquidationPercent - targetPercent;
+        // deficitRub: положительный = нужно докупить, отрицательный = можно продать
+        deficitRub = Math.round((-deviationPct / 100) * totalLiquidationValue);
 
-        if (limitConfig?.holdOnly) {
+        // Защитный HOLD: позиция запрещена к продаже
+        if (asset.holdOnly) {
           status = 'HOLD';
-        } else if (deficitRub > 1000) {
+        } else if (deviationPct < -buyDeviationPct) {
           status = 'BUY';
-        } else if (deficitRub < -2000) {
+        } else if (deviationPct > reduceDeviationPct) {
           status = 'REDUCE';
-        }
-
-        if (
-          asset.liquidationPercent < asset.balancePercent &&
-          status === 'REDUCE'
-        ) {
-          status = 'HOLD';
+        } else {
+          status = 'STABLE';
         }
       }
 
@@ -110,8 +162,8 @@ export class PortfolioMathModule {
       const balancePrice = asset.balancePrice ?? 0;
       const currentPrice = asset.currentPrice ?? 0;
 
-      // Проверяем концентрацию (позиция > 20% — риск)
-      const isConcentrated = asset.liquidationPercent > 20;
+      // Проверяем концентрацию (позиция > X% — риск)
+      const isConcentrated = asset.liquidationPercent > concentrationLimitPct;
 
       assetsAnalysis.push({
         name: asset.name,
@@ -124,10 +176,11 @@ export class PortfolioMathModule {
         dynamicsPercent: asset.dynamicsPercent,
         dailyDynamicsPercent: asset.dailyDynamicsPercent,
         nkdRub: asset.nkdRub || 0,
-        nominal: asset.nominal || 1000,
+        nominal: asset.nominal ?? 0,
         quantity: asset.quantity || 0,
         balancePrice: balancePrice,
         currentPrice: currentPrice,
+        priceUnit: asset.priceUnit,
         unrealizedProfitRub: asset.unrealizedProfitRub || 0,
         priority: deficitRub,
         isConcentrated: isConcentrated,
@@ -138,12 +191,15 @@ export class PortfolioMathModule {
     assetsAnalysis.sort((a, b) => b.deficitRub - a.deficitRub);
 
     // Валидация: сумма долей не может превышать 100%
-    const totalPercent = assetsAnalysis.reduce((sum, a) => sum + a.currentPercent, 0);
+    const totalPercent = assetsAnalysis.reduce(
+      (sum, a) => sum + a.currentPercent,
+      0,
+    );
     if (totalPercent > 100.01) {
       console.warn(
         '⚠️ [VALIDATION] Сумма долей активов: ' +
-        totalPercent.toFixed(1) +
-        '% (должно быть ≤ 100%). Проверьте данные в Excel.',
+          totalPercent.toFixed(1) +
+          '% (должно быть ≤ 100%). Проверьте данные в Excel.',
       );
     }
 

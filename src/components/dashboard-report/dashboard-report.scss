@@ -126,6 +126,13 @@
       background-color: rgb(35 134 54 / 8%);
       border: 1px solid rgb(35 134 54 / 35%);
     }
+
+    /* ⚪ Статус для активов без целевой доли */
+    &.status-NO_TARGET {
+      color: #8b949e;
+      background-color: rgb(139 148 158 / 10%);
+      border: 1px solid rgb(139 148 158 / 30%);
+    }
   }
 
   .no-orders {

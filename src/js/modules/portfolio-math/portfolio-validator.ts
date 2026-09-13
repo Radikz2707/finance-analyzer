@@ -1,4 +1,5 @@
 import { CurrentAsset, MacroGoals } from '../xlsx-parser/xlsx-parser';
+import { PortfolioConfig } from '../config/portfolio-config.js';
 
 export interface ValidationResult {
   isValid: boolean;
@@ -25,19 +26,21 @@ export class PortfolioValidator {
       const isBond = asset.nkdRub !== undefined && asset.nkdRub > 0;
 
       if (isBond) {
-        totalBondsPercent += asset.targetPercent;
+        totalBondsPercent += asset.targetPercent ?? 0;
       } else {
-        totalStocksPercent += asset.targetPercent;
+        totalStocksPercent += asset.targetPercent ?? 0;
       }
 
-      // 🛡️ Цифровое правило риск-менеджмента портфеля: лимит на один актив не более 20%
-      if (asset.targetPercent > 20.0) {
+      // 🛡️ Цифровое правило риск-менеджмента портфеля: лимит на один актив не более X%
+      if ((asset.targetPercent ?? 0) > PortfolioConfig.rebalance.singleAssetLimitPct) {
         errors.push(
           "Критическое превышение лимита: Инструмент '" +
             asset.name +
             "' имеет целевую долю " +
             asset.targetPercent +
-            '%, что выше разрешенных риск-менеджментом 20%!',
+            '%, что выше разрешенных риск-менеджментом ' +
+            PortfolioConfig.rebalance.singleAssetLimitPct +
+            '%!',
         );
       }
     });

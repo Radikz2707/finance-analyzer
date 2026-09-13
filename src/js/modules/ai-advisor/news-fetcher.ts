@@ -53,7 +53,12 @@ export class NewsFetcherModule {
     try {
       const response = await axios.get(source.rssUrl, {
         timeout: 10000,
-        headers: { 'User-Agent': USER_AGENT },
+        headers: {
+          'User-Agent': USER_AGENT,
+          'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+        },
+        responseType: 'text',
+        transformResponse: [(data) => data],
       });
 
       const items = this.parseRssItems(response.data);
@@ -67,8 +72,9 @@ export class NewsFetcherModule {
           relevance: this.calculateRelevance(item.title, item.description),
         }))
         .slice(0, source.maxItems);
-    } catch {
-      console.warn(`[NEWS] Ошибка загрузки новостей ${source.name}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NEWS] Ошибка загрузки новостей ${source.name}: ${message}`);
       return [];
     }
   }

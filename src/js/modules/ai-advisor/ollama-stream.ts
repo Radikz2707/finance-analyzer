@@ -67,32 +67,49 @@ export async function streamChat(
   let totalTokens = 0;
   let totalDuration = 0;
   let loadDuration = 0;
+  let chunksReceived = 0;
+
+  // ─── Line buffer: Node.js stream буферизует данные произвольными чанками.
+  //     JSON-объекты могут быть разорваны между чанками или объединены в один.
+  //     Надёжный подход: аккумулируем сырые байты, делим по '\n',
+  //     последний (неполный) фрагмент оставляем для следующего чанка.
+  let lineBuffer = '';
 
   try {
     if (onStatus) {
       onStatus('Отправка запроса...');
     }
 
-    const response = await axios.post(
-      `${OLLAMA_BASE_URL}/api/chat`,
-      {
-        model: modelName,
-        messages,
-        stream,
-        options: {
-          num_predict: options.numPredict || 4096,
-          temperature: options.temperature || 0.3,
-          top_p: options.topP || 0.9,
-          top_k: options.topK || 40,
-          frequency_penalty: options.frequencyPenalty || 0,
-          presence_penalty: options.presencePenalty || 0,
+    let response;
+    try {
+      console.log('[STREAM] calling axios.post...');
+      response = await axios.post(
+        `${OLLAMA_BASE_URL}/api/chat`,
+        {
+          model: modelName,
+          messages,
+          stream,
+          think: false,
+          options: {
+            num_predict: options.numPredict || 4096,
+            temperature: options.temperature || 0.3,
+            top_p: options.topP || 0.9,
+            top_k: options.topK || 40,
+            frequency_penalty: options.frequencyPenalty || 0,
+            presence_penalty: options.presencePenalty || 0,
+          },
         },
-      },
-      {
-        timeout,
-        responseType: stream ? 'stream' : 'json',
-      },
-    );
+        {
+          timeout,
+          responseType: stream ? 'stream' : 'json',
+        },
+      );
+      console.log('[STREAM] axios.post returned');
+    } catch (axiosError) {
+      console.error('[AXIOS_ERROR] FULL:', axiosError);
+      console.error('[AXIOS_ERROR] STACK:', axiosError instanceof Error ? axiosError.stack : undefined);
+      throw axiosError;
+    }
 
     if (stream && response.data) {
       if (onStatus) {
@@ -100,44 +117,85 @@ export async function streamChat(
       }
 
       return new Promise((resolve) => {
-        response.data.on('data', (chunk: Buffer) => {
-          try {
-            const lines = chunk.toString().split('\n');
-            
-            lines.forEach((line) => {
-              if (!line.trim()) return;
+        // ─── Debug: первый чанк ───
+        let firstChunkLogged = false;
 
-              try {
-                const json = JSON.parse(line);
-                
-                // Добавляем контент к полному ответу
-                if (json.message?.content) {
-                  fullContent += json.message.content;
-                  
-                  if (onChunk) {
+        response.data.on('data', (chunk: Buffer) => {
+          chunksReceived++;
+
+          // Debug: ПЕРВЫЙ полученный chunk
+          if (!firstChunkLogged) {
+            firstChunkLogged = true;
+            console.debug('[OLLAMA_DEBUG] first chunk type:', typeof chunk);
+            console.debug('[OLLAMA_DEBUG] first chunk:', String(chunk).slice(0, 1000));
+          }
+
+          // Аккумулируем в line buffer
+          lineBuffer += chunk.toString();
+
+          // Делим по '\n'
+          const lines = lineBuffer.split('\n');
+          // Последний элемент может быть неполной строкой — оставляем в буфере
+          lineBuffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+
+            try {
+              const json = JSON.parse(line);
+
+              // Debug: логируем первый распаршенный JSON
+              if (chunksReceived === 1 && !firstChunkLogged) {
+                console.debug('[OLLAMA_DEBUG] first parsed JSON keys:', Object.keys(json));
+              }
+
+              // Добавляем контент к полному ответу
+              if (json.message?.content) {
+                fullContent += json.message.content;
+
+                if (onChunk) {
+                  try {
                     onChunk(json.message.content);
+                  } catch (chunkError) {
+                    console.error('[ON_CHUNK_ERROR] FULL:', chunkError);
+                    console.error('[ON_CHUNK_ERROR] STACK:', chunkError instanceof Error ? chunkError.stack : undefined);
                   }
                 }
-
-                // Собираем статистику из последнего сообщения
-                if (json.done) {
-                  totalTokens = json.total_tokens || 0;
-                  totalDuration = json.total_duration || 0;
-                  loadDuration = json.load_duration || 0;
-                }
-              } catch {
-                // Игнорируем не-JSON данные
               }
-            });
-          } catch {
-            // Игнорируем ошибки парсинга
+
+              // Собираем статистику из последнего сообщения
+              if (json.done) {
+                totalTokens = json.total_tokens || 0;
+                totalDuration = json.total_duration || 0;
+                loadDuration = json.load_duration || 0;
+              }
+            } catch {
+              // Игнорируем не-JSON данные
+            }
           }
         });
 
         response.data.on('end', () => {
+          // Обрабатываем оставшийся буфер (последняя строка без '\n')
+          if (lineBuffer.trim()) {
+            try {
+              const json = JSON.parse(lineBuffer);
+              if (json.message?.content) {
+                fullContent += json.message.content;
+              }
+              if (json.done) {
+                totalTokens = json.total_tokens || 0;
+                totalDuration = json.total_duration || 0;
+                loadDuration = json.load_duration || 0;
+              }
+            } catch {
+              // Игнорируем
+            }
+          }
+
           const elapsed = Date.now() - startTime;
           console.log(
-            `[Ollama Stream] ✅ Ответ получен за ${elapsed}мс (${fullContent.length} символов, ${totalTokens} токенов)`,
+            `[Ollama Stream] ✅ Ответ получен за ${elapsed}мс (${fullContent.length} символов, ${totalTokens} токенов, ${chunksReceived} чанков)`,
           );
 
           resolve({
@@ -151,6 +209,8 @@ export async function streamChat(
         });
 
         response.data.on('error', (err: Error) => {
+          console.error('[STREAM_ERROR_EVENT] FULL:', err);
+          console.error('[STREAM_ERROR_EVENT] STACK:', err.stack);
           console.error('[Ollama Stream] ❌ Ошибка потока:', err.message);
           resolve({
             content: fullContent || 'Ошибка получения ответа',

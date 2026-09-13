@@ -2,6 +2,7 @@ import { PortfolioReportData } from '../portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../portfolio-math/portfolio-validator.js';
 import { UIOrdersData } from './types.js';
 import { CalculatedIncome } from './income-calculator.js';
+import { PortfolioConfig } from '../config/portfolio-config.js';
 
 /**
  * Усиленный генератор локального отчёта при недоступности API.
@@ -27,9 +28,9 @@ export function buildFallbackReport(
 
   // Оценка структуры портфеля при текущей ставке ЦБ
   const macroAssessment = (() => {
-    if (cbrRate >= 18) {
-      return `При высокой ключевой ставке ${cbrRate}% облигационный сектор остаётся привлекательным благодаря доходностям к погашению 18-22%. Акции переоценены с точки зрения риска — премиум за волатильность высок. Рекомендуется сохранять долю облигаций не менее 50-60% портфеля.`;
-    } else if (cbrRate >= 12) {
+    if (cbrRate >= PortfolioConfig.macroThresholds.highCbrRate) {
+      return `При высокой ключевой ставке ${cbrRate}% облигационный сектор остаётся привлекательным благодаря доходностям к погашению ${PortfolioConfig.macroThresholds.highCbrRate}-${PortfolioConfig.macroThresholds.highCbrRate + 4}%. Акции переоценены с точки зрения риска — премиум за волатильность высок. Рекомендуется сохранять долю облигаций не менее 50-60% портфеля.`;
+    } else if (cbrRate >= PortfolioConfig.macroThresholds.mediumCbrRate) {
       return `При умеренно высокой ставке ${cbrRate}% баланс между акциями и облигациями должен определяться горизонтом инвестирования. Горизонт 3+ года — можно увеличивать долю акций до 40-50%. Гороризонт менее 2 лет — приоритет облигациям.`;
     } else {
       return `При низкой ставке ${cbrRate}% акции становятся более привлекательными. Рекомендуется увеличивать долю акций до 60-70% портфеля, особенно в секорах роста и качества.`;
@@ -47,16 +48,17 @@ export function buildFallbackReport(
   // ============================================================
   // СЕКЦИЯ 2: Ребалансировка — активы на покупку
   // ============================================================
-  const buyAssets = assetsAnalysis.filter((a) => a.status === 'BUY' && a.targetPercent > 0);
+  const buyAssets = assetsAnalysis.filter((a) => a.status === 'BUY' && (a.targetPercent ?? 0) > 0);
   if (buyAssets.length > 0) {
     parts.push('<strong>2. РЕКОМЕНДАЦИИ ПО ПОКУПКЕ</strong>');
     parts.push('');
     buyAssets.forEach((a) => {
-      const gap = a.targetPercent - a.currentPercent;
+      const tp = a.targetPercent ?? 0;
+      const gap = tp - a.currentPercent;
       const gapAbs = Math.abs(gap).toFixed(1);
       parts.push(
         `• <strong>${a.name} (${a.ticker}):</strong> ` +
-        `дефицит ${gapAbs}% (цель ${a.targetPercent.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
+        `дефицит ${gapAbs}% (цель ${tp.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
         `→ необходимо докупить на <strong>${a.deficitRub.toLocaleString('ru-RU')} ₽</strong>`
       );
       if (a.dynamicsPercent < -10) {
@@ -76,11 +78,12 @@ export function buildFallbackReport(
     parts.push('<strong>3. РЕКОМЕНДАЦИИ ПО СНИЖЕНИЮ ПОЗИЦИЙ</strong>');
     parts.push('');
     reduceAssets.forEach((a) => {
-      const excess = a.currentPercent - a.targetPercent;
+      const tp = a.targetPercent ?? 0;
+      const excess = a.currentPercent - tp;
       const excessAbs = Math.abs(excess).toFixed(1);
       parts.push(
         `• <strong>${a.name} (${a.ticker}):</strong> ` +
-        `профицит ${excessAbs}% (цель ${a.targetPercent.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
+        `профицит ${excessAbs}% (цель ${tp.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
         `→ рекомендуется сократить на <strong>${Math.abs(a.deficitRub).toLocaleString('ru-RU')} ₽</strong>`
       );
       if (a.dynamicsPercent > 15) {
@@ -166,9 +169,9 @@ export function buildFallbackReport(
       : '0';
     parts.push(`• Дивидендная доходность портфеля: ~${divYield}% годовых`);
 
-    if (parseFloat(divYield) < 5) {
-      parts.push('  💡 Дивидендная доходность ниже 5% — рассмотрите добавление дивидендных акций (Сбербанк, Лукойл, Татнефть) или высокодоходных облигаций.');
-    } else if (parseFloat(divYield) > 10) {
+    if (parseFloat(divYield) < PortfolioConfig.macroThresholds.lowDivYieldThreshold) {
+      parts.push(`  💡 Дивидендная доходность ниже ${PortfolioConfig.macroThresholds.lowDivYieldThreshold}% — рассмотрите добавление дивидендных акций или высокодоходных облигаций.`);
+    } else if (parseFloat(divYield) > PortfolioConfig.macroThresholds.highDivYieldThreshold) {
       parts.push('  💰 Высокая дивидендная доходность — хороший результат. Реинвестируйте дивиденды для сложного процента.');
     }
     parts.push('');

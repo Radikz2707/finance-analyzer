@@ -203,7 +203,7 @@ export function buildAssetsTablesAndBars(
     const item = sortedAssets[i];
     const color = colors[i % colors.length];
     const widthFact = Math.min(100, Math.max(0, item.currentPercent * 4));
-    const widthTarget = Math.min(100, Math.max(0, item.targetPercent * 4));
+    const widthTarget = Math.min(100, Math.max(0, (item.targetPercent ?? 0) * 4));
 
     barRows +=
       "<div class='asset-bars'>" +
@@ -222,7 +222,7 @@ export function buildAssetsTablesAndBars(
       '</div>' +
       "<div class='bar-row' style='margin-top: 3px;'>" +
       "<div class='bar-label bar-label--target'>Цель: " +
-      item.targetPercent.toFixed(1) +
+      (item.targetPercent !== undefined ? item.targetPercent.toFixed(1) : '—') +
       '%</div>' +
       "<div class='bar-track bar-track--small'>" +
       "<div class='bar-fill bar-fill--green' style='width: " +
@@ -261,17 +261,19 @@ export function buildAssetsTablesAndBars(
           ? '#ff7b72'
           : '#fff';
 
-    // Если целевая доля равна 0 (актив полностью продается, как STME ETF), выводим аккуратный прочерк
+    // Если целевая доля не установлена или равна 0 — выводим прочерк
     const displayDeficit =
-      item.targetPercent === 0
+      item.targetPercent === undefined || item.targetPercent === 0
         ? '—'
         : prefix + item.deficitRub.toLocaleString('ru-RU') + ' ₽';
 
     // ─── P&L от цены входа (в процентах) ───
     const balancePrice = Number(item.balancePrice) || 0;
     const currentPrice = Number(item.currentPrice) || 0;
+    // Для облигаций с UNKNOWN priceUnit P&L = «—» (номинал неизвестен)
+    const isPriceUnknown = item.priceUnit === 'UNKNOWN';
     const pnlPercent =
-      currentPrice > 0 && balancePrice > 0
+      !isPriceUnknown && currentPrice > 0 && balancePrice > 0
         ? ((currentPrice - balancePrice) / balancePrice) * 100
         : 0;
     const pnlColor = pnlPercent > 0
@@ -291,7 +293,7 @@ export function buildAssetsTablesAndBars(
       item.currentPercent.toFixed(1) +
       '%</td>' +
       '<td>' +
-      item.targetPercent.toFixed(1) +
+      (item.targetPercent !== undefined ? item.targetPercent.toFixed(1) : '—') +
       '%</td>' +
       '<td class="deficit-cell" style="color: ' +
       colorStyle +
@@ -299,9 +301,9 @@ export function buildAssetsTablesAndBars(
       displayDeficit +
       '</td>' +
       "<td><span class='status-badge status-" +
-      (item.targetPercent === 0 ? 'SELL' : item.status) +
+      (item.status === 'EXIT' ? 'EXIT' : item.status) +
       "'>" +
-      (item.targetPercent === 0 ? 'ВЫХОД' : item.status) +
+      (item.status === 'EXIT' ? 'ВЫХОД' : item.status === 'NO_TARGET' ? 'БЕЗ ЦЕЛИ' : item.status) +
       '</span></td>' +
       "<td class='price-info price-direction--" + pnlDirection + "'>" +
       "<div class='price-pair'>" +
@@ -321,16 +323,16 @@ export function buildAssetsTablesAndBars(
       "<td class='pnl-cell' style='color: " + pnlColor + ";'>" +
       "<span class='pnl-arrow'>" + pnlArrow + '</span>' +
       "<span class='pnl-pct'>" +
-      (currentPrice > 0 && balancePrice > 0
-        ? (pnlPercent > 0 ? '+' : '') + pnlPercent.toFixed(1) + '%'
-        : '—') +
+      (isPriceUnknown || currentPrice === 0 || balancePrice === 0
+        ? '—'
+        : (pnlPercent > 0 ? '+' : '') + pnlPercent.toFixed(1) + '%') +
       '</span>' +
       '</td>' +
       '</tr>';
   }
 
   const buyAssets = assetsAnalysis.filter(
-    (a) => a.status === 'BUY' && a.targetPercent > 0,
+    (a) => a.status === 'BUY' && (a.targetPercent ?? 0) > 0,
   );
   if (buyAssets.length > 0) {
     priorityBlock =
@@ -377,13 +379,14 @@ export function buildAssetsTablesAndBars(
 
   if (buyAssets.length > 0) {
     const topBuy = buyAssets[0];
+    const topTargetPct = topBuy.targetPercent ?? 0;
     const totalDeficit = buyAssets
       .reduce((sum, a) => sum + a.deficitRub, 0)
       .toLocaleString('ru-RU');
     const totalPositions = buyAssets.length;
     const topName = topBuy.name;
     const topDeficit = topBuy.deficitRub.toLocaleString('ru-RU');
-    const topPct = (topBuy.targetPercent - topBuy.currentPercent).toFixed(1);
+    const topPct = (topTargetPct - topBuy.currentPercent).toFixed(1);
 
     rebalanceBlock =
       "<div class='rebalance-section'>" +

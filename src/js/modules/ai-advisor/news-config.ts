@@ -16,11 +16,11 @@ export interface NewsSource {
 export const NEWS_SOURCES: NewsSource[] = [
   {
     name: 'РБК',
-    rssUrl: 'https://www.rbc.ru/rbc5onews/rss/articles?search=%D0%9F%D1%80%D0%B0%D0%B2%D0%B8%D0%BD%D0%B0%20%D0%98%D0%BD%D0%B2%D0%B5%D1%81%D1%82%D0%B8%D1%86%D0%B8%D0%B8%20%D0%A6%D0%91',
+    rssUrl: 'https://www.rbc.ru/rss/rbc_news_main.xml',
   },
   {
     name: 'Интерфакс',
-    rssUrl: 'https://www.interfax.ru/rss/rssfinance.rdf',
+    rssUrl: 'https://www.interfax.ru/rss/rss.rdf',
   },
   {
     name: 'Investing.com',

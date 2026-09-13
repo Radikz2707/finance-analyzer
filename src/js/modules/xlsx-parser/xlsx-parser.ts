@@ -2,6 +2,7 @@ import XLSX from 'xlsx';
 import * as fs from 'fs';
 import { QuikOrder, parseQuikOrdersFile } from './quik-orders-parser.js';
 import * as config from './xlsx-parser-config.js';
+import { PortfolioConfig } from '../config/portfolio-config.js';
 
 export interface MacroGoals {
   totalBalance: number;
@@ -15,11 +16,14 @@ export interface MacroGoals {
   activeOrdersListText: string;
 }
 
+/** Единица текущей цены: рубль, процент от номинала или неизвестно */
+export type PriceUnit = 'RUB' | 'PERCENT_OF_NOMINAL' | 'UNKNOWN';
+
 export interface CurrentAsset {
   name: string;
   ticker: string;
   assetType: string;
-  targetPercent: number;
+  targetPercent?: number;
   liquidationPercent: number;
   balancePercent: number;
   unrealizedProfitRub: number;
@@ -30,6 +34,76 @@ export interface CurrentAsset {
   quantity?: number;
   balancePrice?: number;
   currentPrice?: number;
+  /** Единица currentPrice: RUB / PERCENT_OF_NOMINAL / UNKNOWN */
+  priceUnit?: PriceUnit;
+  /** Идентификатор счёта (например, 'S04J3LB' или '403GPBT') */
+  accountId?: string;
+  /** Тип счёта: ИИС или брокерский */
+  accountType?: 'IIS' | 'BROKER';
+  /** Запрет на продажу (например, для защитных позиций) */
+  holdOnly?: boolean;
+  /** Исключить из расчёта stock pool */
+  excludeFromStockPool?: boolean;
+  /** Флаг конфликта targetPercent между счетами */
+  targetPercentConflict?: boolean;
+}
+
+/** Позиция на конкретном счёте (для детализации агрегации) */
+export interface AccountPosition {
+  accountId: string;
+  accountType: 'IIS' | 'BROKER';
+  liquidationValue: number;
+  liquidationPercent: number;
+  balancePercent: number;
+  targetPercent?: number;
+  quantity: number;
+  balancePrice: number;
+  currentPrice: number;
+  /** Балансовая стоимость из Excel (SUM этого поля = totalBalanceValue) */
+  balanceValue: number;
+  unrealizedProfitRub: number;
+  dynamicsPercent: number;
+  dailyDynamicsPercent?: number;
+  nkdRub?: number;
+  nominal?: number;
+  /** Единица currentPrice: RUB / PERCENT_OF_NOMINAL / UNKNOWN */
+  priceUnit?: PriceUnit;
+  /** Запрет на продажу (например, для защитных позиций) */
+  holdOnly?: boolean;
+  /** Исключить из расчёта stock pool */
+  excludeFromStockPool?: boolean;
+}
+
+/** Агрегированная позиция по тикеру с детализацией по счетам */
+export interface AggregatedAsset {
+  ticker: string;
+  name: string;
+  assetType: string;
+  totalLiquidationValue: number;
+  totalLiquidationPercent: number;
+  totalBalancePercent: number;
+  targetPercent?: number;
+  totalQuantity: number;
+  balancePrice: number;
+  currentPrice: number;
+  totalUnrealizedProfitRub: number;
+  dynamicsPercent: number;
+  dailyDynamicsPercent?: number;
+  nkdRub?: number;
+  nominal?: number;
+  /** Единица currentPrice: RUB / PERCENT_OF_NOMINAL / UNKNOWN */
+  priceUnit?: PriceUnit;
+  /** Сумма балансовых стоимостей по всем счетам (SUM balanceValue).
+    * averageBalancePrice = totalBalanceValue / totalQuantity
+    */
+  totalBalanceValue: number;
+  /** Запрет на продажу — true, если хотя бы на одном счёте holdOnly=true */
+  holdOnly?: boolean;
+  /** Исключить из stock pool — true, если хотя бы на одном счёте excludeFromStockPool=true */
+  excludeFromStockPool?: boolean;
+  /** Флаг конфликта targetPercent между счетами (true = разные target на разных счетах) */
+  targetPercentConflict?: boolean;
+  accounts: AccountPosition[];
 }
 
 export class XlsxParserModule {
@@ -162,7 +236,8 @@ export class XlsxParserModule {
 
     orders.forEach((order) => {
       if (order.status === 'АКТИВНА' || order.status === 'GTC (ПЕРЕНОС)') {
-        const isIis = order.account === 'S04J3LB';
+        const accountType = PortfolioConfig.accountTypeMapping[order.account as keyof typeof PortfolioConfig.accountTypeMapping];
+        const isIis = accountType === 'IIS';
         if (isIis) {
           totalIis += order.sum;
         } else {
@@ -257,6 +332,22 @@ export class XlsxParserModule {
       ).trim();
       const assetType = String(row['Вид активов'] || row['Тип'] || '').trim();
 
+      // Парсим номинал динамически из колонки «Номинал»
+      const nominal = this.parseNominalFromRow(row);
+
+      // Определяем priceUnit на основе типа актива и наличия номинала
+      const priceUnit = this.determinePriceUnit(assetType, nominal);
+
+      // Для облигаций с неизвестным номиналом НЕ подставляем 1000
+      // currentPrice = 0 → P&L покажет «—»/N/A
+      let finalCurrentPrice = liquidationPrice;
+      if (priceUnit === 'UNKNOWN') {
+        finalCurrentPrice = 0;
+      } else if (priceUnit === 'PERCENT_OF_NOMINAL' && nominal !== undefined && nominal > 0) {
+        // Процент от номинала → конвертируем в рубли
+        finalCurrentPrice = liquidationPrice * nominal / 100;
+      }
+
       // Ищем дневную динамику — только для акций
       const isStock = assetType === 'А' || assetType === 'Акция' || assetType.includes('Акция');
       let dailyDynamicsPercent: number | undefined = undefined;
@@ -298,15 +389,524 @@ export class XlsxParserModule {
         dynamicsPercent: dynamicsPercent,
         dailyDynamicsPercent,
         nkdRub: nkd,
-        nominal: config.DEFAULT_BOND_NOMINAL,
+        nominal,
+        priceUnit,
         quantity: quantity,
         balancePrice: balancePrice,
-        currentPrice: liquidationPrice,
+        currentPrice: finalCurrentPrice,
       });
     });
 
     return assets;
   }
+
+    /**
+     * Построение карты целевых долей из основного листа (QUIK).
+     *
+     * Читает колонки:
+     *   "Инструмент" → ticker (из "Код工具"/"Код инструмента"/"Код")
+     *   "Целевая доля, %" → targetPercent
+     *
+     * Возвращает Record< tickerUpper, targetPercent | undefined >
+     *   undefined → target отсутствует в Excel
+     *   0 → явный target 0 (EXIT)
+     *   15 → целевая доля 15%
+     */
+    private async parseTargetMapFromMainSheet(): Promise<Record<string, number | undefined>> {
+      await this.loadWorkbook();
+      if (!this.workbook) return {};
+
+      const sheetName = this.workbook?.SheetNames.find(
+        (name) => name === config.QUIK_SHEET_NAME,
+      );
+      if (!sheetName || !this.workbook) return {};
+
+      const sheet = this.workbook.Sheets[sheetName];
+      if (!sheet || !sheet['!ref']) return {};
+
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+      const targetMap: Record<string, number | undefined> = {};
+
+      for (const row of rows) {
+        const name = String(row['Инструмент'] || '').trim();
+        if (
+          !name ||
+          config.EXCLUDED_ROW_KEYWORDS.some((kw) => name.toUpperCase().includes(kw))
+        )
+          continue;
+        if (name.startsWith('-') || !isNaN(Number(name)) || name.length > 30)
+          continue;
+        if (config.FREE_CASH_ROW_KEYWORDS.some((kw) => name === kw)) continue;
+
+        const ticker = String(
+          row['Код工具'] || row['Код инструмента'] || row['Код'] || '',
+        ).trim().toUpperCase();
+        if (!ticker) continue;
+
+        // Читаем ТОЛЬКО из колонки "Целевая доля, %" — не используем parseValue
+        // чтобы различать 0 и undefined
+        const targetRaw = row['Целевая доля, %'] ?? row['Target Percent'] ?? row['S'];
+        let targetPct = this.parseOptionalTargetPercent(targetRaw);
+
+        // Excel хранит дроби (0.15), конвертируем в проценты (15)
+        // 0 остаётся 0 (EXIT), undefined остаётся undefined
+        if (targetPct !== undefined && targetPct > 0 && targetPct <= 1) {
+          targetPct = Math.round(targetPct * 100 * 100) / 100;
+        }
+
+        targetMap[ticker] = targetPct;
+      }
+
+      return targetMap;
+    }
+
+    /**
+      * Парсинг позиций по каждому счёту из отдельных листов "Портфель_XXX"
+      * Возвращает мапу: тикер → агрегированная позиция с детализацией по счетам
+      *
+      * КРИТИЧЕСКОЕ ПРАВИЛО: проценты НЕ складываются!
+      * Сначала агрегируем liquidationValue (руб.), затем пересчитываем проценты.
+      *
+      * Пример:
+      *   IIS:   PLZL = 100 000 ₽, IIS total = 500 000 ₽  → 20%
+      *   BROKER: PLZL = 100 000 ₽, BROKER total = 1 000 000 ₽ → 10%
+      *   ИТОГО:  PLZL = 200 000 ₽, Portfolio total = 1 500 000 ₽ → 13.33%
+      *   НЕ 20% + 10% = 30%!
+      */
+     public async parseAggregatedPortfolio(): Promise<AggregatedAsset[]> {
+       await this.loadWorkbook();
+       if (!this.workbook) return [];
+
+       const workbook = this.workbook;
+
+       // 0. Строим карту целевых долей из основного листа (QUIK)
+       const targetMap = await this.parseTargetMapFromMainSheet();
+
+       const accountsMap = new Map<string, { code: string; type: 'IIS' | 'BROKER' }>();
+
+     // 1. Собираем список счетов из листов "Портфель_XXX"
+     const portfolioSheets = workbook.SheetNames.filter(
+       (name) => name.toUpperCase().startsWith('ПОРТФЕЛЬ_') || name.toUpperCase().startsWith('ПОРТФ.')
+     );
+
+     portfolioSheets.forEach((sheetName) => {
+       const underscoreIdx = sheetName.indexOf('_');
+       if (underscoreIdx < 0) return;
+       const accountCode = sheetName.substring(underscoreIdx + 1).trim();
+       if (!accountCode || !/^[A-Z0-9]{5,7}$/i.test(accountCode)) return;
+
+       const accountType = PortfolioConfig.accountTypeMapping[accountCode as keyof typeof PortfolioConfig.accountTypeMapping];
+       accountsMap.set(accountCode, {
+         code: accountCode,
+         type: accountType === 'IIS' ? 'IIS' : 'BROKER',
+       });
+     });
+
+       // 2. Парсим позиции по каждому счёту, собираем AccountPosition[]
+        const tickerMap = new Map<string, {
+          ticker: string;
+          name: string;
+          assetType: string;
+          totalLiquidationValue: number;
+          totalQuantity: number;
+          totalBalanceValue: number;
+          totalUnrealizedProfitRub: number;
+          balancePrice: number;
+          currentPrice: number;
+          dynamicsPercent: number;
+          dailyDynamicsPercent?: number;
+          nkdRub?: number;
+          nominal?: number;
+          priceUnit?: PriceUnit;
+          targetPercentValues: Set<number | undefined>;
+          holdOnly: boolean;
+          excludeFromStockPool: boolean;
+          accounts: AccountPosition[];
+        }>();
+
+     for (const [accountCode, accountInfo] of accountsMap) {
+       // Ищем лист с этим кодом счёта
+       const sheetName = portfolioSheets.find(
+         (s) => {
+           const idx = s.indexOf('_');
+           if (idx < 0) return false;
+           const code = s.substring(idx + 1).trim().toUpperCase();
+           return code === accountCode.toUpperCase();
+         }
+       );
+       if (!sheetName) continue;
+
+       const sheet = workbook.Sheets[sheetName];
+       if (!sheet || !sheet['!ref']) continue;
+
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+
+          // Шаг 1: агрегируем строки по (accountId, ticker) внутри одного счёта
+          // чтобы избежать дубликатов одного тикера на одном счёте
+          const localTickerAgg = new Map<string, {
+            name: string;
+            assetType: string;
+            liqPercent: number;
+            balPercent: number;
+            targetPct: number | undefined;
+            nkd: number;
+            quantity: number;
+            balancePrice: number;
+            balanceValue: number;
+            currentPrice: number;
+            unrealizedProfit: number;
+            dynamicsPercent: number;
+            liquidationValue: number;
+            holdOnly: boolean;
+            excludeFromStockPool: boolean;
+            nominal: number | undefined;
+            priceUnit: PriceUnit;
+          }>();
+
+        for (const row of rows) {
+          const name = String(row['Инструмент'] || '').trim();
+          if (
+            !name ||
+            config.EXCLUDED_ROW_KEYWORDS.some((kw) =>
+              name.toUpperCase().includes(kw),
+            )
+          )
+            continue;
+          if (name.startsWith('-') || !isNaN(Number(name)) || name.length > 30)
+            continue;
+
+          const liqPercent = this.parseValue(
+            row['%, активов'] ||
+              row['%, активов, по ликвидационной стоимости'] ||
+              row['Доля'],
+          );
+          const balPercent = this.parseValue(
+            row['%, активов, по балансовой стоимости'] || row['%, активов'],
+          );
+           const targetPct = this.parseOptionalTargetPercent(
+             row['Target Percent'] || row['Целевая доля, %'] || row['S'],
+           );
+          const nkd = this.parseValue(row['НКД'] || row['Накопленный купон']);
+          const quantity = this.parseValue(
+            row['Позиция'] ||
+              row['Кол-во'] ||
+              row['Количество'] ||
+              row['Кол'] ||
+              0,
+          );
+           const balancePrice = this.parseValue(row['Балансовая цена']);
+           const balanceValue = this.parseValue(
+             row['Балансовая стоимость'] || row['Стоимость'],
+           );
+           const currentPrice = this.parseValue(row['Ликвидационная цена']);
+          const unrealizedProfit = this.parseValue(
+            row['Нереализованная прибыль'],
+          );
+          const dynamicsPercent = this.parseValue(row['Динамика актива']);
+          const ticker = String(
+            row['Код工具'] || row['Код инструмента'] || row['Код'] || '',
+          ).trim();
+          const assetType = String(
+            row['Вид активов'] || row['Тип'] || '',
+          ).trim();
+
+          // Парсим номинал динамически из колонки «Номинал»
+          const rowNominal = this.parseNominalFromRow(row);
+
+          // Определяем priceUnit на основе типа актива и наличия номинала
+          const rowPriceUnit = this.determinePriceUnit(assetType, rowNominal);
+
+          // Для облигаций с неизвестным номиналом НЕ подставляем 1000
+          let rowCurrentPrice = currentPrice;
+          if (rowPriceUnit === 'UNKNOWN') {
+            rowCurrentPrice = 0;
+          } else if (rowPriceUnit === 'PERCENT_OF_NOMINAL' && rowNominal !== undefined && rowNominal > 0) {
+            rowCurrentPrice = currentPrice * rowNominal / 100;
+          }
+
+          const holdOnly = this.parseBooleanColumn(row, [
+            config.QUIK_COLUMN_HOLD_ONLY,
+            config.QUIK_COLUMN_HOLD_ONLY_ALT1,
+            config.QUIK_COLUMN_HOLD_ONLY_ALT2,
+            config.QUIK_COLUMN_HOLD_ONLY_ALT3,
+          ]);
+          const excludeFromStockPool = this.parseBooleanColumn(row, [
+            config.QUIK_COLUMN_EXCLUDE_STOCK_POOL,
+            config.QUIK_COLUMN_EXCLUDE_STOCK_POOL_ALT1,
+            config.QUIK_COLUMN_EXCLUDE_STOCK_POOL_ALT2,
+            config.QUIK_COLUMN_EXCLUDE_STOCK_POOL_ALT3,
+          ]);
+
+          // Ликвидационная стоимость:
+          //   1. Приоритет — готовая колонка «Ликвидационная стоимость» из Excel
+          //   2. Fallback — цена × количество (только когда колонка отсутствует)
+          const explicitLiqValue = this.parseValue(
+            row['Ликвидационная стоимость'] ||
+              row['Стоимость'] ||
+              row['Балансовая стоимость'],
+          );
+          const liqValue = explicitLiqValue > 0 ? explicitLiqValue : currentPrice * quantity;
+
+          const tickerKey = ticker.toUpperCase();
+          const key = `${accountCode}::${tickerKey}`;
+
+          if (localTickerAgg.has(key)) {
+            const existing = localTickerAgg.get(key)!;
+            existing.quantity += quantity;
+            existing.balanceValue += balanceValue;
+            existing.unrealizedProfit += unrealizedProfit;
+            existing.liquidationValue += liqValue;
+            // OR-логика
+            existing.holdOnly = existing.holdOnly || holdOnly;
+            existing.excludeFromStockPool =
+              existing.excludeFromStockPool || excludeFromStockPool;
+            // Берём targetPct/nominal/priceUnit из первой непустой строки
+            if (existing.targetPct === undefined && targetPct !== undefined) {
+              existing.targetPct = targetPct;
+            } else if (existing.targetPct === 0 && targetPct !== undefined && targetPct > 0) {
+              existing.targetPct = targetPct;
+            }
+            if (existing.nominal === undefined && rowNominal !== undefined) {
+              existing.nominal = rowNominal;
+            }
+            if (existing.priceUnit === 'UNKNOWN' && rowPriceUnit !== 'UNKNOWN') {
+              existing.priceUnit = rowPriceUnit;
+            }
+          } else {
+            localTickerAgg.set(key, {
+              name,
+              assetType,
+              liqPercent,
+              balPercent,
+              targetPct,
+              nkd,
+              quantity,
+              balancePrice,
+              balanceValue,
+              currentPrice: rowCurrentPrice,
+              unrealizedProfit,
+              dynamicsPercent,
+              liquidationValue: liqValue,
+              holdOnly,
+              excludeFromStockPool,
+              nominal: rowNominal,
+              priceUnit: rowPriceUnit,
+            });
+          }
+        }
+
+        // Шаг 2: создаём AccountPosition из агрегированных данных и добавляем в tickerMap
+        for (const [key, agg] of localTickerAgg) {
+          const parts = key.split('::');
+          const ticker = parts[1];
+          const tickerKey = ticker.toUpperCase();
+
+            const accPos: AccountPosition = {
+              accountId: accountCode,
+              accountType: accountInfo.type,
+              liquidationValue: agg.liquidationValue,
+              liquidationPercent: agg.liqPercent,
+              balancePercent: agg.balPercent > 0 ? agg.balPercent : agg.liqPercent,
+              targetPercent: agg.targetPct,
+              quantity: agg.quantity,
+              balancePrice: agg.balancePrice,
+              balanceValue: agg.balanceValue,
+              currentPrice: agg.currentPrice,
+              unrealizedProfitRub: agg.unrealizedProfit,
+              dynamicsPercent: agg.dynamicsPercent,
+              nkdRub: agg.nkd,
+              nominal: agg.nominal,
+              priceUnit: agg.priceUnit,
+              holdOnly: agg.holdOnly,
+              excludeFromStockPool: agg.excludeFromStockPool,
+            };
+
+          if (tickerMap.has(tickerKey)) {
+            const existing = tickerMap.get(tickerKey)!;
+            existing.totalLiquidationValue += accPos.liquidationValue;
+            existing.totalQuantity += accPos.quantity;
+            existing.totalBalanceValue += accPos.balanceValue;
+            existing.totalUnrealizedProfitRub += accPos.unrealizedProfitRub;
+            existing.targetPercentValues.add(accPos.targetPercent);
+            existing.holdOnly = existing.holdOnly || accPos.holdOnly === true;
+            existing.excludeFromStockPool =
+              existing.excludeFromStockPool ||
+              accPos.excludeFromStockPool === true;
+            existing.accounts.push(accPos);
+          } else {
+            tickerMap.set(tickerKey, {
+              ticker: tickerKey,
+              name: agg.name,
+              assetType: agg.assetType,
+              totalLiquidationValue: accPos.liquidationValue,
+              totalQuantity: accPos.quantity,
+              totalBalanceValue: accPos.balanceValue,
+              totalUnrealizedProfitRub: accPos.unrealizedProfitRub,
+              balancePrice: agg.balancePrice,
+              currentPrice: agg.currentPrice,
+              dynamicsPercent: agg.dynamicsPercent,
+              nkdRub: agg.nkd,
+              nominal: accPos.nominal,
+              priceUnit: accPos.priceUnit,
+              targetPercentValues: new Set([agg.targetPct]),
+              holdOnly: accPos.holdOnly === true,
+              excludeFromStockPool: accPos.excludeFromStockPool === true,
+              accounts: [accPos],
+            });
+          }
+        }
+      }
+
+     // 3. Считаем ОБЩУЮ ликвидационную стоимость всего портфеля
+     let totalPortfolioLiqValue = 0;
+     for (const asset of tickerMap.values()) {
+       totalPortfolioLiqValue += asset.totalLiquidationValue;
+     }
+
+     // 4. Пересчитываем проценты из агрегированных liquidationValue
+     const result: AggregatedAsset[] = [];
+
+      for (const asset of tickerMap.values()) {
+        // Правильный пересчёт: totalLiqValue / totalPortfolioLiqValue * 100
+        const totalLiquidationPercent = totalPortfolioLiqValue > 0
+          ? Math.round((asset.totalLiquidationValue / totalPortfolioLiqValue) * 100 * 100) / 100
+          : 0;
+
+        // Аналогично для balancePercent — собираем balanceValue из accounts
+        let totalBalanceValue = 0;
+        for (const acc of asset.accounts) {
+          totalBalanceValue += acc.balancePercent > 0
+            ? acc.balancePercent * acc.liquidationValue / (acc.liquidationPercent > 0 ? acc.liquidationPercent : 1)
+            : acc.liquidationValue;
+        }
+        const totalBalancePercent = totalPortfolioLiqValue > 0
+          ? Math.round((totalBalanceValue / totalPortfolioLiqValue) * 100 * 100) / 100
+          : 0;
+
+        // averageBalancePrice = SUM(balanceValue) / SUM(quantity)
+        // balanceValue берётся из Excel колонки «Балансовая стоимость»
+        // Округляем до 2 знаков после запятой
+        const averageBalancePrice = asset.totalQuantity > 0
+          ? Math.round((asset.totalBalanceValue / asset.totalQuantity) * 100) / 100
+          : 0;
+
+        // Обработка targetPercent
+          // Приоритет: targetMap из основного листа > account sheets
+          //
+          // undefined + undefined → undefined (TARGET_NOT_SET)
+          // 15 + 15 → 15 (совпадение)
+          // 15 + 8 → undefined + conflict (TARGET_CONFLICT)
+          const targetValues = Array.from(asset.targetPercentValues);
+          const definedTargets = targetValues.filter((v) => v !== undefined);
+          let targetPercent: number | undefined;
+          let targetPercentConflict: boolean;
+
+          // 1. Проверяем targetMap из основного листа (QUIK sheet)
+          const mainSheetTarget = targetMap[asset.ticker];
+
+          if (mainSheetTarget !== undefined) {
+            // Target найден в основном листе → используем его
+            targetPercent = mainSheetTarget;
+            targetPercentConflict = false;
+          } else if (definedTargets.length === 0) {
+            // Target отсутствует и в основном листе, и на счетах → TARGET_NOT_SET
+            targetPercent = undefined;
+            targetPercentConflict = false;
+          } else if (definedTargets.length === 1 && targetValues.length === 1) {
+            // Одинаковый target на всех счетах (но нет в основном листе)
+            targetPercent = definedTargets[0];
+            targetPercentConflict = false;
+          } else if (definedTargets.length > 1) {
+            // КОНФЛИКТ: разные target на разных счетах
+            targetPercentConflict = true;
+            targetPercent = undefined;
+
+           const accountDetails = asset.accounts.map((a) =>
+             `${a.accountId}(${a.accountType}): ${a.targetPercent}`
+           ).join(', ');
+           console.warn(
+             `⚠️ [AGGREGATE] TARGET_CONFLICT: ticker=${asset.ticker}, ` +
+             `targets=[${definedTargets.join(', ')}], details=[${accountDetails}]`,
+           );
+         } else {
+           // definedTargets.length === 1, но targetValues.length > 1
+           // Например: один счёт имеет target=15, другой — undefined
+           targetPercent = definedTargets[0];
+           targetPercentConflict = false;
+         }
+
+         result.push({
+           ticker: asset.ticker,
+           name: asset.name,
+           assetType: asset.assetType,
+           totalLiquidationValue: asset.totalLiquidationValue,
+           totalLiquidationPercent,
+           totalBalancePercent,
+           targetPercent,
+           totalQuantity: asset.totalQuantity,
+           balancePrice: averageBalancePrice,
+           currentPrice: asset.currentPrice,
+           totalUnrealizedProfitRub: asset.totalUnrealizedProfitRub,
+           dynamicsPercent: asset.dynamicsPercent,
+           nkdRub: asset.nkdRub,
+           nominal: asset.nominal,
+           priceUnit: asset.priceUnit,
+           totalBalanceValue: asset.totalBalanceValue,
+           holdOnly: asset.holdOnly,
+           excludeFromStockPool: asset.excludeFromStockPool,
+           targetPercentConflict,
+           accounts: asset.accounts,
+         });
+     }
+
+     return result;
+   }
+
+  /**
+    * Преобразует агрегированный портфель в массив CurrentAsset
+    * для совместимости с существующей бизнес-логикой
+    *
+    * Использует ПРАВИЛЬНО пересчитанные totalLiquidationPercent
+    * из parseAggregatedPortfolio(), а не суммирует проценты счетов.
+    */
+   public aggregatedToCurrentAssets(aggregated: AggregatedAsset[]): CurrentAsset[] {
+     return aggregated.map((agg) => {
+       const totalQty = agg.totalQuantity;
+
+       // accountId: для агрегированного портфеля не используем формат "A,B"
+       // Если позиция на одном счёте — берём его ID, иначе undefined
+       const accountId = agg.accounts.length === 1
+         ? agg.accounts[0].accountId
+         : undefined;
+
+       const accountType = agg.accounts.length === 1
+         ? agg.accounts[0].accountType
+         : undefined;
+
+          return {
+            name: agg.name,
+            ticker: agg.ticker,
+            assetType: agg.assetType,
+            targetPercent: agg.targetPercent,
+            liquidationPercent: agg.totalLiquidationPercent,
+            balancePercent: agg.totalBalancePercent,
+            unrealizedProfitRub: agg.totalUnrealizedProfitRub,
+            dynamicsPercent: agg.dynamicsPercent,
+            dailyDynamicsPercent: agg.dailyDynamicsPercent,
+            nkdRub: agg.nkdRub,
+            nominal: agg.nominal,
+            priceUnit: agg.priceUnit,
+            quantity: totalQty,
+            balancePrice: agg.balancePrice,
+            currentPrice: agg.currentPrice,
+            accountId,
+            accountType,
+            holdOnly: agg.holdOnly || false,
+            excludeFromStockPool: agg.excludeFromStockPool || false,
+            targetPercentConflict: agg.targetPercentConflict || false,
+          };
+      });
+    }
 
   /**
    * Парсинг листа "Акции" — котировки всех акций Московской биржи.
@@ -818,5 +1418,114 @@ export class XlsxParserModule {
       return isNaN(parsed) ? 0 : parsed;
     }
     return 0;
+  }
+
+  /**
+   * Парсинг целевой доли с различением undefined и 0.
+   *
+   *   undefined / null / '' → undefined (target не указан в Excel)
+   *   0 → 0 (target явно равен нулю → EXIT)
+   *   15 → 15 (обычная целевая доля)
+   */
+  private parseOptionalTargetPercent(val: unknown): number | undefined {
+    if (val === undefined || val === null) return undefined;
+    if (typeof val === 'number') {
+      // NaN → undefined, 0 → 0, 15 → 15
+      return isNaN(val) ? undefined : val;
+    }
+    if (typeof val === 'string') {
+      const trimmed = val.trim();
+      if (trimmed === '') return undefined;
+      const normalized = trimmed.replace(',', '.');
+      const parsed = parseFloat(normalized);
+      if (isNaN(parsed)) return undefined;
+      return parsed;
+    }
+    return undefined;
+  }
+
+  /**
+   * Поиск значения в строке Excel по нескольким возможным именам столбцов.
+   * Возвращает значение первого найденного столбца или undefined.
+   */
+  private findColumnValue(
+    row: Record<string, unknown>,
+    columnNames: string[],
+  ): unknown {
+    for (const name of columnNames) {
+      if (row[name] !== undefined && row[name] !== null) {
+        return row[name];
+      }
+    }
+    // Fallback: case-insensitive поиск
+    const rowKeys = Object.keys(row);
+    for (const name of columnNames) {
+      const found = rowKeys.find(
+        (k) => k.toLowerCase().trim() === name.toLowerCase().trim(),
+      );
+      if (found && row[found] !== undefined && row[found] !== null) {
+        return row[found];
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Парсинг булева значения из Excel-колонки по нескольким возможным именам.
+   * Поддерживает: true/false, 1/0, TRUE/FALSE, да/нет, yes/no
+   * Default: false если колонка отсутствует.
+   */
+  private parseBooleanColumn(
+    row: Record<string, unknown>,
+    columnNames: string[],
+  ): boolean {
+    const val = this.findColumnValue(row, columnNames);
+    return this.parseBooleanValue(val);
+  }
+
+  /**
+    * Безопасный парсинг булева значения.
+    */
+  private parseBooleanValue(val: unknown): boolean {
+    if (typeof val === 'boolean') return val;
+    if (typeof val === 'number') return val === 1;
+    if (typeof val !== 'string') return false;
+
+    const normalized = val.trim().toLowerCase();
+    const trueValues = ['true', '1', 'да', 'yes', 'y'];
+    const falseValues = ['false', '0', 'нет', 'no', 'n'];
+
+    if (trueValues.includes(normalized)) return true;
+    if (falseValues.includes(normalized)) return false;
+
+    return false;
+  }
+
+  /**
+   * Динамический поиск колонки «Номинал» в строке Excel.
+   * Возвращает значение номинала или undefined, если колонка отсутствует.
+   */
+  private parseNominalFromRow(row: Record<string, unknown>): number | undefined {
+    const nominal = this.parseValue(
+      row['Номинал'] || row['Номинал облигации'] || row['Номинал облигации, руб'] || 0,
+    );
+    return nominal > 0 ? nominal : undefined;
+  }
+
+  /**
+   * Определение priceUnit для актива.
+   * Для облигаций (assetType === 'О'):
+   *   - nominal известен → 'PERCENT_OF_NOMINAL'
+   *   - nominal неизвестен → 'UNKNOWN'
+   * Для остальных (акции, ETF) → 'RUB'
+   */
+  private determinePriceUnit(
+    assetType: string,
+    nominal: number | undefined,
+  ): PriceUnit {
+    const isBond = assetType === 'О' || assetType === 'Облигация';
+    if (!isBond) return 'RUB';
+    if (nominal !== undefined && nominal > 0) return 'PERCENT_OF_NOMINAL';
+    return 'UNKNOWN';
   }
 }
