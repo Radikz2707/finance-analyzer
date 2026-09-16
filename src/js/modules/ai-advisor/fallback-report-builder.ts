@@ -2,7 +2,7 @@ import { PortfolioReportData } from '../portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../portfolio-math/portfolio-validator.js';
 import { UIOrdersData } from './types.js';
 import { CalculatedIncome } from './income-calculator.js';
-import { PortfolioConfig } from '../config/portfolio-config.js';
+import { PortfolioConfig } from './portfolio-config.js';
 
 /**
  * Усиленный генератор локального отчёта при недоступности API.
@@ -15,7 +15,6 @@ export function buildFallbackReport(
   validation: ValidationResult,
   orders: UIOrdersData,
   cbrRate: number,
-  newAssetsForAi?: string,
 ): string {
   const { assetsAnalysis, macro } = analysis;
   const parts: string[] = [];
@@ -122,15 +121,10 @@ export function buildFallbackReport(
     parts.push('<strong>5. НОВЫЕ АКТИВЫ</strong>');
     parts.push('');
     newAssets.forEach((a) => {
-      const autoMatch = newAssetsForAi
-        ? newAssetsForAi.match(new RegExp(a.ticker + '.*?рекомендуется (\\d+)%', 's'))
-        : null;
-      const target = autoMatch ? autoMatch[1] : '—';
       parts.push(
         '<li>' +
-        '<strong>' + a.name + ' (' + a.ticker + '):</strong> новый актив. Автоматическая рекомендация целевой доли: <strong>' + target + '%</strong>. ' +
-        'Рекомендуется начать с минимальной позиции (1-2% портфеля) и постепенно увеличивать при подтверждении тезисов.' +
-        '</li>',
+        '<strong>' + a.name + ' (' + a.ticker + '):</strong> новый актив. Целевая доля не задана. ' +
+        'Рекомендуется указать targetPercent в Excel-таблице для определения стратегии.</li>',
       );
       parts.push('');
     });

@@ -1,5 +1,5 @@
 import { CurrentAsset } from '../xlsx-parser/xlsx-parser.js';
-import { PortfolioConfig } from '../config/portfolio-config.js';
+import { PortfolioConfig } from './portfolio-config.js';
 
 export interface AutoTargetResult {
   ticker: string;
@@ -71,6 +71,6 @@ export function suggestAllAutoTargets(
   macroBondsPct: number,
 ): AutoTargetResult[] {
   return assets
-    .filter((a) => a.targetPercent === 0 && (a.quantity || 0) > 0)
+    .filter((a) => a.targetPercent === undefined && (a.quantity || 0) > 0)
     .map((asset) => suggestAutoTargetPercent(asset, macroStocksPct, macroBondsPct));
 }

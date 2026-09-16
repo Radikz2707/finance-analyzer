@@ -17,6 +17,9 @@ import { suggestAllAutoTargets } from './auto-target-allocator.js';
 import { PriceAlertsModule } from './price-alerts.js';
 import { NewsFetcherModule } from './news-fetcher.js';
 import { buildPortfolioSnapshot } from '../portfolio-snapshot/portfolio-snapshot.js';
+import { InvestmentThesisEngine } from '../research/investment-thesis/investment-thesis-engine.js';
+import { buildAssetResearchSnapshot, buildPortfolioAssetContext } from './snapshot-builder.js';
+import type { ResearchContext } from '../research/providers/types.js';
 
 /**
  * Главный управляющий модуль сквозного анализа инвестиционной деятельности портфеля
@@ -240,11 +243,70 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     (item) => item.status === 'NEW',
   );
 
-  // АВТОПРЕДЛОЖЕНИЕ ЦЕЛЕВЫХ ДОЛЬ для новых активов
+  // АВТОПРЕДЛОЖЕНИЕ ЦЕЛЕВЫХ ДОЛЬ для новых активов (только для HTML)
   const autoTargets = suggestAllAutoTargets(
     assets,
     actualStocksPct,
     actualBondsPct,
+  );
+
+  // ─── INVESTMENT THESIS GENERATION ───
+  // Для каждого актива формируем:
+  //   AssetAnalysis → ResearchAsset → ResearchProviderRegistry.researchAll → AssetResearchSnapshot → InvestmentThesisEngine
+  const thesisEngine = new InvestmentThesisEngine();
+  const thesisResults = new Map<string, import('../research/investment-thesis/types.js').InvestmentThesisResult>();
+
+  // Создаём ResearchContext из имеющихся данных
+  const researchContext: ResearchContext = {
+    researchTimestamp: new Date().toISOString(),
+    marketQuotes: Object.fromEntries(
+      Object.entries(quotesMap).map(([ticker, quote]) => [
+        ticker,
+        {
+          currentPrice: quote.currentPrice,
+          dailyDynamicsPercent: quote.dailyDynamicsPercent ?? 0,
+          shortName: quote.shortName || ticker,
+        },
+      ])
+    ),
+    macroData: {
+      keyRate: cbrRateData.rate,
+      fxUsd: undefined,
+      oil: undefined,
+    },
+    newsData: [],
+    sources: [
+      {
+        name: cbrRateData.source,
+        version: '1.0',
+        fetchedAt: cbrRateData.lastUpdated,
+      },
+    ],
+  };
+
+  // async function required for await
+  for (const asset of analysisResult.assetsAnalysis) {
+    const { snapshot } = await buildAssetResearchSnapshot(asset, researchContext);
+    const portfolioCtx = buildPortfolioAssetContext(asset, {
+      totalPortfolioValue: analysisResult.macro.totalBalance,
+    });
+
+    try {
+      const result = thesisEngine.generate({
+        snapshot,
+        portfolioContext: portfolioCtx,
+      });
+      thesisResults.set(asset.ticker, result);
+    } catch (err) {
+      console.error(
+        `[THESIS] Ошибка генерации thesis для ${asset.ticker}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  console.log(
+    `[THESIS] Сформировано thesis для ${thesisResults.size} из ${analysisResult.assetsAnalysis.length} активов`,
   );
 
   if (newAssets.length > 0) {
@@ -309,28 +371,6 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   fs.writeFileSync(reportPathMd, mdData, 'utf-8');
 
-  // Формируем список новых активов для ИИ-контекста
-  let newAssetsForAi = '';
-  if (autoTargets.length > 0) {
-    newAssetsForAi =
-      '\n=== НОВЫЕ АКТИВЫ (без целевой доли) ===\n' +
-      autoTargets
-        .map(
-          (t) =>
-            '- ' +
-            t.ticker +
-            ' (' +
-            t.name +
-            '): текущая доля 0%, рекомендуется ' +
-            t.suggestedTargetPercent +
-            '% (' +
-            t.reason +
-            ')',
-        )
-        .join('\n') +
-      '\n';
-  }
-
   const reportPathHtml = path.join(process.cwd(), 'report.html');
 
   // Запускаем AI-запрос в фоне (не блокирует открытие отчёта)
@@ -346,7 +386,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
         ordersData,
         portfolioSnapshot,
         cbrRateData,
-        newAssetsForAi,
+        thesisResults,
         combinedContext,
         { stocks: actualStocksPct, bonds: actualBondsPct },
         {

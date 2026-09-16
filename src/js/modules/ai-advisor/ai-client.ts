@@ -22,8 +22,9 @@ import {
   cleanAiResponse,
   type OllamaMessage,
 } from './ollama-manager.js';
-import { PortfolioConfig } from '../config/portfolio-config.js';
+import { PortfolioConfig } from './portfolio-config.js';
 import { CbrRateData } from './cbr-rate.js';
+import type { InvestmentThesisResult } from '../research/investment-thesis/types.js';
 
 /** Результат запроса к ИИ */
 interface AiResponseResult {
@@ -59,11 +60,12 @@ export class AiClient {
     */
     private buildPortfolioContext(
       analysis: PortfolioReportData,
-      inc: CalculatedIncome,
-      validation: ValidationResult,
+      _inc: CalculatedIncome,
+      _validation: ValidationResult,
       orders: UIOrdersData,
       snapshot: PortfolioSnapshot | null,
-      historicalData?: {
+      thesisResults: Map<string, InvestmentThesisResult>,
+      _historicalData?: {
         profitC10: number;
         profitC11: number;
         investedNet: number;
@@ -97,18 +99,18 @@ export class AiClient {
       (a) => a.assetType === 'О' || a.assetType === 'Облигация',
     );
 
-    let currentStocksPct = 0;
-    let currentBondsPct = 0;
+    let _currentStocksPct = 0;
+    let _currentBondsPct = 0;
 
     stockAssets.forEach((a) => {
-      currentStocksPct += a.currentPercent;
+      _currentStocksPct += a.currentPercent;
     });
     bondAssets.forEach((a) => {
-      currentBondsPct += a.currentPercent;
+      _currentBondsPct += a.currentPercent;
     });
 
-    currentStocksPct = Math.round(currentStocksPct * 100) / 100;
-    currentBondsPct = Math.round(currentBondsPct * 100) / 100;
+    _currentStocksPct = Math.round(_currentStocksPct * 100) / 100;
+    _currentBondsPct = Math.round(_currentBondsPct * 100) / 100;
 
     const currentDate = new Date().toLocaleDateString('ru-RU');
     const rateValue = cbrRateData?.rate ?? 0;
@@ -182,93 +184,128 @@ export class AiClient {
 
     ctx += 'Все данные агрегированы по всем счетам. Анализируй каждый актив как единый.\n\n';
 
+    // === БЛОК 1: INVESTMENT FACTS (без status PortfolioMath) ===
     ctx += '╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  СПИСОК ВСЕХ АКТИВОВ ПОРТФЕЛЯ (АНАЛИЗИРУЙ ТОЛЬКО ИХ)   ║\n';
+    ctx += '║  INVESTMENT FACTS — ФАКТЫ ОБ АКТИВЕ (АНАЛИЗИРУЙ ДО     ║\n';
+    ctx += '║  ПОЛУЧЕНИЯ PORTFOLIO_MATH_STATUS)                      ║\n';
     ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx += '⚠️ ВАЖНО: Один актив может быть на нескольких счетах (брокерский, ИИС). Данные агрегированы.\n\n';
+    ctx += '⚠️ ВАЖНО: Это ТОЛЬКО факты. Сформируй AI_RECOMMENDED_TARGET_PERCENT и AI_RECOMMENDED_ACTION\n';
+    ctx += 'на основе этих фактов ДО того, как увидишь PORTFOLIO_MATH_STATUS ниже.\n\n';
     ctx += 'АКЦИИ:\n';
     stockAssets.forEach((a) => {
       ctx += `  • [АКЦИЯ] ${a.ticker} | ${a.name}\n`;
-      ctx += `    Текущая доля: ${a.currentPercent.toFixed(1)}% | Целевая доля: ${a.targetPercent !== undefined ? a.targetPercent.toFixed(1) : '—'}%\n`;
-      ctx += `    Дефицит/профицит: ${a.deficitRub >= 0 ? '+' : ''}${a.deficitRub.toLocaleString('ru-RU')} ₽ | Статус: ${a.status}\n`;
-      ctx += `    Динамика: ${a.dynamicsPercent >= 0 ? '+' : ''}${a.dynamicsPercent.toFixed(2)}% | Цена входа: ${a.balancePrice.toLocaleString('ru-RU')} ₽ → Текущая: ${a.currentPrice.toLocaleString('ru-RU')} ₽\n`;
+      ctx += `    Текущая доля: ${a.currentPercent.toFixed(1)}%\n`;
+      ctx += `    Текущая цена: ${a.currentPrice.toLocaleString('ru-RU')} ₽ | Цена входа: ${a.balancePrice.toLocaleString('ru-RU')} ₽\n`;
+      if (a.balancePrice > 0 && a.currentPrice > 0) {
+        const pnlFromEntry = ((a.currentPrice - a.balancePrice) / a.balancePrice * 100).toFixed(1);
+        ctx += `    P&L от входа: ${pnlFromEntry}%\n`;
+      }
+      ctx += `    Количество: ${a.quantity} шт. | Ликвидация: ${(a.currentPrice * a.quantity).toLocaleString('ru-RU')} ₽\n`;
+      // NO_DATA marker если нет фундаментальных данных
+      const hasFundamentals = a.nkdRub > 0 || a.dynamicsPercent !== 0;
+      if (!hasFundamentals) {
+        ctx += '    ⚠️ NO_DATA: фундаментальные показатели отсутствуют\n';
+      }
+      if (a.nkdRub > 0) {
+        ctx += `    НКД: ${a.nkdRub.toLocaleString('ru-RU')} ₽\n`;
+      }
+      ctx += '\n';
     });
 
     ctx += '\nОБЛИГАЦИИ:\n';
     bondAssets.forEach((a) => {
       ctx += `  • [ОБЛ] ${a.ticker} | ${a.name}\n`;
-      ctx += `    Текущая доля: ${a.currentPercent.toFixed(1)}% | Целевая доля: ${a.targetPercent !== undefined ? a.targetPercent.toFixed(1) : '—'}%\n`;
-      ctx += `    Дефицит/профицит: ${a.deficitRub >= 0 ? '+' : ''}${a.deficitRub.toLocaleString('ru-RU')} ₽ | Статус: ${a.status}\n`;
-      ctx += `    НКД: ${a.nkdRub.toLocaleString('ru-RU')} ₽ | Динамика: ${a.dynamicsPercent >= 0 ? '+' : ''}${a.dynamicsPercent.toFixed(2)}%\n`;
-    });
-
-    ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  СТРУКТУРА ПОРТФЕЛЯ: ЦЕЛЬ vs ФАКТ                       ║\n';
-    ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx += `Акции:  цель ${macro.stocksPercent}% | факт ${currentStocksPct.toFixed(1)}% | разница ${(currentStocksPct - macro.stocksPercent).toFixed(1)}% | дефицит/профицит: ${macro.stocksDeficitRub >= 0 ? '+' : ''}${macro.stocksDeficitRub.toLocaleString('ru-RU')} ₽\n`;
-    ctx += `Облигации:  цель ${macro.bondsPercent}% | факт ${currentBondsPct.toFixed(1)}% | разница ${(currentBondsPct - macro.bondsPercent).toFixed(1)}% | дефицит/профицит: ${macro.bondsDeficitRub >= 0 ? '+' : ''}${macro.bondsDeficitRub.toLocaleString('ru-RU')} ₽\n`;
-    ctx += `Кэш: ${macro.freeCash.toLocaleString('ru-RU')} ₽\n\n`;
-
-    // Исторический результат (из PortfolioSnapshot + historicalData)
-    if (historicalData) {
-      ctx += '╔══════════════════════════════════════════════════════════╗\n';
-      ctx += '║  ИСТОРИЧЕСКИЙ РЕЗУЛЬТАТ (С НАЧАЛА УЧЕТА)               ║\n';
-      ctx += '╚══════════════════════════════════════════════════════════╝\n';
-      ctx += `📉 Текущая прибыль (C10): ${historicalData.profitC10 >= 0 ? '+' : ''}${historicalData.profitC10.toLocaleString('ru-RU')} ₽\n`;
-      ctx += `🌟 Инвест-результат (C11): ${historicalData.profitC11 >= 0 ? '+' : ''}${historicalData.profitC11.toLocaleString('ru-RU')} ₽\n`;
-      const profitPercent = historicalData.investedNet > 0
-        ? (historicalData.profitC11 / historicalData.investedNet) * 100
-        : 0;
-      ctx += `📊 Доходность: ${profitPercent.toFixed(2)}%\n`;
-      // Из snapshot.financial (не реконструкция)
-      ctx += `💰 Вложено средств: ${snapshotFinancial?.contributedCapital.toLocaleString('ru-RU') ?? historicalData.investedNet.toLocaleString('ru-RU')} ₽\n`;
-      ctx += `📈 Текущая рыночная стоимость: ${snapshotFinancial?.currentAssets.toLocaleString('ru-RU') ?? totalVal.toLocaleString('ru-RU')} ₽\n`;
-      ctx += `📊 Дефицит долевой позиции: ${currentEquityGap.toLocaleString('ru-RU')} ₽ (${currentEquityGapPct.toFixed(2)}%)\n`;
-      ctx += `🛒 Общий объём покупок: ${historicalData.totalPurchases.toLocaleString('ru-RU')} ₽\n`;
-      ctx += `💰 Общий объём продаж: ${historicalData.totalSales.toLocaleString('ru-RU')} ₽\n`;
-      ctx += `▪️ Комиссии брокеру: ${historicalData.commission.toLocaleString('ru-RU')} ₽\n\n`;
-    }
-
-    ctx += '╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  ДИВИДЕНДЫ И КУПОНЫ (LTM)                               ║\n';
-    ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx += `Ожидаемый чистый поток (после НДФЛ 13%): ${inc.totalDivsNet.toLocaleString('ru-RU')} ₽\n`;
-    ctx += `Накопленный НКД по облигациям: ${inc.totalNkd.toLocaleString('ru-RU')} ₽\n`;
-    inc.stocks.forEach((s) => {
-      ctx += `  • ${s.name} (${s.ticker}): ${s.quantity} шт. × ${s.rate} ₽ = ${s.grossIncome.toLocaleString('ru-RU')} ₽ грязными → ${s.netIncome.toLocaleString('ru-RU')} ₽ чистыми\n`;
-    });
-
-    // Рекомендации по каждому активу (из анализа портфеля)
-    ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  РЕКОМЕНДАЦИИ ПО АКТИВАМ (АВТО-АНАЛИЗ)                  ║\n';
-    ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    assetsAnalysis.forEach((a) => {
-      if (a.currentPercent === 0 && a.targetPercent === 0) return;
-      const action = a.status === 'BUY' ? '🟢 ПОКУПАТЬ' : a.status === 'REDUCE' ? '🔴 ПРОДАВАТЬ' : a.status === 'HOLD' ? '🟡 ДЕРЖАТЬ' : '⚪ НОВЫЙ';
-      ctx += `• ${a.ticker} (${a.name}):\n`;
-      ctx += `    ${action} | Текущая: ${a.currentPercent.toFixed(1)}% | Цель: ${a.targetPercent !== undefined ? a.targetPercent.toFixed(1) : '—'}%\n`;
-      ctx += `    Дефицит: ${a.deficitRub >= 0 ? '+' : ''}${a.deficitRub.toLocaleString('ru-RU')} ₽ | Динамика: ${a.dynamicsPercent >= 0 ? '+' : ''}${a.dynamicsPercent.toFixed(2)}%\n`;
+      ctx += `    Текущая доля: ${a.currentPercent.toFixed(1)}%\n`;
+      ctx += `    Текущая цена: ${a.currentPrice.toLocaleString('ru-RU')} ₽ | Цена входа: ${a.balancePrice.toLocaleString('ru-RU')} ₽\n`;
       if (a.balancePrice > 0 && a.currentPrice > 0) {
         const pnlFromEntry = ((a.currentPrice - a.balancePrice) / a.balancePrice * 100).toFixed(1);
-        ctx += `    P&L от входа: ${pnlFromEntry}% (${a.balancePrice.toLocaleString('ru-RU')} → ${a.currentPrice.toLocaleString('ru-RU')} ₽)\n`;
+        ctx += `    P&L от входа: ${pnlFromEntry}%\n`;
       }
+      ctx += `    Количество: ${a.quantity} шт. | Ликвидация: ${(a.currentPrice * a.quantity).toLocaleString('ru-RU')} ₽\n`;
+      // NO_DATA marker если нет фундаментальных данных
+      const hasFundamentals = a.nkdRub > 0 || a.dynamicsPercent !== 0;
+      if (!hasFundamentals) {
+        ctx += '    ⚠️ NO_DATA: фундаментальные показатели отсутствуют\n';
+      }
+      if (a.nkdRub > 0) {
+        ctx += `    НКД: ${a.nkdRub.toLocaleString('ru-RU')} ₽\n`;
+      }
+      ctx += '\n';
     });
 
+    // === БЛОК 2: INVESTMENT RESEARCH (Thesis Engine) ===
     ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  РИСК-МЕНЕДЖМЕНТ                                        ║\n';
+    ctx += '║  INVESTMENT RESEARCH — РЕЗУЛЬТАТЫ ИССЛЕДОВАНИЯ        ║\n';
     ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    if (!validation.isValid) {
-      ctx += '⚠️ НАРУШЕНИЯ:\n';
-      validation.errors.forEach((err) => {
-        ctx += `  ⚠️ ${err}\n`;
-      });
-    } else {
-      ctx += '✅ Все лимиты соблюдены.\n';
-    }
+    ctx += '⚠️ ВАЖНО: Это структурированный InvestmentThesis. AI НЕ должен пересказывать evidence как собственный факт,\n';
+    ctx += 'если confidence/evidence недостаточны. Если RESEARCH_STATUS = NO_RESEARCH — не компенсируй выдуманными данными.\n\n';
 
+    analysis.assetsAnalysis.forEach((a) => {
+      const thesis = thesisResults.get(a.ticker);
+
+      if (!thesis) {
+        ctx += 'TICKER: ' + a.ticker + '\n';
+        ctx += 'NAME: ' + a.name + '\n';
+        ctx += 'RESEARCH_STATUS: NO_RESEARCH\n';
+        ctx += 'INVESTMENT_THESIS: Недостаточно данных для формирования инвестиционного тезиса.\n';
+        ctx += 'BULL_CASE: Недостаточно данных.\n';
+        ctx += 'BASE_CASE: Недостаточно данных.\n';
+        ctx += 'BEAR_CASE: Недостаточно данных.\n';
+        ctx += 'KEY_DRIVERS: []\n';
+        ctx += 'KEY_RISKS: []\n';
+        ctx += 'KEY_CATALYSTS: []\n';
+        ctx += 'VALUATION_VIEW: insufficient_data\n';
+        ctx += 'MACRO_SENSITIVITY: insufficient\n';
+        ctx += 'THESIS_CONFIDENCE: LOW (0.00)\n';
+        ctx += 'EVIDENCE: []\n';
+        ctx += '\n';
+        return;
+      }
+
+      const confidenceStr = thesis.confidence.level + ' (' + thesis.confidence.value.toFixed(2) + ')';
+      const evidenceItems = thesis.evidenceReferences.map(
+        (e) => '- id: ' + e.evidenceId + ' | type: ' + e.type + ' | source: ' + e.fact,
+      ).join('\n');
+
+      ctx += 'TICKER: ' + thesis.ticker + '\n';
+      ctx += 'NAME: ' + a.name + '\n';
+      ctx += 'RESEARCH_STATUS: RESEARCH_AVAILABLE\n';
+      ctx += 'INVESTMENT_THESIS: ' + thesis.thesis + '\n';
+      ctx += 'BULL_CASE: ' + thesis.bullCase + '\n';
+      ctx += 'BASE_CASE: ' + thesis.baseCase + '\n';
+      ctx += 'BEAR_CASE: ' + thesis.bearCase + '\n';
+      ctx += 'KEY_DRIVERS:\n';
+      thesis.keyDrivers.forEach((d) => { ctx += '  - ' + d + '\n'; });
+      ctx += 'KEY_RISKS:\n';
+      thesis.keyRisks.forEach((r) => { ctx += '  - ' + r + '\n'; });
+      ctx += 'KEY_CATALYSTS:\n';
+      thesis.keyCatalysts.forEach((c) => { ctx += '  - ' + c + '\n'; });
+      ctx += 'VALUATION_VIEW: ' + thesis.valuationView.stance + ' | ' + thesis.valuationView.reasoning + '\n';
+      ctx += 'MACRO_SENSITIVITY: ' + thesis.macroSensitivity.level + ' | ' + thesis.macroSensitivity.description + '\n';
+      ctx += 'THESIS_CONFIDENCE: ' + confidenceStr + '\n';
+      ctx += 'EVIDENCE:\n';
+      ctx += evidenceItems || '  (нет доказательств)';
+      ctx += '\n\n';
+    });
+
+    // === БЛОК 4: DETERMINISTIC PORTFOLIO RESULT ===
     ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  АКТИВНЫЕ ЗАЯВКИ                                        ║\n';
+    ctx += '║  DETERMINISTIC PORTFOLIO RESULT — РЕЗУЛЬТАТ ПОРТФЕЛЯ   ║\n';
     ctx += '╚══════════════════════════════════════════════════════════╝\n';
+    ctx += '⚠️ ВАЖНО: Это детерминированный результат PortfolioMath. Сравни с AI_RECOMMENDED_ACTION.\n\n';
+    assetsAnalysis.forEach((a) => {
+      if (a.currentPercent === 0 && a.targetPercent === 0) return;
+      ctx += `• ${a.ticker} (${a.name}):\n`;
+      ctx += `    USER_TARGET_PERCENT: ${a.targetPercent !== undefined ? a.targetPercent.toFixed(1) : '—'}%\n`;
+      ctx += `    PORTFOLIO_MATH_STATUS: ${a.status}\n`;
+      ctx += `    Дефицит: ${a.deficitRub >= 0 ? '+' : ''}${a.deficitRub.toLocaleString('ru-RU')} ₽\n\n`;
+    });
+
+    // === БЛОК 5: ACTIVE ORDERS (только execution context, ПОСЛЕ AI decision) ===
+    ctx += '╔══════════════════════════════════════════════════════════╗\n';
+    ctx += '║  EXECUTION CONTEXT — АКТИВНЫЕ ЗАЯВКИ (НЕ ИНВЕСТ. ТЕЗИС)║\n';
+    ctx += '╚══════════════════════════════════════════════════════════╝\n';
+    ctx += '⚠️ ВАЖНО: Эти заявки — факт исполнения. НЕ используй их как инвестиционный аргумент.\n';
     ctx += orders.md || 'Нет активных заявок.\n';
 
     ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
@@ -290,7 +327,6 @@ export class AiClient {
   private buildUserPrompt(
     context: string,
     cbrRate: number,
-    newAssetsForAi?: string,
     newsContext?: string,
     macroPercentages?: { stocks: number; bonds: number },
     historicalData?: {
@@ -353,12 +389,6 @@ export class AiClient {
     prompt += '- Используй структуру: 7 секций, пронумерованных 1., 2., 3., 4., 5., 6., 7.\n';
     prompt += '- НЕ используй маркеры типа "$1." — только "1.", "2." и т.д.\n';
     prompt += '- ⚠️ ВАЖНО: Данные агрегированы по всем счетам. Анализируй каждый актив как единый, не дублируй рекомендации по счетам.\n';
-
-    // Добавляем информацию о новых активах
-    if (newAssetsForAi) {
-      prompt += '\n=== НОВЫЕ АКТИВЫ ===\n' + newAssetsForAi + '\n';
-      prompt += '⚡ ВНИМАНИЕ: Новые активы проанализируй в рамках переданных данных. Не назначай targetPercent, если он не задан PortfolioMath.\n';
-    }
 
     return prompt;
   }
@@ -816,7 +846,7 @@ export class AiClient {
     orders: UIOrdersData,
     snapshot: PortfolioSnapshot | null,
     cbrRateData: CbrRateData,
-    newAssetsForAi?: string,
+    thesisResults: Map<string, InvestmentThesisResult>,
     newsContext?: string,
     actualMacroPercentages?: { stocks: number; bonds: number },
     historicalData?: {
@@ -846,6 +876,7 @@ export class AiClient {
       validation,
       orders,
       snapshot,
+      thesisResults,
       historicalData,
       accountsInfo,
       cbrRateData,
@@ -869,7 +900,6 @@ export class AiClient {
     const userPrompt = this.buildUserPrompt(
       context,
       cbrRateData.rate,
-      newAssetsForAi,
       newsContext,
       roundedMacros,
       {
@@ -891,7 +921,6 @@ export class AiClient {
           validation,
           orders,
           cbrRateData.rate,
-          newAssetsForAi,
         ),
         modelUsed: 'local-fallback',
         success: false,
@@ -954,7 +983,6 @@ export class AiClient {
         validation,
         orders,
         cbrRateData.rate,
-        newAssetsForAi,
       ),
       modelUsed: 'local-fallback',
       success: false,

@@ -35,7 +35,7 @@ export const AI_MODELS: AiModelConfig[] = [
     id: 'ollama',
     name: 'Ollama (локально)',
     baseUrl: 'http://localhost:11434/api/chat',
-    modelName: 'qwen3.5:9b',
+    modelName: 'qwen3.5:4b',
     maxTokens: 8192,
     temperature: 0.2,
     priority: 1,

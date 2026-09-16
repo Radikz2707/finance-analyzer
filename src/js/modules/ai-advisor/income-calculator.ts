@@ -2,7 +2,7 @@ import XLSX from 'xlsx';
 import * as fs from 'fs';
 import { CurrentAsset } from '../xlsx-parser/xlsx-parser.js';
 import * as config from '../xlsx-parser/xlsx-parser-config.js';
-import { PortfolioConfig } from '../config/portfolio-config.js';
+import { PortfolioConfig } from './portfolio-config.js';
 
 export interface StockIncomeResult {
   name: string;

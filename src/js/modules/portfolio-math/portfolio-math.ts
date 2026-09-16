@@ -1,5 +1,5 @@
 import { MacroGoals, CurrentAsset, PriceUnit } from '../xlsx-parser/xlsx-parser.js';
-import { PortfolioConfig } from '../config/portfolio-config.js';
+import { PortfolioConfig } from '../ai-advisor/portfolio-config.js';
 
 export interface AssetAnalysis {
   name: string;
