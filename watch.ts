@@ -12,12 +12,9 @@
  */
 import { parseExcelAndFetchRecommendations } from './src/js/modules/ai-advisor/ai-advisor.js';
 import * as fs from 'fs';
-import * as path from 'path';
 
-// Путь к Excel-файлу (дублируем из xlsx-parser-config.ts, чтобы не тянуть зависимости)
-const EXCEL_FILE_PATH =
-  process.env.EXCEL_FILE_PATH ||
-  path.resolve('C:/Users/Радик/Documents/Бухгалтерия Радика/Отчет/Данные новые.xlsx');
+/** Путь к Excel-файлу (читается из .env) */
+const EXCEL_FILE_PATH = process.env.EXCEL_FILE_PATH || '';
 
 const DEBOUNCE_MS = 5000; // Ждём 5 сек после изменения mtime — Power Query обычно завершает запись за 3-4 сек
 const RETRY_DELAY_MS = 2000; // Ждём 2 сек перед повторной попыткой чтения
@@ -99,7 +96,6 @@ if (!fs.existsSync(EXCEL_FILE_PATH)) {
 
 // Читаем начальное состояние файла
 let lastModified = fs.statSync(EXCEL_FILE_PATH).mtimeMs;
-let lastSuccessRun = Date.now();
 
 // Первый запуск
 runAnalysis();

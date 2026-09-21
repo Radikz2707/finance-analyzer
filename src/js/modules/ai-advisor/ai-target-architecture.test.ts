@@ -123,7 +123,9 @@ describe('AI Target Architecture Tests', () => {
     const prompt = buildSystemPrompt(21);
     // AI обязан использовать только targetPercent из PortfolioMath
     expect(prompt).toContain('используй только targetPercent из PortfolioMath');
-    expect(prompt).toContain('targetPercent не задан → напиши «Цель не задана»');
+    // NO_TARGET vs AI_RECOMMENDED_TARGET разделены
+    expect(prompt).toContain('NO_TARGET vs AI_RECOMMENDED_TARGET');
+    expect(prompt).toContain('AI_RECOMMENDED_TARGET_PERCENT — это ИСКЛЮЧИТЕЛЬНО AI-рекомендация');
   });
 
   it('Тест 5: AI target не попадает обратно в PortfolioMath', () => {
@@ -482,8 +484,11 @@ describe('AI Target Architecture Tests', () => {
 
     // PORTFOLIO_MATH_STATUS должен остаться NO_TARGET (не изменён)
     expect(context).toContain('PORTFOLIO_MATH_STATUS: NO_TARGET');
-    // USER_TARGET_PERCENT должен быть '—' (не задан)
-    expect(context).toContain('USER_TARGET_PERCENT: —%');
+    // USER_TARGET_PERCENT должен быть 'НЕ ЗАДАН' (не задан)
+    expect(context).toContain('USER_TARGET_PERCENT: НЕ ЗАДАН');
+    // AI_RECOMMENDED_TARGET_PERCENT явно отделён от USER_TARGET
+    expect(context).toContain('AI_RECOMMENDED_TARGET_PERCENT: AI формирует рекомендацию самостоятельно');
+    expect(context).toContain('НЕ пользовательская цель');
   });
 
   it('Тест 16: buildPortfolioContext НЕ изменяет REDUCE статус', () => {

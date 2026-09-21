@@ -27,11 +27,19 @@ const execOptions = {
  */
 const sanitizePath = (p) => (p ? p.replace(/[&|;`]/g, '') : '');
 
+/**
+ * Получает путь к CLI-модулю через node (обходит bash-обёртки на Windows).
+ */
+const cliPath = (moduleName) => {
+  const ext = moduleName === 'stylelint' ? '.mjs' : '.js';
+  return path.resolve('node_modules', moduleName, 'bin', moduleName + ext);
+};
+
 // === БЕЗОПАСНЫЙ ТАСК STYLELINT (ВАЛИДАЦИЯ SCSS) ===
 export const lintCss = (arg = null) => {
   return new Promise((resolve, reject) => {
     const filePath = typeof arg === 'function' ? null : arg;
-    const args = ['stylelint'];
+    const args = [];
 
     if (filePath) {
       args.push(sanitizePath(filePath));
@@ -45,9 +53,15 @@ export const lintCss = (arg = null) => {
       '--custom-formatter=stylelint-formatter-pretty',
     );
 
-    const cmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    // Используем node напрямую, чтобы обойти bash-обёртки на Windows
+    const cmd = process.platform === 'win32'
+      ? 'node'
+      : 'npx';
+    const cli = process.platform === 'win32'
+      ? cliPath('stylelint')
+      : 'stylelint';
 
-    execFile(cmd, args, execOptions, (err, stdout, stderr) => {
+    execFile(cmd, [cli, ...args], execOptions, (err, stdout, stderr) => {
       if (stdout) {
         process.stdout.write(stdout);
 
@@ -93,7 +107,7 @@ export const lintCss = (arg = null) => {
 export const lintJs = (arg = null) => {
   return new Promise((resolve, reject) => {
     const filePath = typeof arg === 'function' ? null : arg;
-    const args = ['eslint'];
+    const args = [];
 
     if (filePath) {
       args.push(sanitizePath(filePath));
@@ -109,9 +123,15 @@ export const lintJs = (arg = null) => {
 
     if (isProdBuild) args.push('--fix');
 
-    const cmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+    // Используем node напрямую, чтобы обойти bash-обёртки на Windows
+    const cmd = process.platform === 'win32'
+      ? 'node'
+      : 'npx';
+    const cli = process.platform === 'win32'
+      ? cliPath('eslint')
+      : 'eslint';
 
-    execFile(cmd, args, execOptions, (err, stdout, stderr) => {
+    execFile(cmd, [cli, ...args], execOptions, (err, stdout, stderr) => {
       if (stdout) {
         process.stdout.write(stdout);
 

@@ -9,9 +9,7 @@
 // ─── Пути и имена ───────────────────────────────────────────────────────────
 
 /** Путь к Excel-файлу с данными портфеля QUIK */
-export const EXCEL_FILE_PATH =
-  process.env.EXCEL_FILE_PATH ||
-  'C:/Users/Радик/Documents/Бухгалтерия Радика/Отчет/Данные новые.xlsx';
+export const EXCEL_FILE_PATH = process.env.EXCEL_FILE_PATH || '';
 
 /** Имя листа Excel с текущими позициями портфеля */
 export const QUIK_SHEET_NAME = 'QUIK';
@@ -25,9 +23,24 @@ export const TRADES_SHEET_NAME = 'Отчет по сделкам';
 /** Имя листа Excel с котировками всех акций Московской биржи */
 export const QUOTES_SHEET_NAME = 'Акции';
 
+/** Имя листа Excel со справочником облигаций (ISIN + номинал) */
+export const BONDS_SHEET_NAME = 'Облигации';
+
+/** Варианты имён колонки ISIN в листе «Облигации» */
+export const BONDS_COLUMN_ISIN = 'ISIN';
+export const BONDS_COLUMN_ISIN_ALT1 = 'ISIN-код';
+export const BONDS_COLUMN_ISIN_ALT2 = 'Код ISIN';
+export const BONDS_COLUMN_ISIN_ALT3 = 'ISIN код';
+
+/** Варианты имён колонки номинала в листе «Облигации» */
+export const BONDS_COLUMN_NOMINAL = 'Номинал';
+export const BONDS_COLUMN_NOMINAL_ALT1 = 'Номинальная стоимость';
+export const BONDS_COLUMN_NOMINAL_ALT2 = 'Nominal';
+export const BONDS_COLUMN_NOMINAL_ALT3 = 'Номинал облигации';
+
 // Столбцы листа "Акции" — левая таблица (сырые данные из QUIK)
 export const QUOTES_COLUMN_INSTRUMENT = 'Инструмент';
-export const QUOTES_COLUMN_TICKER = 'Код工具';
+export const QUOTES_COLUMN_TICKER = 'Код инструмента';
 export const QUOTES_COLUMN_TICKER_ALT = 'Код';
 export const QUOTES_COLUMN_CURRENT_PRICE = 'Цена';
 export const QUOTES_COLUMN_DAILY_DYNAMICS = 'Динамика';
@@ -45,6 +58,7 @@ export const EXCLUDED_ROW_KEYWORDS = [
   'БАЛАНС',
   'ДОЛЯ АКЦИЙ',
   'ДОЛЯ ОБЛИГА',
+  'РУБЛЬ',
 ];
 
 /** Набор ключевых слов для поиска строки «Вложенные средства» */
@@ -99,7 +113,7 @@ export const QUANTITY_COLUMN_SEARCH_KEY = 'КОЛ';
 // ─── Столбцы листа QUIK ────────────────────────────────────────────────────
 
 export const QUIK_COLUMN_INSTRUMENT = 'Инструмент';
-export const QUIK_COLUMN_TICKER = 'Код工具';
+export const QUIK_COLUMN_TICKER = 'Код инструмента';
 export const QUIK_COLUMN_TICKER_ALT1 = 'Код инструмента';
 export const QUIK_COLUMN_TICKER_ALT2 = 'Код';
 export const QUIK_COLUMN_ASSET_TYPE = 'Вид активов';
@@ -132,6 +146,3 @@ export const QUIK_COLUMN_EXCLUDE_STOCK_POOL_ALT2 = 'exclude_from_stock_pool';
 export const QUIK_COLUMN_EXCLUDE_STOCK_POOL_ALT3 = 'excludestockpool';
 
 // ─── Константы ──────────────────────────────────────────────────────────────
-
-/** Стандартный номинал российской облигации (₽) */
-export const DEFAULT_BOND_NOMINAL = 1000;

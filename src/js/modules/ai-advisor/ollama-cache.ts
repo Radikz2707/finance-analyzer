@@ -295,8 +295,8 @@ export async function getCachedResponse(
 
     return { content, fromCache: false };
   } catch (error) {
-    console.error('[CACHE_ERROR] FULL:', error);
-    console.error('[CACHE_ERROR] STACK:', error instanceof Error ? error.stack : undefined);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error('[AI] Ошибка кэша Ollama:', msg);
     throw error;
   }
 }

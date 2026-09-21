@@ -1,9 +1,3 @@
-import { header } from '../components/header/header';
-import { main } from '../components/main/main';
-import { footer } from '../components/footer/footer';
-
-// import { runFullPortfolioAnalysis } from './modules/cli-interface/cli-interface';
-
 /** Проверка поддержки WebP */
 function isWebp(): void {
   function testWebP(callback: (support: boolean) => void): void {
@@ -25,9 +19,6 @@ function isWebp(): void {
 const initApp = () => {
   document.body.classList.add('_js-ready');
   isWebp();
-  header();
-  main();
-  footer();
 };
 
 if (document.readyState === 'loading') {
@@ -37,6 +28,3 @@ if (document.readyState === 'loading') {
 }
 
 console.log('🚀 Radik.Dev: TypeScript успешно инициализирован');
-
-
-// runFullPortfolioAnalysis();

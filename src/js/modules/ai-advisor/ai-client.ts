@@ -1,8 +1,11 @@
-import { PortfolioReportData } from '../portfolio-math/portfolio-math.js';
+import { PortfolioReportData, type AssetAnalysis } from '../portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../portfolio-math/portfolio-validator.js';
 import { CalculatedIncome } from './income-calculator.js';
 import axios from 'axios';
-import { buildSystemPrompt, type MacroDataContext } from './prompt-templates.js';
+import {
+  buildSystemPrompt,
+  type MacroDataContext,
+} from './prompt-templates.js';
 import { buildFallbackReport } from './fallback-report-builder.js';
 import { UIOrdersData } from './types.js';
 import { PortfolioSnapshot } from '../portfolio-snapshot/portfolio-snapshot.js';
@@ -13,18 +16,29 @@ import {
   type AiModelConfig,
 } from './ai-config.js';
 import { localCache, getCachedResponse } from './ollama-cache.js';
-import { streamChat, chatWithoutStream, type StreamResult } from './ollama-stream.js';
+import {
+  streamChat,
+  chatWithoutStream,
+  type StreamResult,
+} from './ollama-stream.js';
 import {
   isOllamaRunning,
   listModels,
   pullModel,
   formatModelList,
   cleanAiResponse,
+  validateAiOutput,
+  validateArithmeticConsistency,
+  type DeterministicAmounts,
   type OllamaMessage,
 } from './ollama-manager.js';
 import { PortfolioConfig } from './portfolio-config.js';
-import { CbrRateData } from './cbr-rate.js';
 import type { InvestmentThesisResult } from '../research/investment-thesis/types.js';
+import {
+  validateStructuredAIJson,
+  type RawAIJson,
+  type ValidationResult as StructuredValidationResult,
+} from './structured-ai-recommendation.js';
 
 /** Результат запроса к ИИ */
 interface AiResponseResult {
@@ -36,6 +50,66 @@ interface AiResponseResult {
   success: boolean;
   /** Сообщение об ошибке (если success = false) */
   error?: string;
+  /** Структурированный JSON от AI (может быть null если не извлечён) */
+  structuredJson?: RawAIJson | null;
+  /** Результат валидации structured JSON */
+  structuredValidation?: StructuredValidationResult | null;
+}
+
+/**
+ * Извлекает JSON-блок из AI-ответа.
+ * Ищет блок между ```json ... ``` или ``` ... ``` или прямой JSON.
+ */
+export function extractJsonFromAiResponse(text: string): RawAIJson | null {
+  if (!text) return null;
+
+  // Паттерн 1: ```json { ... } ```
+  const jsonBlockPattern = /```json\s*([\s\S]*?)```/;
+  let match = text.match(jsonBlockPattern);
+  if (match) {
+    try {
+      return JSON.parse(match[1].trim()) as RawAIJson;
+    } catch {
+      // fall through
+    }
+  }
+
+  // Паттерн 2: ``` { ... } ```
+  const blockPattern = /```\s*([\s\S]*?)```/;
+  match = text.match(blockPattern);
+  if (match) {
+    try {
+      return JSON.parse(match[1].trim()) as RawAIJson;
+    } catch {
+      // fall through
+    }
+  }
+
+  // Паттерн 3: прямой JSON объект
+  const objectPattern = /\{\s*"ticker"\s*:/;
+  const idx = text.search(objectPattern);
+  if (idx >= 0) {
+    // Найдем закрывающую скобку
+    let braceCount = 0;
+    let endIdx = -1;
+    for (let i = idx; i < text.length; i++) {
+      if (text[i] === '{') braceCount++;
+      if (text[i] === '}') braceCount--;
+      if (braceCount === 0 && braceCount !== undefined) {
+        endIdx = i + 1;
+        break;
+      }
+    }
+    if (endIdx > idx) {
+      try {
+        return JSON.parse(text.substring(idx, endIdx)) as RawAIJson;
+      } catch {
+        // fall through
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -55,42 +129,45 @@ export class AiClient {
   }
 
   /**
-    * Построение контекста портфеля для ИИ
-    * Усиленная версия: более структурированные данные, жёсткая привязка к реальным данным
-    */
-    private buildPortfolioContext(
-      analysis: PortfolioReportData,
-      _inc: CalculatedIncome,
-      _validation: ValidationResult,
-      orders: UIOrdersData,
-      snapshot: PortfolioSnapshot | null,
-      thesisResults: Map<string, InvestmentThesisResult>,
-      _historicalData?: {
-        profitC10: number;
-        profitC11: number;
-        investedNet: number;
-        totalPurchases: number;
-        totalSales: number;
-        commission: number;
-      },
-      accountsInfo?: Array<{ name: string; value: number }>,
-      cbrRateData?: CbrRateData,
-    ): string {
-     const { assetsAnalysis, macro } = analysis;
-     const totalVal = macro.totalBalance;
+   * Построение контекста портфеля для ИИ
+   * Усиленная версия: более структурированные данные, жёсткая привязка к реальным данным
+   */
+  private buildPortfolioContext(
+    analysis: PortfolioReportData,
+    _inc: CalculatedIncome,
+    _validation: ValidationResult,
+    orders: UIOrdersData,
+    snapshot: PortfolioSnapshot | null,
+    thesisResults: Map<string, InvestmentThesisResult>,
+    _historicalData?: {
+      profitC10: number;
+      profitC11: number;
+      investedNet: number;
+      totalPurchases: number;
+      totalSales: number;
+      commission: number;
+    },
+    accountsInfo?: Array<{ name: string; value: number }>,
+    macroData?: MacroDataContext,
+  ): string {
+    const { assetsAnalysis, macro } = analysis;
+    const totalVal = macro.totalBalance;
 
-     // Используем snapshot.financial вместо реконструкции
-     const snapshotFinancial = snapshot?.financial ?? null;
-     const contributedCapital = snapshotFinancial?.contributedCapital ?? 0;
-     const currentEquityGap = snapshotFinancial?.currentEquityGap ?? 0;
-     const currentEquityGapPct = snapshotFinancial?.currentEquityGapPct ?? 0;
-     const historicalMarketResult = snapshotFinancial?.historicalMarketResult ?? 0;
+    // Используем snapshot.financial вместо реконструкции
+    const snapshotFinancial = snapshot?.financial ?? null;
+    const contributedCapital = snapshotFinancial?.contributedCapital ?? 0;
+    const currentEquityGap = snapshotFinancial?.currentEquityGap ?? 0;
+    const currentEquityGapPct = snapshotFinancial?.currentEquityGapPct ?? 0;
+    const historicalMarketResult =
+      snapshotFinancial?.historicalMarketResult ?? 0;
 
-     const totalNetProfit = snapshotFinancial
-       ? snapshotFinancial.currentAssets + snapshotFinancial.freeCash - snapshotFinancial.contributedCapital
-       : totalVal - contributedCapital;
-     const totalNetProfitPercent =
-       contributedCapital > 0 ? (totalNetProfit / contributedCapital) * 100 : 0;
+    const totalNetProfit = snapshotFinancial
+      ? snapshotFinancial.currentAssets +
+        snapshotFinancial.freeCash -
+        snapshotFinancial.contributedCapital
+      : totalVal - contributedCapital;
+    const totalNetProfitPercent =
+      contributedCapital > 0 ? (totalNetProfit / contributedCapital) * 100 : 0;
 
     const stockAssets = assetsAnalysis.filter(
       (a) => a.assetType === 'А' || a.assetType === 'Акция',
@@ -113,8 +190,8 @@ export class AiClient {
     _currentBondsPct = Math.round(_currentBondsPct * 100) / 100;
 
     const currentDate = new Date().toLocaleDateString('ru-RU');
-    const rateValue = cbrRateData?.rate ?? 0;
-    const isFresh = cbrRateData?.isFresh ?? false;
+    const rateValue = macroData?.keyRate ?? 0;
+    const isFresh = macroData?.isFresh ?? false;
 
     let ctx = '';
     ctx += '╔══════════════════════════════════════════════════════════╗\n';
@@ -127,7 +204,7 @@ export class AiClient {
     ctx += `Свободный кэш: ${macro.freeCash.toLocaleString('ru-RU')} ₽\n`;
     ctx += `Ключевая ставка ЦБ: ${rateValue}%\n`;
     if (!isFresh) {
-      ctx += `⚠️ DATA_STATUS = STALE (ключевая ставка — устаревшие данные, источник: ${cbrRateData?.source || 'unknown'})\n`;
+      ctx += `⚠️ DATA_STATUS = STALE (ключевая ставка — устаревшие данные, источник: ${macroData?.source || 'unknown'})\n`;
     }
     // Финансовый snapshot (из PortfolioSnapshot)
     if (snapshotFinancial) {
@@ -142,8 +219,14 @@ export class AiClient {
       ctx += '║  СЧЕТА В ПОРТФЕЛЕ                                      ║\n';
       ctx += '╚══════════════════════════════════════════════════════════╝\n';
       for (const acc of snapshot.accounts) {
-        ctx += '• Счет ' + acc.accountId + ' (' + acc.accountType + '): ' +
-          acc.totalLiquidationValue.toLocaleString('ru-RU') + ' ₽\n';
+        ctx +=
+          '• Счет ' +
+          acc.accountId +
+          ' (' +
+          acc.accountType +
+          '): ' +
+          acc.totalLiquidationValue.toLocaleString('ru-RU') +
+          ' ₽\n';
       }
       ctx += '\n';
     } else if (accountsInfo && accountsInfo.length > 0) {
@@ -151,7 +234,8 @@ export class AiClient {
       ctx += '║  СЧЕТА В ПОРТФЕЛЕ                                      ║\n';
       ctx += '╚══════════════════════════════════════════════════════════╝\n';
       accountsInfo.forEach((a) => {
-        ctx += '• Счет ' + a.name + ': ' + a.value.toLocaleString('ru-RU') + ' ₽\n';
+        ctx +=
+          '• Счет ' + a.name + ': ' + a.value.toLocaleString('ru-RU') + ' ₽\n';
       });
       ctx += '\n';
     }
@@ -159,7 +243,7 @@ export class AiClient {
     // Детализация по счетам для каждого тикера (из PortfolioSnapshot)
     if (snapshot && snapshot.assets.length > 0) {
       const multiAccountAssets = snapshot.assets.filter(
-        (a) => a.accounts.length > 1
+        (a) => a.accounts.length > 1,
       );
 
       if (multiAccountAssets.length > 0) {
@@ -169,35 +253,50 @@ export class AiClient {
         for (const asset of multiAccountAssets) {
           ctx += '• ' + asset.ticker + ' (' + (asset.name || '') + '):\n';
           for (const acc of asset.accounts) {
-            ctx += '    [' + acc.accountId + ' (' + acc.accountType + ')] ' +
-              acc.liquidationValue.toLocaleString('ru-RU') + ' ₽ (' +
-              acc.liquidationWeightPct.toFixed(2) + '%)\n';
+            ctx +=
+              '    [' +
+              acc.accountId +
+              ' (' +
+              acc.accountType +
+              ')] ' +
+              acc.liquidationValue.toLocaleString('ru-RU') +
+              ' ₽ (' +
+              acc.liquidationWeightPct.toFixed(2) +
+              '%)\n';
           }
           // Предупреждение о конфликте target
           if (asset.targetPercentConflict) {
-            ctx += '    ⚠️ TARGET_CONFLICT: разные целевые доли на разных счетах\n';
+            ctx +=
+              '    ⚠️ TARGET_CONFLICT: разные целевые доли на разных счетах\n';
           }
           ctx += '\n';
         }
       }
     }
 
-    ctx += 'Все данные агрегированы по всем счетам. Анализируй каждый актив как единый.\n\n';
+    ctx +=
+      'Все данные агрегированы по всем счетам. Анализируй каждый актив как единый.\n\n';
 
     // === БЛОК 1: INVESTMENT FACTS (без status PortfolioMath) ===
     ctx += '╔══════════════════════════════════════════════════════════╗\n';
     ctx += '║  INVESTMENT FACTS — ФАКТЫ ОБ АКТИВЕ (АНАЛИЗИРУЙ ДО     ║\n';
     ctx += '║  ПОЛУЧЕНИЯ PORTFOLIO_MATH_STATUS)                      ║\n';
     ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx += '⚠️ ВАЖНО: Это ТОЛЬКО факты. Сформируй AI_RECOMMENDED_TARGET_PERCENT и AI_RECOMMENDED_ACTION\n';
-    ctx += 'на основе этих фактов ДО того, как увидишь PORTFOLIO_MATH_STATUS ниже.\n\n';
+    ctx +=
+      '⚠️ ВАЖНО: Это ТОЛЬКО факты. Сформируй AI_RECOMMENDED_TARGET_PERCENT и AI_RECOMMENDED_ACTION\n';
+    ctx +=
+      'на основе этих фактов ДО того, как увидишь PORTFOLIO_MATH_STATUS ниже.\n\n';
     ctx += 'АКЦИИ:\n';
     stockAssets.forEach((a) => {
+      const marketBlocked = a.currentPrice <= 0;
       ctx += `  • [АКЦИЯ] ${a.ticker} | ${a.name}\n`;
       ctx += `    Текущая доля: ${a.currentPercent.toFixed(1)}%\n`;
       ctx += `    Текущая цена: ${a.currentPrice.toLocaleString('ru-RU')} ₽ | Цена входа: ${a.balancePrice.toLocaleString('ru-RU')} ₽\n`;
       if (a.balancePrice > 0 && a.currentPrice > 0) {
-        const pnlFromEntry = ((a.currentPrice - a.balancePrice) / a.balancePrice * 100).toFixed(1);
+        const pnlFromEntry = (
+          ((a.currentPrice - a.balancePrice) / a.balancePrice) *
+          100
+        ).toFixed(1);
         ctx += `    P&L от входа: ${pnlFromEntry}%\n`;
       }
       ctx += `    Количество: ${a.quantity} шт. | Ликвидация: ${(a.currentPrice * a.quantity).toLocaleString('ru-RU')} ₽\n`;
@@ -208,17 +307,30 @@ export class AiClient {
       }
       if (a.nkdRub > 0) {
         ctx += `    НКД: ${a.nkdRub.toLocaleString('ru-RU')} ₽\n`;
+      }
+      // PRICE SOURCE PRECEDENCE: PortfolioMath currentPrice = authoritative execution price
+      // Research market price = supplementary only, NEVER overrides PortfolioMath
+      if (marketBlocked) {
+        ctx += '    ⛔ MARKET_DATA_STATUS: INVALID (PortfolioMath currentPrice=0)\n';
+        ctx += '    ⛔ AI ACTION: BLOCKED — НЕ давать BUY/REDUCE/EXIT как исполнимую рекомендацию.\n';
+        ctx += '    ⛔ reason: INVALID_MARKET_DATA — нет цены для исполнения.\n';
+      } else {
+        ctx += '    ✅ EXECUTION_PRICE: PortfolioMath currentPrice=' + a.currentPrice + ' ₽ (authoritative)\n';
       }
       ctx += '\n';
     });
 
     ctx += '\nОБЛИГАЦИИ:\n';
     bondAssets.forEach((a) => {
+      const marketBlocked = a.currentPrice <= 0;
       ctx += `  • [ОБЛ] ${a.ticker} | ${a.name}\n`;
       ctx += `    Текущая доля: ${a.currentPercent.toFixed(1)}%\n`;
       ctx += `    Текущая цена: ${a.currentPrice.toLocaleString('ru-RU')} ₽ | Цена входа: ${a.balancePrice.toLocaleString('ru-RU')} ₽\n`;
       if (a.balancePrice > 0 && a.currentPrice > 0) {
-        const pnlFromEntry = ((a.currentPrice - a.balancePrice) / a.balancePrice * 100).toFixed(1);
+        const pnlFromEntry = (
+          ((a.currentPrice - a.balancePrice) / a.balancePrice) *
+          100
+        ).toFixed(1);
         ctx += `    P&L от входа: ${pnlFromEntry}%\n`;
       }
       ctx += `    Количество: ${a.quantity} шт. | Ликвидация: ${(a.currentPrice * a.quantity).toLocaleString('ru-RU')} ₽\n`;
@@ -229,6 +341,15 @@ export class AiClient {
       }
       if (a.nkdRub > 0) {
         ctx += `    НКД: ${a.nkdRub.toLocaleString('ru-RU')} ₽\n`;
+      }
+      // PRICE SOURCE PRECEDENCE: PortfolioMath currentPrice = authoritative execution price
+      // Research market price = supplementary only, NEVER overrides PortfolioMath
+      if (marketBlocked) {
+        ctx += '    ⛔ MARKET_DATA_STATUS: INVALID (PortfolioMath currentPrice=0)\n';
+        ctx += '    ⛔ AI ACTION: BLOCKED — НЕ давать BUY/REDUCE/EXIT как исполнимую рекомендацию.\n';
+        ctx += '    ⛔ reason: INVALID_MARKET_DATA — нет цены для исполнения.\n';
+      } else {
+        ctx += '    ✅ EXECUTION_PRICE: PortfolioMath currentPrice=' + a.currentPrice + ' ₽ (authoritative)\n';
       }
       ctx += '\n';
     });
@@ -237,8 +358,10 @@ export class AiClient {
     ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
     ctx += '║  INVESTMENT RESEARCH — РЕЗУЛЬТАТЫ ИССЛЕДОВАНИЯ        ║\n';
     ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx += '⚠️ ВАЖНО: Это структурированный InvestmentThesis. AI НЕ должен пересказывать evidence как собственный факт,\n';
-    ctx += 'если confidence/evidence недостаточны. Если RESEARCH_STATUS = NO_RESEARCH — не компенсируй выдуманными данными.\n\n';
+    ctx +=
+      '⚠️ ВАЖНО: Это структурированный InvestmentThesis. AI НЕ должен пересказывать evidence как собственный факт,\n';
+    ctx +=
+      'если confidence/evidence недостаточны. Если RESEARCH_STATUS = NO_RESEARCH — не компенсируй выдуманными данными.\n\n';
 
     analysis.assetsAnalysis.forEach((a) => {
       const thesis = thesisResults.get(a.ticker);
@@ -247,7 +370,8 @@ export class AiClient {
         ctx += 'TICKER: ' + a.ticker + '\n';
         ctx += 'NAME: ' + a.name + '\n';
         ctx += 'RESEARCH_STATUS: NO_RESEARCH\n';
-        ctx += 'INVESTMENT_THESIS: Недостаточно данных для формирования инвестиционного тезиса.\n';
+        ctx +=
+          'INVESTMENT_THESIS: Недостаточно данных для формирования инвестиционного тезиса.\n';
         ctx += 'BULL_CASE: Недостаточно данных.\n';
         ctx += 'BASE_CASE: Недостаточно данных.\n';
         ctx += 'BEAR_CASE: Недостаточно данных.\n';
@@ -262,10 +386,22 @@ export class AiClient {
         return;
       }
 
-      const confidenceStr = thesis.confidence.level + ' (' + thesis.confidence.value.toFixed(2) + ')';
-      const evidenceItems = thesis.evidenceReferences.map(
-        (e) => '- id: ' + e.evidenceId + ' | type: ' + e.type + ' | source: ' + e.fact,
-      ).join('\n');
+      const confidenceStr =
+        thesis.confidence.level +
+        ' (' +
+        thesis.confidence.value.toFixed(2) +
+        ')';
+      const evidenceItems = thesis.evidenceReferences
+        .map(
+          (e) =>
+            '- id: ' +
+            e.evidenceId +
+            ' | type: ' +
+            e.type +
+            ' | source: ' +
+            e.fact,
+        )
+        .join('\n');
 
       ctx += 'TICKER: ' + thesis.ticker + '\n';
       ctx += 'NAME: ' + a.name + '\n';
@@ -275,13 +411,29 @@ export class AiClient {
       ctx += 'BASE_CASE: ' + thesis.baseCase + '\n';
       ctx += 'BEAR_CASE: ' + thesis.bearCase + '\n';
       ctx += 'KEY_DRIVERS:\n';
-      thesis.keyDrivers.forEach((d) => { ctx += '  - ' + d + '\n'; });
+      thesis.keyDrivers.forEach((d) => {
+        ctx += '  - ' + d + '\n';
+      });
       ctx += 'KEY_RISKS:\n';
-      thesis.keyRisks.forEach((r) => { ctx += '  - ' + r + '\n'; });
+      thesis.keyRisks.forEach((r) => {
+        ctx += '  - ' + r + '\n';
+      });
       ctx += 'KEY_CATALYSTS:\n';
-      thesis.keyCatalysts.forEach((c) => { ctx += '  - ' + c + '\n'; });
-      ctx += 'VALUATION_VIEW: ' + thesis.valuationView.stance + ' | ' + thesis.valuationView.reasoning + '\n';
-      ctx += 'MACRO_SENSITIVITY: ' + thesis.macroSensitivity.level + ' | ' + thesis.macroSensitivity.description + '\n';
+      thesis.keyCatalysts.forEach((c) => {
+        ctx += '  - ' + c + '\n';
+      });
+      ctx +=
+        'VALUATION_VIEW: ' +
+        thesis.valuationView.stance +
+        ' | ' +
+        thesis.valuationView.reasoning +
+        '\n';
+      ctx +=
+        'MACRO_SENSITIVITY: ' +
+        thesis.macroSensitivity.level +
+        ' | ' +
+        thesis.macroSensitivity.description +
+        '\n';
       ctx += 'THESIS_CONFIDENCE: ' + confidenceStr + '\n';
       ctx += 'EVIDENCE:\n';
       ctx += evidenceItems || '  (нет доказательств)';
@@ -292,38 +444,91 @@ export class AiClient {
     ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
     ctx += '║  DETERMINISTIC PORTFOLIO RESULT — РЕЗУЛЬТАТ ПОРТФЕЛЯ   ║\n';
     ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx += '⚠️ ВАЖНО: Это детерминированный результат PortfolioMath. Сравни с AI_RECOMMENDED_ACTION.\n\n';
+    ctx +=
+      '⚠️ ВАЖНО: Это детерминированный результат PortfolioMath. Сравни с AI_RECOMMENDED_ACTION.\n\n';
     assetsAnalysis.forEach((a) => {
       if (a.currentPercent === 0 && a.targetPercent === 0) return;
+
+      const hasUserTarget = a.targetPercent !== undefined;
+      const userTargetStr = hasUserTarget
+        ? a.targetPercent!.toFixed(1) + '%'
+        : 'НЕ ЗАДАН';
+      const marketDataValid = a.currentPrice > 0;
+      const marketBlocked = !marketDataValid;
+
       ctx += `• ${a.ticker} (${a.name}):\n`;
-      ctx += `    USER_TARGET_PERCENT: ${a.targetPercent !== undefined ? a.targetPercent.toFixed(1) : '—'}%\n`;
+      ctx += `    USER_TARGET_PERCENT: ${userTargetStr}\n`;
       ctx += `    PORTFOLIO_MATH_STATUS: ${a.status}\n`;
-      ctx += `    Дефицит: ${a.deficitRub >= 0 ? '+' : ''}${a.deficitRub.toLocaleString('ru-RU')} ₽\n\n`;
+
+      // EXIT presentation: для USER_TARGET=0 НЕ используем "дефицит"
+      const isExit = a.targetPercent === 0;
+      if (isExit) {
+        const liqVal = a.currentPrice * a.quantity;
+        ctx += `    SELL_AMOUNT_DETERMINISTIC: ${liqVal.toLocaleString('ru-RU')} ₽ (ликвидация всей позиции)\n`;
+      } else {
+        ctx += `    Дефицит: ${a.deficitRub >= 0 ? '+' : ''}${a.deficitRub.toLocaleString('ru-RU')} ₽\n`;
+      }
+
+      // DETERMINISTIC QUANTITIES — AI НЕ должен придумывать свои объёмы
+      const liquidationValue = a.currentPrice * a.quantity;
+      ctx += `    LIQUIDATION_VALUE: ${liquidationValue.toLocaleString('ru-RU')} ₽ (currentPrice=${a.currentPrice} × quantity=${a.quantity})\n`;
+      ctx += `    CURRENT_QUANTITY: ${a.quantity} шт.\n`;
+      if (a.deficitRub > 0 && !isExit) {
+        ctx += `    BUY_AMOUNT_DETERMINISTIC: ${a.deficitRub.toLocaleString('ru-RU')} ₽ (deficitRub из PortfolioMath)\n`;
+      } else if (a.deficitRub < 0 && !isExit) {
+        ctx += `    SELL_AMOUNT_DETERMINISTIC: ${Math.abs(a.deficitRub).toLocaleString('ru-RU')} ₽ (deficitRub из PortfolioMath)\n`;
+      }
+
+      // SUR / NO_TARGET PRESENTATION
+      // USER_TARGET_PERCENT — это ТОЛЬКО пользовательская цель из Excel
+      // AI_RECOMMENDED_TARGET_PERCENT — это рекомендация ИИ, никогда не показывать как USER
+      if (!hasUserTarget) {
+        ctx += '    USER_TARGET_PERCENT: НЕ ЗАДАН (PortfolioMath → NO_TARGET)\n';
+        ctx += '    ⚠️ AI_RECOMMENDED_TARGET_PERCENT: AI формирует рекомендацию самостоятельно.\n';
+        ctx += '    ⚠️ Это ИИ-РЕКОМЕНДАЦИЯ, а НЕ пользовательская цель.\n';
+        ctx += '    ⚠️ В отчёте явно обозначай как "AI-рекомендация", а не "целевая доля пользователя".\n';
+      }
+
+      // INVALID_MARKET_DATA safety gate — ТОЛЬКО если PortfolioMath currentPrice <= 0
+      if (marketBlocked) {
+        ctx += '    ⛔ MARKET_DATA_STATUS: INVALID (PortfolioMath currentPrice=0, цена отсутствует)\n';
+        ctx += '    ⛔ AI ACTION: BLOCKED — НЕ давать BUY/REDUCE/EXIT как исполнимую рекомендацию.\n';
+        ctx += '    ⛔ reason: INVALID_MARKET_DATA — нет цены для исполнения.\n';
+      } else {
+        ctx += '    ✅ EXECUTION_PRICE: PortfolioMath currentPrice=' + a.currentPrice + ' ₽ (authoritative)\n';
+      }
+
+      ctx += '\n';
     });
 
     // === БЛОК 5: ACTIVE ORDERS (только execution context, ПОСЛЕ AI decision) ===
     ctx += '╔══════════════════════════════════════════════════════════╗\n';
     ctx += '║  EXECUTION CONTEXT — АКТИВНЫЕ ЗАЯВКИ (НЕ ИНВЕСТ. ТЕЗИС)║\n';
     ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx += '⚠️ ВАЖНО: Эти заявки — факт исполнения. НЕ используй их как инвестиционный аргумент.\n';
+    ctx +=
+      '⚠️ ВАЖНО: Эти заявки — факт исполнения. НЕ используй их как инвестиционный аргумент.\n';
     ctx += orders.md || 'Нет активных заявок.\n';
 
     ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
     ctx += '║  ⚠️ ВАЖНОЕ ПРЕДУПРЕЖДЕНИЕ ДЛЯ МОДЕЛИ                   ║\n';
     ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx += '• Анализируй ТОЛЬКО активы, перечисленные выше в разделе «СПИСОК ВСЕХ АКТИВОВ»\n';
+    ctx +=
+      '• Анализируй ТОЛЬКО активы, перечисленные выше в разделе «СПИСОК ВСЕХ АКТИВОВ»\n';
     ctx += '• НЕ упоминай компании, которых нет в этом списке\n';
-    ctx += '• НЕ выдумывай данные о сделках топ-менеджеров, финансовых отчётах компаний\n';
-    ctx += '• ВСЕ проценты и рубли должны соответствовать данным из раздела «СТРУКТУРА ПОРТФЕЛЯ»\n';
-    ctx += '• Если актив имеет статус NEW — анализируй в рамках переданных данных. Не назначай целевую долю, если targetPercent не задан PortfolioMath.\n';
+    ctx +=
+      '• НЕ выдумывай данные о сделках топ-менеджеров, финансовых отчётах компаний\n';
+    ctx +=
+      '• ВСЕ проценты и рубли должны соответствовать данным из раздела «СТРУКТУРА ПОРТФЕЛЯ»\n';
+    ctx +=
+      '• Если актив имеет статус NEW — анализируй в рамках переданных данных. Не назначай целевую долю, если targetPercent не задан PortfolioMath.\n';
 
     return ctx;
   }
 
   /**
-    * Построение user prompt с учётом новостного фона
-    * Усиленная версия: жёсткие инструкции по формату, валидация данных
-    */
+   * Построение user prompt с учётом новостного фона
+   * Усиленная версия: жёсткие инструкции по формату, валидация данных
+   */
   private buildUserPrompt(
     context: string,
     cbrRate: number,
@@ -355,28 +560,59 @@ export class AiClient {
     prompt += '=== ЗАДАЧА АНАЛИЗА ===\n';
     prompt += 'Проанализируй портфель с учётом:\n';
     prompt += '- Ключевая ставка ЦБ: ' + cbrRate + '%\n';
-    prompt += '- Текущая структура: Акции ' + stocksPct + '%, Облигации ' + bondsPct + '%\n';
+    prompt +=
+      '- Текущая структура: Акции ' +
+      stocksPct +
+      '%, Облигации ' +
+      bondsPct +
+      '%\n';
     prompt += '- Дата анализа: ' + currentMonth + '\n\n';
 
     prompt += '=== ЧТО НУЖНО ДАТЬ В ОТВЕТЕ ===\n';
-    prompt += '1. Макроэкономическая оценка: соответствует ли текущая структура (Акции ' + stocksPct + '% / Облигации ' + bondsPct + '%) макроэкономической обстановке ' + currentMonth.charAt(0).toUpperCase() + currentMonth.slice(1) + ' года? Почему?\n';
+    prompt +=
+      '1. Макроэкономическая оценка: соответствует ли текущая структура (Акции ' +
+      stocksPct +
+      '% / Облигации ' +
+      bondsPct +
+      '%) макроэкономической обстановке ' +
+      currentMonth.charAt(0).toUpperCase() +
+      currentMonth.slice(1) +
+      ' года? Почему?\n';
     prompt += '2. РЕКОМЕНДАЦИИ ПО КАЖДОМУ АКТИВУ:\n';
-    prompt += '   - Для каждого актива из списка укажи статус PortfolioMath: BUY / STABLE / REDUCE / EXIT / NO_TARGET\n';
-    prompt += '   - Объясни каждый статус на основе переданных targetPercent и текущих данных\n';
+    prompt +=
+      '   - Для каждого актива из списка укажи статус PortfolioMath: BUY / STABLE / REDUCE / EXIT / NO_TARGET\n';
+    prompt +=
+      '   - Объясни каждый статус на основе переданных targetPercent и текущих данных\n';
     prompt += '   - targetPercent не задан → напиши «Цель не задана»\n';
     prompt += '   - targetPercent = 0% → EXIT / ВЫХОД\n';
     prompt += '3. ПЛАН РЕБАЛАНСИРОВКИ:\n';
-    prompt += '   - Какие BUY / REDUCE / STABLE / EXIT имеют наивысший приоритет\n';
-    prompt += '   - Как использовать свободный кэш с учётом фактического ограничения\n';
+    prompt +=
+      '   - Какие BUY / REDUCE / STABLE / EXIT имеют наивысший приоритет\n';
+    prompt +=
+      '   - Как использовать свободный кэш с учётом фактического ограничения\n';
     prompt += '   - Приоритет операций на основе deficitRub из PortfolioMath\n';
     prompt += '4. ВЫХОД В ЗЕЛЁНУЮ ЗОНУ:\n';
-    prompt += '   - Текущий убыток: ' + (historicalData?.profitC11 || 0) + ' ₽ (' + (historicalData?.profitC11 ? (historicalData.profitC11 / historicalData.investedNet * 100).toFixed(2) : '0') + '% от вложенных)\n';
-    prompt += '   - Краткосрочные шаги (1-3 месяца): что продать/купить сейчас\n';
-    prompt += '   - Среднесрочные шаги (3-12 месяцев): диверсификация, купоны\n';
+    prompt +=
+      '   - Текущий убыток: ' +
+      (historicalData?.profitC11 || 0) +
+      ' ₽ (' +
+      (historicalData?.profitC11
+        ? (
+            (historicalData.profitC11 / historicalData.investedNet) *
+            100
+          ).toFixed(2)
+        : '0') +
+      '% от вложенных)\n';
+    prompt +=
+      '   - Краткосрочные шаги (1-3 месяца): что продать/купить сейчас\n';
+    prompt +=
+      '   - Среднесрочные шаги (3-12 месяцев): диверсификация, купоны\n';
     prompt += '   - Долгосрочные шаги (1+ лет): стратегия накопления\n';
-    prompt += '   - Ценовые уровни отслеживай только при наличии данных во входном контексте\n';
+    prompt +=
+      '   - Ценовые уровни отслеживай только при наличии данных во входном контексте\n';
     prompt += '5. НОВЫЕ ИНСТРУМЕНТЫ:\n';
-    prompt += '   - Не добавляй новые инструменты без явного запроса пользователя\n';
+    prompt +=
+      '   - Не добавляй новые инструменты без явного запроса пользователя\n';
     prompt += '   - Не создавай новые targetPercent\n';
     prompt += '6. КРАТКОЕ РЕЗЮМЕ: что делать прямо сейчас (3-5 пунктов).\n\n';
 
@@ -386,9 +622,11 @@ export class AiClient {
     prompt += '- НЕ выдумывай данные о сделках топ-менеджеров\n';
     prompt += '- ВСЕ проценты и рубли должны соответствовать данным портфеля\n';
     prompt += '- Ответь развёрнуто, с аргументацией и конкретными цифрами\n';
-    prompt += '- Используй структуру: 7 секций, пронумерованных 1., 2., 3., 4., 5., 6., 7.\n';
+    prompt +=
+      '- Используй структуру: 7 секций, пронумерованных 1., 2., 3., 4., 5., 6., 7.\n';
     prompt += '- НЕ используй маркеры типа "$1." — только "1.", "2." и т.д.\n';
-    prompt += '- ⚠️ ВАЖНО: Данные агрегированы по всем счетам. Анализируй каждый актив как единый, не дублируй рекомендации по счетам.\n';
+    prompt +=
+      '- ⚠️ ВАЖНО: Данные агрегированы по всем счетам. Анализируй каждый актив как единый, не дублируй рекомендации по счетам.\n';
 
     return prompt;
   }
@@ -405,22 +643,26 @@ export class AiClient {
       throw new Error('OPENROUTER_API_KEY не настроен');
     }
 
-    const response = await axios.post(modelConfig.baseUrl, {
-      model: modelConfig.modelName,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      max_tokens: modelConfig.maxTokens,
-      temperature: modelConfig.temperature,
-    }, {
-      headers: {
-        'Authorization': 'Bearer ' + this.openRouterKey,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://github.com/finance-analyzer',
-        'X-Title': 'Finance Analyzer',
+    const response = await axios.post(
+      modelConfig.baseUrl,
+      {
+        model: modelConfig.modelName,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        max_tokens: modelConfig.maxTokens,
+        temperature: modelConfig.temperature,
       },
-    });
+      {
+        headers: {
+          Authorization: 'Bearer ' + this.openRouterKey,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://github.com/finance-analyzer',
+          'X-Title': 'Finance Analyzer',
+        },
+      },
+    );
 
     return response.data.choices[0].message.content;
   }
@@ -472,10 +714,10 @@ export class AiClient {
       },
       {
         headers: {
-          'Authorization': 'Bearer ' + this.gigaChatKey,
+          Authorization: 'Bearer ' + this.gigaChatKey,
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'RqUID': Date.now().toString(),
+          Accept: 'application/json',
+          RqUID: Date.now().toString(),
         },
         timeout: 60000,
       },
@@ -513,9 +755,9 @@ export class AiClient {
       'scope=GIGACHAT_API_PERS',
       {
         headers: {
-          'Authorization': 'Basic ' + auth,
+          Authorization: 'Basic ' + auth,
           'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json',
+          Accept: 'application/json',
         },
         timeout: 15000,
       },
@@ -545,7 +787,11 @@ export class AiClient {
   ): Promise<string> {
     // Определяем тип ключа
     if (this.isAuthorizationKey(this.gigaChatKey)) {
-      return this.queryGigaChatWithAuthKey(modelConfig, systemPrompt, userPrompt);
+      return this.queryGigaChatWithAuthKey(
+        modelConfig,
+        systemPrompt,
+        userPrompt,
+      );
     }
 
     // Получаем свежий OAuth токен
@@ -566,10 +812,10 @@ export class AiClient {
       },
       {
         headers: {
-          'Authorization': 'Bearer ' + accessToken,
+          Authorization: 'Bearer ' + accessToken,
           'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'RqUID': Date.now().toString(),
+          Accept: 'application/json',
+          RqUID: Date.now().toString(),
         },
         timeout: 60000,
       },
@@ -643,7 +889,7 @@ export class AiClient {
       },
       {
         headers: {
-          'Authorization': 'Bearer ' + iamToken,
+          Authorization: 'Bearer ' + iamToken,
           'Content-Type': 'application/json',
         },
         timeout: 60000,
@@ -654,59 +900,63 @@ export class AiClient {
   }
 
   /**
-    * Запрос к локальной модели Ollama с поддержкой кэширования и стриминга
-    * Endpoint: http://localhost:11434/api/chat
-    * Не требует API-ключа, работает полностью оффлайн
-    */
+   * Запрос к локальной модели Ollama с поддержкой кэширования и стриминга
+   * Endpoint: http://localhost:11434/api/chat
+   * Не требует API-ключа, работает полностью оффлайн
+   */
   private async queryOllama(
     modelConfig: AiModelConfig,
     systemPrompt: string,
     userPrompt: string,
     assetTickers?: string[],
+    assetsAnalysis?: AssetAnalysis[],
   ): Promise<string> {
     console.log('[Ollama] Проверка подключения к localhost:11434...');
 
-    try {
-      // Проверяем, запущен ли Ollama
-      const isRunning = await isOllamaRunning();
-      console.log('[Ollama] isOllamaRunning:', isRunning);
-      if (!isRunning) {
-        throw new Error('Ollama не запущен. Запустите Ollama на localhost:11434');
-      }
-
-      // Формируем полный промпт для кэширования
-      const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
-      console.log('[Ollama] fullPrompt length:', fullPrompt.length);
-      
-      // Пробуем получить из кэша
-      console.log('[Ollama] calling getCachedResponse...');
-      const cachedResult = await getCachedResponse(
-        fullPrompt,
-        modelConfig.modelName,
-        async () => {
-          // Если нет в кэше, запрашиваем у модели
-          return await this.executeOllamaQuery(modelConfig, systemPrompt, userPrompt, assetTickers);
-        },
+    // Проверяем, запущен ли Ollama
+    const isRunning = await isOllamaRunning();
+    console.log('[Ollama] isOllamaRunning:', isRunning);
+    if (!isRunning) {
+      throw new Error(
+        'Ollama не запущен. Запустите Ollama на localhost:11434',
       );
-      console.log('[Ollama] getCachedResponse returned');
-
-      return cachedResult.content;
-    } catch (error) {
-      console.error('[OLLAMA_DIAGNOSTIC] FULL ERROR:', error);
-      console.error('[OLLAMA_DIAGNOSTIC] STACK:', error instanceof Error ? error.stack : undefined);
-      throw error;
     }
+
+    // Формируем полный промпт для кэширования
+    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+    console.log('[Ollama] fullPrompt length:', fullPrompt.length);
+
+    // Пробуем получить из кэша
+    console.log('[Ollama] calling getCachedResponse...');
+    const cachedResult = await getCachedResponse(
+      fullPrompt,
+      modelConfig.modelName,
+      async () => {
+        // Если нет в кэше, запрашиваем у модели
+        return await this.executeOllamaQuery(
+          modelConfig,
+          systemPrompt,
+          userPrompt,
+          assetTickers,
+          assetsAnalysis,
+        );
+      },
+    );
+    console.log('[Ollama] getCachedResponse returned');
+
+    return cachedResult.content;
   }
 
   /**
-    * Выполнение запроса к Ollama (без кэширования)
-    * Усиленная версия: валидация рекомендаций против реальных данных
-    */
+   * Выполнение запроса к Ollama (без кэширования)
+   * Усиленная версия: валидация рекомендаций против реальных данных
+   */
   private async executeOllamaQuery(
     modelConfig: AiModelConfig,
     systemPrompt: string,
     userPrompt: string,
     assetTickers?: string[],
+    assetsAnalysis?: AssetAnalysis[],
   ): Promise<string> {
     console.log(`[Ollama] Запрос к модели ${modelConfig.modelName}...`);
 
@@ -730,7 +980,10 @@ export class AiClient {
           stream: true,
         },
       );
-      console.log('[Ollama] streamChat returned, success:', streamResult.success);
+      console.log(
+        '[Ollama] streamChat returned, success:',
+        streamResult.success,
+      );
 
       if (!streamResult.success) {
         throw new Error(streamResult.error || 'Ошибка стриминга');
@@ -738,24 +991,59 @@ export class AiClient {
 
       // Очищаем ответ от markdown-разметки и артефактов
       console.log('[Ollama] calling cleanAiResponse...');
-      const cleanedResponse = cleanAiResponse(streamResult.content, assetTickers);
+      const cleanedResponse = cleanAiResponse(
+        streamResult.content,
+        assetTickers,
+      );
       console.log('[Ollama] cleanAiResponse returned');
-      
-      console.log('[Ollama] about to format stream stats, totalDuration:', streamResult.totalDuration);
-      
+
+      // AI OUTPUT VALIDATION — детерминированная проверка после cleanAiResponse
+      console.log('[Ollama] calling validateAiOutput...');
+      const validatedResponse = validateAiOutput(
+        cleanedResponse,
+      );
+      console.log('[Ollama] validateAiOutput returned');
+
+      // ARITHMETIC CONSISTENCY — проверяем суммы против deterministic
+      console.log('[Ollama] calling validateArithmeticConsistency...');
+      const deterministicAmounts: DeterministicAmounts[] = (assetsAnalysis ?? [])
+        .filter((a): a is AssetAnalysis => a.currentPercent > 0)
+        .map((a: AssetAnalysis) => {
+          const det: DeterministicAmounts = {
+            ticker: a.ticker,
+            liquidationValue: a.currentPrice * a.quantity,
+            currentQuantity: a.quantity,
+          };
+          if (a.deficitRub > 0) {
+            det.buyAmount = a.deficitRub;
+          }
+          if (a.deficitRub < 0) {
+            det.sellAmount = Math.abs(a.deficitRub);
+          }
+          return det;
+        });
+      const arithmeticValidatedResponse = validateArithmeticConsistency(
+        validatedResponse,
+        deterministicAmounts,
+      );
+      console.log('[Ollama] validateArithmeticConsistency returned');
+
       console.log(
-        `[Ollama] ✅ Ответ получен: ${streamResult.content.length} символов, ` +
-        `${streamResult.totalTokens} токенов, ` +
-        `${((streamResult.totalDuration || 0) / 1_000_000_000).toFixed(2)}с`,
+        '[Ollama] about to format stream stats, totalDuration:',
+        streamResult.totalDuration,
       );
 
-      return cleanedResponse;
+      console.log(
+        `[Ollama] ✅ Ответ получен: ${streamResult.content.length} символов, ` +
+          `${streamResult.totalTokens} токенов, ` +
+          `${((streamResult.totalDuration || 0) / 1_000_000_000).toFixed(2)}с`,
+      );
+
+      return arithmeticValidatedResponse;
     } catch (error) {
-      console.error('[STREAM_ERROR] FULL:', error);
-      console.error('[STREAM_ERROR] STACK:', error instanceof Error ? error.stack : undefined);
       // Если стриминг не сработал, пробуем обычный запрос
       console.log('[Ollama] ⚠️ Стриминг не удался, пробуем обычный запрос...');
-      
+
       try {
         const result: StreamResult = await chatWithoutStream(
           messages,
@@ -771,15 +1059,42 @@ export class AiClient {
         }
 
         const cleanedResponse = cleanAiResponse(result.content, assetTickers);
-        
+
+        // AI OUTPUT VALIDATION — детерминированная проверка после cleanAiResponse
+        const validatedResponse = validateAiOutput(cleanedResponse);
+
+        // ARITHMETIC CONSISTENCY — проверяем суммы против deterministic
+        const deterministicAmounts: DeterministicAmounts[] = (assetsAnalysis ?? [])
+          .filter((a): a is AssetAnalysis => a.currentPercent > 0)
+          .map((a: AssetAnalysis) => {
+            const det: DeterministicAmounts = {
+              ticker: a.ticker,
+              liquidationValue: a.currentPrice * a.quantity,
+              currentQuantity: a.quantity,
+            };
+            if (a.deficitRub > 0) {
+              det.buyAmount = a.deficitRub;
+            }
+            if (a.deficitRub < 0) {
+              det.sellAmount = Math.abs(a.deficitRub);
+            }
+            return det;
+          });
+        const arithmeticValidatedResponse = validateArithmeticConsistency(
+          validatedResponse,
+          deterministicAmounts,
+        );
+
         console.log(
           `[Ollama] ✅ Ответ получен: ${result.content.length} символов`,
         );
 
-        return cleanedResponse;
+        return arithmeticValidatedResponse;
       } catch (thrown: unknown) {
         if (thrown instanceof Error) {
-          throw new Error(`Ollama не отвечает: ${thrown.message}`, { cause: thrown });
+          throw new Error(`Ollama не отвечает: ${thrown.message}`, {
+            cause: thrown,
+          });
         }
         // eslint-disable-next-line preserve-caught-error -- thrown is unknown, not Error
         throw new Error(`Ollama не отвечает: ${String(thrown)}`);
@@ -788,8 +1103,8 @@ export class AiClient {
   }
 
   /**
-    * Получение информации о моделях Ollama
-    */
+   * Получение информации о моделях Ollama
+   */
   public async getOllamaModelInfo(): Promise<string> {
     const isRunning = await isOllamaRunning();
     if (!isRunning) {
@@ -801,30 +1116,27 @@ export class AiClient {
   }
 
   /**
-    * Установка модели Ollama
-    */
+   * Установка модели Ollama
+   */
   public async installOllamaModel(
     modelName: string,
     onProgress?: (status: string, percent: number) => void,
   ): Promise<boolean> {
     console.log(`[Ollama] Установка модели ${modelName}...`);
 
-    return pullModel(
-      modelName,
-      (status, completed, total) => {
-        if (total > 0 && onProgress) {
-          const percent = (completed / total) * 100;
-          onProgress(status, percent);
-        } else if (onProgress) {
-          onProgress(status, 0);
-        }
-      },
-    );
+    return pullModel(modelName, (status, completed, total) => {
+      if (total > 0 && onProgress) {
+        const percent = (completed / total) * 100;
+        onProgress(status, percent);
+      } else if (onProgress) {
+        onProgress(status, 0);
+      }
+    });
   }
 
   /**
-    * Получение статистики кэша
-    */
+   * Получение статистики кэша
+   */
   public getCacheStats(): string {
     const stats = localCache.getStats();
     return [
@@ -837,15 +1149,15 @@ export class AiClient {
   }
 
   /**
-    * Основной метод генерации отчёта с автоматическим fallback
-    */
+   * Основной метод генерации отчёта с автоматическим fallback
+   */
   public async generateDynamicReport(
     analysis: PortfolioReportData,
     inc: CalculatedIncome,
     validation: ValidationResult,
     orders: UIOrdersData,
     snapshot: PortfolioSnapshot | null,
-    cbrRateData: CbrRateData,
+    macroData: MacroDataContext,
     thesisResults: Map<string, InvestmentThesisResult>,
     newsContext?: string,
     actualMacroPercentages?: { stocks: number; bonds: number },
@@ -862,14 +1174,6 @@ export class AiClient {
     // Извлекаем тикеры активов для валидации
     const assetTickers = analysis.assetsAnalysis.map((a) => a.ticker);
 
-    // Формируем MacroDataContext из CbrRateData
-    const macroDataContext: MacroDataContext = {
-      keyRate: cbrRateData.rate,
-      source: cbrRateData.source,
-      asOf: cbrRateData.date,
-      isFresh: cbrRateData.isFresh,
-    };
-
     const context = this.buildPortfolioContext(
       analysis,
       inc,
@@ -879,15 +1183,15 @@ export class AiClient {
       thesisResults,
       historicalData,
       accountsInfo,
-      cbrRateData,
+      macroData,
     );
     console.log('[AI_CLIENT] buildPortfolioContext OK');
 
     const systemPrompt = buildSystemPrompt(
-      cbrRateData.rate,
+      macroData.keyRate,
       newsContext,
       assetTickers,
-      macroDataContext,
+      macroData,
     );
     const macroPercentages = actualMacroPercentages || {
       stocks: analysis.macro.stocksPercent,
@@ -899,7 +1203,7 @@ export class AiClient {
     };
     const userPrompt = this.buildUserPrompt(
       context,
-      cbrRateData.rate,
+      macroData.keyRate,
       newsContext,
       roundedMacros,
       {
@@ -913,14 +1217,16 @@ export class AiClient {
     const availableModels = getAvailableModels();
 
     if (availableModels.length === 0) {
-      console.warn('[AI] Нет доступных API-ключей. Используется локальный fallback.');
+      console.warn(
+        '[AI] Нет доступных API-ключей. Используется локальный fallback.',
+      );
       return {
         text: buildFallbackReport(
           analysis,
           inc,
           validation,
           orders,
-          cbrRateData.rate,
+          macroData.keyRate,
         ),
         modelUsed: 'local-fallback',
         success: false,
@@ -941,7 +1247,13 @@ export class AiClient {
         if (model.envKey === 'OPENROUTER_API_KEY') {
           aiText = await this.queryOpenRouter(model, systemPrompt, userPrompt);
         } else if (model.id === 'ollama') {
-          aiText = await this.queryOllama(model, systemPrompt, userPrompt, assetTickers);
+          aiText = await this.queryOllama(
+            model,
+            systemPrompt,
+            userPrompt,
+            assetTickers,
+            analysis.assetsAnalysis,
+          );
         } else if (model.id === 'gigachat') {
           aiText = await this.queryGigaChat(model, systemPrompt, userPrompt);
         } else if (model.id === 'yandexgpt') {
@@ -955,17 +1267,45 @@ export class AiClient {
           `[AI] ✅ Ответ получен от ${model.name} (${aiText.length} символов)`,
         );
 
+        // Извлекаем структурированный JSON из AI-ответа
+        let structuredJson: RawAIJson | null = null;
+        let structuredValidation: StructuredValidationResult | null = null;
+
+        try {
+          structuredJson = extractJsonFromAiResponse(aiText);
+          if (structuredJson) {
+            structuredValidation = validateStructuredAIJson(
+              structuredJson,
+              assetTickers,
+            );
+            console.log(
+              `[AI] JSON извлечён: ticker=${structuredJson.ticker}, ` +
+              `action=${structuredJson.recommendedAction}, ` +
+              `valid=${structuredValidation?.valid ?? 'N/A'}`,
+            );
+            if (structuredValidation && !structuredValidation.valid) {
+              console.warn(
+                '[AI] ⚠️ JSON валидация не пройдена:',
+                structuredValidation.errors,
+              );
+            }
+          } else {
+            console.warn('[AI] JSON-блок не найден в ответе');
+          }
+        } catch (err) {
+          console.error('[AI] Ошибка парсинга JSON:', err);
+        }
+
         return {
           text: aiText.replace(/\n/g, '<br>'),
           modelUsed: model.name,
           success: true,
+          structuredJson,
+          structuredValidation,
         };
       } catch (error: unknown) {
-        console.error('[MODEL_LOOP_ERROR] FULL:', error);
-        console.error('[MODEL_LOOP_ERROR] STACK:', error instanceof Error ? error.stack : undefined);
-        console.error(
-          '[Ollama] Ошибка подключения: ' + error,
-        );
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error('[AI] Ошибка модели ' + model.name + ': ' + msg);
 
         const nextModel = getNextModel(model.id);
         if (nextModel) {
@@ -975,18 +1315,22 @@ export class AiClient {
     }
 
     // Если все модели не сработали — локальный fallback
-    console.warn('[AI] ⚠️ Все модели недоступны. Используется локальный fallback.');
+    console.warn(
+      '[AI] ⚠️ Все модели недоступны. Используется локальный fallback.',
+    );
     return {
       text: buildFallbackReport(
         analysis,
         inc,
         validation,
         orders,
-        cbrRateData.rate,
+        macroData.keyRate,
       ),
       modelUsed: 'local-fallback',
       success: false,
       error: 'Все API недоступны',
+      structuredJson: null,
+      structuredValidation: null,
     };
   }
 }

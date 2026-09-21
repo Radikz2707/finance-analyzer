@@ -45,7 +45,7 @@ export function parseQuikOrdersFile(
   _instrumentMap?: Record<string, string>,
   customPath?: string,
 ): QuikOrder[] {
-  const defaultPath = process.env.QUIK_ORDERS_PATH;
+  const defaultPath = process.env.EXCEL_FILE_PATH;
   const targetPath = customPath || defaultPath;
   const parsedOrders: QuikOrder[] = [];
 

@@ -12,14 +12,27 @@ import { calculatePortfolioIncome } from './income-calculator.js';
 import { getMarkdownTemplate } from './report-templates.js';
 import { DashboardReportBuilder } from '../../../components/dashboard-report/dashboard-report.js';
 import { AiClient } from './ai-client.js';
-import { getCbrKeyRate } from './cbr-rate.js';
-import { suggestAllAutoTargets } from './auto-target-allocator.js';
+// Удалено: auto-target блок — legacy UI suggestion, не AI recommendation.
+// Для SUR при USER_TARGET=NOT_SET не показывать автоматически целевую долю.
+// import { suggestAllAutoTargets } from './auto-target-allocator.js';
 import { PriceAlertsModule } from './price-alerts.js';
-import { NewsFetcherModule } from './news-fetcher.js';
 import { buildPortfolioSnapshot } from '../portfolio-snapshot/portfolio-snapshot.js';
 import { InvestmentThesisEngine } from '../research/investment-thesis/investment-thesis-engine.js';
 import { buildAssetResearchSnapshot, buildPortfolioAssetContext } from './snapshot-builder.js';
 import type { ResearchContext } from '../research/providers/types.js';
+import { hasValue } from '../research/helpers.js';
+import type { MacroResearch } from '../research/types.js';
+import {
+  buildDeterministicAssetData,
+  buildStructuredAIRecommendation,
+  type StructuredAIAssetRecommendation,
+} from './structured-ai-recommendation.js';
+import {
+  sanitizeAiNarrative,
+  assertFinalAiDisplaySafe,
+  assertFinalReportSafe,
+} from './ollama-manager.js';
+import { postProcessAiText } from './ai-validation.js';
 
 /**
  * Главный управляющий модуль сквозного анализа инвестиционной деятельности портфеля
@@ -94,7 +107,25 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     portfolioSnapshot.totalLiquidationValue,
   );
 
+  // ─── DIAGNOSTIC: PORTFOLIO TABLE ROWS COUNT ─────────────────────
+  console.log(
+    '[PORTFOLIO] ' +
+    'assets=' + assets.length + ' | ' +
+    'analysis=' + analysisResult.assetsAnalysis.length + ' | ' +
+    'snapshot=' + portfolioSnapshot.assets.length,
+  );
+
+  // C9 = Excel/model «ТЕКУЩИЕ АКТИВЫ» (parseMacroGoals → totalBalance)
+  // НЕ liquidation value — это разные метрики
   const totalVal = analysisResult.macro.totalBalance;
+
+  // ─── DIAGNOSTIC: DASHBOARD_KPI_SOURCE ─────────────────────────────
+  console.log(
+    '[KPI] C9=' + totalVal.toLocaleString('ru-RU') + '₽ | ' +
+    'C10=' + historicalTrades.profitC10.toLocaleString('ru-RU') + '₽ | ' +
+    'C11=' + historicalTrades.profitC11.toLocaleString('ru-RU') + '₽ | ' +
+    'C12=' + investedData.totalNet.toLocaleString('ru-RU') + '₽',
+  );
 
   // Фактические проценты акций и облигаций из портфеля
   const actualStocksPct = Math.round(
@@ -119,57 +150,28 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   const c10Color = currentTradingResultRub >= 0 ? '#56d364' : '#ff7b72';
   const c11Color = totalNetProfitRub >= 0 ? '#56d364' : '#ff7b72';
 
-  console.log('==================================================');
-  console.log('📊 СКВОЗНОЙ ИСТОРИЧЕСКИЙ АНАЛИЗ ДЕЯТЕЛЬНОСТИ (EXCEL MODEL)');
   console.log(
-    '▪️ Всего проведено сделок с начала учета: ' +
-      historicalTrades.tradesCount +
-      ' шт.',
+    '==================================================',
   );
   console.log(
-    '🛒 Общий объем покупок (Купля): ' +
-      historicalTrades.totalPurchasesSum.toLocaleString('ru-RU') +
-      ' ₽',
+    '📊 СДЕЛОК: ' + historicalTrades.tradesCount + ' | ' +
+    'ПОКУПКИ: ' + historicalTrades.totalPurchasesSum.toLocaleString('ru-RU') + '₽ | ' +
+    'ПРОДАЖИ: ' + historicalTrades.totalSalesSum.toLocaleString('ru-RU') + '₽',
   );
   console.log(
-    '💰 Общий объем продаж (Продажа): ' +
-      historicalTrades.totalSalesSum.toLocaleString('ru-RU') +
-      ' ₽',
+    '📊 ТЕКУЩАЯ ПРИБЫЛЬ (C10): ' + historicalTrades.profitC10.toLocaleString('ru-RU') + '₽ | ' +
+    'КОМИССИЯ: ' + historicalTrades.totalHistoricalCommission.toLocaleString('ru-RU') + '₽',
   );
   console.log(
-    '📉 Текущая прибыль (C10): ' +
-      historicalTrades.profitC10.toLocaleString('ru-RU') +
-      ' ₽',
+    '📊 ОЦЕНКА АКТИВОВ (C9): ' + totalVal.toLocaleString('ru-RU') + '₽ | ' +
+    'РЕЗУЛЬТАТ (C10): ' + currentTradingResultRub.toLocaleString('ru-RU') + '₽ | ' +
+    'ВЛОЖЕНО (C12): ' + investedData.totalNet.toLocaleString('ru-RU') + '₽',
   );
   console.log(
-    '▪️ Всего уплачено комиссий брокера (C6): ' +
-      historicalTrades.totalHistoricalCommission.toLocaleString('ru-RU') +
-      ' ₽',
-  );
-  console.log(
-    '📈 Текущая оценка активов in наличии (C9): ' +
-      totalVal.toLocaleString('ru-RU') +
-      ' ₽',
-  );
-
-  // Вывод в терминал Thunderobot теперь полностью выровнен и точен копейка в копейку с Excel
-  console.log(
-    '📊 Результат за весь период (C10): ' +
-      currentTradingResultRub.toLocaleString('ru-RU') +
-      ' ₽',
-  );
-  console.log(
-    '💰 Чистый объем лично вложенных средств (C12): ' +
-      investedData.totalNet.toLocaleString('ru-RU') +
-      ' ₽',
-  );
-  console.log(
-    '🌟 Текущий инвест-результат (C11): ' +
+    '🌟 ИНВЕСТ-РЕЗУЛЬТАТ (C11): ' +
       (totalNetProfitRub >= 0 ? '+' : '') +
-      totalNetProfitRub.toLocaleString('ru-RU') +
-      ' ₽ (' +
-      totalNetProfitPercent.toFixed(2) +
-      '%)',
+      totalNetProfitRub.toLocaleString('ru-RU') + '₽ (' +
+      totalNetProfitPercent.toFixed(2) + '%)',
   );
 
   if (!validation.isValid) {
@@ -186,38 +188,6 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   // Вызов калькулятора доходов: затягиваем дивиденды и купоны активов портфеля
   const inc = await calculatePortfolioIncome(assets);
-
-  // Получаем актуальное значение ключевой ставки с автоматическим JSON-обновлением
-  const cbrRateData = await getCbrKeyRate();
-  console.log(
-    '🏦 Ключевая ставка ЦБ РФ: ' +
-      cbrRateData.rate +
-      '% (от ' +
-      cbrRateData.date +
-      ', ' +
-      cbrRateData.source +
-      ')' +
-      (cbrRateData.isFresh ? '' : ' ⚠️ ДАННЫЕ СТАЛЫЕ — требуют проверки'),
-  );
-
-  // Загрузка новостного фона и макроэкономических индикаторов
-  console.log('[NEWS] Загрузка свежих новостей и макро-данных...');
-  const newsFetcher = new NewsFetcherModule();
-  const [newsContext, macroIndicators] = await Promise.all([
-    newsFetcher.fetchMarketNews(),
-    newsFetcher.getMacroIndicators(),
-  ]);
-
-  // Объединяем новостной и макро-контекст
-  const combinedContext = [newsContext, macroIndicators]
-    .filter(Boolean)
-    .join('\n\n');
-
-  if (combinedContext) {
-    console.log('[NEWS] ✅ Новости и макро-данные загружены');
-  } else {
-    console.log('[NEWS] ⚠️ Новости не загружены, анализ без новостного фона');
-  }
 
   const reportPathMd = path.join(process.cwd(), 'report.md');
   const assetsListMd = analysisResult.assetsAnalysis
@@ -238,16 +208,8 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
 
   let newAssetsWarningMd = '';
   let newAssetsWarningHtml = '';
-  let autoTargetsMd = '';
   const newAssets = analysisResult.assetsAnalysis.filter(
     (item) => item.status === 'NEW',
-  );
-
-  // АВТОПРЕДЛОЖЕНИЕ ЦЕЛЕВЫХ ДОЛЬ для новых активов (только для HTML)
-  const autoTargets = suggestAllAutoTargets(
-    assets,
-    actualStocksPct,
-    actualBondsPct,
   );
 
   // ─── INVESTMENT THESIS GENERATION ───
@@ -270,26 +232,27 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       ])
     ),
     macroData: {
-      keyRate: cbrRateData.rate,
+      keyRate: undefined,
       fxUsd: undefined,
       oil: undefined,
     },
     newsData: [],
-    sources: [
-      {
-        name: cbrRateData.source,
-        version: '1.0',
-        fetchedAt: cbrRateData.lastUpdated,
-      },
-    ],
+    sources: [],
   };
 
   // async function required for await
+  let freshMacroData: import('./prompt-templates.js').MacroDataContext | null = null;
+
   for (const asset of analysisResult.assetsAnalysis) {
     const { snapshot } = await buildAssetResearchSnapshot(asset, researchContext);
     const portfolioCtx = buildPortfolioAssetContext(asset, {
       totalPortfolioValue: analysisResult.macro.totalBalance,
     });
+
+    // Извлекаем свежие макро-данные из первого snapshot (macro — глобальные, не зависят от актива)
+    if (!freshMacroData && snapshot.macroResearch) {
+      freshMacroData = extractFreshMacroDataContext(snapshot.macroResearch);
+    }
 
     try {
       const result = thesisEngine.generate({
@@ -322,23 +285,6 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       '⚠️ Внимание: В вашем портфеле обнаружены новые инструменты без установленной целевой доли: ' +
       newAssets.map((item) => item.name).join(', ') +
       '. Пожалуйста, пропишите желаемый процент в столбце S вашей Excel-таблицы.</div>';
-
-    // Формируем рекомендации по автопредложению
-    if (autoTargets.length > 0) {
-      autoTargetsMd =
-        '\n💡 **АВТОМАТИЧЕСКИЕ РЕКОМЕНДАЦИИ ПО ЦЕЛЕВЫМ ДОЛЯМ:**\n' +
-        autoTargets
-          .map(
-            (t) =>
-              '* **' +
-              t.name +
-              '**: рекомендуется ' +
-              t.suggestedTargetPercent +
-              '% (основано на макро-структуре портфеля)',
-          )
-          .join('\n') +
-        '\n';
-    }
   }
 
   const stocksListText = inc.stocks
@@ -353,7 +299,6 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     actualBondsPct,
     assetsListMd +
       newAssetsWarningMd +
-      autoTargetsMd +
       priceAlertsMd +
       '\n\n### 💰 Динамическая аналитика купонов и объявленных дивидендов:\n' +
       '* Суммарный накопленный НКД по всем облигациям в портфеле: ' +
@@ -379,15 +324,23 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     try {
       // ────────────────────────────────────────────────────────────
 
+      // Строим MacroDataContext из свежих данных research pipeline
+      const aiMacroData = freshMacroData ?? {
+        keyRate: 0,
+        source: 'NO_DATA',
+        asOf: 'N/A',
+        isFresh: false,
+      };
+
       const aiResult = await aiClient.generateDynamicReport(
         analysisResult,
         inc,
         validation,
         ordersData,
         portfolioSnapshot,
-        cbrRateData,
+        aiMacroData,
         thesisResults,
-        combinedContext,
+        undefined, // newsContext — больше не передаём (используется только research pipeline)
         { stocks: actualStocksPct, bonds: actualBondsPct },
         {
           profitC10: historicalTrades.profitC10,
@@ -407,6 +360,82 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
         '[AI] Модель: ' + aiResult.modelUsed +
         ' | Статус: ' + (aiResult.success ? '✅ Успешно' : '⚠️ Fallback') +
         (aiResult.error ? ' | Ошибка: ' + aiResult.error : '')
+      );
+
+      // ─── CANONICAL SANITIZED AI TEXT ─────────────────────────────
+      // Один очищенный AI-текст для ВСЕХ display paths.
+      // aiResult.text больше НЕ используется напрямую после этой строки.
+      // Только sanitizedAiText или deterministic structured data.
+      const strippedText = stripJsonBlockFromAiText(aiResult.text);
+      const sanitizedAiText = sanitizeAiNarrative(strippedText);
+
+      // ─── POST-PROCESSING: AI VALIDATION MODULE ───────────────────
+      // Полная пост-обработка: валидация направлений, удаление
+      // галлюцинированных данных, проверка исключённых активов.
+      const postProcessResult = postProcessAiText(
+        sanitizedAiText,
+        analysisResult.assetsAnalysis,
+      );
+
+      // Логируем предупреждения валидации
+      if (postProcessResult.warnings.length > 0) {
+        console.log('[AI-VALIDATION] Предупреждения пост-обработки:');
+        for (const warning of postProcessResult.warnings) {
+          console.log('  ⚠️  ' + warning);
+        }
+      }
+
+      // Используем очищенный текст из пост-обработки
+      const validatedAiText = postProcessResult.cleanedText;
+
+      // ─── DIAGNOSTIC: PRE-ASSERT AI DISPLAY SAFE ──────────────────
+      const forbiddenFields = ['recommendedTargetPercent', 'recommendedAction', 'agreementWithPortfolioMath'];
+      const foundForbidden = forbiddenFields.filter((f) => validatedAiText.includes(f));
+      if (foundForbidden.length > 0) {
+        console.warn(
+          '[AI] ⚠️ Forbidden fields in validatedAiText:',
+          foundForbidden,
+        );
+      }
+
+      // ─── HARD INVARIANT: AI display text ─────────────────────────
+      // Проверка: structured JSON НЕ дошёл до final display layer.
+      // Если инвариант срабатывает — баг в pipeline sanitization.
+      assertFinalAiDisplaySafe(validatedAiText);
+
+      // ─── STRUCTURED AI RECOMMENDATIONS ───
+      // Создаём Map<ticker, StructuredAIAssetRecommendation> для каждого актива
+      const structuredRecommendations = new Map<
+        string,
+        StructuredAIAssetRecommendation
+      >();
+
+      for (const asset of analysisResult.assetsAnalysis) {
+        // Строим deterministic данные
+        const det = buildDeterministicAssetData(asset, []);
+
+        // Пытаемся найти AI JSON для этого тикера
+        // AI возвращает один JSON для первого актива (основной)
+        // Для остальных используем fallback
+        let aiJson = aiResult.structuredJson ?? null;
+        let validation = aiResult.structuredValidation ?? null;
+
+        // Если AI JSON тикер не совпадает с текущим активом — используем fallback
+        if (aiJson && aiJson.ticker !== asset.ticker) {
+          aiJson = null;
+          validation = null;
+        }
+
+        const structured = buildStructuredAIRecommendation(
+          det,
+          aiJson,
+          validation,
+        );
+        structuredRecommendations.set(asset.ticker, structured);
+      }
+
+      console.log(
+        `[STRUCTURED] Создано рекомендаций: ${structuredRecommendations.size}`,
       );
 
       // Формируем AI-блок
@@ -480,28 +509,6 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
         '</p>' +
         '</div>';
 
-      let autoTargetsHtml = '';
-      if (autoTargets.length > 0) {
-        autoTargetsHtml =
-          '<div style="background: rgba(56, 139, 255, 0.08); border: 1px solid #388bfd; padding: 15px; border-radius: 8px; margin-bottom: 15px; color: #e6edf2;">' +
-          '<h4 style="margin-top: 0; color: #58a6ff; margin-bottom: 10px;">💡 Автоматические рекомендации по целевым долям</h4>' +
-          '<ul style="margin: 0; padding-left: 20px; line-height: 1.6;">' +
-          autoTargets
-            .map(
-              (t) =>
-                '<li><strong>' +
-                t.name +
-                '</strong>: рекомендуется <strong style="color: #56d364;">' +
-                t.suggestedTargetPercent +
-                '%</strong> — ' +
-                t.reason +
-                '</li>',
-            )
-            .join('') +
-          '</ul>' +
-          '<p style="margin-top: 10px; margin-bottom: 0; color: #8b949e; font-size: 12px;">Для применения рекомендаций укажите целевой процент в столбце S Excel-таблицы.</p></div>';
-      }
-
       const priceAlertsHtml = priceAlertsModule.formatAlertsHtml(priceAlerts);
 
       let validationAlertsHtml = '';
@@ -513,18 +520,27 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
           '</div>';
       }
 
-      const aiBoxHtml =
-        '📋 Экспертное заключение ИИ-советника (' +
-        currentMonth.charAt(0).toUpperCase() + currentMonth.slice(1) +
-        ')\n' +
+       // ─── GUARD: structuredJson НЕ должен попадать в aiBoxHtml ────
+       // structuredJson используется ТОЛЬКО для StructuredAIAssetRecommendation
+       // и никогда не должен сериализоваться в display layer.
+       if (aiResult.structuredJson) {
+         console.log(
+           '[AI-BOX-GUARD] structuredJson present but NOT included in aiBoxHtml — ' +
+           'only sanitizedAiText is used for display.',
+         );
+       }
+
+       const aiBoxHtml =
+         '📋 Экспертное заключение ИИ-советника (' +
+         currentMonth.charAt(0).toUpperCase() + currentMonth.slice(1) +
+         ')\n' +
         '🤖 Использована модель: ' + aiResult.modelUsed + '\n\n' +
-        priceAlertsHtml +
-        newAssetsWarningHtml +
-        autoTargetsHtml +
-        validationAlertsHtml +
-        incomeHtmlWidget +
-        '\n' +
-        aiResult.text;
+          priceAlertsHtml +
+          newAssetsWarningHtml +
+          validationAlertsHtml +
+          incomeHtmlWidget +
+          '\n' +
+          validatedAiText;
 
       // Обновляем report.html с AI-блоком
       const reportBuilder = DashboardReportBuilder.fromOrdersAndAssets(
@@ -537,7 +553,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       reportBuilder.data.freeCash = analysisResult.macro.freeCash.toLocaleString('ru-RU');
       reportBuilder.data.stocksPct = actualStocksPct;
       reportBuilder.data.bondsPct = actualBondsPct;
-  reportBuilder.data.cbrRate = cbrRateData.rate;
+      reportBuilder.data.cbrRate = freshMacroData?.keyRate ?? 0;
       reportBuilder.data.totalInvested = investedData.totalNet.toLocaleString('ru-RU');
       reportBuilder.data.resultC10 = currentTradingResultRub.toLocaleString('ru-RU');
       reportBuilder.data.profitC11 =
@@ -552,11 +568,18 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
       reportBuilder.data.aiBoxHtml = aiBoxHtml;
 
       const htmlData = reportBuilder.buildHtml();
+
+      // ─── HARD INVARIANT: final report payload ────────────────────
+      // Проверка: raw JSON / structured data НЕ дошли до PDF renderer.
+      // Это ПОСЛЕДНИЙ рубеж — если HTML содержит forbidden patterns,
+      // сборка падает. Нельзя silently sanitizing malformed report.
+      assertFinalReportSafe(htmlData);
+
       fs.writeFileSync(reportPathHtml, htmlData, 'utf-8');
       console.log('[AI] ✅ Отчёт обновлён с AI-анализом');
     } catch (error) {
-      console.error('❌ Ошибка при перегенерации:', error);
-      console.error('STACK:', error instanceof Error ? error.stack : undefined);
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('[AI] ❌ Ошибка:', msg);
     }
   })();
 
@@ -580,7 +603,7 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   reportBuilder.data.freeCash = analysisResult.macro.freeCash.toLocaleString('ru-RU');
   reportBuilder.data.stocksPct = actualStocksPct;
   reportBuilder.data.bondsPct = actualBondsPct;
-  reportBuilder.data.cbrRate = cbrRateData.rate;
+  reportBuilder.data.cbrRate = freshMacroData?.keyRate ?? 0;
   reportBuilder.data.totalInvested = investedData.totalNet.toLocaleString('ru-RU');
   reportBuilder.data.resultC10 = currentTradingResultRub.toLocaleString('ru-RU');
   reportBuilder.data.profitC11 =
@@ -595,6 +618,10 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   reportBuilder.data.aiBoxHtml = aiBoxHtmlPlaceholder;
 
   const htmlData = reportBuilder.buildHtml();
+
+  // Placeholder invariant: проверяем что placeholder HTML чистый
+  assertFinalReportSafe(htmlData);
+
   fs.writeFileSync(reportPathHtml, htmlData, 'utf-8');
 
   // Сразу открываем страницу (не ждём AI)
@@ -606,4 +633,152 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
   exec(openCommand);
 
   console.log('[REPORT] ✅ Отчёт открыт (AI-анализ выполнится в фоне)');
+}
+
+/**
+ * Извлекает MacroDataContext из MacroResearch (AssetResearchSnapshot).
+ * Использует свежие данные из MacroResearchProvider (CBR official + XML-Daily).
+ * НЕ использует legacy cbr-rate.ts (хардкод) и news-fetcher.ts (RSS).
+ */
+function extractFreshMacroDataContext(
+  macroResearch: MacroResearch,
+): import('./prompt-templates.js').MacroDataContext {
+  const keyRate = hasValue(macroResearch.keyRate) ? macroResearch.keyRate.value : 0;
+  const inflation = hasValue(macroResearch.inflation) ? macroResearch.inflation.value : undefined;
+  const fx = hasValue(macroResearch.fx) ? macroResearch.fx.value : undefined;
+
+  // Определяем source и asOf из evidence
+  let source = 'CBR official + XML-Daily mirror';
+  const asOf = new Date().toLocaleDateString('ru-RU');
+  let isFresh = true;
+
+  // Пытаемся извлечь дату из evidence ключевой ставки
+  if (hasValue(macroResearch.keyRate)) {
+    const evidenceId = macroResearch.keyRate.evidenceIds?.[0];
+    if (evidenceId) {
+      const ev = evidenceId.startsWith('macro-keyrate');
+      if (ev) {
+        source = 'Bank of Russia (официальный источник)';
+        isFresh = true;
+      }
+    }
+  }
+
+  return {
+    keyRate,
+    inflation,
+    currency: fx,
+    source,
+    asOf,
+    isFresh,
+  };
+}
+
+/**
+ * Удаляет JSON-блок из AI-ответа перед вставкой в HTML/PDF.
+ * Raw JSON никогда не должен попадать в HTML — он используется только
+ * для построения StructuredAIAssetRecommendation через aiResult.structuredJson.
+ *
+ * Покрывает ВСЕ форматы:
+ *  1. ```json { ... } ```  (fenced с маркером)
+ *  2. ``` { ... } ```      (fenced без маркера)
+ *  3. {"ticker": ... }     (сырой JSON-объект без маркеров, inline)
+ *  4. <environment_details>...</environment_details>
+ *  5. Многострочный JSON с вложенными объектами и массивами
+ */
+export function stripJsonBlockFromAiText(text: string): string {
+  let result = text;
+
+  // 1. Удаляем ```json ... ``` блок (fenced с маркером)
+  result = result.replace(/```json\s*[\s\S]*?```/g, '');
+  // 2. Удаляем ``` ... ``` блок (fenced без маркера)
+  result = result.replace(/```\s*[\s\S]*?```/g, '');
+
+  // 3. Удаляем сырой JSON-объект {"ticker": ... } без маркеров (inline)
+  //    Используем brace-counting для корректного удаления вложенных объектов
+  result = removeInlineJsonObject(result);
+
+  // 4. Удаляем <environment_details>...</environment_details>
+  result = result.replace(/<environment_details>[\s\S]*?<\/environment_details>/g, '');
+
+  // 5. Пост-очистка: удаляем оставшиеся одиночные { "ticker" ... } без закрывающей }
+  //    (на случай если LLM оборвал JSON)
+  result = result.replace(/\{\s*"ticker"\s*:[^}]*$/gm, '');
+
+  // 6. Финальная проверка: удаляем любые оставшиеся structured JSON patterns
+  //    на случай если что-то проскочило
+  result = result.replace(/"recommendedTargetPercent"\s*:/g, '');
+  result = result.replace(/"recommendedAction"\s*:/g, '');
+  result = result.replace(/"agreementWithPortfolioMath"\s*:/g, '');
+
+  return result.trim();
+}
+
+/**
+ * Удаляет inline JSON-объект {"ticker": ...} с корректной обработкой
+ * вложенных объектов и массивов через подсчёт скобок.
+ */
+function removeInlineJsonObject(text: string): string {
+  const pattern = /\{\s*"ticker"\s*:/;
+  let result = '';
+  let lastIndex = 0;
+  let match;
+
+  while ((match = pattern.exec(text)) !== null) {
+    const startIdx = match.index;
+
+    // Защита от бесконечного цикла: если паттерн совпал в той же позиции
+    if (startIdx <= lastIndex) {
+      break;
+    }
+
+    // Находим закрывающую } с учётом вложенности
+    let braceCount = 0;
+    let inString = false;
+    let escapeNext = false;
+    let endIdx = -1;
+
+    for (let i = startIdx; i < text.length; i++) {
+      const ch = text[i];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (ch === '\\') {
+        escapeNext = true;
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) continue;
+
+      if (ch === '{' || ch === '[') {
+        braceCount++;
+      } else if (ch === '}' || ch === ']') {
+        braceCount--;
+        if (braceCount === 0) {
+          endIdx = i + 1;
+          break;
+        }
+      }
+    }
+
+    if (endIdx > startIdx) {
+      result += text.slice(lastIndex, startIdx);
+      result += '[JSON_BLOCK_REMOVED]';
+      lastIndex = endIdx;
+    } else {
+      // Не нашли закрывающую скобку — пропускаем
+      lastIndex = startIdx + 1;
+    }
+  }
+
+  result += text.slice(lastIndex);
+  return result;
 }
