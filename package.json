@@ -29,6 +29,7 @@
     "audit": "node run-audit.js",
     "blueprint": "node generate-blueprint.js",
     "watch": "tsx watch.ts",
+    "push": "git add . && read -p 'Commit message: ' msg && git commit -m \"$msg\" && git push",
     "push:main": "git add . && git commit -m \"Updates\" && git push origin main",
     "cache:clear-ai": "tsx scripts/clear-ai-cache.ts",
     "pipeline": "tsx pipeline.ts run",
