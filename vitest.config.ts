@@ -5,6 +5,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    env: {
+      NODE_ENV: 'test',
+    },
     // 🎯 ИСПРАВЛЕНО: Vitest будет искать тесты и в src/, и в нашей защищенной gulp/tests/
     include: [
       'src/**/*.{test,spec}.{js,ts}',

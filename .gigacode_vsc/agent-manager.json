@@ -1,9 +1,25 @@
 {
-  "worktrees": {},
-  "sessions": {},
+  "worktrees": {
+    "wt-1790185447155-1": {
+      "branch": "quixotic-literature",
+      "path": "c:\\dev\\finance-analyzer_2\\.gigacode_vsc\\worktrees\\quixotic-literature",
+      "parentBranch": "main",
+      "createdAt": "2026-09-23T17:44:07.155Z",
+      "remote": "origin"
+    }
+  },
+  "sessions": {
+    "ses_f30a19379ffeOACvuPUdnoKps4": {
+      "worktreeId": "wt-1790185447155-1",
+      "createdAt": "2026-09-23T17:44:27.156Z"
+    }
+  },
   "tabOrder": {
     "local": [
       "pending:1"
     ]
-  }
+  },
+  "worktreeOrder": [
+    "wt-1790185447155-1"
+  ]
 }

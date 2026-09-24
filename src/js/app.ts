@@ -15,10 +15,24 @@ function isWebp(): void {
   });
 }
 
+// ==========================================
+// 📦 ВНЕШНИЕ БИБЛИОТЕКИ И СИСТЕМНЫЕ МОДУЛИ
+// ==========================================
+import { init as dashboard } from './modules/dashboard/dashboard';
+import { dbManager } from './modules/db-manager/db-manager';
+import { telegramBot } from './modules/telegram-bot/telegram-bot';
+import { memoryLayer } from './modules/memory-layer/memory-layer';
+
 // Инициализация компонентов
 const initApp = () => {
   document.body.classList.add('_js-ready');
   isWebp();
+
+  dashboard();
+// [ДИНАМИЧЕСКИЕ МОДУЛИ]
+  dbManager();
+  telegramBot();
+  memoryLayer();
 };
 
 if (document.readyState === 'loading') {

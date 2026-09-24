@@ -30,3 +30,39 @@ Thumbs.db
 # 📊 Сгенерированные отчёты (обновляются при каждом запуске)
 report.html
 report.md
+
+# 🧪 Временные файлы тестов
+coverage/
+.vitest/
+
+# 📁 Данные и базы
+data/*.db
+data/*.sqlite
+data/*.json
+!data/.gitkeep
+data/*-shm
+data/*-wal
+data/*-journal
+
+# 📦 Локальные конфиги и скрипты автоматизации
+create-modules.js
+pipeline.ts
+
+# 🌐 HTML-дашборды (если генерируются)
+src/dashboard.html
+
+# 📱 Telegram-бот (локальные файлы)
+src/js/modules/telegram-bot/
+
+# 📊 Бэктестинг (данные)
+src/js/modules/backtesting/data/
+src/js/modules/backtesting/results/
+
+# 📈 Оптимизация портфеля (данные)
+src/js/modules/portfolio-optimizer/data/
+
+# 📊 Dashboard (стили и данные)
+src/scss/dashboard.scss
+
+# 🔧 Интеграционные файлы (не для репозитория)
+src/js/app-integration.ts

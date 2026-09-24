@@ -5,6 +5,12 @@
 @use '../js/modules/xlsx-parser/xlsx-parser' as xlsxParser;
 @use '../js/modules/ai-advisor/ai-advisor' as aiAdvisor;
 
+// ФУНКЦИОНАЛЬНЫЕ JS/TS МОДУЛИ
+@use '../js/modules/dashboard/dashboard' as dashboard;
+@use '../js/modules/db-manager/db-manager' as dbManager;
+@use '../js/modules/telegram-bot/telegram-bot' as telegramBot;
+@use '../js/modules/memory-layer/memory-layer' as memoryLayer;
+
 // Перенесли в самый конец, после всех директив @use
 @import "base/fonts";
 @use '../components/dashboard-report/dashboard-report';

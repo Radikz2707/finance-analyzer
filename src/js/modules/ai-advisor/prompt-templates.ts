@@ -21,6 +21,7 @@ export function buildSystemPrompt(
   newsContext?: string,
   assetTickers?: string[],
   macroData?: MacroDataContext,
+  memoryContext?: string,
 ): string {
   const currentMonth = new Date().toLocaleDateString('ru-RU', {
     month: 'long',
@@ -289,6 +290,13 @@ export function buildSystemPrompt(
   // Блок макроэкономики
   prompt += '=== МАКРОЭКОНОМИЧЕСКИЙ КОНТЕКСТ (учти при анализе) ===\n';
   prompt += '• ' + macroContext + '\n\n';
+
+  // Блок контекста из памяти ИИ (история предыдущих анализов)
+  if (memoryContext) {
+    prompt += '=== КОНТЕКСТ ИЗ ПАМЯТИ ИИ (история предыдущих анализов) ===\n';
+    prompt += memoryContext;
+    prompt += '\n⚡ ОБЯЗАТЕЛЬНО учти историю предыдущих анализов и принятых решений при формировании рекомендаций.\n\n';
+  }
 
   // Блок свежих новостей (если есть)
   if (newsContext) {

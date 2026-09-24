@@ -19,7 +19,7 @@
     "module": "gulp --gulpfile gulp/system/gulp.module.js module",
     "remove": "gulp --gulpfile gulp/system/gulp.remove.js remove",
     "help": "gulp --gulpfile gulp/system/gulp.help.js help",
-    "lint": "cross-env NODE_NO_WARNINGS=1 G_MESSAGES_DEBUG=none node --no-deprecation node_modules/gulp/bin/gulp.js lintJs lintCss",
+    "lint": "cross-env NODE_NO_WARNINGS=1 G_MESSAGES_DEBUG=none node --no-deprecation node_modules/gulp/bin/gulp.js lintJs lintCss &&  npx tsc --noEmit",
     "lint:fix": "npx stylelint \"src/**/*.scss\" --fix",
     "clean": "gulp cleandist",
     "update-modules": "npx npm-check-updates -i --no-cache && npm install --legacy-peer-deps",
@@ -30,7 +30,9 @@
     "blueprint": "node generate-blueprint.js",
     "watch": "tsx watch.ts",
     "push:main": "git add . && git commit -m \"Updates\" && git push origin main",
-    "cache:clear-ai": "tsx scripts/clear-ai-cache.ts"
+    "cache:clear-ai": "tsx scripts/clear-ai-cache.ts",
+    "pipeline": "tsx pipeline.ts run",
+    "pipeline:schedule": "tsx pipeline.ts schedule"
   },
   "lint-staged": {
     "src/**/*.scss": "npx stylelint --fix"
@@ -38,6 +40,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@prettier/plugin-xml": "^3.4.2",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/browser-sync": "^2.29.1",
     "@types/gulp": "^4.0.18",
     "@types/node": "^26.6.2",
@@ -46,7 +49,7 @@
     "autoprefixer": "^10.6.1",
     "browser-sync": "^3.0.4",
     "cross-env": "^10.1.0",
-    "dotenv": "^17.4.2",
+    "dotenv": "^18.0.3",
     "esbuild-loader": "^4.5.0",
     "eslint": "10.11.0",
     "eslint-config-prettier": "^10.1.8",
@@ -74,8 +77,8 @@
     "lint-staged": "^17.5.1",
     "postcss": "^8.5.28",
     "postcss-sort-media-queries": "^6.7.1",
-    "prettier": "^3.9.8",
-    "sass": "^1.104.1",
+    "prettier": "^3.9.9",
+    "sass": "^1.105.0",
     "sharp": "^0.35.4",
     "stylelint": "^17.15.0",
     "stylelint-config-recess-order": "^7.8.0",
@@ -84,7 +87,7 @@
     "stylelint-order": "^8.1.1",
     "tsx": "^4.23.15",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "typescript-eslint": "^8.70.0",
+    "typescript-eslint": "^8.70.1",
     "vinyl-ftp": "^0.6.1",
     "vitest": "^4.1.11",
     "webp-in-css": "^0.9.0",
@@ -107,6 +110,7 @@
   },
   "dependencies": {
     "axios": "^1.20.0",
+    "better-sqlite3": "^13.0.3",
     "xlsx": "^0.18.5"
   }
 }

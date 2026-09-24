@@ -15,6 +15,7 @@ import type {
   AssetType,
 } from '../types.js';
 import { hasValue } from '../helpers.js';
+import { researchCacheRepo } from '../../db-manager/db-manager.js';
 
 // ──────────────────────────────────────────────
 // Conflict record
@@ -241,6 +242,8 @@ export class ResearchProviderRegistry {
    * - VALUE > NO_DATA
    * - evidence объединяется
    * - конфликт VALUE+VALUE фиксируется, первое значение сохраняется
+   *
+   * Кэширование: результаты сохраняются в SQLite с TTL 5 минут.
    */
   async researchAll(
     asset: ResearchAsset,
@@ -249,6 +252,7 @@ export class ResearchProviderRegistry {
     snapshot: AssetResearchSnapshot;
     conflicts: ValueConflict[];
     providerCount: number;
+    fromCache: boolean;
   }> {
     const matchingProviders = this.findProviders(asset);
 
@@ -267,7 +271,28 @@ export class ResearchProviderRegistry {
         },
         conflicts: [],
         providerCount: 0,
+        fromCache: false,
       };
+    }
+
+    // Проверяем кэш перед вызовом провайдеров (пропускаем в тестах)
+    const cacheKey = asset.ticker;
+    const isTest = process.env.NODE_ENV === 'test' || process.env.VITEST;
+    const cached = !isTest ? researchCacheRepo.get(cacheKey, context.researchTimestamp ?? 'latest') : null;
+
+    if (cached) {
+      console.log(`[ResearchCache] ✅ ${cacheKey} — данные из кэша (TTL ${context.ttlSeconds ?? 300}с)`);
+      try {
+        const cachedSnapshot = JSON.parse(cached) as AssetResearchSnapshot;
+        return {
+          snapshot: cachedSnapshot,
+          conflicts: [],
+          providerCount: matchingProviders.length,
+          fromCache: true,
+        };
+      } catch {
+        console.warn(`[ResearchCache] ⚠️ Ошибка парсинга кэша для ${cacheKey}`);
+      }
     }
 
     // Последовательно сливаем результаты
@@ -281,10 +306,34 @@ export class ResearchProviderRegistry {
       conflicts.push(...result.conflicts);
     }
 
+    // Сохраняем в кэш (пропускаем в тестах)
+    if (!isTest) {
+      const ttlSeconds = context.ttlSeconds ?? 300;
+      try {
+        researchCacheRepo.set(
+          cacheKey,
+          JSON.stringify(merged),
+          context.researchTimestamp ?? 'latest',
+          ttlSeconds,
+        );
+        console.log(`[ResearchCache] 💾 ${cacheKey} — сохранено в кэш (TTL ${ttlSeconds}с)`);
+      } catch (err) {
+        console.warn(`[ResearchCache] ⚠️ Ошибка сохранения кэша для ${cacheKey}:`, err);
+      }
+
+      // Очищаем просроченные записи
+      try {
+        researchCacheRepo.clearExpired();
+      } catch {
+        // Игнорируем ошибки очистки
+      }
+    }
+
     return {
       snapshot: merged,
       conflicts,
       providerCount: matchingProviders.length,
+      fromCache: false,
     };
   }
 

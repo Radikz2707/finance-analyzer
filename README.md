@@ -12,6 +12,7 @@
 - **Ребалансировка** — сравнение текущих и целевых долей, расчёт дефицита в рублях
 - **ИИ-советник** — анализ портфеля с учётом макроэкономической ситуации и ключевой ставки ЦБ
 - **Генерация отчётов** — HTML-дашборд + Markdown-отчёт с таблицами, графиками и рекомендациями
+- **Мультиагентный конвейер** — 5 независимых агентов с параллельным выполнением и cron-расписанием
 
 ---
 
@@ -70,6 +71,8 @@ npm run analyze
 | `npm run help`       | Справка по Gulp-командам                        |
 | `npm run audit`      | Аудит кода в `.audit/audit.md`                  |
 | `npm run blueprint`  | Генерация дерева файлов в `.audit/`             |
+| `npm run pipeline`   | **Мультиагентный конвейер:** однократный запуск |
+| `npm run pipeline:schedule` | Запуск с cron-расписанием (утро/периодически) |
 
 ---
 
@@ -83,12 +86,24 @@ finance-analyzer/
 │   │   │   ├── xlsx-parser/        # Парсинг Excel (QUIK, сделки, цели)
 │   │   │   ├── ai-advisor/         # ИИ-советник, расчёт доходов, ставки ЦБ
 │   │   │   ├── portfolio-math/     # Математика портфеля, валидация лимитов
-│   │   │   └── cli-interface/      # CLI-интерфейс
+│   │   │   ├── portfolio-snapshot/ # Снимки портфеля для AI
+│   │   │   ├── research/           # Research providers (Market, Issuer, News, Macro)
+│   │   │   ├── pipeline/           # 🔮 Мультиагентный конвейер (Фаза 2+3)
+│   │   │   │   ├── agent/          # Базовый класс IAgent, AgentBase
+│   │   │   │   ├── agents/         # 5 агентов: Data, Research, Analysis, AI, Notification
+│   │   │   │   ├── review/         # 🔮 3 review-агента (Conservative, Aggressive, Risk)
+│   │   │   │   ├── controller/     # 🔮 Agent Controller (управление агентами)
+│   │   │   │   ├── audit/          # 🔮 Audit Log (аудит-трейл)
+│   │   │   │   ├── pipeline-coordinator.ts  # DAG-оркестратор
+│   │   │   │   ├── pipeline-scheduler.ts    # Cron-планировщик
+│   │   │   │   └── command-center.ts        # 🔮 AI Command Center (human-in-the-loop)
+│   │   │   └── telegram-bot/       # Telegram-бот для управления
 │   │   └── app.ts                  # Точка входа фронтенда
 │   └── components/                 # БЭМ-компоненты (dashboard-report)
 ├── data/                           # Данные (orders.csv и др.)
 ├── gulp/                           # Gulp-задачи
-├── index.ts                        # Точка входа анализа
+├── pipeline.ts                     # 🔮 Entry point мультиагентного конвейера
+├── index.ts                        # Точка входа анализа (Фаза 1)
 ├── package.json
 └── .env                            # API-ключи (ProxyAPI, GigaChat)
 ```
@@ -111,6 +126,157 @@ finance-analyzer/
 ### Portfolio Math (`src/js/modules/portfolio-math/`)
 - `portfolio-math.ts` — анализ отклонений, приоритеты покупок, концентрация рисков
 - `portfolio-validator.ts` — валидация лимитов портфеля
+
+### Research Data Layer (`src/js/modules/research/`)
+
+**Типы и контракты:**
+- `types.ts` — ResearchValue<T>, AssetIdentity, IssuerResearch, BondResearch, MarketResearch, MacroResearch, NewsResearch, RiskAssessment, InvestmentThesis, AIRecommendation
+- `helpers.ts` — value(), noData(), hasValue(), pct(), rub() — фабрики с provenance
+
+**Providers (поставщики данных):**
+- `providers/market-provider.ts` — котировки, динамика, liquidity
+- `providers/issuer-fundamentals-provider.ts` — финансовые показатели эмитента
+- `providers/news-provider.ts` — новости с релевантностью к активу
+- `providers/macro-provider.ts` — ключевая ставка ЦБ (официальный API), инфляция, курсы валют
+- `providers/registry.ts` — агрегация результатов, merge semantics (VALUE > NO_DATA), conflict tracking
+
+**Investment Thesis Engine:**
+- `investment-thesis/investment-thesis-engine.ts` — генерация тезисов (bull/base/bear case)
+- `investment-thesis/types.ts` — InvestmentThesisInput, InvestmentThesisResult, ValuationView, ThesisConfidence
+
+**Принцип:** LLM НЕ является источником фактов. Все факты поступают через providers с evidenceIds. LLM только интерпретирует ResearchData.
+
+### 🔮 Мультиагентный конвейер (`src/js/modules/pipeline/`)
+
+**Фаза 2** — переписала монолитный конвейер `parseExcelAndFetchRecommendations()` в систему из 5 независимых агентов:
+
+```
+[Data Agent] ────────────────────────────────────────┐
+    │                                                  │
+    ├─→ [Research Agent] ──→ [AI Agent] ──→ [Notification Agent]
+    │          │                      │
+    └─→ [Analysis Agent] ────┘        │
+                                      │
+(Research + Analysis — параллельно через Promise.all)
+```
+
+**5 агентов:**
+
+| Агент | Задачи |
+| :--- | :--- |
+| **Data Agent** | Парсинг Excel/QUIK: позиции, цены, НКД, целевые доли, счета, заявки, сделки |
+| **Research Agent** | Параллельное исследование каждого актива через 4 провайдера (Market, Issuer, News, Macro) |
+| **Analysis Agent** | PortfolioMath, валидация рисков, расчёт дивидендов/купонов, ценовые алерты |
+| **AI Agent** | InvestmentThesisEngine, вызов GigaChat, пост-обработка, структурированные рекомендации |
+| **Notification Agent** | Сборка HTML-дашборда, Markdown-отчёт, открытие в браузере |
+
+**Преимущества:**
+- **Параллелизм** — Research и Analysis запускаются одновременно (Promise.all)
+- **Изоляция ошибок** — падение одного агента не ломает весь конвейер
+- **Retry-логика** — каждый агент имеет собственную политику повторных попыток
+- **Таймауты** — агенты не блокируют конвейер бесконечно
+- **Cron-расписание** — автоматические запуски по расписанию (утро, каждые 4ч, воскресенье)
+
+**Entry point:** `pipeline.ts`
+
+```bash
+npm run pipeline          # однократный запуск
+npm run pipeline:schedule # запуск с cron-расписанием
+```
+
+**Расписания по умолчанию:**
+- `0 9 * * 1-5` — каждое утро в 9:00 (будни)
+- `0 */4 * * *` — каждые 4 часа
+- `0 10 * * 0` — воскресенье в 10:00 (развёрнутый отчёт)
+
+### 🎮 AI Command Center (Фаза 3 — Human-in-the-Loop)
+
+**Фаза 3** добавляет систему управления агентами и многоагентную проверку рекомендаций:
+
+```
+[AI Agent] генерирует рекомендацию
+     │
+     ▼
+[Conservative Reviewer] — "что если рынок упадет?"
+[Aggressive Reviewer]   — "где скрытый потенциал?"
+[Risk Manager]          — "не нарушаем ли лимиты?"
+     │
+     ▼
+[Review Coordinator] сравнивает 3 мнения
+     │
+     ├─→ Согласие > 80% → ✅ Approve → Отчёт
+     │
+     └─→ Расхождение > 20% → 📤 Директору на проверку
+              │
+              ├─→ /approve → ✅ Отчёт
+              ├─→ /reject "убери риски по Сберу" → AI переделывает
+              └─→ /modify "добавь X5 в портфель" → новый анализ
+```
+
+**3 review-агента:**
+
+| Ревизор | Задачи |
+| :--- | :--- |
+| **Conservative** | Оценивает риски при падении рынка, концентрацию, ликвидность |
+| **Aggressive** | Ищет скрытый потенциал роста, недооценённые активы |
+| **Risk Manager** | Проверяет соблюдение лимитов, диверсификацию, стресс-сценарии |
+
+**Команды директора в Telegram:**
+
+| Команда | Описание |
+| :--- | :--- |
+| `/agents` | Статус всех агентов (idle/running/error) |
+| `/status {agent}` | Детальная статистика конкретного агента |
+| `/log {agent}` | Логи агента за последнюю минуту |
+| `/stop {agent}` | Остановить агента |
+| `/restart {agent}` | Перезапустить агента |
+| `/config {agent} key=value` | Изменить настройки (retries, timeout) |
+| `/override {agent} "команда"` | Переопределить результат агента |
+| `/review` | Запустить 3 ревизора |
+| `/approve` | Утвердить рекомендацию |
+| `/reject "комментарий"` | Отправить на доработку с фидбэком |
+| `/modify "изменение"` | Точечное изменение рекомендаций |
+| `/audit` | Полный аудит-трейд всех действий |
+
+**Пример диалога:**
+
+```
+Директор: /review
+
+Бот: 🔍 Результаты review-агентов:
+
+🛡️ Консервативный ревизор
+⚠️ SBER концентрация > 8% — риск при падении рынка
+⚠️ Нет хеджа против валютного риска
+
+🚀 Агрессивный ревизор
+✅ PLZL недооценён (P/E < отрасли на 15%)
+✅ X5 имеет потенциал роста +12%
+
+📋 Risk Manager
+⚠️ Превышение лимита концентрации при стресс-сценарии
+✅ Диверсификация по секторам OK
+
+📊 Согласие: 60% (расхождение > 20%)
+📤 Отправка директору на проверку...
+
+Директор: /reject "SBER не трогать, рынок нестабильный"
+
+Бот: 🔄 Переделываю с учётом фидбэка...
+
+📊 Итоговая рекомендация (итерация 2):
+• SBER: HOLD (без изменений — рыночная нестабильность)
+• PLZL: BUY (10.4% → 12%)
+• Свободные средства перераспределены на OФЗ-26244
+
+📊 Согласие агентов: 92%
+```
+
+**Audit Log:**
+- Все действия записываются в аудит-трейл
+- Фильтрация по типу, actor, pipelineId
+- Формирование отчётов для Telegram
+- Ограничение размера (1000 записей)
 
 ---
 

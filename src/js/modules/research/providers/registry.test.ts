@@ -1,9 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { MarketDataProvider } from './market-provider.js';
 import { TestFundamentalsProvider } from './test-fundamentals-provider.js';
 import { ResearchProviderRegistry } from './registry.js';
+import { researchCacheRepo } from '../../db-manager/db-manager.js';
 import type { ResearchAsset } from './types.js';
 import { hasValue } from '../helpers.js';
+
+beforeEach(() => {
+  researchCacheRepo.clearAll();
+});
 
 // ═══════════════════════════════════════════════
 // Helpers
@@ -296,6 +301,10 @@ describe('Registry: supports() фильтрует providers', () => {
 // ═══════════════════════════════════════════════
 
 describe('Registry: порядок регистрации не меняет результат конфликта', () => {
+  beforeEach(() => {
+    researchCacheRepo.clearAll();
+  });
+
   it('первое значение сохраняется независимо от порядка', async () => {
     const { TestConflictProvider } = await import('./test-conflict-provider.js');
 

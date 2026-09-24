@@ -1149,8 +1149,9 @@ export class AiClient {
   }
 
   /**
-   * Основной метод генерации отчёта с автоматическим fallback
-   */
+    * Основной метод генерации отчёта с автоматическим fallback
+    * @param memoryContext — контекст из двухслойной памяти ИИ (опционально)
+    */
   public async generateDynamicReport(
     analysis: PortfolioReportData,
     inc: CalculatedIncome,
@@ -1170,6 +1171,7 @@ export class AiClient {
       commission: number;
     },
     accountsInfo?: Array<{ name: string; value: number }>,
+    memoryContext?: string,
   ): Promise<AiResponseResult> {
     // Извлекаем тикеры активов для валидации
     const assetTickers = analysis.assetsAnalysis.map((a) => a.ticker);
@@ -1192,6 +1194,7 @@ export class AiClient {
       newsContext,
       assetTickers,
       macroData,
+      memoryContext,
     );
     const macroPercentages = actualMacroPercentages || {
       stocks: analysis.macro.stocksPercent,

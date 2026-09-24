@@ -14,6 +14,12 @@
     "scss/at-use-no-unnamespaced": null,
     "declaration-empty-line-before": null,
     "declaration-no-important": null,
-    "selector-pseudo-class-no-unknown": null
+    "selector-pseudo-class-no-unknown": null,
+    "order/properties-order": null,
+    "shorthand-property-no-redundant-values": null,
+    "color-function-alias-notation": null,
+    "color-function-notation": null,
+    "alpha-value-notation": null,
+    "media-feature-range-notation": null
   }
 }

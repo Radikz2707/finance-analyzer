@@ -62,6 +62,8 @@ export interface ResearchContext {
   newsData: NewsDataItem[];
   /** Метаданные источников */
   sources: SourceMetadata[];
+  /** TTL кэша в секундах (по умолчанию 300 = 5 минут) */
+  ttlSeconds?: number;
 }
 
 // ──────────────────────────────────────────────
