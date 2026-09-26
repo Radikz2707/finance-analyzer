@@ -10,7 +10,7 @@ import {
   getStats,
   exportMemory,
   init,
-} from './ai-memory.js';
+} from './core.js';
 import type {
   PortfolioKpiSnapshot,
 } from './types.js';

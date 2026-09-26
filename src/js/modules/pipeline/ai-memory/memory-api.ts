@@ -18,7 +18,7 @@ import {
   getStats,
   cleanup,
   exportMemory,
-} from './ai-memory.js';
+} from './core.js';
 import type {
   MemoryEntryType,
   MemoryPriority,

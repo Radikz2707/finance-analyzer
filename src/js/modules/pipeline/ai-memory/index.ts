@@ -3,7 +3,7 @@
  *
  * Подмодули:
  * - types.ts — типы и интерфейсы
- * - ai-memory.ts — ядро: оперативная и стратегическая память (SQLite)
+ * - core.ts — ядро: оперативная и стратегическая память (SQLite)
  * - memory-api.ts — удобный фасадный API для других модулей
  * - memory-cleaner.ts — автоматическая очистка по расписанию
  * - memory-rest-api.ts — REST-подобный интерфейс
@@ -24,8 +24,8 @@ export {
   resetDatabase,
   init as initMemory,
   getState as getMemoryState,
-} from './ai-memory.js';
-export { aiMemoryImpl } from './ai-memory.js';
+} from './core.js';
+export { aiMemoryImpl } from './core.js';
 
 // memory-cleaner.ts
 export * from './memory-cleaner.js';

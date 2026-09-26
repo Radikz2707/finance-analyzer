@@ -1,6 +1,6 @@
 /**
  * Конфигурация ИИ-агентов для финансового анализа
- * Приоритет: Ollama (локально, без VPN) → GigaChat → OpenRouter → Fallback
+ * Приоритет: Ollama (локально, бесплатно) → GigaChat (бесплатно, без VPN) → OpenRouter → YandexGPT
  */
 
 import axios from 'axios';
@@ -35,14 +35,14 @@ export const AI_MODELS: AiModelConfig[] = [
     id: 'ollama',
     name: 'Ollama (локально)',
     baseUrl: 'http://localhost:11434/api/chat',
-    modelName: 'qwen3.5:4b',
+    modelName: 'qwen3:14b',
     maxTokens: 8192,
     temperature: 0.2,
     priority: 1,
     requiresKey: false,
     envKey: '',
     description:
-      'Локальная модель, работает без VPN и ключей, полностью бесплатно. Усиленная версия 14B для более точного анализа.',
+      'Локальная модель 14B, работает без VPN и ключей, полностью бесплатно.',
   },
   {
     id: 'gigachat',
@@ -54,19 +54,7 @@ export const AI_MODELS: AiModelConfig[] = [
     priority: 2,
     requiresKey: true,
     envKey: 'GIGACHAT_API_KEY',
-    description: 'Бесплатная модель от Сбера, работает в РФ без VPN',
-  },
-  {
-    id: 'claude-sonnet-4',
-    name: 'Claude Sonnet 4 (OpenRouter)',
-    baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
-    modelName: 'anthropic/claude-sonnet-4',
-    maxTokens: 8192,
-    temperature: 0.3,
-    priority: 3,
-    requiresKey: true,
-    envKey: 'OPENROUTER_API_KEY',
-    description: 'Лучшая модель для анализа (нужен VPN)',
+    description: 'Бесплатная модель от Сбера, работает в РФ без VPN, до 1000 запросов/день',
   },
   {
     id: 'gpt-4o',
@@ -74,11 +62,24 @@ export const AI_MODELS: AiModelConfig[] = [
     baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
     modelName: 'openai/gpt-4o',
     maxTokens: 4096,
+    temperature: 0.2,
+    priority: 3,
+    requiresKey: true,
+    envKey: 'OPENROUTER_API_KEY',
+    description:
+      'Облачная модель. Требует пополнения кредитов на OpenRouter.',
+  },
+  {
+    id: 'gigachat',
+    name: 'GigaChat (Сбер)',
+    baseUrl: 'https://api.giga.chat/v1/chat/completions',
+    modelName: 'GigaChat',
+    maxTokens: 8192,
     temperature: 0.3,
     priority: 4,
     requiresKey: true,
-    envKey: 'OPENROUTER_API_KEY',
-    description: 'Отличная модель для анализа (нужен VPN)',
+    envKey: 'GIGACHAT_API_KEY',
+    description: 'Бесплатная модель от Сбера, работает в РФ без VPN',
   },
   {
     id: 'yandexgpt',

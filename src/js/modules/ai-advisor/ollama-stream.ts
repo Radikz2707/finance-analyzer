@@ -106,8 +106,9 @@ export async function streamChat(
       );
       console.log('[STREAM] axios.post returned');
     } catch (axiosError) {
-      console.error('[AXIOS_ERROR] FULL:', axiosError);
-      console.error('[AXIOS_ERROR] STACK:', axiosError instanceof Error ? axiosError.stack : undefined);
+      // Убран verbose-лог для защиты от вывода системного промпта
+      // console.error('[AXIOS_ERROR] FULL:', axiosError);
+      console.error('[AXIOS_ERROR] MESSAGE:', axiosError instanceof Error ? axiosError.message : String(axiosError));
       throw axiosError;
     }
 
@@ -156,9 +157,8 @@ export async function streamChat(
                 if (onChunk) {
                   try {
                     onChunk(json.message.content);
-                  } catch (chunkError) {
-                    console.error('[ON_CHUNK_ERROR] FULL:', chunkError);
-                    console.error('[ON_CHUNK_ERROR] STACK:', chunkError instanceof Error ? chunkError.stack : undefined);
+                  } catch {
+                    // Убран verbose-лог
                   }
                 }
               }
@@ -209,8 +209,9 @@ export async function streamChat(
         });
 
         response.data.on('error', (err: Error) => {
-          console.error('[STREAM_ERROR_EVENT] FULL:', err);
-          console.error('[STREAM_ERROR_EVENT] STACK:', err.stack);
+          // Убран verbose-лог
+          // console.error('[STREAM_ERROR_EVENT] FULL:', err);
+          // console.error('[STREAM_ERROR_EVENT] STACK:', err.stack);
           console.error('[Ollama Stream] ❌ Ошибка потока:', err.message);
           resolve({
             content: fullContent || 'Ошибка получения ответа',

@@ -26,15 +26,7 @@
     "forceConsistentCasingInFileNames": true,
     "types": [
       "node"
-    ],
-    "paths": {
-      "@/*": [
-        "./src/js/*"
-      ],
-      "@components/*": [
-        "./src/components/*"
-      ]
-    }
+    ]
   },
   "include": [
     "src/**/*"

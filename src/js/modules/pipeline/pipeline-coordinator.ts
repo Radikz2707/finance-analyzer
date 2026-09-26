@@ -47,6 +47,8 @@ export interface PipelineResult {
   stages: Record<PipelineStage, PipelineStageResult | null>;
   /** Результаты review */
   reviewResult?: ReviewResult;
+  /** Интерактивные ордера от Notification Agent */
+  interactiveOrders?: Array<{ ticker: string; action: string; id: string }>;
   /** Сводки по всем агентам */
   agentSummaries: Record<string, AgentSummary>;
   /** Успешен ли весь конвейер */
@@ -107,12 +109,17 @@ export class PipelineCoordinator {
 
   private agentSummaries: Record<string, AgentSummary> = {};
   private reviewResultData: ReviewResult | null = null;
+  private interactiveOrdersData: Array<{ ticker: string; action: string; id: string }> = [];
 
   /**
    * Сохранить результат этапа в оперативную память ИИ.
    */
   private saveToMemory(stage: PipelineStage, data: unknown): void {
     try {
+      if (data == null) {
+        console.warn(`[Pipeline] saveToMemory: data is null for stage ${stage}`);
+        return;
+      }
       const content = JSON.stringify(data, null, 2).substring(0, 2000);
       aiMemoryImpl.saveOperational({
         type: stage === 'ai' ? 'pipeline_result' : 'pipeline_result',
@@ -259,7 +266,14 @@ export class PipelineCoordinator {
         return this.buildResult(totalStart, error);
       }
 
-      const researchOutput = researchResult.result.data!;
+      const researchOutput = researchResult.result.success
+        ? researchResult.result.data!
+        : {
+            snapshots: new Map(),
+            allConflicts: [],
+            totalAssets: 0,
+            researchTimestamp: new Date().toISOString(),
+          };
       const analysisOutput = analysisResult.result.data!;
 
       // Сохраняем результаты в оперативную память
@@ -350,6 +364,17 @@ export class PipelineCoordinator {
 
       // Сохраняем результат Notification в оперативную память
       this.saveToMemory('notification', notificationResult.result.data);
+
+      // Извлекаем интерактивные ордера из результата Notification Agent
+      const notificationData = notificationResult.result.data;
+      if (notificationData && 'interactiveOrders' in notificationData) {
+        const orders = (notificationData as { interactiveOrders: Array<{ ticker: string; action: string; id: string }> }).interactiveOrders;
+        this.interactiveOrdersData = orders.map((o) => ({
+          ticker: o.ticker,
+          action: o.action,
+          id: o.id,
+        }));
+      }
 
       // Сохраняем KPI-снимок в стратегическую память
       this.saveKpiSnapshot();
@@ -452,6 +477,7 @@ export class PipelineCoordinator {
       totalDurationMs: Date.now() - totalStart,
       stages: this.stageResults,
       reviewResult: this.reviewResultData || undefined,
+      interactiveOrders: this.interactiveOrdersData.length > 0 ? this.interactiveOrdersData : undefined,
       agentSummaries: this.agentSummaries,
       success: error === undefined,
       error,

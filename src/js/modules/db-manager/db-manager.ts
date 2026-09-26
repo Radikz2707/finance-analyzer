@@ -317,6 +317,15 @@ const positionsRepo = {
     return stmt.all() as PortfolioPosition[];
   },
 
+  /** Получить все позиции в режиме RECOVERY_ONLY */
+  getRecoveryOnly(): PortfolioPosition[] {
+    initializeDatabase();
+    const stmt = db.prepare(
+      'SELECT * FROM positions WHERE status = ? ORDER BY ticker'
+    );
+    return stmt.all('RECOVERY_ONLY') as PortfolioPosition[];
+  },
+
   /** Создать или обновить позицию (upsert) */
   upsert(position: Omit<PortfolioPosition, 'id' | 'createdAt' | 'updatedAt'>): PortfolioPosition {
     initializeDatabase();

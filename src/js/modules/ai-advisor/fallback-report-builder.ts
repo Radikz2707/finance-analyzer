@@ -2,7 +2,7 @@ import { PortfolioReportData } from '../portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../portfolio-math/portfolio-validator.js';
 import { UIOrdersData } from './types.js';
 import { CalculatedIncome } from './income-calculator.js';
-import { PortfolioConfig } from './portfolio-config.js';
+import { PortfolioConfig } from '../../config/portfolio-config.js';
 
 /**
  * Усиленный генератор локального отчёта при недоступности API.

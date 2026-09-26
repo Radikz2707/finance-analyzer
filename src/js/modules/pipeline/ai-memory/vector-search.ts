@@ -21,7 +21,7 @@
  * @module vector-search
  */
 
-import { operationalMemory, strategicMemory } from './ai-memory.js';
+import { operationalMemory, strategicMemory } from './core.js';
 
 // ──────────────────────────────────────────────
 // 1. Стоп-слова (русский + английский)

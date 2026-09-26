@@ -23,7 +23,7 @@ import {
   deleteEntry,
   getEntryById,
 } from './memory-api.js';
-import { init as initMemory } from './ai-memory.js';
+import { init as initMemory } from './core.js';
 
 // ──────────────────────────────────────────────
 // Тесты записи в оперативную память

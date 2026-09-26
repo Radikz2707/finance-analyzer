@@ -10,7 +10,7 @@
  * @module memory-cleaner
  */
 
-import { operationalMemory, strategicMemory, cleanup } from './ai-memory.js';
+import { operationalMemory, strategicMemory, cleanup } from './core.js';
 
 // ──────────────────────────────────────────────
 // 1. Типы

@@ -20,7 +20,7 @@ import {
 import {
   init as initMemory,
   operationalMemory,
-} from './ai-memory.js';
+} from './core.js';
 
 // ──────────────────────────────────────────────
 // 1. Тесты tokenize()

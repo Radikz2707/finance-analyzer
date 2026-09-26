@@ -23,7 +23,7 @@ import {
   error,
   timed,
 } from './memory-rest-api.js';
-import { init as initMemory, operationalMemory, strategicMemory } from './ai-memory.js';
+import { init as initMemory, operationalMemory, strategicMemory } from './core.js';
 
 // ──────────────────────────────────────────────
 // 1. Тесты success/error/timed()

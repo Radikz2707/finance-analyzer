@@ -2,7 +2,7 @@ import XLSX from 'xlsx';
 import * as fs from 'fs';
 import { QuikOrder, parseQuikOrdersFile } from './quik-orders-parser.js';
 import * as config from './xlsx-parser-config.js';
-import { PortfolioConfig } from '../ai-advisor/portfolio-config.js';
+import { PortfolioConfig } from '../../config/portfolio-config.js';
 
 export interface MacroGoals {
   totalBalance: number;

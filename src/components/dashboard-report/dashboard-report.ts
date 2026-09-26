@@ -2,6 +2,53 @@ import { QuikOrder } from '../../js/modules/xlsx-parser/quik-orders-parser';
 import { AssetAnalysis } from '../../js/modules/portfolio-math/portfolio-math.js';
 import { buildOrdersHtmlAndMd, buildAssetsTablesAndBars, buildQuotesBlock, StockQuote } from '../../js/modules/ai-advisor/report-builders.js';
 
+/**
+ * Опциональные KPI-данные, передаваемые в fromOrdersAndAssets.
+ * Если параметр не передан — поля инициализируются заглушками (backward compat).
+ */
+export interface DashboardKpiData {
+  totalVal: number;
+  freeCash: number;
+  totalInvested: number;
+  resultC10: number;
+  profitC11: number;
+  investedNet: number;
+  c10Color: string;
+  c11Color: string;
+  cbrRate: number;
+  dateStr: string;
+  timeStr: string;
+  aiBoxHtml: string;
+}
+
+/**
+ * Вычисляет фактические доли акций и облигаций из массива AssetAnalysis.
+ * Типы активов определяются по полю assetType:
+ *   'А' / 'Акция' → акции
+ *   'О' / 'Облигация' → облигации
+ */
+function computeAssetPercents(assetsAnalysis: AssetAnalysis[]): { stocksPct: number; bondsPct: number } {
+  let stocksPct = 0;
+  let bondsPct = 0;
+
+  for (const asset of assetsAnalysis) {
+    const isStock = asset.assetType === 'А' || asset.assetType === 'Акция';
+    const isBond = asset.assetType === 'О' || asset.assetType === 'Облигация';
+
+    if (isStock) {
+      stocksPct += asset.currentPercent;
+    } else if (isBond) {
+      bondsPct += asset.currentPercent;
+    }
+  }
+
+  // Округляем до двух знаков после запятой
+  return {
+    stocksPct: Math.round(stocksPct * 100) / 100,
+    bondsPct: Math.round(bondsPct * 100) / 100,
+  };
+}
+
 export interface DashboardReportData {
   totalVal: string;
   freeCash: string;
@@ -354,25 +401,47 @@ export class DashboardReportBuilder {
     orders: QuikOrder[],
     assetsAnalysis: AssetAnalysis[],
     quotes?: StockQuote[],
+    kpiData?: DashboardKpiData,
   ): DashboardReportBuilder {
     const ordersResult = buildOrdersHtmlAndMd(orders);
     const uiTables = buildAssetsTablesAndBars(assetsAnalysis);
     const quotesBlock = quotes ? buildQuotesBlock(quotes) : { quotesTableRows: '', topGainers: '', topLosers: '' };
 
+    // Вычисляем фактические доли акций/облигаций из математического ядра
+    const { stocksPct, bondsPct } = computeAssetPercents(assetsAnalysis);
+
+    // Форматируем KPI-значения с разделителями тысяч, если данные переданы
+    const totalValStr = kpiData ? kpiData.totalVal.toLocaleString('ru-RU') : '';
+    const freeCashStr = kpiData ? kpiData.freeCash.toLocaleString('ru-RU') : '';
+    const totalInvestedStr = kpiData ? kpiData.totalInvested.toLocaleString('ru-RU') : '';
+    const resultC10Str = kpiData ? kpiData.resultC10.toLocaleString('ru-RU') : '';
+    const profitC11Str = kpiData
+      ? kpiData.profitC11.toLocaleString('ru-RU') + ' ₽' +
+        (kpiData.investedNet > 0
+          ? ' (' + ((kpiData.profitC11 / kpiData.investedNet) * 100).toFixed(2) + '%)'
+          : '')
+      : '';
+    const c10Color = kpiData?.c10Color ?? '';
+    const c11Color = kpiData?.c11Color ?? '';
+    const cbrRate = kpiData?.cbrRate ?? 0;
+    const dateStr = kpiData?.dateStr ?? '';
+    const timeStr = kpiData?.timeStr ?? '';
+    const aiBoxHtml = kpiData?.aiBoxHtml ?? '';
+
     return new DashboardReportBuilder({
-      totalVal: '',
-      freeCash: '',
-      stocksPct: 0,
-      bondsPct: 0,
-      cbrRate: 0,
-      totalInvested: '',
-      resultC10: '',
-      profitC11: '',
-      c10Color: '',
-      c11Color: '',
-      dateStr: '',
-      timeStr: '',
-      aiBoxHtml: '',
+      totalVal: totalValStr,
+      freeCash: freeCashStr,
+      stocksPct,
+      bondsPct,
+      cbrRate,
+      totalInvested: totalInvestedStr,
+      resultC10: resultC10Str,
+      profitC11: profitC11Str,
+      c10Color,
+      c11Color,
+      dateStr,
+      timeStr,
+      aiBoxHtml,
       barRows: uiTables.barRows,
       tableRows: uiTables.tableRows,
       ordersRows: ordersResult.html,

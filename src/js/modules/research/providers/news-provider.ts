@@ -92,7 +92,7 @@ export class NewsResearchProvider implements ResearchProvider {
     const fetchedAt = new Date().toISOString();
 
     // Этап 1: fetchRaw (с кэшем)
-    const rawItems = await this.fetchRaw(asset.ticker, asset.name, asset.issuer);
+    const rawItems = await this.fetchRaw(asset.ticker, asset.name, asset.issuer) ?? [];
 
     // Если нет данных — возвращаем NO_DATA snapshot
     if (rawItems.length === 0) {

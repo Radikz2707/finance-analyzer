@@ -1,6 +1,9 @@
 /**
  * Единый конфигурационный объект для всех модулей проекта.
  * Содержит все вынесенные из бизнес-логики числовые значения, пороги и маппинги.
+ *
+ * Вынесен в отдельный модуль для разрыва circular dependency:
+ *   ai-advisor → portfolio-math → xlsx-parser → ai-advisor
  */
 
 export const PortfolioConfig = {

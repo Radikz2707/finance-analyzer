@@ -103,6 +103,21 @@ export class IssuerFundamentalsProvider implements ResearchProvider {
     // Этап 1: fetchRaw
     const raw = await this.fetchRaw(asset.ticker, asset.name);
 
+    // Защита от null
+    if (!raw) {
+      return {
+        identity: {
+          ticker: asset.ticker,
+          name: asset.name,
+          assetType: 'STOCK' as const,
+          issuer: asset.issuer ?? '',
+          currency: asset.currency ?? 'RUB',
+          market: asset.market ?? 'MOEX',
+        },
+        evidence: {},
+      };
+    }
+
     // Этап 2: normalize
     const normalized = normalizeIssuerData(raw);
 

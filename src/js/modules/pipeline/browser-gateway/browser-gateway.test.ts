@@ -2,9 +2,31 @@
  * BrowserGateway Tests — тесты для браузерного/ОС шлюза.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { BrowserGateway } from './browser-gateway.js';
 import type { ExternalAiConfig, ExternalAiRequest } from './types.js';
+
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  const mockSpawn = vi.fn((exePath: string) => ({
+    pid: exePath.includes('nonexistent') ? undefined : 12345,
+    stdout: { on: vi.fn() },
+    stderr: { on: vi.fn() },
+    on: vi.fn((event: string, callback: (arg?: number | Error) => void) => {
+      if (event === 'error') {
+        callback(new Error(`spawn ${exePath} ENOENT`));
+      }
+      if (event === 'close') {
+        callback(exePath.includes('nonexistent') ? 1 : 0);
+      }
+    }),
+    kill: vi.fn(),
+  }));
+  return {
+    ...actual,
+    spawn: mockSpawn,
+  };
+});
 
 // ──────────────────────────────────────────────
 // Тесты
@@ -14,10 +36,17 @@ describe('BrowserGateway', () => {
   let gateway: BrowserGateway;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
     gateway = new BrowserGateway(
-      { exePath: 'C:\\Program Files\\happ\\happ.exe' },
+      { exePath: 'C:\\Program Files\\happ\\happ.exe', startupTimeoutMs: 10 },
       { headless: true },
     );
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('должен создать экземпляр с дефолтной конфигурацией', () => {
@@ -42,21 +71,25 @@ describe('BrowserGateway', () => {
   });
 
   it('должен вернуть state starting после вызова startHapp', async () => {
-    // startHapp может не сработать если файл не существует,
-    // но state должен измениться на starting
+    // @ts-expect-error — мокаем приватный метод для теста
+    gateway.sleep = vi.fn().mockResolvedValue(undefined);
+
     const result = gateway.startHapp();
-    // Даем время на асинхронное выполнение
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    
-    // State может быть starting или running или error
+    await vi.advanceTimersByTimeAsync(100);
+
     const state = gateway.getState();
     expect(['starting', 'running', 'error', 'stopped']).toContain(state);
-    
+
     await result;
   });
 
   it('должен вернуть false если happ.exe не существует', async () => {
-    const gateway2 = new BrowserGateway({ exePath: 'C:\\nonexistent\\happ.exe' });
+    const gateway2 = new BrowserGateway({
+      exePath: 'C:\\nonexistent\\happ.exe',
+      startupTimeoutMs: 10,
+    });
+    // @ts-expect-error — мокаем приватный метод для теста
+    gateway2.sleep = vi.fn().mockResolvedValue(undefined);
     const result = await gateway2.startHapp();
     expect(result).toBe(false);
   });
@@ -103,7 +136,6 @@ describe('BrowserGateway', () => {
     };
 
     const result = await gateway.authenticate('anthropic', config);
-    // Anthropic — заглушка, должна вернуть true
     expect(result).toBe(true);
   });
 
@@ -118,7 +150,12 @@ describe('BrowserGateway', () => {
   });
 
   it('должен вернуть state error после неудачного запуска happ', async () => {
-    const gateway2 = new BrowserGateway({ exePath: 'C:\\nonexistent\\happ.exe' });
+    const gateway2 = new BrowserGateway({
+      exePath: 'C:\\nonexistent\\happ.exe',
+      startupTimeoutMs: 10,
+    });
+    // @ts-expect-error — мокаем приватный метод для теста
+    gateway2.sleep = vi.fn().mockResolvedValue(undefined);
     await gateway2.startHapp();
     expect(gateway2.getState()).toBe('error');
   });

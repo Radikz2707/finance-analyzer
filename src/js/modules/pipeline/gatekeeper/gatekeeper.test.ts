@@ -204,7 +204,7 @@ describe('Gatekeeper', () => {
       },
       {
         title: 'Apple представила iPhone',
-        description: 'Купертино анонсировало iPhone',
+        description: 'Купертино выпустила новый смартфон',
         url: 'https://example.com/apple',
         date: new Date().toISOString(),
       },
@@ -217,7 +217,8 @@ describe('Gatekeeper', () => {
     const stats = gatekeeper.getStats();
     expect(stats.totalProcessed).toBe(2);
     expect(stats.approved).toBe(1);
-    expect(stats.filtered).toBe(1);
+    expect(stats.filtered).toBe(1); // Apple — not_relevant
+    expect(stats.noise).toBe(0);
   });
 
   it('должен остановить Gatekeeper', async () => {

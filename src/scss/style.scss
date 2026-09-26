@@ -1,6 +1,6 @@
-@use "base/zero";
-@use "base/vendors";
-@use "base/global";
+@use 'base/zero';
+@use 'base/vendors';
+@use 'base/global';
 @use '../js/modules/portfolio-math/portfolio-math' as portfolioMath;
 @use '../js/modules/xlsx-parser/xlsx-parser' as xlsxParser;
 @use '../js/modules/ai-advisor/ai-advisor' as aiAdvisor;
@@ -12,5 +12,4 @@
 @use '../js/modules/memory-layer/memory-layer' as memoryLayer;
 
 // Перенесли в самый конец, после всех директив @use
-@import "base/fonts";
-@use '../components/dashboard-report/dashboard-report';
+@import 'base/fonts';

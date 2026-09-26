@@ -1,8 +1,17 @@
 /* cspell:disable */
-import { config } from './gulp.config.js';
 import gulp from 'gulp';
-import fs from 'fs';
-import path from 'path';
+
+// ─── Глобальная регистрация ts-node (один раз, с защитой от повторного вызова) ───
+// ts-node регистрирует хуки на уровне Node.js, поэтому повторная регистрация
+// вызывает утечку памяти и зависание вотчера. Guard-семафор предотвращает
+// двойную инициализацию при многократных запусках таски "analyze".
+let _tsNodeRegistered = false;
+async function ensureTsNodeRegistered() {
+  if (_tsNodeRegistered) return;
+  const { register } = await import('ts-node');
+  register({ compilerOptions: { module: 'NodeNext' }, esm: true });
+  _tsNodeRegistered = true;
+}
 
 // Импорты инфраструктуры // Серверное ядро и утилиты отладки с автоматической изоляцией имён
 import { isProd } from './gulp/server.js';
@@ -46,33 +55,15 @@ const TASK_FILE_MAP = {
 };
 
 /**
-Автоматически генерирует файл конфигурации среды env-config.js из .env
-*/
-export const createEnvConfig = (done) => {
-  const envPath = path.resolve('.env');
-  let token = '';
-  let chatId = '';
-
-  if (fs.existsSync(envPath)) {
-    const envFileContent = fs.readFileSync(envPath, 'utf8');
-    const tokenMatch = envFileContent.match(/TELEGRAM_TOKEN\s*=\s*(.*)/);
-    const chatIdMatch = envFileContent.match(/TELEGRAM_CHAT_ID\s*=\s*(.*)/);
-
-    if (tokenMatch && tokenMatch[1]) token = tokenMatch[1].trim();
-    if (chatIdMatch && chatIdMatch[1]) chatId = chatIdMatch[1].trim();
-  }
-
-  const envContent =
-    "export const env = { TELEGRAM_TOKEN: '" +
-    token +
-    "', TELEGRAM_CHAT_ID: '" +
-    chatId +
-    "' };";
-  const jsDir = path.join(config.srcFolder, 'js');
-  if (!fs.existsSync(jsDir)) fs.mkdirSync(jsDir, { recursive: true });
-  fs.writeFileSync(path.join(jsDir, 'env-config.js'), envContent);
-  done();
-};
+ * УДАЛЕНО: генерация env-config.js из .env.
+ * Причина: CWE-522 — токены из .env (TELEGRAM_BOT_TOKEN и др.)
+ * парсились регулярным выражением и записывались в src/js/env-config.js,
+ * который затем собирался Webpack в публичный бандл dist/js/app.min.js.
+ *
+ * Токены теперь используются ИСКЛЮЧИТЕЛЬНО на стороне бэкенд-агентов
+ * через прямой доступ к process.env (dotenv/config в pipeline.ts).
+ * Файл env-config.js удалён из архитектуры фронтенд-сборки.
+ */
 
 /**
 Динамический загрузчик изолированных Gulp-модулей (Lazy Loading)
@@ -107,7 +98,6 @@ const compileAssets = parallel(
 
 // Продакшен-сборка пустого шаблона
 export const build = series(
-  createEnvConfig,
   cleandist,
   parallel(runTask('fonts'), runTask('fontsStyle'), runTask('favs')),
   parallel(...(isProd ? [lintCss, lintJs] : []), compileAssets),
@@ -122,7 +112,6 @@ export const build = series(
 
 // Сценарий локальной разработки по умолчанию (Команда: npx gulp или npm run dev)
 export default series(
-  createEnvConfig,
   parallel(runTask('fonts'), runTask('fontsStyle'), runTask('favs')),
   parallel(runTask('html')),
   parallel(compileAssets),
@@ -132,15 +121,22 @@ export default series(
 
 // 📊 Автоматический инвестиционный конвейер аналитики QUIK и GigaChat
 export const analyze = async (done) => {
-  // Активируем поддержку TypeScript на лету для Node.js внутри Gulp
-  const { register } = await import('ts-node');
-  register({ compilerOptions: { module: 'NodeNext' }, esm: true });
+  try {
+    // Используем глобальный guard — ensureTsNodeRegistered() вызывает
+    // register() ровно один раз, предотвращая утечку памяти от повторной
+    // регистрации хуков ts-node при многократных запусках таски.
+    await ensureTsNodeRegistered();
 
-  // Импортируем напрямую исходный файл .ts без привязки к сборке Webpack
-  const { parseExcelAndFetchRecommendations } =
-    await import('./src/js/modules/ai-advisor/ai-advisor.ts');
-  await parseExcelAndFetchRecommendations();
-  done();
+    // Импортируем напрямую исходный файл .ts без привязки к сборке Webpack
+    const { parseExcelAndFetchRecommendations } =
+      await import('./src/js/modules/ai-advisor/ai-advisor.ts');
+    await parseExcelAndFetchRecommendations();
+    done();
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error('\x1b[31m[analyze] Ошибка конвейера:\x1b[0m', msg);
+    done(); // Гарантированный вызов done() предотвращает зависание Gulp-планировщика
+  }
 };
 
 // Системный экспорт для CLI-регистрации

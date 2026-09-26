@@ -36,6 +36,11 @@ export function scripts() {
         '@': path.resolve(config.aliasPath),
         '@components': path.resolve(config.structure.components),
       },
+      // TypeScript-импорты используют расширение .js (bundler resolution),
+      // поэтому webpack должен резолвить "./x.js" как "./x.ts"
+      extensionAlias: {
+        '.js': ['.ts', '.js'],
+      },
       extensions: ['.ts', '.js', '.json'],
     },
     module: {

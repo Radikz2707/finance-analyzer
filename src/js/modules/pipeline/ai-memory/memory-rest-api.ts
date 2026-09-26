@@ -25,7 +25,7 @@ import {
   strategicMemory,
   query as memoryQuery,
   cleanup,
-} from './ai-memory.js';
+} from './core.js';
 import {
   saveOperational,
   saveKpiSnapshot,

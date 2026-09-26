@@ -10,7 +10,7 @@
   "author": "",
   "license": "ISC",
   "scripts": {
-    "analyze": "node node_modules/tsx/dist/cli.mjs src/js/index.ts",
+    "analyze": "node --import tsx src/js/index.ts",
     "admin": "npx @staticcms/proxy-server",
     "dev": "cross-env NODE_NO_WARNINGS=1 G_MESSAGES_DEBUG=none gulp",
     "build": "npm run test:run && gulp build",
@@ -26,14 +26,14 @@
     "prepare": "husky",
     "test": "vitest",
     "test:run": "cross-env LANG=en_US.UTF-8 vitest run",
-    "audit": "node run-audit.js",
-    "blueprint": "node generate-blueprint.js",
-    "watch": "tsx watch.ts",
+    "audit": "node gulp/run-audit.js && node gulp/generate-blueprint.js",
+    "blueprint": "node gulp/generate-blueprint.js",
+    "watch": "node --import tsx watch.ts",
     "push": "git add . && read -p 'Commit message: ' msg && git commit -m \"$msg\" && git push",
     "push:main": "git add . && git commit -m \"Updates\" && git push origin main",
-    "cache:clear-ai": "tsx scripts/clear-ai-cache.ts",
-    "pipeline": "tsx pipeline.ts run",
-    "pipeline:schedule": "tsx pipeline.ts schedule"
+    "cache:clear-ai": "node --import tsx scripts/clear-ai-cache.ts",
+    "pipeline": "node --import tsx pipeline.ts run",
+    "pipeline:schedule": "node --import tsx pipeline.ts schedule"
   },
   "lint-staged": {
     "src/**/*.scss": "npx stylelint --fix"
@@ -51,8 +51,9 @@
     "browser-sync": "^3.0.4",
     "cross-env": "^10.1.0",
     "dotenv": "^18.0.3",
+    "esbuild": "^0.28.2",
     "esbuild-loader": "^4.5.0",
-    "eslint": "10.11.0",
+    "eslint": "^10.11.0",
     "eslint-config-prettier": "^10.1.8",
     "gh-pages": "^6.3.0",
     "globals": "^17.12.0",
@@ -90,7 +91,8 @@
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-eslint": "^8.70.1",
     "vinyl-ftp": "^0.6.1",
-    "vitest": "^4.1.11",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.1",
     "webp-in-css": "^0.9.0",
     "webpack": "^5.111.1",
     "webpack-stream": "^7.0.0"
@@ -112,6 +114,7 @@
   "dependencies": {
     "axios": "^1.20.0",
     "better-sqlite3": "^13.0.3",
+    "open": "^11.0.4",
     "xlsx": "^0.18.5"
   }
 }

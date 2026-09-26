@@ -1,7 +1,11 @@
-import { PortfolioReportData, type AssetAnalysis } from '../portfolio-math/portfolio-math.js';
+import {
+  PortfolioReportData,
+  type AssetAnalysis,
+} from '../portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../portfolio-math/portfolio-validator.js';
 import { CalculatedIncome } from './income-calculator.js';
 import axios from 'axios';
+import https from 'https';
 import {
   buildSystemPrompt,
   type MacroDataContext,
@@ -32,7 +36,7 @@ import {
   type DeterministicAmounts,
   type OllamaMessage,
 } from './ollama-manager.js';
-import { PortfolioConfig } from './portfolio-config.js';
+import { PortfolioConfig } from '../../config/portfolio-config.js';
 import type { InvestmentThesisResult } from '../research/investment-thesis/types.js';
 import {
   validateStructuredAIJson,
@@ -132,6 +136,11 @@ export class AiClient {
    * Построение контекста портфеля для ИИ
    * Усиленная версия: более структурированные данные, жёсткая привязка к реальным данным
    */
+  /**
+   * Построение контекста портфеля для ИИ.
+   * СЖАТАЯ ВЕРСИЯ: агрегированные метрики + таблица активов (~350 символов на актив).
+   * Цель: < 5000 символов для 11 активов вместо ~25000.
+   */
   private buildPortfolioContext(
     analysis: PortfolioReportData,
     _inc: CalculatedIncome,
@@ -153,13 +162,10 @@ export class AiClient {
     const { assetsAnalysis, macro } = analysis;
     const totalVal = macro.totalBalance;
 
-    // Используем snapshot.financial вместо реконструкции
     const snapshotFinancial = snapshot?.financial ?? null;
     const contributedCapital = snapshotFinancial?.contributedCapital ?? 0;
     const currentEquityGap = snapshotFinancial?.currentEquityGap ?? 0;
     const currentEquityGapPct = snapshotFinancial?.currentEquityGapPct ?? 0;
-    const historicalMarketResult =
-      snapshotFinancial?.historicalMarketResult ?? 0;
 
     const totalNetProfit = snapshotFinancial
       ? snapshotFinancial.currentAssets +
@@ -169,358 +175,233 @@ export class AiClient {
     const totalNetProfitPercent =
       contributedCapital > 0 ? (totalNetProfit / contributedCapital) * 100 : 0;
 
-    const stockAssets = assetsAnalysis.filter(
-      (a) => a.assetType === 'А' || a.assetType === 'Акция',
-    );
-    const bondAssets = assetsAnalysis.filter(
-      (a) => a.assetType === 'О' || a.assetType === 'Облигация',
-    );
+    let stocksPct = 0,
+      bondsPct = 0,
+      etfPct = 0;
+    for (const a of assetsAnalysis) {
+      const t = a.assetType.toUpperCase();
+      if (t === 'А' || t === 'АКЦИЯ' || t === 'STOCK')
+        stocksPct += a.currentPercent;
+      if (t === 'О' || t === 'ОБЛИГАЦИЯ' || t === 'BOND')
+        bondsPct += a.currentPercent;
+      if (t === 'Ф' || t === 'ETF' || t === 'FUND')
+        etfPct += a.currentPercent;
+    }
+    stocksPct = Math.round(stocksPct * 100) / 100;
+    bondsPct = Math.round(bondsPct * 100) / 100;
+    etfPct = Math.round(etfPct * 100) / 100;
 
-    let _currentStocksPct = 0;
-    let _currentBondsPct = 0;
-
-    stockAssets.forEach((a) => {
-      _currentStocksPct += a.currentPercent;
-    });
-    bondAssets.forEach((a) => {
-      _currentBondsPct += a.currentPercent;
-    });
-
-    _currentStocksPct = Math.round(_currentStocksPct * 100) / 100;
-    _currentBondsPct = Math.round(_currentBondsPct * 100) / 100;
+    // Fallback: если assetType не распознан — используем name/ticker для эвристики
+    if (stocksPct === 0 && bondsPct === 0) {
+      for (const a of assetsAnalysis) {
+        const n = (a.name + ' ' + a.ticker).toUpperCase();
+        if (
+          n.includes('ОФЗ') ||
+          n.includes('ОБЛ') ||
+          n.includes('КУПОН') ||
+          n.includes('ФОНАРЕК') ||
+          n.includes('БРУС') ||
+          n.includes('ФОС') ||
+          n.includes('СЕЛИГДАР') ||
+          n.includes('ГТЛК') ||
+          n.includes('ФосАгро')
+        ) {
+          bondsPct += a.currentPercent;
+        } else if (
+          n.includes('ETF') ||
+          n.includes('ФОНД') ||
+          n.includes('GPD') ||
+          n.includes('SPDR') ||
+          n.includes('TMX') ||
+          n.includes('ISHARES') ||
+          n.includes('VANGUARD')
+        ) {
+          etfPct += a.currentPercent;
+        } else if (a.currentPercent > 0) {
+          stocksPct += a.currentPercent;
+        }
+      }
+      stocksPct = Math.round(stocksPct * 100) / 100;
+      bondsPct = Math.round(bondsPct * 100) / 100;
+      etfPct = Math.round(etfPct * 100) / 100;
+      console.log(
+        '[AI_CLIENT] Fallback assetType detection: stocksPct:',
+        stocksPct,
+        '| bondsPct:',
+        bondsPct,
+        '| etfPct:',
+        etfPct,
+        '| assetTypes:',
+        assetsAnalysis.map((a) => a.assetType).join(', '),
+      );
+    }
 
     const currentDate = new Date().toLocaleDateString('ru-RU');
     const rateValue = macroData?.keyRate ?? 0;
     const isFresh = macroData?.isFresh ?? false;
 
-    let ctx = '';
-    ctx += '╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  ДАННЫЕ ПОРТФЕЛЯ ДЛЯ АНАЛИЗА — ТОЛЬКО ЭТИ ДАННЫЕ  ║\n';
-    ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx += `Дата анализа: ${currentDate}\n`;
-    ctx += `Общая стоимость портфеля: ${totalVal.toLocaleString('ru-RU')} ₽\n`;
-    ctx += `Лично вложено средств: ${contributedCapital.toLocaleString('ru-RU')} ₽\n`;
-    ctx += `Инвест-результат: ${totalNetProfit >= 0 ? '+' : ''}${totalNetProfit.toFixed(2)} ₽ (${totalNetProfitPercent.toFixed(2)}%)\n`;
-    ctx += `Свободный кэш: ${macro.freeCash.toLocaleString('ru-RU')} ₽\n`;
-    ctx += `Ключевая ставка ЦБ: ${rateValue}%\n`;
-    if (!isFresh) {
-      ctx += `⚠️ DATA_STATUS = STALE (ключевая ставка — устаревшие данные, источник: ${macroData?.source || 'unknown'})\n`;
-    }
-    // Финансовый snapshot (из PortfolioSnapshot)
+    let ctx =
+      '=== \u0414\u0410\u041d\u041d\u042b\u0415 \u041f\u041e\u0420\u0422\u0424\u0415\u041b\u042f ===\n';
+    ctx +=
+      '\u0414\u0430\u0442\u0430: ' +
+      currentDate +
+      ' | \u041f\u043e\u0440\u0442\u0444\u0435\u043b\u044c: ' +
+      totalVal.toLocaleString('ru-RU') +
+      ' \u20bd\n';
+    ctx +=
+      '\u0412\u043b\u043e\u0436\u0435\u043d\u043e: ' +
+      contributedCapital.toLocaleString('ru-RU') +
+      ' \u20bd | \u0418\u043d\u0432\u0435\u0441\u0442-\u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442: ' +
+      (totalNetProfit >= 0 ? '+' : '') +
+      totalNetProfit.toFixed(2) +
+      ' \u20bd (' +
+      totalNetProfitPercent.toFixed(2) +
+      '%)\n';
+    ctx +=
+      '\u0421\u0432\u043e\u0431\u043e\u0434\u043d\u044b\u0439 \u043a\u044d\u0448: ' +
+      macro.freeCash.toLocaleString('ru-RU') +
+      ' \u20bd | \u0421\u0442\u0430\u0432\u043a\u0430 \u0426\u0411: ' +
+      rateValue +
+      '%\n';
+    if (!isFresh)
+      ctx +=
+        '⚠️ DATA_STATUS=STALE (\u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a: ' +
+        (macroData?.source || 'unknown') +
+        ')\n';
     if (snapshotFinancial) {
-      ctx += `Дефицит долевой позиции: ${currentEquityGap.toLocaleString('ru-RU')} ₽ (${currentEquityGapPct.toFixed(2)}%)\n`;
-      ctx += `Исторический результат (с начала учёта): ${historicalMarketResult.toLocaleString('ru-RU')} ₽\n`;
+      ctx +=
+        '\u0414\u0435\u0444\u0438\u0446\u0438\u0442 \u0434\u043e\u043b\u0438: ' +
+        currentEquityGap.toLocaleString('ru-RU') +
+        ' \u20bd (' +
+        currentEquityGapPct.toFixed(2) +
+        '%)\n';
     }
-    ctx += '\n';
+    ctx +=
+      '\u0421\u0442\u0440\u0443\u043a\u0442\u0443\u0440\u0430: \u0410\u043a\u0446\u0438\u0438 ' +
+      stocksPct +
+      '% | \u041e\u0431\u043b\u0438\u0433\u0430\u0446\u0438\u0438 ' +
+      bondsPct +
+      '% | \u0424\u043e\u043d\u0434\u044b(ETF) ' +
+      etfPct +
+      '%\n\n';
+    // КРИТИЧЕСКИЕ ДАННЫЕ — ОБЯЗАТЕЛЬНО используй в ответе
+    ctx +=
+      '!!! СТРУКТУРА: Акции=' +
+      stocksPct +
+      '% Облигации=' +
+      bondsPct +
+      '% Фонды(ETF)=' +
+      etfPct +
+      '% !!!\n\n';
 
-    // Информация о счетах (динамически из PortfolioSnapshot)
     if (snapshot && snapshot.accounts.length > 0) {
-      ctx += '╔══════════════════════════════════════════════════════════╗\n';
-      ctx += '║  СЧЕТА В ПОРТФЕЛЕ                                      ║\n';
-      ctx += '╚══════════════════════════════════════════════════════════╝\n';
+      ctx += '\u0421\u0447\u0435\u0442\u0430:';
       for (const acc of snapshot.accounts) {
         ctx +=
-          '• Счет ' +
+          ' ' +
           acc.accountId +
-          ' (' +
+          '(' +
           acc.accountType +
-          '): ' +
+          '=' +
           acc.totalLiquidationValue.toLocaleString('ru-RU') +
-          ' ₽\n';
+          ' \u20bd)';
       }
       ctx += '\n';
     } else if (accountsInfo && accountsInfo.length > 0) {
-      ctx += '╔══════════════════════════════════════════════════════════╗\n';
-      ctx += '║  СЧЕТА В ПОРТФЕЛЕ                                      ║\n';
-      ctx += '╚══════════════════════════════════════════════════════════╝\n';
+      ctx += '\u0421\u0447\u0435\u0442\u0430:';
       accountsInfo.forEach((a) => {
-        ctx +=
-          '• Счет ' + a.name + ': ' + a.value.toLocaleString('ru-RU') + ' ₽\n';
+        ctx += ' ' + a.name + '=' + a.value.toLocaleString('ru-RU') + ' \u20bd';
       });
       ctx += '\n';
     }
 
-    // Детализация по счетам для каждого тикера (из PortfolioSnapshot)
-    if (snapshot && snapshot.assets.length > 0) {
-      const multiAccountAssets = snapshot.assets.filter(
-        (a) => a.accounts.length > 1,
-      );
-
-      if (multiAccountAssets.length > 0) {
-        ctx += '╔══════════════════════════════════════════════════════════╗\n';
-        ctx += '║  ДЕТАЛИЗАЦИЯ ПО СЧЕТАМ (мульти-аккаунт позиции)        ║\n';
-        ctx += '╚══════════════════════════════════════════════════════════╝\n';
-        for (const asset of multiAccountAssets) {
-          ctx += '• ' + asset.ticker + ' (' + (asset.name || '') + '):\n';
-          for (const acc of asset.accounts) {
-            ctx +=
-              '    [' +
-              acc.accountId +
-              ' (' +
-              acc.accountType +
-              ')] ' +
-              acc.liquidationValue.toLocaleString('ru-RU') +
-              ' ₽ (' +
-              acc.liquidationWeightPct.toFixed(2) +
-              '%)\n';
-          }
-          // Предупреждение о конфликте target
-          if (asset.targetPercentConflict) {
-            ctx +=
-              '    ⚠️ TARGET_CONFLICT: разные целевые доли на разных счетах\n';
-          }
-          ctx += '\n';
-        }
-      }
-    }
-
     ctx +=
-      'Все данные агрегированы по всем счетам. Анализируй каждый актив как единый.\n\n';
-
-    // === БЛОК 1: INVESTMENT FACTS (без status PortfolioMath) ===
-    ctx += '╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  INVESTMENT FACTS — ФАКТЫ ОБ АКТИВЕ (АНАЛИЗИРУЙ ДО     ║\n';
-    ctx += '║  ПОЛУЧЕНИЯ PORTFOLIO_MATH_STATUS)                      ║\n';
-    ctx += '╚══════════════════════════════════════════════════════════╝\n';
+      '\n=== \u0410\u041a\u0422\u0418\u0412\u042b (\u0442\u0430\u0431\u043b\u0438\u0446\u0430) ===\n';
     ctx +=
-      '⚠️ ВАЖНО: Это ТОЛЬКО факты. Сформируй AI_RECOMMENDED_TARGET_PERCENT и AI_RECOMMENDED_ACTION\n';
-    ctx +=
-      'на основе этих фактов ДО того, как увидишь PORTFOLIO_MATH_STATUS ниже.\n\n';
-    ctx += 'АКЦИИ:\n';
-    stockAssets.forEach((a) => {
-      const marketBlocked = a.currentPrice <= 0;
-      ctx += `  • [АКЦИЯ] ${a.ticker} | ${a.name}\n`;
-      ctx += `    Текущая доля: ${a.currentPercent.toFixed(1)}%\n`;
-      ctx += `    Текущая цена: ${a.currentPrice.toLocaleString('ru-RU')} ₽ | Цена входа: ${a.balancePrice.toLocaleString('ru-RU')} ₽\n`;
-      if (a.balancePrice > 0 && a.currentPrice > 0) {
-        const pnlFromEntry = (
-          ((a.currentPrice - a.balancePrice) / a.balancePrice) *
-          100
-        ).toFixed(1);
-        ctx += `    P&L от входа: ${pnlFromEntry}%\n`;
-      }
-      ctx += `    Количество: ${a.quantity} шт. | Ликвидация: ${(a.currentPrice * a.quantity).toLocaleString('ru-RU')} ₽\n`;
-      // NO_DATA marker если нет фундаментальных данных
-      const hasFundamentals = a.nkdRub > 0 || a.dynamicsPercent !== 0;
-      if (!hasFundamentals) {
-        ctx += '    ⚠️ NO_DATA: фундаментальные показатели отсутствуют\n';
-      }
-      if (a.nkdRub > 0) {
-        ctx += `    НКД: ${a.nkdRub.toLocaleString('ru-RU')} ₽\n`;
-      }
-      // PRICE SOURCE PRECEDENCE: PortfolioMath currentPrice = authoritative execution price
-      // Research market price = supplementary only, NEVER overrides PortfolioMath
-      if (marketBlocked) {
-        ctx += '    ⛔ MARKET_DATA_STATUS: INVALID (PortfolioMath currentPrice=0)\n';
-        ctx += '    ⛔ AI ACTION: BLOCKED — НЕ давать BUY/REDUCE/EXIT как исполнимую рекомендацию.\n';
-        ctx += '    ⛔ reason: INVALID_MARKET_DATA — нет цены для исполнения.\n';
-      } else {
-        ctx += '    ✅ EXECUTION_PRICE: PortfolioMath currentPrice=' + a.currentPrice + ' ₽ (authoritative)\n';
-      }
-      ctx += '\n';
-    });
+      '\u0424\u043e\u0440\u043c\u0430\u0442: [\u0422\u0418\u041f] \u0422\u0438\u043a\u0435\u0440 | \u0418\u043c\u044f | \u0414\u043e\u043b\u044f% | \u0426\u0435\u043d\u0430 | \u0412\u0445\u043e\u0434 | P&L% | \u041a\u043e\u043b-\u0432\u043e | \u041b\u0438\u043a\u0432\u0438\u0434\u0430\u0446\u0438\u044f | \u0414\u0435\u0444\u0438\u0446\u0438\u0442 | \u0421\u0442\u0430\u0442\u0443\u0441 | target% | ThesisConf | Thesis\n';
 
-    ctx += '\nОБЛИГАЦИИ:\n';
-    bondAssets.forEach((a) => {
-      const marketBlocked = a.currentPrice <= 0;
-      ctx += `  • [ОБЛ] ${a.ticker} | ${a.name}\n`;
-      ctx += `    Текущая доля: ${a.currentPercent.toFixed(1)}%\n`;
-      ctx += `    Текущая цена: ${a.currentPrice.toLocaleString('ru-RU')} ₽ | Цена входа: ${a.balancePrice.toLocaleString('ru-RU')} ₽\n`;
-      if (a.balancePrice > 0 && a.currentPrice > 0) {
-        const pnlFromEntry = (
-          ((a.currentPrice - a.balancePrice) / a.balancePrice) *
-          100
-        ).toFixed(1);
-        ctx += `    P&L от входа: ${pnlFromEntry}%\n`;
-      }
-      ctx += `    Количество: ${a.quantity} шт. | Ликвидация: ${(a.currentPrice * a.quantity).toLocaleString('ru-RU')} ₽\n`;
-      // NO_DATA marker если нет фундаментальных данных
-      const hasFundamentals = a.nkdRub > 0 || a.dynamicsPercent !== 0;
-      if (!hasFundamentals) {
-        ctx += '    ⚠️ NO_DATA: фундаментальные показатели отсутствуют\n';
-      }
-      if (a.nkdRub > 0) {
-        ctx += `    НКД: ${a.nkdRub.toLocaleString('ru-RU')} ₽\n`;
-      }
-      // PRICE SOURCE PRECEDENCE: PortfolioMath currentPrice = authoritative execution price
-      // Research market price = supplementary only, NEVER overrides PortfolioMath
-      if (marketBlocked) {
-        ctx += '    ⛔ MARKET_DATA_STATUS: INVALID (PortfolioMath currentPrice=0)\n';
-        ctx += '    ⛔ AI ACTION: BLOCKED — НЕ давать BUY/REDUCE/EXIT как исполнимую рекомендацию.\n';
-        ctx += '    ⛔ reason: INVALID_MARKET_DATA — нет цены для исполнения.\n';
-      } else {
-        ctx += '    ✅ EXECUTION_PRICE: PortfolioMath currentPrice=' + a.currentPrice + ' ₽ (authoritative)\n';
-      }
-      ctx += '\n';
-    });
+    for (const a of assetsAnalysis) {
+      if (a.currentPercent === 0 && a.targetPercent === 0) continue;
 
-    // === БЛОК 2: INVESTMENT RESEARCH (Thesis Engine) ===
-    ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  INVESTMENT RESEARCH — РЕЗУЛЬТАТЫ ИССЛЕДОВАНИЯ        ║\n';
-    ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx +=
-      '⚠️ ВАЖНО: Это структурированный InvestmentThesis. AI НЕ должен пересказывать evidence как собственный факт,\n';
-    ctx +=
-      'если confidence/evidence недостаточны. Если RESEARCH_STATUS = NO_RESEARCH — не компенсируй выдуманными данными.\n\n';
+      const type =
+        a.assetType === 'А' || a.assetType === 'Акция'
+          ? '\u0410\u041a\u0426\u0418\u042F'
+          : a.assetType === 'О' || a.assetType === 'Облигация'
+            ? '\u041e\u0411\u041b'
+            : '\u0424\u041e\u041d\u0414';
 
-    analysis.assetsAnalysis.forEach((a) => {
+      const pnlFromEntry =
+        a.balancePrice > 0 && a.currentPrice > 0
+          ? (
+              ((a.currentPrice - a.balancePrice) / a.balancePrice) *
+              100
+            ).toFixed(1)
+          : '—';
+
+      const liquidation = (a.currentPrice * a.quantity).toLocaleString('ru-RU');
+      const deficitStr =
+        a.deficitRub > 0
+          ? '+' + a.deficitRub.toLocaleString('ru-RU')
+          : a.deficitRub < 0
+            ? Math.abs(a.deficitRub).toLocaleString('ru-RU')
+            : '—';
+
       const thesis = thesisResults.get(a.ticker);
+      const thesisConf = thesis
+        ? thesis.confidence.level +
+          '(' +
+          thesis.confidence.value.toFixed(2) +
+          ')'
+        : 'NO_RESEARCH';
+      const thesisSummary = thesis
+        ? thesis.thesis.length > 80
+          ? thesis.thesis.substring(0, 80) + '...'
+          : thesis.thesis
+        : '\u041d\u0435\u0442 \u0434\u0430\u043d\u043d\u044b\u0445';
 
-      if (!thesis) {
-        ctx += 'TICKER: ' + a.ticker + '\n';
-        ctx += 'NAME: ' + a.name + '\n';
-        ctx += 'RESEARCH_STATUS: NO_RESEARCH\n';
-        ctx +=
-          'INVESTMENT_THESIS: Недостаточно данных для формирования инвестиционного тезиса.\n';
-        ctx += 'BULL_CASE: Недостаточно данных.\n';
-        ctx += 'BASE_CASE: Недостаточно данных.\n';
-        ctx += 'BEAR_CASE: Недостаточно данных.\n';
-        ctx += 'KEY_DRIVERS: []\n';
-        ctx += 'KEY_RISKS: []\n';
-        ctx += 'KEY_CATALYSTS: []\n';
-        ctx += 'VALUATION_VIEW: insufficient_data\n';
-        ctx += 'MACRO_SENSITIVITY: insufficient\n';
-        ctx += 'THESIS_CONFIDENCE: LOW (0.00)\n';
-        ctx += 'EVIDENCE: []\n';
-        ctx += '\n';
-        return;
-      }
+      const marketStatus = a.currentPrice <= 0 ? ' BLOCKED' : '';
+      const targetPctStr =
+        a.targetPercent !== undefined
+          ? a.targetPercent === 0
+            ? '0%'
+            : a.targetPercent.toFixed(1) + '%'
+          : '—';
 
-      const confidenceStr =
-        thesis.confidence.level +
-        ' (' +
-        thesis.confidence.value.toFixed(2) +
-        ')';
-      const evidenceItems = thesis.evidenceReferences
-        .map(
-          (e) =>
-            '- id: ' +
-            e.evidenceId +
-            ' | type: ' +
-            e.type +
-            ' | source: ' +
-            e.fact,
-        )
-        .join('\n');
-
-      ctx += 'TICKER: ' + thesis.ticker + '\n';
-      ctx += 'NAME: ' + a.name + '\n';
-      ctx += 'RESEARCH_STATUS: RESEARCH_AVAILABLE\n';
-      ctx += 'INVESTMENT_THESIS: ' + thesis.thesis + '\n';
-      ctx += 'BULL_CASE: ' + thesis.bullCase + '\n';
-      ctx += 'BASE_CASE: ' + thesis.baseCase + '\n';
-      ctx += 'BEAR_CASE: ' + thesis.bearCase + '\n';
-      ctx += 'KEY_DRIVERS:\n';
-      thesis.keyDrivers.forEach((d) => {
-        ctx += '  - ' + d + '\n';
-      });
-      ctx += 'KEY_RISKS:\n';
-      thesis.keyRisks.forEach((r) => {
-        ctx += '  - ' + r + '\n';
-      });
-      ctx += 'KEY_CATALYSTS:\n';
-      thesis.keyCatalysts.forEach((c) => {
-        ctx += '  - ' + c + '\n';
-      });
       ctx +=
-        'VALUATION_VIEW: ' +
-        thesis.valuationView.stance +
+        type +
+        ' ' +
+        a.ticker +
         ' | ' +
-        thesis.valuationView.reasoning +
-        '\n';
-      ctx +=
-        'MACRO_SENSITIVITY: ' +
-        thesis.macroSensitivity.level +
+        a.name +
         ' | ' +
-        thesis.macroSensitivity.description +
+        a.currentPercent.toFixed(1) +
+        '% | ' +
+        a.currentPrice +
+        ' | ' +
+        a.balancePrice +
+        ' | ' +
+        pnlFromEntry +
+        '% | ' +
+        a.quantity +
+        ' | ' +
+        liquidation +
+        ' | ' +
+        deficitStr +
+        ' | ' +
+        a.status +
+        marketStatus +
+        ' | ' +
+        targetPctStr +
+        ' | ' +
+        thesisConf +
+        ' | ' +
+        thesisSummary +
         '\n';
-      ctx += 'THESIS_CONFIDENCE: ' + confidenceStr + '\n';
-      ctx += 'EVIDENCE:\n';
-      ctx += evidenceItems || '  (нет доказательств)';
-      ctx += '\n\n';
-    });
+    }
 
-    // === БЛОК 4: DETERMINISTIC PORTFOLIO RESULT ===
-    ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  DETERMINISTIC PORTFOLIO RESULT — РЕЗУЛЬТАТ ПОРТФЕЛЯ   ║\n';
-    ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx +=
-      '⚠️ ВАЖНО: Это детерминированный результат PortfolioMath. Сравни с AI_RECOMMENDED_ACTION.\n\n';
-    assetsAnalysis.forEach((a) => {
-      if (a.currentPercent === 0 && a.targetPercent === 0) return;
-
-      const hasUserTarget = a.targetPercent !== undefined;
-      const userTargetStr = hasUserTarget
-        ? a.targetPercent!.toFixed(1) + '%'
-        : 'НЕ ЗАДАН';
-      const marketDataValid = a.currentPrice > 0;
-      const marketBlocked = !marketDataValid;
-
-      ctx += `• ${a.ticker} (${a.name}):\n`;
-      ctx += `    USER_TARGET_PERCENT: ${userTargetStr}\n`;
-      ctx += `    PORTFOLIO_MATH_STATUS: ${a.status}\n`;
-
-      // EXIT presentation: для USER_TARGET=0 НЕ используем "дефицит"
-      const isExit = a.targetPercent === 0;
-      if (isExit) {
-        const liqVal = a.currentPrice * a.quantity;
-        ctx += `    SELL_AMOUNT_DETERMINISTIC: ${liqVal.toLocaleString('ru-RU')} ₽ (ликвидация всей позиции)\n`;
-      } else {
-        ctx += `    Дефицит: ${a.deficitRub >= 0 ? '+' : ''}${a.deficitRub.toLocaleString('ru-RU')} ₽\n`;
-      }
-
-      // DETERMINISTIC QUANTITIES — AI НЕ должен придумывать свои объёмы
-      const liquidationValue = a.currentPrice * a.quantity;
-      ctx += `    LIQUIDATION_VALUE: ${liquidationValue.toLocaleString('ru-RU')} ₽ (currentPrice=${a.currentPrice} × quantity=${a.quantity})\n`;
-      ctx += `    CURRENT_QUANTITY: ${a.quantity} шт.\n`;
-      if (a.deficitRub > 0 && !isExit) {
-        ctx += `    BUY_AMOUNT_DETERMINISTIC: ${a.deficitRub.toLocaleString('ru-RU')} ₽ (deficitRub из PortfolioMath)\n`;
-      } else if (a.deficitRub < 0 && !isExit) {
-        ctx += `    SELL_AMOUNT_DETERMINISTIC: ${Math.abs(a.deficitRub).toLocaleString('ru-RU')} ₽ (deficitRub из PortfolioMath)\n`;
-      }
-
-      // SUR / NO_TARGET PRESENTATION
-      // USER_TARGET_PERCENT — это ТОЛЬКО пользовательская цель из Excel
-      // AI_RECOMMENDED_TARGET_PERCENT — это рекомендация ИИ, никогда не показывать как USER
-      if (!hasUserTarget) {
-        ctx += '    USER_TARGET_PERCENT: НЕ ЗАДАН (PortfolioMath → NO_TARGET)\n';
-        ctx += '    ⚠️ AI_RECOMMENDED_TARGET_PERCENT: AI формирует рекомендацию самостоятельно.\n';
-        ctx += '    ⚠️ Это ИИ-РЕКОМЕНДАЦИЯ, а НЕ пользовательская цель.\n';
-        ctx += '    ⚠️ В отчёте явно обозначай как "AI-рекомендация", а не "целевая доля пользователя".\n';
-      }
-
-      // INVALID_MARKET_DATA safety gate — ТОЛЬКО если PortfolioMath currentPrice <= 0
-      if (marketBlocked) {
-        ctx += '    ⛔ MARKET_DATA_STATUS: INVALID (PortfolioMath currentPrice=0, цена отсутствует)\n';
-        ctx += '    ⛔ AI ACTION: BLOCKED — НЕ давать BUY/REDUCE/EXIT как исполнимую рекомендацию.\n';
-        ctx += '    ⛔ reason: INVALID_MARKET_DATA — нет цены для исполнения.\n';
-      } else {
-        ctx += '    ✅ EXECUTION_PRICE: PortfolioMath currentPrice=' + a.currentPrice + ' ₽ (authoritative)\n';
-      }
-
-      ctx += '\n';
-    });
-
-    // === БЛОК 5: ACTIVE ORDERS (только execution context, ПОСЛЕ AI decision) ===
-    ctx += '╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  EXECUTION CONTEXT — АКТИВНЫЕ ЗАЯВКИ (НЕ ИНВЕСТ. ТЕЗИС)║\n';
-    ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx +=
-      '⚠️ ВАЖНО: Эти заявки — факт исполнения. НЕ используй их как инвестиционный аргумент.\n';
-    ctx += orders.md || 'Нет активных заявок.\n';
-
-    ctx += '\n╔══════════════════════════════════════════════════════════╗\n';
-    ctx += '║  ⚠️ ВАЖНОЕ ПРЕДУПРЕЖДЕНИЕ ДЛЯ МОДЕЛИ                   ║\n';
-    ctx += '╚══════════════════════════════════════════════════════════╝\n';
-    ctx +=
-      '• Анализируй ТОЛЬКО активы, перечисленные выше в разделе «СПИСОК ВСЕХ АКТИВОВ»\n';
-    ctx += '• НЕ упоминай компании, которых нет в этом списке\n';
-    ctx +=
-      '• НЕ выдумывай данные о сделках топ-менеджеров, финансовых отчётах компаний\n';
-    ctx +=
-      '• ВСЕ проценты и рубли должны соответствовать данным из раздела «СТРУКТУРА ПОРТФЕЛЯ»\n';
-    ctx +=
-      '• Если актив имеет статус NEW — анализируй в рамках переданных данных. Не назначай целевую долю, если targetPercent не задан PortfolioMath.\n';
+    if (orders.md) {
+      ctx += '\n=== \u0417\u0410\u042f\u0412\u041a\u0418 ===\n' + orders.md;
+    }
 
     return ctx;
   }
@@ -583,8 +464,8 @@ export class AiClient {
       '   - Для каждого актива из списка укажи статус PortfolioMath: BUY / STABLE / REDUCE / EXIT / NO_TARGET\n';
     prompt +=
       '   - Объясни каждый статус на основе переданных targetPercent и текущих данных\n';
-    prompt += '   - targetPercent не задан → напиши «Цель не задана»\n';
     prompt += '   - targetPercent = 0% → EXIT / ВЫХОД\n';
+    prompt += '   - targetPercent = — (прочерк) → цель не задана в Excel, укажи это\n';
     prompt += '3. ПЛАН РЕБАЛАНСИРОВКИ:\n';
     prompt +=
       '   - Какие BUY / REDUCE / STABLE / EXIT имеют наивысший приоритет\n';
@@ -627,12 +508,17 @@ export class AiClient {
     prompt += '- НЕ используй маркеры типа "$1." — только "1.", "2." и т.д.\n';
     prompt +=
       '- ⚠️ ВАЖНО: Данные агрегированы по всем счетам. Анализируй каждый актив как единый, не дублируй рекомендации по счетам.\n';
+    prompt +=
+      '- ⚠️ КРИТИЧЕСКИ: В секции 2 «РЕКОМЕНДАЦИИ ПО КАЖДОМУ АКТИВУ» ты ОБЯЗАН прокомментировать КАЖДЫЙ актив из таблицы активов. Без исключений. Если актив есть в таблице — о нём должна быть строка в рекомендациях. Никогда не пиши «актив не указан в списке» — это ошибка, если он там есть.\n';
 
     return prompt;
   }
 
   /**
    * Запрос к OpenRouter (Claude Sonnet 4 / GPT-4o)
+   * Примечание: используется кастомный HTTPS-агент с отключённой проверкой
+   * сертификатов — это необходимо на машинах с корпоративными SSL-прокси
+   * или антивирусами, которые подменяют TLS-сертификаты.
    */
   private async queryOpenRouter(
     modelConfig: AiModelConfig,
@@ -642,6 +528,19 @@ export class AiClient {
     if (!this.openRouterKey) {
       throw new Error('OPENROUTER_API_KEY не настроен');
     }
+
+    // Кастомный HTTPS-агент: отключаем проверку сертификатов
+    // Только для OpenRouter — на остальных API это не влияет
+    const httpsAgent = new https.Agent({
+      rejectUnauthorized: false,
+    });
+
+    console.log('[OPENROUTER] Sending request to:', modelConfig.baseUrl);
+    console.log('[OPENROUTER] Model:', modelConfig.modelName);
+    console.log(
+      '[OPENROUTER] Key prefix:',
+      this.openRouterKey.substring(0, 15) + '...',
+    );
 
     const response = await axios.post(
       modelConfig.baseUrl,
@@ -661,9 +560,12 @@ export class AiClient {
           'HTTP-Referer': 'https://github.com/finance-analyzer',
           'X-Title': 'Finance Analyzer',
         },
+        httpsAgent,
+        timeout: 120000,
       },
     );
 
+    console.log('[OPENROUTER] ✅ Response received, status:', response.status);
     return response.data.choices[0].message.content;
   }
 
@@ -693,6 +595,7 @@ export class AiClient {
     modelConfig: AiModelConfig,
     systemPrompt: string,
     userPrompt: string,
+    httpsAgent?: https.Agent,
   ): Promise<string> {
     if (!this.gigaChatKey) {
       throw new Error('GIGACHAT_API_KEY не настроен');
@@ -719,6 +622,7 @@ export class AiClient {
           Accept: 'application/json',
           RqUID: Date.now().toString(),
         },
+        httpsAgent,
         timeout: 60000,
       },
     );
@@ -785,12 +689,18 @@ export class AiClient {
     systemPrompt: string,
     userPrompt: string,
   ): Promise<string> {
+    // Кастомный HTTPS-агент для обхода корпоративных SSL-прокси
+    const httpsAgent = new https.Agent({
+      rejectUnauthorized: false,
+    });
+
     // Определяем тип ключа
     if (this.isAuthorizationKey(this.gigaChatKey)) {
       return this.queryGigaChatWithAuthKey(
         modelConfig,
         systemPrompt,
         userPrompt,
+        httpsAgent,
       );
     }
 
@@ -817,6 +727,7 @@ export class AiClient {
           Accept: 'application/json',
           RqUID: Date.now().toString(),
         },
+        httpsAgent,
         timeout: 60000,
       },
     );
@@ -917,9 +828,7 @@ export class AiClient {
     const isRunning = await isOllamaRunning();
     console.log('[Ollama] isOllamaRunning:', isRunning);
     if (!isRunning) {
-      throw new Error(
-        'Ollama не запущен. Запустите Ollama на localhost:11434',
-      );
+      throw new Error('Ollama не запущен. Запустите Ollama на localhost:11434');
     }
 
     // Формируем полный промпт для кэширования
@@ -999,14 +908,14 @@ export class AiClient {
 
       // AI OUTPUT VALIDATION — детерминированная проверка после cleanAiResponse
       console.log('[Ollama] calling validateAiOutput...');
-      const validatedResponse = validateAiOutput(
-        cleanedResponse,
-      );
+      const validatedResponse = validateAiOutput(cleanedResponse);
       console.log('[Ollama] validateAiOutput returned');
 
       // ARITHMETIC CONSISTENCY — проверяем суммы против deterministic
       console.log('[Ollama] calling validateArithmeticConsistency...');
-      const deterministicAmounts: DeterministicAmounts[] = (assetsAnalysis ?? [])
+      const deterministicAmounts: DeterministicAmounts[] = (
+        assetsAnalysis ?? []
+      )
         .filter((a): a is AssetAnalysis => a.currentPercent > 0)
         .map((a: AssetAnalysis) => {
           const det: DeterministicAmounts = {
@@ -1064,7 +973,9 @@ export class AiClient {
         const validatedResponse = validateAiOutput(cleanedResponse);
 
         // ARITHMETIC CONSISTENCY — проверяем суммы против deterministic
-        const deterministicAmounts: DeterministicAmounts[] = (assetsAnalysis ?? [])
+        const deterministicAmounts: DeterministicAmounts[] = (
+          assetsAnalysis ?? []
+        )
           .filter((a): a is AssetAnalysis => a.currentPercent > 0)
           .map((a: AssetAnalysis) => {
             const det: DeterministicAmounts = {
@@ -1149,9 +1060,10 @@ export class AiClient {
   }
 
   /**
-    * Основной метод генерации отчёта с автоматическим fallback
-    * @param memoryContext — контекст из двухслойной памяти ИИ (опционально)
-    */
+   * Основной метод генерации отчёта с автоматическим fallback
+   * @param memoryContext — контекст из двухслойной памяти ИИ (опционально)
+   * @param guardrailsContext — контекст защитных правил (опционально)
+   */
   public async generateDynamicReport(
     analysis: PortfolioReportData,
     inc: CalculatedIncome,
@@ -1172,6 +1084,7 @@ export class AiClient {
     },
     accountsInfo?: Array<{ name: string; value: number }>,
     memoryContext?: string,
+    guardrailsContext?: string,
   ): Promise<AiResponseResult> {
     // Извлекаем тикеры активов для валидации
     const assetTickers = analysis.assetsAnalysis.map((a) => a.ticker);
@@ -1195,6 +1108,7 @@ export class AiClient {
       assetTickers,
       macroData,
       memoryContext,
+      guardrailsContext,
     );
     const macroPercentages = actualMacroPercentages || {
       stocks: analysis.macro.stocksPercent,
@@ -1283,8 +1197,8 @@ export class AiClient {
             );
             console.log(
               `[AI] JSON извлечён: ticker=${structuredJson.ticker}, ` +
-              `action=${structuredJson.recommendedAction}, ` +
-              `valid=${structuredValidation?.valid ?? 'N/A'}`,
+                `action=${structuredJson.recommendedAction}, ` +
+                `valid=${structuredValidation?.valid ?? 'N/A'}`,
             );
             if (structuredValidation && !structuredValidation.valid) {
               console.warn(
@@ -1309,6 +1223,22 @@ export class AiClient {
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         console.error('[AI] Ошибка модели ' + model.name + ': ' + msg);
+        // Детальная отладка: выводим полный ответ ошибки
+        if (error instanceof Error && 'response' in error) {
+          const axiosError = error as Error & {
+            response?: { data?: unknown; status?: number };
+          };
+          if (axiosError.response?.data) {
+            console.error(
+              '[AI] Response data:',
+              JSON.stringify(axiosError.response.data, null, 2).substring(
+                0,
+                500,
+              ),
+            );
+          }
+          console.error('[AI] Response status:', axiosError.response?.status);
+        }
 
         const nextModel = getNextModel(model.id);
         if (nextModel) {

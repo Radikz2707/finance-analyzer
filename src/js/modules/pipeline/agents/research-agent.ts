@@ -90,11 +90,32 @@ export class ResearchAgent extends AgentBase {
   }
 
   protected async executeInternal(
-    input: { assetsAnalysis: AssetAnalysis[]; quotes: Record<string, AssetQuote>; macroGoals: DataAgentOutput['macroGoals'] },
+    input: { assetsAnalysis?: AssetAnalysis[]; quotes?: Record<string, AssetQuote>; macroGoals?: DataAgentOutput['macroGoals']; assets?: DataAgentOutput['assets'] },
   ): Promise<ResearchAgentOutput> {
     console.log('[ResearchAgent] >>> Начало исследования активов');
 
-    const { assetsAnalysis, quotes, macroGoals } = input;
+    // Поддержка обоих форматов: assetsAnalysis (из PipelineCoordinator) или assets (из DataAgent)
+    const assetsAnalysis = input.assetsAnalysis ?? input.assets?.map((a) => ({
+      name: a.name,
+      ticker: a.ticker,
+      assetType: a.assetType,
+      currentPercent: 0,
+      targetPercent: 0,
+      deficitRub: 0,
+      status: 'STABLE' as const,
+      dynamicsPercent: 0,
+      nkdRub: 0,
+      nominal: 0,
+      quantity: a.quantity || 0,
+      balancePrice: 0,
+      currentPrice: 0,
+      unrealizedProfitRub: 0,
+      priority: 0,
+      isConcentrated: false,
+    })) ?? [];
+    
+    const quotes = input.quotes ?? {};
+    const macroGoals = input.macroGoals ?? undefined;
 
     if (assetsAnalysis.length === 0) {
       console.warn('[ResearchAgent] Нет активов для исследования');
@@ -117,10 +138,12 @@ export class ResearchAgent extends AgentBase {
       const researchAsset = this.toResearchAsset(asset);
 
       try {
+        console.log(`[ResearchAgent] researchAll для ${asset.ticker}...`);
         const { snapshot, conflicts } = await registry.researchAll(
           researchAsset,
           researchContext,
         );
+        console.log(`[ResearchAgent] ✅ researchAll для ${asset.ticker} успешен`);
 
         return {
           ticker: asset.ticker,
@@ -130,17 +153,19 @@ export class ResearchAgent extends AgentBase {
         };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
+        const errorStack = err instanceof Error ? err.stack?.substring(0, 500) : 'N/A';
         console.error(
-          `[ResearchAgent] Ошибка исследования ${asset.ticker}: ${errorMsg}`,
+          `[ResearchAgent] ❌ Ошибка researchAll для ${asset.ticker}: ${errorMsg}`,
         );
+        console.error(`[ResearchAgent] Стек: ${errorStack}`);
 
-        // Fallback: пустой snapshot
+        // Fallback: пустой snapshot вместо падения
         return {
           ticker: asset.ticker,
           snapshot: {
             identity: this.buildFallbackIdentity(asset),
             evidence: {},
-          },
+          } as import('../../research/types.js').AssetResearchSnapshot,
           conflicts: [],
           providerCount: 0,
         };
@@ -148,15 +173,35 @@ export class ResearchAgent extends AgentBase {
     });
 
     // Шаг 4: Ожидание всех параллельных исследований
-    const results = await Promise.all(researchPromises);
+    let results;
+    try {
+      results = await Promise.all(researchPromises);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      const errorStack = err instanceof Error ? err.stack : '';
+      console.error(`[ResearchAgent] Promise.all ошибка: ${errorMsg}`);
+      console.error(`[ResearchAgent] Стек: ${errorStack}`);
+      // Продолжаем с пустыми результатами
+      results = assetsAnalysis.map((asset) => ({
+        ticker: asset.ticker,
+        snapshot: {
+          identity: this.buildFallbackIdentity(asset),
+          evidence: {},
+        } as import('../../research/types.js').AssetResearchSnapshot,
+        conflicts: [],
+        providerCount: 0,
+      }));
+    }
 
     // Шаг 5: Агрегация результатов
     const snapshots = new Map<string, AssetResearchResult>();
     const allConflicts: ValueConflict[] = [];
 
     for (const result of results) {
-      snapshots.set(result.ticker, result);
-      allConflicts.push(...result.conflicts);
+      if (result && result.ticker) {
+        snapshots.set(result.ticker, result);
+        allConflicts.push(...result.conflicts);
+      }
     }
 
     console.log(
@@ -176,7 +221,7 @@ export class ResearchAgent extends AgentBase {
 
   private buildResearchContext(
     quotes: Record<string, AssetQuote>,
-    _macroGoals: DataAgentOutput['macroGoals'],
+    _macroGoals?: DataAgentOutput['macroGoals'],
   ): ResearchContext {
     const marketQuotes: Record<string, MarketQuote> = {};
     for (const [ticker, quote] of Object.entries(quotes)) {

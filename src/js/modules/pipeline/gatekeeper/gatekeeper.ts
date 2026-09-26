@@ -181,6 +181,16 @@ export class Gatekeeper {
         continue;
       }
 
+      // Определение приоритета (нужен для проверки шума)
+      const priority = this.calculatePriority(normalized, []);
+
+      // Отсечение шума (до проверки тикеров — шум не пропускается)
+      if (priority === 'noise') {
+        this.stats.noise++;
+        filteredByReason['noise'] = (filteredByReason['noise'] ?? 0) + 1;
+        continue;
+      }
+
       // Фильтрация по тикерам
       const relevantTickers = extractTickersFromText(
         `${normalized.title} ${normalized.summary}`,
@@ -190,16 +200,6 @@ export class Gatekeeper {
       if (relevantTickers.length === 0) {
         this.stats.filtered++;
         filteredByReason['not_relevant'] = (filteredByReason['not_relevant'] ?? 0) + 1;
-        continue;
-      }
-
-      // Определение приоритета
-      const priority = this.calculatePriority(normalized, relevantTickers);
-
-      // Отсечение шума
-      if (priority === 'noise') {
-        this.stats.noise++;
-        filteredByReason['noise'] = (filteredByReason['noise'] ?? 0) + 1;
         continue;
       }
 
@@ -301,7 +301,7 @@ export class Gatekeeper {
   /** Вычисляет приоритет новости */
   private calculatePriority(
     news: NormalizedNewsItem,
-    relevantTickers: string[],
+    _relevantTickers: string[],
   ): NewsPriority {
     const text = `${news.title} ${news.summary}`.toLowerCase();
 
@@ -341,8 +341,8 @@ export class Gatekeeper {
       return 'high';
     }
 
-    // Проверка на шум
-    if (containsKeywords(text, noiseKeywords) && relevantTickers.length === 0) {
+    // Проверка на шум (только если нет других приоритетов)
+    if (containsKeywords(text, noiseKeywords)) {
       return 'noise';
     }
 

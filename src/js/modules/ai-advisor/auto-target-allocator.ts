@@ -1,5 +1,5 @@
 import { CurrentAsset } from '../xlsx-parser/xlsx-parser.js';
-import { PortfolioConfig } from './portfolio-config.js';
+import { PortfolioConfig } from '../../config/portfolio-config.js';
 
 export interface AutoTargetResult {
   ticker: string;

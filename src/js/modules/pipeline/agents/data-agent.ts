@@ -7,7 +7,7 @@ import type { QuikOrder } from '../../xlsx-parser/quik-orders-parser.js';
 import { XlsxParserModule } from '../../xlsx-parser/xlsx-parser.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
-import { Gatekeeper, RssNewsSource } from '../gatekeeper/index.js';
+import { Gatekeeper, RssNewsSource, MoexNewsSource } from '../gatekeeper/index.js';
 import type { GatekeeperResult } from '../gatekeeper/types.js';
 
 // ──────────────────────────────────────────────
@@ -140,17 +140,21 @@ export class DataAgent extends AgentBase {
     // Шаг 8: Вложенные средства
     const investedFunds = await this.parser.parseInvestedFunds();
 
-    // Шаг 9: Gatekeeper — фильтрация новостей
+    // Шаг 9: Gatekeeper — фильтрация новостей (RSS + MOEX)
     let newsResult: GatekeeperResult | null = null;
     try {
       const monitoredTickers = assets.map((a) => a.ticker);
+      
+      // Создаём оба источника
       const rssSource = new RssNewsSource();
+      const moexSource = new MoexNewsSource({ enabled: true, maxItems: 50 });
+      
       const gatekeeper = new Gatekeeper(
         {
           monitoredTickers,
           verbose: false,
         },
-        [rssSource],
+        [rssSource, moexSource],
       );
       newsResult = await gatekeeper.run();
       console.log(

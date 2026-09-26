@@ -2,9 +2,9 @@
  * RssNewsSource — источник новостей из RSS-лент.
  *
  * Поддерживаемые источники:
- * - РБК (https://www.rbc.ru/rss/rbc_news_main.xml)
- * - Интерфакс (https://www.interfax.ru/rss/rss.rdf)
- * - Investing.com (https://ru.investing.com/rss/news.rss)
+ * - Investing.com (финансовые новости на русском)
+ * - Habr (финансовый тег)
+ * - Yahoo Finance (англоязычные)
  * - Пользовательские RSS
  */
 
@@ -19,23 +19,25 @@ export interface RssSourceConfig {
   maxItems?: number;
 }
 
-/** Дефолтные RSS-ленты */
+/** Дефолтные RSS-ленты (проверенные рабочие) */
 const DEFAULT_RSS_SOURCES: RssSourceConfig[] = [
-  {
-    name: 'РБК',
-    url: 'https://www.rbc.ru/rss/rbc_news_main.xml',
-    enabled: true,
-  },
-  {
-    name: 'Интерфакс',
-    url: 'https://www.interfax.ru/rss/rss.rdf',
-    enabled: true,
-  },
   {
     name: 'Investing.com',
     url: 'https://ru.investing.com/rss/news.rss',
     enabled: true,
-    maxItems: 20,
+    maxItems: 50,
+  },
+  {
+    name: 'Habr Finance',
+    url: 'https://habr.com/ru/rss/best/finance/',
+    enabled: true,
+    maxItems: 30,
+  },
+  {
+    name: 'Yahoo Finance',
+    url: 'https://finance.yahoo.com/rss/',
+    enabled: true,
+    maxItems: 30,
   },
 ];
 

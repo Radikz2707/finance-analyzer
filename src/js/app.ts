@@ -18,10 +18,10 @@ function isWebp(): void {
 // ==========================================
 // 📦 ВНЕШНИЕ БИБЛИОТЕКИ И СИСТЕМНЫЕ МОДУЛИ
 // ==========================================
-import { init as dashboard } from './modules/dashboard/dashboard';
-import { dbManager } from './modules/db-manager/db-manager';
-import { telegramBot } from './modules/telegram-bot/telegram-bot';
-import { memoryLayer } from './modules/memory-layer/memory-layer';
+import { init as dashboard } from './modules/dashboard/dashboard.js';
+import { dbManager } from './modules/db-manager/db-manager.js';
+import { telegramBot } from './modules/telegram-bot/telegram-bot.js';
+import { memoryLayer } from './modules/memory-layer/memory-layer.js';
 
 // Инициализация компонентов
 const initApp = () => {

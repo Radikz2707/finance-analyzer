@@ -12,6 +12,11 @@ import { calculatePortfolioIncome } from './income-calculator.js';
 import { getMarkdownTemplate } from './report-templates.js';
 import { DashboardReportBuilder } from '../../../components/dashboard-report/dashboard-report.js';
 import { AiClient } from './ai-client.js';
+import { positionsRepo } from '../db-manager/db-manager.js';
+import {
+  getRecoveryOnlyTickers,
+  buildGuardrailsContext,
+} from '../pipeline/guardrails/guardrails.js';
 // Удалено: auto-target блок — legacy UI suggestion, не AI recommendation.
 // Для SUR при USER_TARGET=NOT_SET не показывать автоматически целевую долю.
 // import { suggestAllAutoTargets } from './auto-target-allocator.js';
@@ -96,6 +101,47 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     console.error('❌ [ОШИБКА]: Данные portfolio-файла пусты.');
     return;
   }
+
+  console.log(`[AI-ADVISOR] 📊 assets.length = ${assets.length}`);
+  console.log(`[AI-ADVISOR] 📊 assets[0].ticker = ${assets[0]?.ticker}`);
+
+  // ─── Сохраняем позиции в БД ───
+  console.log('[AI-ADVISOR] 💾 Сохранение позиций в БД...');
+  console.log(`[AI-ADVISOR] 💾 positionsRepo.upsert = ${typeof positionsRepo.upsert}`);
+  let savedCount = 0;
+  for (const asset of assets) {
+    console.log(`[AI-ADVISOR] 💾 Сохраняю ${asset.ticker}...`);
+    try {
+      // Рассчитываем totalCost и currentMarketValue из имеющихся данных
+      const totalCost = (asset.quantity || 0) * (asset.balancePrice || 0);
+      const currentMarketValue = (asset.quantity || 0) * (asset.currentPrice || 0);
+
+      // Приводим assetType к допустимому значению
+      const validAssetType = ['STOCK', 'BOND', 'ETF', 'CASH', 'OTHER'].includes(asset.assetType.toUpperCase())
+        ? asset.assetType.toUpperCase() as 'STOCK' | 'BOND' | 'ETF' | 'CASH' | 'OTHER'
+        : 'OTHER';
+
+      positionsRepo.upsert({
+        ticker: asset.ticker,
+        name: asset.name,
+        assetType: validAssetType,
+        issuer: asset.name,
+        currency: 'RUB',
+        market: 'MOEX',
+        quantity: asset.quantity || 0,
+        avgPrice: asset.balancePrice || 0,
+        totalCost: totalCost,
+        currentPrice: asset.currentPrice || 0,
+        currentMarketValue: currentMarketValue,
+        targetPercent: asset.targetPercent,
+        status: 'ACTIVE',
+      });
+      savedCount++;
+    } catch (e) {
+      console.error(`[AI-ADVISOR] ❌ Ошибка сохранения ${asset.ticker}:`, e);
+    }
+  }
+  console.log(`[AI-ADVISOR] ✅ Сохранено ${savedCount} позиций в БД`);
 
   const validator = new PortfolioValidator();
   const validation = validator.validateLimits(macroGoals, assets);
@@ -332,6 +378,20 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
         isFresh: false,
       };
 
+      // ─── GUARDRAILS: проверка RECOVERY_ONLY ───
+      const recoveryTickers = getRecoveryOnlyTickers(positionsRepo);
+      const guardrailsContext = buildGuardrailsContext(
+        recoveryTickers,
+        positionsRepo,
+      );
+
+      if (recoveryTickers.length > 0) {
+        console.log(
+          '[GUARDRAILS] ⚠️ Активы в режиме RECOVERY_ONLY:',
+          recoveryTickers.join(', '),
+        );
+      }
+
       const aiResult = await aiClient.generateDynamicReport(
         analysisResult,
         inc,
@@ -354,6 +414,8 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
           name: a.name,
           value: a.value,
         })),
+        undefined, // memoryContext
+        guardrailsContext, // guardrailsContext — блок защитных правил для промпта
       );
 
       console.log(
@@ -542,30 +604,26 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
           '\n' +
           validatedAiText;
 
-      // Обновляем report.html с AI-блоком
+      // Обновляем report.html с AI-блоком — единый вызов с KPI-данными
       const reportBuilder = DashboardReportBuilder.fromOrdersAndAssets(
         excelModule.parsedActiveOrders,
         analysisResult.assetsAnalysis,
         quotes,
+        {
+          totalVal,
+          freeCash: analysisResult.macro.freeCash,
+          totalInvested: investedData.totalNet,
+          resultC10: currentTradingResultRub,
+          profitC11: totalNetProfitRub,
+          investedNet: investedData.totalNet,
+          c10Color,
+          c11Color,
+          cbrRate: freshMacroData?.keyRate ?? 0,
+          dateStr: new Date().toLocaleDateString('ru-RU'),
+          timeStr: new Date().toLocaleTimeString('ru-RU'),
+          aiBoxHtml,
+        },
       );
-
-      reportBuilder.data.totalVal = totalVal.toLocaleString('ru-RU');
-      reportBuilder.data.freeCash = analysisResult.macro.freeCash.toLocaleString('ru-RU');
-      reportBuilder.data.stocksPct = actualStocksPct;
-      reportBuilder.data.bondsPct = actualBondsPct;
-      reportBuilder.data.cbrRate = freshMacroData?.keyRate ?? 0;
-      reportBuilder.data.totalInvested = investedData.totalNet.toLocaleString('ru-RU');
-      reportBuilder.data.resultC10 = currentTradingResultRub.toLocaleString('ru-RU');
-      reportBuilder.data.profitC11 =
-        totalNetProfitRub.toLocaleString('ru-RU') +
-        ' (' +
-        totalNetProfitPercent.toFixed(2) +
-        '%)';
-      reportBuilder.data.c10Color = c10Color;
-      reportBuilder.data.c11Color = c11Color;
-      reportBuilder.data.dateStr = new Date().toLocaleDateString('ru-RU');
-      reportBuilder.data.timeStr = new Date().toLocaleTimeString('ru-RU');
-      reportBuilder.data.aiBoxHtml = aiBoxHtml;
 
       const htmlData = reportBuilder.buildHtml();
 
@@ -591,31 +649,26 @@ export async function parseExcelAndFetchRecommendations(): Promise<void> {
     '<p style="color: #8b949e; font-size: 12px;">Анализ выполнится в фоне и обновит отчёт</p>' +
     '</div>';
 
-  // Сборка веб-интерфейса дашборда на основе очищенных данных
+  // Сборка веб-интерфейса дашборда на основе очищенных данных (плейсхолдер AI)
   const reportBuilder = DashboardReportBuilder.fromOrdersAndAssets(
     excelModule.parsedActiveOrders,
     analysisResult.assetsAnalysis,
     quotes,
+    {
+      totalVal,
+      freeCash: analysisResult.macro.freeCash,
+      totalInvested: investedData.totalNet,
+      resultC10: currentTradingResultRub,
+      profitC11: totalNetProfitRub,
+      investedNet: investedData.totalNet,
+      c10Color,
+      c11Color,
+      cbrRate: freshMacroData?.keyRate ?? 0,
+      dateStr: new Date().toLocaleDateString('ru-RU'),
+      timeStr: new Date().toLocaleTimeString('ru-RU'),
+      aiBoxHtml: aiBoxHtmlPlaceholder,
+    },
   );
-
-  // Переопределяем данные для карточек KPI
-  reportBuilder.data.totalVal = totalVal.toLocaleString('ru-RU');
-  reportBuilder.data.freeCash = analysisResult.macro.freeCash.toLocaleString('ru-RU');
-  reportBuilder.data.stocksPct = actualStocksPct;
-  reportBuilder.data.bondsPct = actualBondsPct;
-  reportBuilder.data.cbrRate = freshMacroData?.keyRate ?? 0;
-  reportBuilder.data.totalInvested = investedData.totalNet.toLocaleString('ru-RU');
-  reportBuilder.data.resultC10 = currentTradingResultRub.toLocaleString('ru-RU');
-  reportBuilder.data.profitC11 =
-    totalNetProfitRub.toLocaleString('ru-RU') +
-    ' (' +
-    totalNetProfitPercent.toFixed(2) +
-    '%)';
-  reportBuilder.data.c10Color = c10Color;
-  reportBuilder.data.c11Color = c11Color;
-  reportBuilder.data.dateStr = new Date().toLocaleDateString('ru-RU');
-  reportBuilder.data.timeStr = new Date().toLocaleTimeString('ru-RU');
-  reportBuilder.data.aiBoxHtml = aiBoxHtmlPlaceholder;
 
   const htmlData = reportBuilder.buildHtml();
 

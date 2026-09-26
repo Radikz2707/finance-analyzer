@@ -1,5 +1,5 @@
 import { CurrentAsset, MacroGoals } from '../xlsx-parser/xlsx-parser';
-import { PortfolioConfig } from '../ai-advisor/portfolio-config.js';
+import { PortfolioConfig } from '../../config/portfolio-config.js';
 
 export interface ValidationResult {
   isValid: boolean;

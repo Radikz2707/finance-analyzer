@@ -11,6 +11,7 @@ import { DashboardReportBuilder } from '../../../../components/dashboard-report/
 import { getMarkdownTemplate } from '../../ai-advisor/report-templates.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
+import { buildInteractiveOrders, type InteractiveOrder } from '../orders/interactive-orders.js';
 
 // ──────────────────────────────────────────────
 // 1. Notification Agent output types
@@ -28,6 +29,8 @@ export interface NotificationAgentOutput {
   mdContent: string;
   /** Успешно ли открыт отчёт в браузере */
   browserOpened: boolean;
+  /** Интерактивные ордера для UI/Telegram */
+  interactiveOrders: InteractiveOrder[];
 }
 
 // ──────────────────────────────────────────────
@@ -97,7 +100,20 @@ export class NotificationAgent extends AgentBase {
       `report.md (${mdContent.length} байт)`,
     );
 
-    // ── Шаг 4: Открытие в браузере ──
+    // ── Шаг 4: Генерация интерактивных ордеров ──
+    const interactiveOrders = buildInteractiveOrders(
+      analysis.portfolioAnalysis.assetsAnalysis,
+      activeOrders,
+    );
+
+    if (interactiveOrders.length > 0) {
+      console.log(
+        '[NotificationAgent] 📋 Сформировано интерактивных ордеров:',
+        interactiveOrders.map((o) => `${o.ticker}(${o.action})`).join(', '),
+      );
+    }
+
+    // ── Шаг 5: Открытие в браузере ──
     const browserOpened = this.openInBrowser(this.htmlPath);
 
     return {
@@ -106,6 +122,7 @@ export class NotificationAgent extends AgentBase {
       htmlContent,
       mdContent,
       browserOpened,
+      interactiveOrders,
     };
   }
 
@@ -130,38 +147,30 @@ export class NotificationAgent extends AgentBase {
       }),
     );
 
-    // Строим DashboardReportBuilder
+    // Строим DashboardReportBuilder с KPI-данными (единый вызов, без two-phase init)
+    const totalVal = this.calculateTotalVal(assetsAnalysis);
+    const totalNetProfitRub = data.historicalTrades.profitC11;
+    const aiBoxHtml = this.buildAiBoxHtml(analysis, ai);
+
     const reportBuilder = DashboardReportBuilder.fromOrdersAndAssets(
       orders,
       assetsAnalysis,
       stockQuotes,
+      {
+        totalVal,
+        freeCash: data.macroGoals.freeCash,
+        totalInvested: data.investedFunds.totalNet,
+        resultC10: data.historicalTrades.profitC10,
+        profitC11: totalNetProfitRub,
+        investedNet: data.investedFunds.totalNet,
+        c10Color: data.historicalTrades.profitC10 >= 0 ? '#56d364' : '#ff7b72',
+        c11Color: totalNetProfitRub >= 0 ? '#56d364' : '#ff7b72',
+        cbrRate: 0, // будет из macroResearch в будущем
+        dateStr: new Date().toLocaleDateString('ru-RU'),
+        timeStr: new Date().toLocaleTimeString('ru-RU'),
+        aiBoxHtml,
+      },
     );
-
-    // Заполняем KPI-данные
-    const totalVal = this.calculateTotalVal(assetsAnalysis);
-    reportBuilder.data.totalVal = totalVal.toLocaleString('ru-RU');
-    reportBuilder.data.freeCash = data.macroGoals.freeCash.toLocaleString('ru-RU');
-    reportBuilder.data.stocksPct = this.calcStocksPercent(assetsAnalysis);
-    reportBuilder.data.bondsPct = this.calcBondsPercent(assetsAnalysis);
-    reportBuilder.data.cbrRate = 0; // будет из macroResearch в будущем
-    reportBuilder.data.totalInvested = data.investedFunds.totalNet.toLocaleString('ru-RU');
-    reportBuilder.data.resultC10 = data.historicalTrades.profitC10.toLocaleString('ru-RU');
-
-    const totalNetProfitRub = data.historicalTrades.profitC11;
-    const totalNetProfitPercent =
-      data.investedFunds.totalNet > 0
-        ? (totalNetProfitRub / data.investedFunds.totalNet) * 100
-        : 0;
-    reportBuilder.data.profitC11 =
-      `${totalNetProfitRub.toLocaleString('ru-RU')} (${totalNetProfitPercent.toFixed(2)}%)`;
-    reportBuilder.data.c10Color = data.historicalTrades.profitC10 >= 0 ? '#56d364' : '#ff7b72';
-    reportBuilder.data.c11Color = totalNetProfitRub >= 0 ? '#56d364' : '#ff7b72';
-    reportBuilder.data.dateStr = new Date().toLocaleDateString('ru-RU');
-    reportBuilder.data.timeStr = new Date().toLocaleTimeString('ru-RU');
-
-    // Формируем AI-блок
-    const aiBoxHtml = this.buildAiBoxHtml(analysis, ai);
-    reportBuilder.data.aiBoxHtml = aiBoxHtml;
 
     return reportBuilder.buildHtml();
   }

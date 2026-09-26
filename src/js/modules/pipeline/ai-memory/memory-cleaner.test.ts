@@ -15,7 +15,7 @@ import {
   init,
   shutdown,
 } from './memory-cleaner.js';
-import { operationalMemory } from './ai-memory.js';
+import { operationalMemory } from './core.js';
 
 // ──────────────────────────────────────────────
 // Тесты очистки оперативной памяти
