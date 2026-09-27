@@ -29,7 +29,7 @@
     "audit": "node gulp/run-audit.js && node gulp/generate-blueprint.js",
     "blueprint": "node gulp/generate-blueprint.js",
     "watch": "node --import tsx watch.ts",
-    "push": "git add . && read -p 'Commit message: ' msg && git commit -m \"$msg\" && git push",
+    "push": "git add . && git commit -m \"Updates\" && git push",
     "push:main": "git add . && git commit -m \"Updates\" && git push origin main",
     "cache:clear-ai": "node --import tsx scripts/clear-ai-cache.ts",
     "harness": "node --import tsx scripts/harness-start.ts",
