@@ -18,15 +18,46 @@ const ensureProjectCwd = () => {
 const PROTECTED_NAMES = [
   'js',
   'scss',
+  'sass',
+  'css',
   'html',
   'img',
+  'images',
   'fonts',
+  'favicons',
   'components',
   'modules',
+  'plugins',
+  'pipeline',
+  'agents',
+  'agent',
   'src',
   'dist',
-  'plugins',
+  'app',
+  'index',
+  'main',
+  'types',
+  'config',
+  'system',
+  'gulp',
+  'gulpfile',
+  'cwd',
+  'force',
+  'data',
+  'python',
+  'parts',
+  'assets',
+  'quik',
+  'scripts',
+  'test',
+  'tests',
 ];
+
+/**
+ * Допустимые имена ресурсов: латиница, цифры и дефисы.
+ * Имя не может начинаться с точки или дефиса.
+ */
+const NAME_FORMAT = /^[a-z0-9]+(?:-[a-z0-9]+)*$/i;
 
 const toCamelCase = (str) =>
   str.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -99,23 +130,6 @@ const checkDirectorySafety = (dirPath) => {
   if (!fs.existsSync(dirPath)) return true;
   if (!fs.statSync(dirPath).isDirectory()) return true;
 
-  const dirName = path.basename(dirPath).toLowerCase();
-
-  // Разрешаем автоудаление для обычных автотестов, но ИСКЛЮЧАЕМ блок 'secure'
-  if (dirName.includes('autotest') && !dirName.includes('secure')) {
-    return true;
-  }
-
-  // Альтернативные короткие префиксы для тестов
-  if (
-    dirName.startsWith('atcomp') ||
-    dirName.startsWith('atmod') ||
-    dirName.startsWith('atplug') ||
-    dirName.startsWith('atclean')
-  ) {
-    return true;
-  }
-
   const files = fs.readdirSync(dirPath);
   for (const file of files) {
     const fullPath = path.join(dirPath, file);
@@ -140,6 +154,7 @@ const checkDirectorySafety = (dirPath) => {
         )
         .trim();
       if (cleanContent.length > 0) return false;
+      continue;
     }
 
     if (file.endsWith('.scss') || file.endsWith('.sass')) {
@@ -150,6 +165,7 @@ const checkDirectorySafety = (dirPath) => {
         .replace(/\.[\w-]+\s*\{\s*[\s\S]*?\s*\}/gi, '')
         .trim();
       if (cleanContent.length > 0) return false;
+      continue;
     }
 
     if (file.endsWith('.ts') || file.endsWith('.js')) {
@@ -163,18 +179,34 @@ const checkDirectorySafety = (dirPath) => {
         )
         .trim();
       if (cleanContent.length > 0) return false;
+      continue;
     }
+
+    // Служебные пустые файлы (.gitkeep и т.п.) — допустимы.
+    // Любой неизвестный файл с непустым содержимым — рабочий код.
+    if (file !== '.gitkeep' && content.length > 0) return false;
   }
   return true;
 };
 
 export const remove = (done) => {
   ensureProjectCwd();
-  // Имя компонента/модуля — ПОСЛЕДНИЙ --аргумент: --gulpfile/--cwd идут раньше
+  // Имя ресурса — ПОСЛЕДНИЙ не-флаговый --аргумент:
+  // --gulpfile/--cwd/--force идут раньше имени
   const dashedArgs = process.argv.filter((arg) => arg.startsWith('--'));
-  const blockName = dashedArgs[dashedArgs.length - 1]?.replace('--', '');
+  const force = dashedArgs.includes('--force');
+  const knownFlags = new Set(['--force', '--gulpfile', '--cwd']);
+  const nameArgs = dashedArgs.filter((arg) => !knownFlags.has(arg));
+  const blockName = nameArgs[nameArgs.length - 1]?.replace('--', '');
   if (!blockName) {
     console.log('\n❌ Ошибка: Укажите имя! Пример: gulp remove --header\n');
+    return done();
+  }
+  if (!NAME_FORMAT.test(blockName)) {
+    console.log(
+      `\n❌ Ошибка: Недопустимое имя "${blockName}".\n` +
+        '   Разрешены только латиница, цифры и дефис (например: my-block-2).\n',
+    );
     return done();
   }
   if (PROTECTED_NAMES.includes(blockName.toLowerCase())) {
@@ -205,12 +237,30 @@ export const remove = (done) => {
     return done();
   }
 
+  // Одиночные файлы вне структуры папок удаляются ТОЛЬКО с явным --force
+  if (hasSingleFile && !hasDirectory && !force) {
+    console.log(
+      `\n🛑 Защита: "${blockName}" — одиночный файл без папки-заглушки.\n` +
+        '   Удаление файлов вне архитектуры разрешено только с флагом --force:\n' +
+        `   gulp remove --${blockName} --force\n`,
+    );
+    return done();
+  }
+
+  // Каталоги с «рабочим кодом» — только с явным --force
   for (const dir of possibleDirs) {
     if (fs.existsSync(dir) && !checkDirectorySafety(dir)) {
+      if (!force) {
+        console.log(
+          `\n🛑 Защита: Компонент "${blockName}" содержит рабочий код.\n` +
+            '   Автоматическое удаление запрещено! Если вы уверены, повторите с флагом --force:\n' +
+            `   gulp remove --${blockName} --force\n`,
+        );
+        return done(new Error('Попытка удаления заполненного компонента.'));
+      }
       console.log(
-        `\n🛑 Защита: Компонент "${blockName}" содержит рабочий код и не может быть удален автоматически!\n`,
+        `\n⚠️ ВНИМАНИЕ: удаление рабочего кода "${blockName}" с флагом --force.\n`,
       );
-      return done(new Error('Попытка удаления заполненного компонента.'));
     }
   }
 

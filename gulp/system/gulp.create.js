@@ -19,6 +19,12 @@ const toCamelCase = (str) =>
   str.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 
 /**
+ * Допустимые имена ресурсов: латиница, цифры и дефисы.
+ * Имя не может начинаться с точки или дефиса.
+ */
+const NAME_FORMAT = /^[a-z0-9]+(?:-[a-z0-9]+)*$/i;
+
+/**
  * Безопасное обновление файла с сохранением перевода строк (CRLF/LF):
  * нормализуем контент к LF для поиска маркеров, а на диск пишем
  * обратно в исходном формате (иначе каждый запуск ломает diff).
@@ -97,9 +103,15 @@ export function create(done) {
     );
     return done();
   }
-  if (name === 'gulpfile' || name === 'cwd') {
+  if (name === 'gulpfile' || name === 'cwd' || name === 'force') {
     console.error(
       `❌ Ошибка: Имя "${name}" конфликтует с CLI-флагом Gulp. Выберите другое имя.`,
+    );
+    return done();
+  }
+  if (!NAME_FORMAT.test(name)) {
+    console.error(
+      `❌ Ошибка: Недопустимое имя "${name}".\n   Разрешены только латиница, цифры и дефис (например: my-block-2).`,
     );
     return done();
   }
@@ -160,5 +172,8 @@ export function create(done) {
   });
 
   console.log(`✅ Блок "${name}" успешно создан и подключен!`);
+  console.log(
+    `\n📌 Подключите компонент в src/index.html вручную:\n   @@include('components/${name}/${name}.html')\n`,
+  );
   done();
 }

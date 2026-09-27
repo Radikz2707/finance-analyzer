@@ -7,14 +7,13 @@ if (!fs.existsSync('.audit')) {
 
 // Используем классический метод .sync(), совместимый со всеми версиями
 const files = [
+  // Компоненты + все TS-модули ядра
   ...glob.sync('src/components/**/*.ts'),
+  ...glob.sync('src/js/modules/**/*.ts'),
+  // Корневые конфиги
   'gulpfile.js',
   'gulp.config.js',
-  'gulp.create.js',
-  'gulp.init.js',
-  'gulp.module.js',
-  'gulp.remove.js',
-  'gulp.help.js',
+  // Все задачи gulp (включая системные конструкторы из gulp/system/*.js)
   ...glob.sync('gulp/**/*.js'),
 ];
 
