@@ -1,4 +1,3 @@
-import { describe, it, expect } from 'vitest';
 import { PortfolioReportData } from '../portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../portfolio-math/portfolio-validator.js';
 import { CalculatedIncome } from './income-calculator.js';
@@ -10,17 +9,21 @@ import type { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
 import type { InvestmentThesisResult } from '../research/investment-thesis/types.js';
 
 // Создаём моки для тестирования
-function createMockAssetAnalysis(ticker: string, name: string, options: {
-  currentPercent?: number;
-  targetPercent?: number;
-  deficitRub?: number;
-  status?: string;
-  balancePrice?: number;
-  currentPrice?: number;
-  dynamicsPercent?: number;
-  nkdRub?: number;
-  assetType?: string;
-}): AssetAnalysis {
+function createMockAssetAnalysis(
+  ticker: string,
+  name: string,
+  options: {
+    currentPercent?: number;
+    targetPercent?: number;
+    deficitRub?: number;
+    status?: string;
+    balancePrice?: number;
+    currentPrice?: number;
+    dynamicsPercent?: number;
+    nkdRub?: number;
+    assetType?: string;
+  },
+): AssetAnalysis {
   return {
     name,
     ticker,
@@ -28,7 +31,8 @@ function createMockAssetAnalysis(ticker: string, name: string, options: {
     currentPercent: options.currentPercent ?? 0,
     targetPercent: options.targetPercent,
     deficitRub: options.deficitRub ?? 0,
-    status: (options.status || 'HOLD') as 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW' | 'EXIT' | 'NO_TARGET',
+    status: (options.status || 'HOLD') as
+      'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW' | 'EXIT' | 'NO_TARGET',
     dynamicsPercent: options.dynamicsPercent ?? 0,
     nkdRub: options.nkdRub ?? 0,
     nominal: 100,
@@ -106,7 +110,7 @@ describe('Тестирование изоляции данных в AI user prom
       targetPercent: 0,
       deficitRub: -20000,
       status: 'EXIT',
-      balancePrice: 4.30,
+      balancePrice: 4.3,
       currentPrice: 4.19,
       dynamicsPercent: -2.7,
     });
@@ -116,8 +120,8 @@ describe('Тестирование изоляции данных в AI user prom
       targetPercent: 8,
       deficitRub: 50000,
       status: 'REDUCE',
-      balancePrice: 2409.80,
-      currentPrice: 996.00,
+      balancePrice: 2409.8,
+      currentPrice: 996.0,
       dynamicsPercent: -58.7,
     });
 
@@ -149,7 +153,9 @@ describe('Тестирование изоляции данных в AI user prom
         cbrRateData?: CbrRateData,
       ): string;
     }
-    const context = (client as unknown as PrivateAiClient).buildPortfolioContext(
+    const context = (
+      client as unknown as PrivateAiClient
+    ).buildPortfolioContext(
       analysis,
       inc,
       validation,
@@ -174,15 +180,15 @@ describe('Тестирование изоляции данных в AI user prom
     // Блок STME (от начала до PLZL)
     const stmeBlock = context.substring(0, plzlIndex);
     expect(stmeBlock).toContain('STME');
-    // DETERMINISTIC PORTFOLIO RESULT находится после всех активов, проверяем весь контекст
-    expect(context).toContain('USER_TARGET_PERCENT: 0.0%');
-    expect(context).toContain('PORTFOLIO_MATH_STATUS: EXIT');
+    // Каждый актив изолирован в строке таблицы АКТИВЫ со своими данными
+    expect(stmeBlock).toContain('EXIT | 0%');
+    expect(stmeBlock).toContain('-2.6%');
 
     // Блок PLZL (от PLZL до конца)
     const plzlBlock = context.substring(plzlIndex);
     expect(plzlBlock).toContain('PLZL');
-    expect(context).toContain('USER_TARGET_PERCENT: 8.0%');
-    expect(context).toContain('PORTFOLIO_MATH_STATUS: REDUCE');
+    expect(plzlBlock).toContain('REDUCE | 8.0%');
+    expect(plzlBlock).toContain('-58.7%');
 
     // КРИТИЧЕСКАЯ ПРОВЕРКА: данные STME не должны содержать данные PLZL
     // В блоке STME не должно быть цен PLZL
@@ -192,7 +198,7 @@ describe('Тестирование изоляции данных в AI user prom
     // В блоке PLZL не должно быть цен STME
     expect(plzlBlock).not.toContain('4,30');
 
-    // Проверяем наличие блока ACTIVE ORDERS отдельно от позиций
-    expect(context).toContain('АКТИВНЫЕ ЗАЯВКИ');
+    // Проверяем наличие блока заявок отдельно от позиций
+    expect(context).toContain('ЗАЯВКИ');
   });
 });

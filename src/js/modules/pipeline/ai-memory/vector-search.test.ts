@@ -9,7 +9,6 @@
  * - clearVectorCache() — очистка кэша
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   tokenize,
   embedText,
@@ -17,10 +16,7 @@ import {
   searchBySimilarity,
   clearVectorCache,
 } from './vector-search.js';
-import {
-  init as initMemory,
-  operationalMemory,
-} from './core.js';
+import { init as initMemory, operationalMemory } from './core.js';
 
 // ──────────────────────────────────────────────
 // 1. Тесты tokenize()
@@ -305,8 +301,8 @@ describe('Vector Search — searchBySimilarity()', () => {
 
     // Результаты должны быть отсортированы
     for (let i = 1; i < results.length; i++) {
-      expect(results[i - 1].similarity).toBeGreaterThanOrEqual(
-        results[i].similarity,
+      expect(results[i - 1]!.similarity).toBeGreaterThanOrEqual(
+        results[i]!.similarity,
       );
     }
   });
@@ -353,10 +349,10 @@ describe('Vector Search — searchBySimilarity()', () => {
       expect(hit).toHaveProperty('content');
       expect(hit).toHaveProperty('similarity');
       expect(hit).toHaveProperty('createdAt');
-      expect(typeof hit.id).toBe('string');
-      expect(typeof hit.similarity).toBe('number');
-      expect(hit.similarity).toBeGreaterThanOrEqual(0);
-      expect(hit.similarity).toBeLessThanOrEqual(1);
+      expect(typeof hit!.id).toBe('string');
+      expect(typeof hit!.similarity).toBe('number');
+      expect(hit!.similarity).toBeGreaterThanOrEqual(0);
+      expect(hit!.similarity).toBeLessThanOrEqual(1);
     }
   });
 
@@ -372,8 +368,11 @@ describe('Vector Search — searchBySimilarity()', () => {
     const results = searchBySimilarity('дивиденды Сбербанка', 10, 0.01);
 
     // Запись о дивидендах Сбербанка должна быть найдена
+    // (регистронезависимая проверка: content начинается с заглавной «Дивидендная…»)
     const sberResult = results.find(
-      (r) => r.content.includes('Сбербанка') && r.content.includes('дивиденд'),
+      (r) =>
+        r.content.includes('Сбербанка') &&
+        r.content.toLowerCase().includes('дивиденд'),
     );
     expect(sberResult).toBeDefined();
   });

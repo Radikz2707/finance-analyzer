@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+
 import {
   calculatePortfolioReturn,
   calculatePortfolioVolatility,
@@ -36,7 +36,7 @@ function createMockBars(_ticker: string, count: number, startPrice: number): OHL
 function createMockData(tickers: string[], startPrices: number[]): Map<string, OHLCVBar[]> {
   const data = new Map<string, OHLCVBar[]>();
   for (let i = 0; i < tickers.length; i++) {
-    data.set(tickers[i], createMockBars(tickers[i], 60, startPrices[i]));
+    data.set(tickers[i]!, createMockBars(tickers[i]!, 60, startPrices[i]!));
   }
   return data;
 }
@@ -123,7 +123,7 @@ describe('buildCovarianceMatrix', () => {
     expect(result.matrix[1]).toHaveLength(2);
 
     // Матрица ковариаций симметрична
-    expect(result.matrix[0][1]).toBeCloseTo(result.matrix[1][0], 6);
+    expect(result.matrix[0]![1]!).toBeCloseTo(result.matrix[1]![0]!, 6);
   });
 });
 

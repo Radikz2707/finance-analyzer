@@ -27,7 +27,36 @@ import type {
   OperationResult,
   EnvironmentControllerConfig,
 } from './types.js';
-import { DEFAULT_REQUIRED_EXTENSIONS, DEFAULT_PACKAGE_MANAGER } from './types.js';
+import {
+  DEFAULT_REQUIRED_EXTENSIONS,
+  DEFAULT_PACKAGE_MANAGER,
+} from './types.js';
+
+// ──────────────────────────────────────────────
+// Таймауты внешних команд (execSync)
+// ──────────────────────────────────────────────
+// execSync выполняется синхронно: если команда «зависнет» (нет сети, битое
+// зеркало), vitest/Node не смогут прервать её. Явные таймауты гарантируют,
+// что ни одна команда не заблокирует процесс дольше лимита — ошибка по
+// таймауту обрабатывается как обычный сбой команды.
+
+/** Проверка версии инструмента (node --version и т.п.) */
+const VERSION_CHECK_TIMEOUT_MS = 15_000;
+
+/** Проверка VS Code расширений (code CLI) */
+const VSCODE_CHECK_TIMEOUT_MS = 10_000;
+
+/** Установка/обновление расширений VS Code */
+const VSCODE_MUTATION_TIMEOUT_MS = 30_000;
+
+// ВАЖНО: лимиты ниже должны быть МЕНЬШЕ vitest-таймаутов соответствующих
+// тестов (60с/90с), иначе тест будет убит vitest'ом ДО возврата execSync.
+
+/** Статус зависимостей (npm outdated / pip list --outdated): сеть */
+const DEPS_STATUS_TIMEOUT_MS = 45_000;
+
+/** Установка/обновление пакетов (npm install / npm update / pip install) */
+const PACKAGE_MUTATION_TIMEOUT_MS = 45_000;
 
 // ──────────────────────────────────────────────
 // EnvironmentController
@@ -46,7 +75,8 @@ export class EnvironmentController {
       packageJsonPath: config?.packageJsonPath ?? 'package.json',
       requirementsTxtPath: config?.requirementsTxtPath ?? 'requirements.txt',
       vscodeCliPath: config?.vscodeCliPath ?? 'code',
-      requiredExtensions: config?.requiredExtensions ?? DEFAULT_REQUIRED_EXTENSIONS,
+      requiredExtensions:
+        config?.requiredExtensions ?? DEFAULT_REQUIRED_EXTENSIONS,
       packageManager: config?.packageManager ?? DEFAULT_PACKAGE_MANAGER,
       verbose: config?.verbose ?? false,
     };
@@ -59,10 +89,26 @@ export class EnvironmentController {
     this._state = 'checking';
     const issues: string[] = [];
 
-    const nodeVersion = await this.checkToolVersion('node', '--version', '>=18.0.0');
-    const npmVersion = await this.checkToolVersion('npm', '--version', '>=9.0.0');
-    const pythonVersion = await this.checkToolVersion('python', '--version', '>=3.10');
-    const pipVersion = await this.checkToolVersion('pip', '--version', '>=23.0');
+    const nodeVersion = await this.checkToolVersion(
+      'node',
+      '--version',
+      '>=18.0.0',
+    );
+    const npmVersion = await this.checkToolVersion(
+      'npm',
+      '--version',
+      '>=9.0.0',
+    );
+    const pythonVersion = await this.checkToolVersion(
+      'python',
+      '--version',
+      '>=3.10',
+    );
+    const pipVersion = await this.checkToolVersion(
+      'pip',
+      '--version',
+      '>=23.0',
+    );
 
     const health: EnvironmentHealth = {
       node: nodeVersion ?? undefined,
@@ -99,6 +145,7 @@ export class EnvironmentController {
       const result = execSync(`${name} ${versionFlag}`, {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: VERSION_CHECK_TIMEOUT_MS,
       }).trim();
 
       const current = result.replace(/[vV]/, '');
@@ -121,7 +168,11 @@ export class EnvironmentController {
     const currentParts = current.split('.').map(Number);
     const requiredParts = required.split('.').map(Number);
 
-    for (let i = 0; i < Math.max(currentParts.length, requiredParts.length); i++) {
+    for (
+      let i = 0;
+      i < Math.max(currentParts.length, requiredParts.length);
+      i++
+    ) {
       const curr = currentParts[i] ?? 0;
       const req = requiredParts[i] ?? 0;
 
@@ -138,7 +189,8 @@ export class EnvironmentController {
   async installDependencies(): Promise<OperationResult> {
     return this.runOperation('npm_install', async () => {
       const pm = this.config.packageManager;
-      const command = pm === 'yarn' ? 'yarn' : pm === 'pnpm' ? 'pnpm install' : 'npm install';
+      const command =
+        pm === 'yarn' ? 'yarn' : pm === 'pnpm' ? 'pnpm install' : 'npm install';
 
       return await this.executeCommand(command, {
         success: true,
@@ -154,7 +206,12 @@ export class EnvironmentController {
   async updateDependencies(): Promise<OperationResult> {
     return this.runOperation('npm_update', async () => {
       const pm = this.config.packageManager;
-      const command = pm === 'yarn' ? 'yarn upgrade' : pm === 'pnpm' ? 'pnpm update' : 'npm update';
+      const command =
+        pm === 'yarn'
+          ? 'yarn upgrade'
+          : pm === 'pnpm'
+            ? 'pnpm update'
+            : 'npm update';
 
       return await this.executeCommand(command, {
         success: true,
@@ -172,13 +229,18 @@ export class EnvironmentController {
       const result = execSync('npm outdated --json', {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: DEPS_STATUS_TIMEOUT_MS,
       });
 
       const data = JSON.parse(result);
       const deps: NpmDependency[] = [];
 
       for (const [name, info] of Object.entries(data)) {
-        const typedInfo = info as { current: string; wanted: string; latest: string };
+        const typedInfo = info as {
+          current: string;
+          wanted: string;
+          latest: string;
+        };
         deps.push({
           name,
           current: typedInfo.current,
@@ -239,12 +301,17 @@ export class EnvironmentController {
       const result = execSync('pip list --outdated --format=json', {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: DEPS_STATUS_TIMEOUT_MS,
       });
 
       const data = JSON.parse(result);
       const deps: PipDependency[] = [];
 
-      for (const item of data as Array<{ package: string; version: string; latestVersion: string }>) {
+      for (const item of data as Array<{
+        package: string;
+        version: string;
+        latestVersion: string;
+      }>) {
         deps.push({
           name: item.package,
           current: item.version,
@@ -289,9 +356,13 @@ export class EnvironmentController {
 
     for (const extId of this.config.requiredExtensions) {
       try {
-        const result = execSync('code --list-extensions --show-versions 2>/dev/null', {
-          encoding: 'utf-8',
-        });
+        const result = execSync(
+          'code --list-extensions --show-versions 2>/dev/null',
+          {
+            encoding: 'utf-8',
+            timeout: VSCODE_CHECK_TIMEOUT_MS,
+          },
+        );
 
         const installedExts = result.split('\n').map((line) => line.trim());
         const isInstalled = installedExts.includes(extId);
@@ -353,6 +424,7 @@ export class EnvironmentController {
         try {
           execSync(`code --install-extension ${extId}`, {
             stdio: ['pipe', 'pipe', 'pipe'],
+            timeout: VSCODE_MUTATION_TIMEOUT_MS,
           });
           installedCount++;
 
@@ -362,7 +434,9 @@ export class EnvironmentController {
         } catch {
           failedCount++;
           if (this.config.verbose) {
-            console.warn(`[EnvController] Failed to install extension: ${extId}`);
+            console.warn(
+              `[EnvController] Failed to install extension: ${extId}`,
+            );
           }
         }
       }
@@ -384,6 +458,7 @@ export class EnvironmentController {
       try {
         execSync('code --update-extensions', {
           stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: VSCODE_MUTATION_TIMEOUT_MS,
         });
 
         return {
@@ -489,6 +564,7 @@ export class EnvironmentController {
         const stdout = execSync(command, {
           encoding: 'utf-8',
           stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: PACKAGE_MUTATION_TIMEOUT_MS,
         });
 
         resolve({

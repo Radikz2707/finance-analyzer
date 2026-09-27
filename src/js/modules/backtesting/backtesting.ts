@@ -9,7 +9,10 @@
 
 import type { AIRecommendation, AiAction } from '../research/types.js';
 import type { PipelineResult } from '../pipeline/pipeline-coordinator.js';
-import { fetchHistoricalData, calculatePriceMetrics } from '../finam-api/history-provider.js';
+import {
+  fetchHistoricalData,
+  calculatePriceMetrics,
+} from '../finam-api/history-provider.js';
 
 // ──────────────────────────────────────────────
 // 1. Backtesting types
@@ -85,9 +88,11 @@ export async function runBacktest(
   }
 
   // Получаем structuredRecommendations из AI Agent
-  const aiData = aiStage.result.data as {
-    structuredRecommendations?: Map<string, AIRecommendation>;
-  } | undefined;
+  const aiData = aiStage.result.data as
+    | {
+        structuredRecommendations?: Map<string, AIRecommendation>;
+      }
+    | undefined;
 
   const recommendations = aiData?.structuredRecommendations;
 
@@ -104,11 +109,12 @@ export async function runBacktest(
     const fromDate = new Date(toDate);
     fromDate.setDate(fromDate.getDate() - lookbackDays);
 
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
+    const fromStr = fromDate.toISOString().split('T')[0] ?? '';
+    const toStr = toDate.toISOString().split('T')[0] ?? '';
 
     let actualChange: number;
-    let metrics: { sharpeRatio: number; maxDrawdown: number; winRate: number } | undefined;
+    let metrics:
+      { sharpeRatio: number; maxDrawdown: number; winRate: number } | undefined;
 
     try {
       const historyResult = await fetchHistoricalData({
@@ -119,8 +125,9 @@ export async function runBacktest(
       });
 
       if (historyResult.bars.length >= 2) {
-        const firstPrice = historyResult.bars[0].close;
-        const lastPrice = historyResult.bars[historyResult.bars.length - 1].close;
+        const firstPrice = historyResult.bars[0]!.close;
+        const lastPrice =
+          historyResult.bars[historyResult.bars.length - 1]!.close;
         actualChange = (lastPrice - firstPrice) / firstPrice;
 
         // Рассчитываем метрики
@@ -134,11 +141,7 @@ export async function runBacktest(
 
     const predictedChange = predictChange(action);
 
-    const accuracy = evaluateAccuracy(
-      action,
-      actualChange,
-      predictedChange,
-    );
+    const accuracy = evaluateAccuracy(action, actualChange, predictedChange);
 
     const roi = calculateRoi(action, actualChange);
 
@@ -149,40 +152,63 @@ export async function runBacktest(
       predictedChangePercent: predictedChange,
       accuracy,
       roiPercent: roi * 100,
-      metrics: metrics ? {
-        sharpeRatio: metrics.sharpeRatio,
-        maxDrawdown: metrics.maxDrawdown * 100,
-        winRate: metrics.winRate * 100,
-      } : undefined,
+      metrics: metrics
+        ? {
+            sharpeRatio: metrics.sharpeRatio,
+            maxDrawdown: metrics.maxDrawdown * 100,
+            winRate: metrics.winRate * 100,
+          }
+        : undefined,
     });
   }
 
   // Вычисляем общую статистику
-  const correctCount = assetResults.filter((r) => r.accuracy === 'correct').length;
-  const overallAccuracy = assetResults.length > 0
-    ? Math.round((correctCount / assetResults.length) * 100)
-    : 0;
+  const correctCount = assetResults.filter(
+    (r) => r.accuracy === 'correct',
+  ).length;
+  const overallAccuracy =
+    assetResults.length > 0
+      ? Math.round((correctCount / assetResults.length) * 100)
+      : 0;
 
-  const averageRoi = assetResults.length > 0
-    ? assetResults.reduce((sum, r) => sum + r.roiPercent, 0) / assetResults.length
-    : 0;
+  const averageRoi =
+    assetResults.length > 0
+      ? assetResults.reduce((sum, r) => sum + r.roiPercent, 0) /
+        assetResults.length
+      : 0;
 
   // Средние метрики из исторических данных
   const assetsWithMetrics = assetResults.filter((r) => r.metrics);
-  const averageSharpe = assetsWithMetrics.length > 0
-    ? assetsWithMetrics.reduce((sum, r) => sum + (r.metrics?.sharpeRatio ?? 0), 0) / assetsWithMetrics.length
-    : 0;
+  const averageSharpe =
+    assetsWithMetrics.length > 0
+      ? assetsWithMetrics.reduce(
+          (sum, r) => sum + (r.metrics?.sharpeRatio ?? 0),
+          0,
+        ) / assetsWithMetrics.length
+      : 0;
 
-  const averageMaxDrawdown = assetsWithMetrics.length > 0
-    ? assetsWithMetrics.reduce((sum, r) => sum + (r.metrics?.maxDrawdown ?? 0), 0) / assetsWithMetrics.length
-    : 0;
+  const averageMaxDrawdown =
+    assetsWithMetrics.length > 0
+      ? assetsWithMetrics.reduce(
+          (sum, r) => sum + (r.metrics?.maxDrawdown ?? 0),
+          0,
+        ) / assetsWithMetrics.length
+      : 0;
 
-  const averageWinRate = assetsWithMetrics.length > 0
-    ? assetsWithMetrics.reduce((sum, r) => sum + (r.metrics?.winRate ?? 0), 0) / assetsWithMetrics.length
-    : 0;
+  const averageWinRate =
+    assetsWithMetrics.length > 0
+      ? assetsWithMetrics.reduce(
+          (sum, r) => sum + (r.metrics?.winRate ?? 0),
+          0,
+        ) / assetsWithMetrics.length
+      : 0;
 
-  const bestAsset = [...assetResults].sort((a, b) => b.roiPercent - a.roiPercent)[0];
-  const worstAsset = [...assetResults].sort((a, b) => a.roiPercent - b.roiPercent)[0];
+  const bestAsset = [...assetResults].sort(
+    (a, b) => b.roiPercent - a.roiPercent,
+  )[0];
+  const worstAsset = [...assetResults].sort(
+    (a, b) => a.roiPercent - b.roiPercent,
+  )[0];
 
   // Формируем сводку
   const summary = formatSummary(
@@ -241,12 +267,20 @@ function evaluateAccuracy(
 ): 'correct' | 'wrong' | 'neutral' {
   // BUY/REDUCE/AVOID — ожидаем рост/падение
   if (action === 'BUY') {
-    return actualChange > 0 ? 'correct' : actualChange < -2 ? 'wrong' : 'neutral';
+    return actualChange > 0
+      ? 'correct'
+      : actualChange < -2
+        ? 'wrong'
+        : 'neutral';
   }
 
   // SELL/REDUCE/AVOID — ожидаем падение
   if (action === 'SELL' || action === 'REDUCE' || action === 'AVOID') {
-    return actualChange < 0 ? 'correct' : actualChange > 2 ? 'wrong' : 'neutral';
+    return actualChange < 0
+      ? 'correct'
+      : actualChange > 2
+        ? 'wrong'
+        : 'neutral';
   }
 
   // HOLD — ожидаем стабильность
@@ -309,7 +343,8 @@ function formatSummary(
   worstAsset: BacktestAssetResult | undefined,
   totalAssets: number,
 ): string {
-  let text = '<b>📊 Backtesting (' + totalAssets + ' активов, ' + 30 + ' дн.)</b>\n\n';
+  let text =
+    '<b>📊 Backtesting (' + totalAssets + ' активов, ' + 30 + ' дн.)</b>\n\n';
   text += 'Точность рекомендаций: ' + overallAccuracy + '%\n';
   text += 'Средняя ROI: ' + averageRoi.toFixed(2) + '%\n';
   text += 'Средний Sharpe: ' + averageSharpe.toFixed(2) + '\n';
@@ -317,11 +352,21 @@ function formatSummary(
   text += 'Средний Win Rate: ' + averageWinRate.toFixed(1) + '%\n';
 
   if (bestAsset) {
-    text += '\n🏆 Лучший: ' + bestAsset.ticker + ' (ROI: ' + bestAsset.roiPercent.toFixed(2) + '%)';
+    text +=
+      '\n🏆 Лучший: ' +
+      bestAsset.ticker +
+      ' (ROI: ' +
+      bestAsset.roiPercent.toFixed(2) +
+      '%)';
   }
 
   if (worstAsset) {
-    text += '\n📉 Худший: ' + worstAsset.ticker + ' (ROI: ' + worstAsset.roiPercent.toFixed(2) + '%)';
+    text +=
+      '\n📉 Худший: ' +
+      worstAsset.ticker +
+      ' (ROI: ' +
+      worstAsset.roiPercent.toFixed(2) +
+      '%)';
   }
 
   return text;

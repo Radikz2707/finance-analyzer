@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+
 import {
   value,
   noData,
@@ -433,8 +433,8 @@ describe('NewsResearch', () => {
     };
 
     expect(newsResearch.items.length).toBe(2);
-    expect(newsResearch.items[0].importance).toBe('MEDIUM');
-    expect(newsResearch.items[1].importance).toBe('CRITICAL');
+    expect(newsResearch.items[0]!.importance).toBe('MEDIUM');
+    expect(newsResearch.items[1]!.importance).toBe('CRITICAL');
   });
 });
 
@@ -588,7 +588,7 @@ describe('AssetResearchSnapshot', () => {
     expect(hasValue(snapshot.marketResearch!.currentPrice)).toBe(true);
     expect(snapshot.marketResearch!.currentPrice.evidenceIds).toContain('ev-2');
     expect(Object.keys(snapshot.evidence)).toHaveLength(2);
-    expect(snapshot.evidence['ev-1'].id).toBe('ev-1');
+    expect(snapshot.evidence['ev-1']!.id).toBe('ev-1');
   });
 });
 

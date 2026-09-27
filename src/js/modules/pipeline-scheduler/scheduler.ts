@@ -56,7 +56,10 @@ export class PipelineScheduler {
   private notificationEngine?: NotificationEngine;
   private lastRun: string | null = null;
 
-  constructor(config: SchedulerConfig, notificationEngine?: NotificationEngine) {
+  constructor(
+    config: SchedulerConfig,
+    notificationEngine?: NotificationEngine,
+  ) {
     this.config = config;
     this.notificationEngine = notificationEngine;
   }
@@ -70,7 +73,13 @@ export class PipelineScheduler {
       return;
     }
 
-    console.log('[Scheduler] Запуск: утро=' + this.config.morningHour + ':00, вечер=' + this.config.eveningHour + ':00');
+    console.log(
+      '[Scheduler] Запуск: утро=' +
+        this.config.morningHour +
+        ':00, вечер=' +
+        this.config.eveningHour +
+        ':00',
+    );
 
     // Проверка каждую минуту
     const checkInterval = setInterval(() => {
@@ -126,14 +135,19 @@ export class PipelineScheduler {
       const result = await this.executePipeline();
 
       if (result.success) {
-        this.lastRun = new Date().toISOString().split('T')[0];
+        this.lastRun = new Date().toISOString().split('T')[0] ?? '';
         console.log('[Scheduler] ✅ Анализ завершён успешно');
 
         // Отправляем уведомление
         if (this.notificationEngine && result.pipelineResult) {
-          const digest = period === 'morning'
-            ? this.notificationEngine.generateMorningDigest(result.pipelineResult)
-            : this.notificationEngine.generateEveningDigest(result.pipelineResult);
+          const digest =
+            period === 'morning'
+              ? this.notificationEngine.generateMorningDigest(
+                  result.pipelineResult,
+                )
+              : this.notificationEngine.generateEveningDigest(
+                  result.pipelineResult,
+                );
 
           await this.notificationEngine.sendToTelegram(digest);
         }

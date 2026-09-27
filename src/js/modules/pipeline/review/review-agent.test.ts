@@ -1,4 +1,3 @@
-import { describe, it, expect, beforeEach } from 'vitest';
 import { ReviewAgent } from './review-agent.js';
 import type { ReviewResult } from './review-agent.js';
 import type { DataAgentOutput } from '../agents/data-agent.js';
@@ -9,7 +8,11 @@ describe('ReviewAgent', () => {
   let agent: ReviewAgent;
 
   beforeEach(() => {
-    agent = new ReviewAgent({ name: 'ReviewAgent', verbose: false, retries: 0 });
+    agent = new ReviewAgent({
+      name: 'ReviewAgent',
+      verbose: false,
+      retries: 0,
+    });
   });
 
   it('should execute and return review results', async () => {
@@ -45,6 +48,7 @@ describe('ReviewAgent', () => {
         totalSales: 0,
       },
       news: null,
+      anomalies: [],
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -128,6 +132,7 @@ describe('ReviewAgent', () => {
         totalSales: 0,
       },
       news: null,
+      anomalies: [],
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -213,6 +218,7 @@ describe('ReviewAgent', () => {
         totalSales: 0,
       },
       news: null,
+      anomalies: [],
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -262,9 +268,15 @@ describe('ReviewAgent', () => {
     expect(reviewResult?.metrics).toBeDefined();
     expect(reviewResult?.metrics?.totalDurationMs).toBeGreaterThanOrEqual(0);
     expect(reviewResult?.metrics?.reviewerTimings).toBeDefined();
-    expect(reviewResult?.metrics?.reviewerTimings?.conservative).toBeGreaterThanOrEqual(0);
-    expect(reviewResult?.metrics?.reviewerTimings?.aggressive).toBeGreaterThanOrEqual(0);
-    expect(reviewResult?.metrics?.reviewerTimings?.risk_manager).toBeGreaterThanOrEqual(0);
+    expect(
+      reviewResult?.metrics?.reviewerTimings?.conservative,
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      reviewResult?.metrics?.reviewerTimings?.aggressive,
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      reviewResult?.metrics?.reviewerTimings?.risk_manager,
+    ).toBeGreaterThanOrEqual(0);
     expect(reviewResult?.metrics?.successfulReviewers).toBe(3);
     expect(reviewResult?.metrics?.timedOutReviewers).toBe(0);
   });
@@ -301,6 +313,7 @@ describe('ReviewAgent', () => {
         totalSales: 0,
       },
       news: null,
+      anomalies: [],
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -387,6 +400,7 @@ describe('ReviewAgent', () => {
         totalSales: 0,
       },
       news: null,
+      anomalies: [],
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -471,6 +485,7 @@ describe('ReviewAgent', () => {
         totalSales: 0,
       },
       news: null,
+      anomalies: [],
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -519,5 +534,165 @@ describe('ReviewAgent', () => {
     const reviewResult = result.data as ReviewResult | undefined;
     expect(reviewResult?.hasDisagreement).toBeDefined();
     expect(typeof reviewResult?.hasDisagreement).toBe('boolean');
+  });
+});
+
+describe('ReviewAgent — внешний AI-судья', () => {
+  function buildInput() {
+    const mockData: DataAgentOutput = {
+      aggregated: [],
+      assets: [],
+      macroGoals: {
+        totalBalance: 100000,
+        freeCash: 5000,
+        stocksPercent: 50,
+        bondsPercent: 40,
+        stocksDeficitRub: 10000,
+        bondsDeficitRub: 5000,
+        iisOrdersSum: 0,
+        brokerOrdersSum: 0,
+        activeOrdersListText: '',
+      },
+      accounts: [],
+      quotes: {},
+      activeOrders: [],
+      historicalTrades: {
+        tradesCount: 0,
+        totalPurchasesSum: 0,
+        totalSalesSum: 0,
+        profitC10: 0,
+        profitC11: 0,
+        totalHistoricalCommission: 0,
+      },
+      investedFunds: {
+        totalNet: 100000,
+        totalPurchases: 0,
+        totalSales: 0,
+      },
+      news: null,
+      anomalies: [],
+    };
+
+    const mockAnalysis: AnalysisAgentOutput = {
+      portfolioAnalysis: {
+        assetsAnalysis: [],
+        macro: {
+          totalBalance: 100000,
+          freeCash: 5000,
+          stocksDeficitRub: 10000,
+          bondsDeficitRub: 5000,
+        },
+      },
+      riskValidation: {
+        isValid: true,
+        errors: [],
+      },
+      income: {
+        stocks: [],
+        totalNkd: 0,
+        totalDivs: 0,
+        totalDivsNet: 0,
+      },
+      priceAlerts: [],
+      priceAlertsMd: '',
+    };
+
+    const mockAi: AiAgentOutput = {
+      thesisResults: new Map(),
+      aiNarrative: '',
+      aiClientResult: {
+        text: '',
+        modelUsed: 'test',
+        success: true,
+      },
+      structuredRecommendations: new Map(),
+      validationWarnings: [],
+    };
+
+    return { data: mockData, analysis: mockAnalysis, ai: mockAi };
+  }
+
+  it('добавляет внешний вердикт при наличии externalJudge', async () => {
+    const judge = {
+      provider: 'openai' as const,
+      request: async () => ({
+        success: true,
+        content: 'Рекомендации одобрены, качество высокое',
+        modelUsed: 'gpt-4o',
+        durationMs: 120,
+        qualityScore: 88,
+        recommendations: ['Ок'],
+      }),
+    };
+
+    const agent = new ReviewAgent(
+      { name: 'ReviewAgent', verbose: false, retries: 0 },
+      judge,
+    );
+    const result = await agent.execute(buildInput());
+
+    expect(result.success).toBe(true);
+    const reviewResult = result.data as ReviewResult | undefined;
+    expect(reviewResult?.externalVerdict).toBeDefined();
+    expect(reviewResult?.externalVerdict?.provider).toBe('openai');
+    expect(reviewResult?.externalVerdict?.status).toBe('approved');
+    expect(reviewResult?.externalVerdict?.summary).toContain('одобрены');
+  });
+
+  it('падающий externalJudge → no-op, success=true', async () => {
+    const judge = {
+      provider: 'openai' as const,
+      request: async () => {
+        throw new Error('network down');
+      },
+    };
+
+    const agent = new ReviewAgent(
+      { name: 'ReviewAgent', verbose: false, retries: 0 },
+      judge,
+    );
+    const result = await agent.execute(buildInput());
+
+    expect(result.success).toBe(true);
+    const reviewResult = result.data as ReviewResult | undefined;
+    expect(reviewResult?.externalVerdict).toBeUndefined();
+    expect(reviewResult?.reviewers.size).toBe(3);
+  });
+
+  it('ответ судьи с error → no-op, externalVerdict отсутствует', async () => {
+    const judge = {
+      provider: 'anthropic' as const,
+      request: async () => ({
+        success: false,
+        content: '',
+        error: 'auth failed',
+        modelUsed: 'claude',
+        durationMs: 5,
+      }),
+    };
+
+    const agent = new ReviewAgent(
+      { name: 'ReviewAgent', verbose: false, retries: 0 },
+      judge,
+    );
+    const result = await agent.execute(buildInput());
+
+    expect(result.success).toBe(true);
+    const reviewResult = result.data as ReviewResult | undefined;
+    expect(reviewResult?.externalVerdict).toBeUndefined();
+  });
+
+  it('совместимость: конструктор без judge — поведение прежнее', async () => {
+    const agent = new ReviewAgent({
+      name: 'ReviewAgent',
+      verbose: false,
+      retries: 0,
+    });
+    const result = await agent.execute(buildInput());
+
+    expect(result.success).toBe(true);
+    const reviewResult = result.data as ReviewResult | undefined;
+    expect(reviewResult?.externalVerdict).toBeUndefined();
+    expect(reviewResult?.metrics.successfulReviewers).toBe(3);
   });
 });

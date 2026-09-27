@@ -51,8 +51,12 @@ function parseRssXml(xml: string, maxItems: number = 50): RawNewsItem[] {
   const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi;
   let itemMatch;
 
-  while ((itemMatch = itemRegex.exec(xml)) !== null && items.length < maxItems) {
+  while (
+    (itemMatch = itemRegex.exec(xml)) !== null &&
+    items.length < maxItems
+  ) {
     const itemXml = itemMatch[1];
+    if (!itemXml) continue;
 
     const title = extractTag(itemXml, 'title')?.trim() ?? '';
     const link = extractTag(itemXml, 'link')?.trim() ?? '';
@@ -122,7 +126,7 @@ export class RssNewsSource implements INewsSource {
           timeout: 10000,
           headers: {
             'User-Agent': this.userAgent,
-            'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+            Accept: 'application/rss+xml, application/xml, text/xml, */*',
           },
           responseType: 'text',
           transformResponse: [(data) => data],
@@ -134,7 +138,9 @@ export class RssNewsSource implements INewsSource {
         return items;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[RssNewsSource] Ошибка загрузки ${source.name}: ${message}`);
+        console.warn(
+          `[RssNewsSource] Ошибка загрузки ${source.name}: ${message}`,
+        );
         return [];
       }
     });

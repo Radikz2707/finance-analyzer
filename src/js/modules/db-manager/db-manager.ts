@@ -544,14 +544,14 @@ const tradesRepo = {
       FROM trades
       WHERE ticker = ?
     `);
-    const row = stmt.get(ticker) as Record<string, number>;
+    const row = stmt.get(ticker) as Record<string, number> | undefined;
     return {
-      totalBought: row.total_bought,
-      totalSold: row.total_sold,
-      avgBuyPrice: row.avg_buy_price,
-      avgSellPrice: row.avg_sell_price,
-      totalBoughtAmount: row.total_bought_amount,
-      totalSoldAmount: row.total_sold_amount,
+      totalBought: row?.total_bought ?? 0,
+      totalSold: row?.total_sold ?? 0,
+      avgBuyPrice: row?.avg_buy_price ?? 0,
+      avgSellPrice: row?.avg_sell_price ?? 0,
+      totalBoughtAmount: row?.total_bought_amount ?? 0,
+      totalSoldAmount: row?.total_sold_amount ?? 0,
     };
   },
 };

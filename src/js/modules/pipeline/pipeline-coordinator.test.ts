@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
 import { PipelineCoordinator } from './pipeline-coordinator.js';
 import type { PipelineResult, PipelineStage } from './pipeline-coordinator.js';
 import { getStats, operationalMemory, strategicMemory, initMemory } from './ai-memory/index.js';
@@ -156,7 +156,7 @@ describe('Pipeline Coordinator — AI Memory Integration', () => {
 
     const trend = strategicMemory.getKpiTrend(10);
     expect(trend.length).toBe(1);
-    expect(trend[0].totalValue).toBe(1000000);
+    expect(trend[0]!.totalValue).toBe(1000000);
   });
 
   it('должна вернуть статистику памяти', () => {

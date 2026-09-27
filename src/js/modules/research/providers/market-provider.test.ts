@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+
 import { MarketDataProvider } from './market-provider.js';
 import type {
   ResearchAsset,
@@ -254,7 +254,7 @@ describe('Evidence record is created', () => {
     expect(keys.length).toBeGreaterThan(0);
 
     for (const key of keys) {
-      const ev = snapshot.evidence[key];
+      const ev = snapshot.evidence[key]!;
       expect(ev.id).toBeDefined();
       expect(typeof ev.id).toBe('string');
       expect(ev.source).toBeDefined();
@@ -409,8 +409,8 @@ describe('Registry selects correct provider', () => {
     const found = registry.findProviders(asset);
 
     expect(found.length).toBe(1);
-    expect(found[0]).toBe(provider);
-    expect(found[0]).toBeInstanceOf(MarketDataProvider);
+    expect(found[0]!).toBe(provider);
+    expect(found[0]!).toBeInstanceOf(MarketDataProvider);
   });
 
   it('registry находит provider для BOND', async () => {
@@ -422,7 +422,7 @@ describe('Registry selects correct provider', () => {
     const found = registry.findProviders(asset);
 
     expect(found.length).toBe(1);
-    expect(found[0]).toBeInstanceOf(MarketDataProvider);
+    expect(found[0]!).toBeInstanceOf(MarketDataProvider);
   });
 
   it('registry возвращает пустой массив для неизвестного типа', async () => {

@@ -16,6 +16,18 @@
   </head>
 
   <body>
+    <!-- 🛰 HARNESS INTEGRATION: контейнер фонового анализа.
+         mountDashboardBlock() (#harnessBlock) рендерит сюда состояние
+         диспетчера, живые аномалии и новости QUIK (см. harness-integration). -->
+    <section
+      id="harnessBlock"
+      data-harness-container
+      aria-live="polite"
+      aria-label="Harness — фоновый анализ"
+    >
+      <div class="harness-block harness-placeholder">🛰 Загрузка состояния…</div>
+    </section>
+
     <script src="js/app.min.js" defer></script>
   </body>
 </html>

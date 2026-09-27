@@ -49,13 +49,17 @@ export class NewsFetcherModule {
   /**
    * Получение новостей из одного источника
    */
-  private async fetchSource(source: { name: string; rssUrl: string; maxItems?: number }): Promise<NewsArticle[]> {
+  private async fetchSource(source: {
+    name: string;
+    rssUrl: string;
+    maxItems?: number;
+  }): Promise<NewsArticle[]> {
     try {
       const response = await axios.get(source.rssUrl, {
         timeout: 10000,
         headers: {
           'User-Agent': USER_AGENT,
-          'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+          Accept: 'application/rss+xml, application/xml, text/xml, */*',
         },
         responseType: 'text',
         transformResponse: [(data) => data],
@@ -65,16 +69,18 @@ export class NewsFetcherModule {
       return items
         .map((item) => ({
           title: item.title,
-          summary: item.description.substring(0, 200),
+          summary: item.description?.substring(0, 200) ?? '',
           source: source.name,
           date: item.pubDate || new Date().toLocaleDateString('ru-RU'),
-          url: item.link,
-          relevance: this.calculateRelevance(item.title, item.description),
+          url: item.link ?? '',
+          relevance: this.calculateRelevance(item.title, item.description ?? ''),
         }))
         .slice(0, source.maxItems);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NEWS] Ошибка загрузки новостей ${source.name}: ${message}`);
+      console.warn(
+        `[NEWS] Ошибка загрузки новостей ${source.name}: ${message}`,
+      );
       return [];
     }
   }
@@ -84,15 +90,15 @@ export class NewsFetcherModule {
    */
   private parseRssItems(xml: string): Array<{
     title: string;
-    description: string;
-    link: string;
-    pubDate: string | null;
+    description: string | undefined;
+    link: string | undefined;
+    pubDate: string | undefined;
   }> {
     const items: Array<{
       title: string;
-      description: string;
-      link: string;
-      pubDate: string | null;
+      description: string | undefined;
+      link: string | undefined;
+      pubDate: string | undefined;
     }> = [];
 
     // Простой парсинг через regex (без внешних зависимостей)
@@ -101,6 +107,7 @@ export class NewsFetcherModule {
 
     while ((itemMatch = itemRegex.exec(xml)) !== null) {
       const itemContent = itemMatch[1];
+      if (!itemContent) continue;
 
       const title = this.extractTag(itemContent, 'title');
       const description = this.extractTag(itemContent, 'description');
@@ -118,10 +125,10 @@ export class NewsFetcherModule {
   /**
    * Извлечение тега из XML
    */
-  private extractTag(xml: string, tag: string): string {
+  private extractTag(xml: string, tag: string): string | undefined {
     const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
     const match = xml.match(regex);
-    return match ? match[1].trim() : '';
+    return match && match[1] ? match[1].trim() : undefined;
   }
 
   /**
@@ -134,7 +141,9 @@ export class NewsFetcherModule {
     const text = `${title} ${description}`.toLowerCase();
 
     const highMatch = RELEVANCE_KEYWORDS.high.some((kw) => text.includes(kw));
-    const mediumMatch = RELEVANCE_KEYWORDS.medium.some((kw) => text.includes(kw));
+    const mediumMatch = RELEVANCE_KEYWORDS.medium.some((kw) =>
+      text.includes(kw),
+    );
 
     if (highMatch) return 'high';
     if (mediumMatch) return 'medium';
@@ -184,8 +193,12 @@ export class NewsFetcherModule {
       const eurPrevious = rateResponse.data.Valute.EUR.Previous;
 
       indicators.push(`Курс ЦБ РФ на ${rateResponse.data.Date}:`);
-      indicators.push(`  $ USD: ${usdRate.toFixed(2)} ₽ (изм: ${(usdRate - usdPrevious).toFixed(2)} ₽)`);
-      indicators.push(`  € EUR: ${eurRate.toFixed(2)} ₽ (изм: ${(eurRate - eurPrevious).toFixed(2)} ₽)`);
+      indicators.push(
+        `  $ USD: ${usdRate.toFixed(2)} ₽ (изм: ${(usdRate - usdPrevious).toFixed(2)} ₽)`,
+      );
+      indicators.push(
+        `  € EUR: ${eurRate.toFixed(2)} ₽ (изм: ${(eurRate - eurPrevious).toFixed(2)} ₽)`,
+      );
     } catch {
       console.warn('[NEWS] Ошибка загрузки курсов ЦБ');
     }

@@ -2,7 +2,7 @@
  * Memory API Tests — тесты для удобного интерфейса работы с памятью.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+
 import {
   saveOperational,
   savePipelineResult,
@@ -105,7 +105,7 @@ describe('Memory API — Стратегическая память', () => {
 
     const trend = getKpiTrend(10);
     expect(trend.length).toBeGreaterThanOrEqual(1);
-    expect(trend[0].totalValue).toBe(1000000);
+    expect(trend[0]!.totalValue).toBe(1000000);
   });
 
   it('saveTrend должна сохранить тренд', () => {

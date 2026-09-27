@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────
+# CI для finance-analyzer (Windows)
+#
+# Триггеры: push в main + pull request.
+# Задачи: lint → test:run → build.
+#
+# Особенности:
+# - Локальный .npmrc указывает на китайское зеркало npmmirror,
+#   которое в GitHub Actions может быть недоступно → перед установкой
+#   явно переключаем registry на официальный npmjs.org (не меняет проект).
+# - husky prepare (в lifecycle npm ci) в CI не нужен и может падать
+#   без git user → npm ci --ignore-scripts.
+# - Тесты НЕ требуют секретов: sender Telegram не сконфигурирован → no-op.
+# ─────────────────────────────────────────────────────────────
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Lint · Test · Build
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # Переключаемся на официальный registry до install (зеркало npmmirror
+      # из локального .npmrc в CI может быть недоступно/медленно).
+      - name: Use official npm registry
+        run: npm config set registry https://registry.npmjs.org/
+
+      # --ignore-scripts: husky prepare в CI не требуется и падает без git user.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --legacy-peer-deps
+
+      # Ветка main: активируем husky hooks (необязательно, безопасно).
+      - name: Prepare hooks (main only)
+        if: github.ref == 'refs/heads/main'
+        run: npm run prepare
+
+      - name: Lint (eslint + stylelint + tsc)
+        run: npm run lint
+
+      # Полный прогон тестов (0 skipped). Тесты, требующие сети/окружения
+      # (npm/pip), на CI-раннерах имеют сеть; при недоступности команд
+      # они условно проходят, не роняя прогон.
+      - name: Tests
+        run: npm run test:run
+
+      - name: Build
+        run: npm run build

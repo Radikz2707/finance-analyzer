@@ -1,0 +1,141 @@
+// Harness Integration — блок «🛰 Harness» на дашборде.
+// Работает поверх HTML, который формирует formatDashboardHtml():
+// карточка статуса диспетчера, список аномалий, лента новостей QUIK
+// и кнопка ручного запуска анализа.
+// Цвета режимов: active = green, sleeping = grey, manual = blue.
+// Последняя аномалия подсвечивается красным (isLastAnomaly).
+
+.harness-block {
+  border: 1px solid var(--bg-card-raw);
+  border-radius: 12px;
+  padding: 16px;
+  margin: 16px 0;
+  background: var(--bg-card-raw);
+  color: var(--text-main-raw);
+
+  h3 {
+    margin: 0 0 12px;
+    font-size: 16px;
+  }
+
+  .h-section {
+    margin-bottom: 12px;
+
+    &:last-child {
+      margin-bottom: 0;
+    }
+  }
+}
+
+// Плейсхолдер до первого рендера / при недоступности API
+.harness-placeholder {
+  color: var(--text-muted-raw);
+  font-style: italic;
+  text-align: center;
+}
+
+// Свежесть данных: зелёный акцент, пока данные актуальны
+.h-freshness {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.harness-block.h-fresh .h-freshness {
+  color: #16a34a;
+}
+
+// Устаревшие данные (> 15 мин): красная метка и рамка блока
+.harness-block.h-stale {
+  border-color: #dc2626;
+}
+
+.harness-block.h-stale .h-freshness {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+// Режим диспетчера (цвет по состоянию)
+.h-mode {
+  font-weight: 600;
+}
+
+.h-mode--active {
+  color: #16a34a;
+}
+
+.h-mode--sleeping {
+  color: var(--text-muted-raw);
+}
+
+.h-mode--manual {
+  color: #2563eb;
+}
+
+// Строки контента (аномалии, новости, метаданные)
+.h-item {
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+.h-muted {
+  color: var(--text-muted-raw);
+}
+
+.h-ticker {
+  font-weight: 600;
+}
+
+// Аномалии: красная подсветка последней точки-выброса
+.h-anomaly {
+  border-radius: 6px;
+}
+
+.h-anomaly--danger {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.08);
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+// Лента новостей QUIK (компактный список)
+.h-news {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.h-news-time {
+  color: var(--text-muted-raw);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+// Кнопка ручного запуска анализа
+.harness-run {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: inherit;
+  transition:
+    background-color 0.15s ease,
+    opacity 0.15s ease;
+
+  &:hover:not([disabled]) {
+    background: #1d4ed8;
+  }
+
+  &[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}

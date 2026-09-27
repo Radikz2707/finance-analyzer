@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+
 import { MarketDataProvider } from './market-provider.js';
 import { TestFundamentalsProvider } from './test-fundamentals-provider.js';
 import { ResearchProviderRegistry } from './registry.js';
@@ -230,7 +230,7 @@ describe('Registry: конфликт VALUE + VALUE не теряется', () =>
     expect(conflicts.length).toBeGreaterThan(0);
 
     // Конфликт зафиксирован
-    const conflict = conflicts[0];
+    const conflict = conflicts[0]!;
     expect(conflict.field).toContain('currentPrice');
     expect(conflict.providerA).toBeDefined();
     expect(conflict.providerB).toBeDefined();

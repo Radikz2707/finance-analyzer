@@ -3,9 +3,20 @@
  * Работает с Chart.js для рендеринга и db-manager для загрузки данных
  */
 
-import { positionsRepo, pricesRepo, macroRepo, newsRepo } from '../db-manager/db-manager';
+import {
+  positionsRepo,
+  pricesRepo,
+  macroRepo,
+  newsRepo,
+} from '../db-manager/db-manager';
 import type { PortfolioPosition, NewsRecord } from '../db-manager/types';
-import { getStats, operationalMemory, strategicMemory, cleanup, exportMemory } from '../pipeline/ai-memory/index.js';
+import {
+  getStats,
+  operationalMemory,
+  strategicMemory,
+  cleanup,
+  exportMemory,
+} from '../pipeline/ai-memory/index.js';
 import type { AIMemoryStats } from '../pipeline/ai-memory/types.js';
 
 // ──────────────────────────────────────────────
@@ -108,9 +119,21 @@ interface DashboardMemoryData {
 // ──────────────────────────────────────────────
 
 const CHART_COLORS = [
-  '#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed',
-  '#0891b2', '#c026d3', '#ea580c', '#4f46e5', '#15803d',
-  '#d97706', '#dc2626', '#0d9488', '#9333ea', '#db2777',
+  '#2563eb',
+  '#16a34a',
+  '#f59e0b',
+  '#dc2626',
+  '#7c3aed',
+  '#0891b2',
+  '#c026d3',
+  '#ea580c',
+  '#4f46e5',
+  '#15803d',
+  '#d97706',
+  '#dc2626',
+  '#0d9488',
+  '#9333ea',
+  '#db2777',
 ];
 
 // ──────────────────────────────────────────────
@@ -133,8 +156,8 @@ function loadDashboardData(): DashboardData {
 
   // Распределение портфеля
   const portfolioDistribution = {
-    labels: positions.map(p => p.ticker),
-    values: positions.map(p => p.currentMarketValue || 0),
+    labels: positions.map((p) => p.ticker),
+    values: positions.map((p) => p.currentMarketValue || 0),
     colors: CHART_COLORS.slice(0, positions.length),
   };
 
@@ -146,10 +169,10 @@ function loadDashboardData(): DashboardData {
 
   // Заполняем демо-данными если нет реальных
   if (positions.length > 0) {
-    const ticker = positions[0].ticker;
+    const ticker = positions[0]!.ticker;
     const snapshots = pricesRepo.getLast(ticker, 30);
-    returnsHistory.dates = snapshots.map(s => s.date);
-    returnsHistory.values = snapshots.map(s => s.close);
+    returnsHistory.dates = snapshots.map((s) => s.date);
+    returnsHistory.values = snapshots.map((s) => s.close);
   }
 
   // Backtesting метрики (демо-данные, потом из backtesting модуля)
@@ -172,8 +195,8 @@ function loadDashboardData(): DashboardData {
       return: [8, 12, 18],
     },
     weights: {
-      labels: positions.map(p => p.ticker),
-      values: positions.map(p => {
+      labels: positions.map((p) => p.ticker),
+      values: positions.map((p) => {
         const total = summary.totalMarketValue || 1;
         return ((p.currentMarketValue || 0) / total) * 100;
       }),
@@ -186,7 +209,7 @@ function loadDashboardData(): DashboardData {
     good: Math.floor(positions.length * 0.6),
     fair: Math.floor(positions.length * 0.3),
     poor: Math.max(0, positions.length - Math.floor(positions.length * 0.9)),
-    details: positions.map(p => ({
+    details: positions.map((p) => ({
       ticker: p.ticker,
       score: Math.floor(70 + Math.random() * 30),
       errors: Math.floor(Math.random() * 3),
@@ -194,7 +217,16 @@ function loadDashboardData(): DashboardData {
     })),
   };
 
-  return { kpi, portfolioDistribution, returnsHistory, portfolioPositions: positions, alerts: latestNews, backtesting, optimization, quality };
+  return {
+    kpi,
+    portfolioDistribution,
+    returnsHistory,
+    portfolioPositions: positions,
+    alerts: latestNews,
+    backtesting,
+    optimization,
+    quality,
+  };
 }
 
 // ──────────────────────────────────────────────
@@ -205,14 +237,16 @@ function initTabs(): void {
   const navItems = document.querySelectorAll('.dashboard__nav-item');
   const tabs = document.querySelectorAll('.dashboard__tab');
 
-  navItems.forEach(item => {
+  navItems.forEach((item) => {
     item.addEventListener('click', (e) => {
       e.preventDefault();
       const tabName = (item as HTMLElement).dataset.tab;
 
       // Убираем активный класс у всех
-      navItems.forEach(n => n.classList.remove('dashboard__nav-item--active'));
-      tabs.forEach(t => t.classList.remove('dashboard__tab--active'));
+      navItems.forEach((n) =>
+        n.classList.remove('dashboard__nav-item--active'),
+      );
+      tabs.forEach((t) => t.classList.remove('dashboard__tab--active'));
 
       // Добавляем активный класс нужному
       if (item instanceof HTMLElement) {
@@ -227,7 +261,11 @@ function initTabs(): void {
       // Обновляем заголовок
       const pageTitle = document.getElementById('pageTitle');
       if (pageTitle && item instanceof HTMLElement) {
-        pageTitle.textContent = item.textContent?.trim().replace(/[📈💼🧪⚡✅]/gu, '').trim() || 'Обзор';
+        pageTitle.textContent =
+          item.textContent
+            ?.trim()
+            .replace(/[📈💼🧪⚡✅]/gu, '')
+            .trim() || 'Обзор';
       }
     });
   });
@@ -248,7 +286,10 @@ function renderKPI(data: DashboardData): void {
   }
   if (kpiTotalGain) {
     const sign = data.kpi.totalGain >= 0 ? '+' : '';
-    const color = data.kpi.totalGain >= 0 ? 'var(--color-success, #16a34a)' : 'var(--color-danger, #dc2626)';
+    const color =
+      data.kpi.totalGain >= 0
+        ? 'var(--color-success, #16a34a)'
+        : 'var(--color-danger, #dc2626)';
     kpiTotalGain.textContent = `${sign}${data.kpi.totalGain.toLocaleString('ru-RU')} ₽`;
     kpiTotalGain.style.color = color;
   }
@@ -268,7 +309,7 @@ let charts: Record<string, unknown> = {};
 
 function renderCharts(data: DashboardData): void {
   // Уничтожаем старые графики
-  Object.values(charts).forEach(chart => {
+  Object.values(charts).forEach((chart) => {
     if (chart && typeof chart === 'object' && 'destroy' in chart) {
       (chart as { destroy: () => void }).destroy();
     }
@@ -276,19 +317,23 @@ function renderCharts(data: DashboardData): void {
   charts = {};
 
   // 1. Распределение портфеля (Pie)
-  const portfolioCanvas = document.getElementById('chartPortfolio') as HTMLCanvasElement | null;
+  const portfolioCanvas = document.getElementById(
+    'chartPortfolio',
+  ) as HTMLCanvasElement | null;
   if (portfolioCanvas && data.portfolioDistribution.values.length > 0) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     charts.portfolio = new (window as any).Chart(portfolioCanvas, {
       type: 'doughnut',
       data: {
         labels: data.portfolioDistribution.labels,
-        datasets: [{
-          data: data.portfolioDistribution.values,
-          backgroundColor: data.portfolioDistribution.colors,
-          borderWidth: 2,
-          borderColor: '#ffffff',
-        }],
+        datasets: [
+          {
+            data: data.portfolioDistribution.values,
+            backgroundColor: data.portfolioDistribution.colors,
+            borderWidth: 2,
+            borderColor: '#ffffff',
+          },
+        ],
       },
       options: {
         responsive: true,
@@ -300,21 +345,25 @@ function renderCharts(data: DashboardData): void {
   }
 
   // 2. Динамика доходности (Line)
-  const returnsCanvas = document.getElementById('chartReturns') as HTMLCanvasElement | null;
+  const returnsCanvas = document.getElementById(
+    'chartReturns',
+  ) as HTMLCanvasElement | null;
   if (returnsCanvas && data.returnsHistory.dates.length > 0) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     charts.returns = new (window as any).Chart(returnsCanvas, {
       type: 'line',
       data: {
         labels: data.returnsHistory.dates,
-        datasets: [{
-          label: 'Доходность',
-          data: data.returnsHistory.values,
-          borderColor: '#2563eb',
-          backgroundColor: 'rgba(37, 99, 235, 0.1)',
-          fill: true,
-          tension: 0.4,
-        }],
+        datasets: [
+          {
+            label: 'Доходность',
+            data: data.returnsHistory.values,
+            borderColor: '#2563eb',
+            backgroundColor: 'rgba(37, 99, 235, 0.1)',
+            fill: true,
+            tension: 0.4,
+          },
+        ],
       },
       options: {
         responsive: true,
@@ -329,18 +378,26 @@ function renderCharts(data: DashboardData): void {
   }
 
   // 3. Точность рекомендаций (Bar)
-  const accuracyCanvas = document.getElementById('chartAccuracy') as HTMLCanvasElement | null;
+  const accuracyCanvas = document.getElementById(
+    'chartAccuracy',
+  ) as HTMLCanvasElement | null;
   if (accuracyCanvas) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     charts.accuracy = new (window as any).Chart(accuracyCanvas, {
       type: 'bar',
       data: {
         labels: ['Точность', 'Sharpe', 'Win Rate'],
-        datasets: [{
-          label: 'Метрики',
-          data: [data.backtesting.accuracy, data.backtesting.sharpe * 50, data.backtesting.winRate],
-          backgroundColor: ['#2563eb', '#16a34a', '#f59e0b'],
-        }],
+        datasets: [
+          {
+            label: 'Метрики',
+            data: [
+              data.backtesting.accuracy,
+              data.backtesting.sharpe * 50,
+              data.backtesting.winRate,
+            ],
+            backgroundColor: ['#2563eb', '#16a34a', '#f59e0b'],
+          },
+        ],
       },
       options: {
         responsive: true,
@@ -352,18 +409,24 @@ function renderCharts(data: DashboardData): void {
   }
 
   // 4. ROI по активам (Bar horizontal)
-  const roiCanvas = document.getElementById('chartROI') as HTMLCanvasElement | null;
+  const roiCanvas = document.getElementById(
+    'chartROI',
+  ) as HTMLCanvasElement | null;
   if (roiCanvas && data.portfolioDistribution.labels.length > 0) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     charts.roi = new (window as any).Chart(roiCanvas, {
       type: 'bar',
       data: {
         labels: data.portfolioDistribution.labels.slice(0, 10),
-        datasets: [{
-          label: 'ROI %',
-          data: data.portfolioDistribution.values.slice(0, 10).map(() => Math.floor(Math.random() * 30 - 5)),
-          backgroundColor: '#7c3aed',
-        }],
+        datasets: [
+          {
+            label: 'ROI %',
+            data: data.portfolioDistribution.values
+              .slice(0, 10)
+              .map(() => Math.floor(Math.random() * 30 - 5)),
+            backgroundColor: '#7c3aed',
+          },
+        ],
       },
       options: {
         indexAxis: 'y',
@@ -376,20 +439,24 @@ function renderCharts(data: DashboardData): void {
   }
 
   // 5. Efficient Frontier (Scatter)
-  const frontierCanvas = document.getElementById('chartFrontier') as HTMLCanvasElement | null;
+  const frontierCanvas = document.getElementById(
+    'chartFrontier',
+  ) as HTMLCanvasElement | null;
   if (frontierCanvas) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     charts.frontier = new (window as any).Chart(frontierCanvas, {
       type: 'scatter',
       data: {
-        datasets: [{
-          label: 'Efficient Frontier',
-          data: data.optimization.frontier.risk.map((risk, i) => ({
-            x: risk,
-            y: data.optimization.frontier.return[i],
-          })),
-          backgroundColor: '#2563eb',
-        }],
+        datasets: [
+          {
+            label: 'Efficient Frontier',
+            data: data.optimization.frontier.risk.map((risk, i) => ({
+              x: risk,
+              y: data.optimization.frontier.return[i],
+            })),
+            backgroundColor: '#2563eb',
+          },
+        ],
       },
       options: {
         responsive: true,
@@ -405,17 +472,24 @@ function renderCharts(data: DashboardData): void {
   }
 
   // 6. Оптимальные веса (Pie)
-  const weightsCanvas = document.getElementById('chartWeights') as HTMLCanvasElement | null;
+  const weightsCanvas = document.getElementById(
+    'chartWeights',
+  ) as HTMLCanvasElement | null;
   if (weightsCanvas && data.optimization.weights.values.length > 0) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     charts.weights = new (window as any).Chart(weightsCanvas, {
       type: 'pie',
       data: {
         labels: data.optimization.weights.labels,
-        datasets: [{
-          data: data.optimization.weights.values,
-          backgroundColor: CHART_COLORS.slice(0, data.optimization.weights.labels.length),
-        }],
+        datasets: [
+          {
+            data: data.optimization.weights.values,
+            backgroundColor: CHART_COLORS.slice(
+              0,
+              data.optimization.weights.labels.length,
+            ),
+          },
+        ],
       },
       options: {
         responsive: true,
@@ -436,16 +510,21 @@ function renderPortfolioTable(data: DashboardData): void {
   if (!tbody) return;
 
   if (data.portfolioPositions.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="table-empty">Нет данных</td></tr>';
+    tbody.innerHTML =
+      '<tr><td colspan="8" class="table-empty">Нет данных</td></tr>';
     return;
   }
 
-  tbody.innerHTML = data.portfolioPositions.map(pos => {
-    const pnl = pos.currentMarketValue ? pos.currentMarketValue - pos.totalCost : 0;
-    const pnlPct = pos.totalCost > 0 ? ((pnl / pos.totalCost) * 100).toFixed(2) : '0.00';
-    const pnlColor = pnl >= 0 ? '#16a34a' : '#dc2626';
+  tbody.innerHTML = data.portfolioPositions
+    .map((pos) => {
+      const pnl = pos.currentMarketValue
+        ? pos.currentMarketValue - pos.totalCost
+        : 0;
+      const pnlPct =
+        pos.totalCost > 0 ? ((pnl / pos.totalCost) * 100).toFixed(2) : '0.00';
+      const pnlColor = pnl >= 0 ? '#16a34a' : '#dc2626';
 
-    return `
+      return `
       <tr>
         <td><strong>${pos.ticker}</strong></td>
         <td>${pos.name}</td>
@@ -457,7 +536,8 @@ function renderPortfolioTable(data: DashboardData): void {
         <td style="color: ${pnlColor}; font-weight: 600;">${pnlPct}%</td>
       </tr>
     `;
-  }).join('');
+    })
+    .join('');
 }
 
 function renderQualityTable(data: DashboardData): void {
@@ -639,22 +719,36 @@ function loadMemoryData(): DashboardMemoryData {
   }));
 
   // Стратегические записи
-  const strategicData = strategicEntries.map((entry) => ({
-    id: entry.id,
-    date: entry.date,
-    raw: entry.raw
-      ? {
-          totalValue: entry.raw.totalValue,
-          returnPercent: entry.raw.returnPercent,
-          sharpeRatio: entry.raw.sharpeRatio,
-          maxDrawdown: entry.raw.maxDrawdown,
-        }
-      : null,
-  })).filter((item): item is NonNullable<typeof item> & { raw: NonNullable<typeof item.raw> } => item.raw !== null);
+  const strategicData = strategicEntries
+    .map((entry) => ({
+      id: entry.id,
+      date: entry.date,
+      raw: entry.raw
+        ? {
+            totalValue: entry.raw.totalValue,
+            returnPercent: entry.raw.returnPercent,
+            sharpeRatio: entry.raw.sharpeRatio,
+            maxDrawdown: entry.raw.maxDrawdown,
+          }
+        : null,
+    }))
+    .filter(
+      (
+        item,
+      ): item is NonNullable<typeof item> & {
+        raw: NonNullable<typeof item.raw>;
+      } => item.raw !== null,
+    );
 
   const anomalies = loadAnomalies();
 
-  return { stats, kpiTrend, operationalEntries: operationalData, strategicEntries: strategicData, anomalies };
+  return {
+    stats,
+    kpiTrend,
+    operationalEntries: operationalData,
+    strategicEntries: strategicData,
+    anomalies,
+  };
 }
 
 // ──────────────────────────────────────────────
@@ -684,13 +778,19 @@ function renderMemory(data: DashboardMemoryData): void {
   const memOperationalSize = document.getElementById('memOperationalSize');
   const memAnomalies = document.getElementById('memAnomalies');
 
-  if (memOperationalCount) memOperationalCount.textContent = data.stats.operationalCount.toString();
-  if (memStrategicCount) memStrategicCount.textContent = data.stats.strategicCount.toString();
-  if (memOperationalSize) memOperationalSize.textContent = `${(data.stats.operationalSizeBytes / 1024).toFixed(0)} КБ`;
-  if (memAnomalies) memAnomalies.textContent = data.stats.recentAnomalies.toString();
+  if (memOperationalCount)
+    memOperationalCount.textContent = data.stats.operationalCount.toString();
+  if (memStrategicCount)
+    memStrategicCount.textContent = data.stats.strategicCount.toString();
+  if (memOperationalSize)
+    memOperationalSize.textContent = `${(data.stats.operationalSizeBytes / 1024).toFixed(0)} КБ`;
+  if (memAnomalies)
+    memAnomalies.textContent = data.stats.recentAnomalies.toString();
 
   // KPI Trend Chart
-  const kpiTrendCanvas = document.getElementById('chartKpiTrend') as HTMLCanvasElement | null;
+  const kpiTrendCanvas = document.getElementById(
+    'chartKpiTrend',
+  ) as HTMLCanvasElement | null;
   if (kpiTrendCanvas && data.kpiTrend.values.length > 0) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if ((window as any).Chart && charts.kpiTrend) {
@@ -701,14 +801,16 @@ function renderMemory(data: DashboardMemoryData): void {
       type: 'line',
       data: {
         labels: data.kpiTrend.dates,
-        datasets: [{
-          label: 'Стоимость портфеля',
-          data: data.kpiTrend.values,
-          borderColor: '#7c3aed',
-          backgroundColor: 'rgba(124, 58, 237, 0.1)',
-          fill: true,
-          tension: 0.4,
-        }],
+        datasets: [
+          {
+            label: 'Стоимость портфеля',
+            data: data.kpiTrend.values,
+            borderColor: '#7c3aed',
+            backgroundColor: 'rgba(124, 58, 237, 0.1)',
+            fill: true,
+            tension: 0.4,
+          },
+        ],
       },
       options: {
         responsive: true,
@@ -726,14 +828,19 @@ function renderMemory(data: DashboardMemoryData): void {
   const opBody = document.getElementById('memoryOperationalBody');
   if (opBody) {
     if (data.operationalEntries.length === 0) {
-      opBody.innerHTML = '<tr><td colspan="5" class="table-empty">Нет данных</td></tr>';
+      opBody.innerHTML =
+        '<tr><td colspan="5" class="table-empty">Нет данных</td></tr>';
     } else {
       opBody.innerHTML = data.operationalEntries
         .map((entry) => {
           const priorityColor =
-            entry.priority === 'critical' ? '#dc2626' :
-            entry.priority === 'high' ? '#f59e0b' :
-            entry.priority === 'medium' ? '#2563eb' : '#64748b';
+            entry.priority === 'critical'
+              ? '#dc2626'
+              : entry.priority === 'high'
+                ? '#f59e0b'
+                : entry.priority === 'medium'
+                  ? '#2563eb'
+                  : '#64748b';
 
           return `
             <tr>
@@ -753,11 +860,13 @@ function renderMemory(data: DashboardMemoryData): void {
   const stBody = document.getElementById('memoryStrategicBody');
   if (stBody) {
     if (data.strategicEntries.length === 0) {
-      stBody.innerHTML = '<tr><td colspan="5" class="table-empty">Нет данных</td></tr>';
+      stBody.innerHTML =
+        '<tr><td colspan="5" class="table-empty">Нет данных</td></tr>';
     } else {
       stBody.innerHTML = data.strategicEntries
         .map((entry) => {
-          const returnColor = entry.raw.returnPercent >= 0 ? '#16a34a' : '#dc2626';
+          const returnColor =
+            entry.raw.returnPercent >= 0 ? '#16a34a' : '#dc2626';
           return `
             <tr>
               <td>${new Date(entry.date).toLocaleDateString('ru-RU')}</td>
@@ -780,17 +889,20 @@ function renderMemory(data: DashboardMemoryData): void {
 // Рендеринг аномалий
 // ──────────────────────────────────────────────
 
-function renderAnomalies(anomalies: Array<{
-  type: string;
-  severity: number;
-  description: string;
-  date: string;
-}>): void {
+function renderAnomalies(
+  anomalies: Array<{
+    type: string;
+    severity: number;
+    description: string;
+    date: string;
+  }>,
+): void {
   const tbody = document.getElementById('memoryAnomaliesBody');
   if (!tbody) return;
 
   if (anomalies.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="table-empty">Аномалий не обнаружено</td></tr>';
+    tbody.innerHTML =
+      '<tr><td colspan="4" class="table-empty">Аномалий не обнаружено</td></tr>';
     return;
   }
 

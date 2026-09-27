@@ -1,6 +1,4 @@
-import {
-  db,
-} from '../db-manager/db-manager';
+import { db } from '../db-manager/db-manager';
 import type {
   OperationalMemoryEntry,
   StrategicMemoryEntry,
@@ -191,14 +189,18 @@ const operationalMemory = {
   /** Отметить как прочитанную */
   markRead(id: number): void {
     initializeMemoryTables();
-    const stmt = db.prepare('UPDATE operational_memory SET is_read = 1 WHERE id = ?');
+    const stmt = db.prepare(
+      'UPDATE operational_memory SET is_read = 1 WHERE id = ?',
+    );
     stmt.run(id);
   },
 
   /** Отметить все как прочитанные */
   markAllRead(): void {
     initializeMemoryTables();
-    const stmt = db.prepare('UPDATE operational_memory SET is_read = 1 WHERE is_read = 0');
+    const stmt = db.prepare(
+      'UPDATE operational_memory SET is_read = 1 WHERE is_read = 0',
+    );
     stmt.run();
   },
 
@@ -222,14 +224,20 @@ const operationalMemory = {
       WHERE timestamp >= datetime('now', ?)
       GROUP BY event_type
     `);
-    const types = typeStmt.all(daysAgo) as { event_type: string; count: number }[];
+    const types = typeStmt.all(daysAgo) as {
+      event_type: string;
+      count: number;
+    }[];
 
     const severityStmt = db.prepare(`
       SELECT severity, COUNT(*) as count FROM operational_memory
       WHERE timestamp >= datetime('now', ?)
       GROUP BY severity
     `);
-    const severities = severityStmt.all(daysAgo) as { severity: string; count: number }[];
+    const severities = severityStmt.all(daysAgo) as {
+      severity: string;
+      count: number;
+    }[];
 
     const lastStmt = db.prepare(`
       SELECT timestamp FROM operational_memory
@@ -241,7 +249,9 @@ const operationalMemory = {
     return {
       totalEntries: total.total,
       byType: Object.fromEntries(types.map((t) => [t.event_type, t.count])),
-      bySeverity: Object.fromEntries(severities.map((s) => [s.severity, s.count])),
+      bySeverity: Object.fromEntries(
+        severities.map((s) => [s.severity, s.count]),
+      ),
       lastEvent: last?.timestamp || null,
     };
   },
@@ -253,24 +263,26 @@ const operationalMemory = {
 
 const strategicMemory = {
   /** Агрегировать данные за период и записать в БД */
-  aggregatePeriod(periodType: 'WEEKLY' | 'MONTHLY' | 'QUARTERLY'): StrategicMemoryEntry {
+  aggregatePeriod(
+    periodType: 'WEEKLY' | 'MONTHLY' | 'QUARTERLY',
+  ): StrategicMemoryEntry {
     initializeMemoryTables();
     const now = new Date();
     let periodStart: string;
-    const periodEnd = now.toISOString().split('T')[0];
+    const periodEnd = now.toISOString().split('T')[0] ?? '';
 
     if (periodType === 'WEEKLY') {
       const start = new Date(now);
       start.setDate(start.getDate() - 7);
-      periodStart = start.toISOString().split('T')[0];
+      periodStart = start.toISOString().split('T')[0] ?? '';
     } else if (periodType === 'MONTHLY') {
       const start = new Date(now);
       start.setMonth(start.getMonth() - 1);
-      periodStart = start.toISOString().split('T')[0];
+      periodStart = start.toISOString().split('T')[0] ?? '';
     } else {
       const start = new Date(now);
       start.setMonth(start.getMonth() - 3);
-      periodStart = start.toISOString().split('T')[0];
+      periodStart = start.toISOString().split('T')[0] ?? '';
     }
 
     // Сделки за период
@@ -345,14 +357,16 @@ const strategicMemory = {
 
     // Рассчёт доходности
     const totalReturnRub = positionsSummary.total_pnl;
-    const totalCost = positionsSummary.active > 0
-      ? positionsSummary.active * 10000 // упрощённо
-      : 1;
+    const totalCost =
+      positionsSummary.active > 0
+        ? positionsSummary.active * 10000 // упрощённо
+        : 1;
     const totalReturn = (totalReturnRub / totalCost) * 100;
 
     // Win rate
     const totalTrades = tradesSummary.total;
-    const winRate = totalTrades > 0 ? (tradesSummary.sells / totalTrades) * 100 : 0;
+    const winRate =
+      totalTrades > 0 ? (tradesSummary.sells / totalTrades) * 100 : 0;
 
     const entry: StrategicMemoryEntry = {
       periodStart,
@@ -390,17 +404,31 @@ const strategicMemory = {
     `);
 
     insertStmt.run(
-      entry.periodStart, entry.periodEnd, entry.periodType,
-      entry.totalReturn, entry.totalReturnRub,
-      entry.totalDividends, entry.totalCoupons, entry.totalCommissions,
-      entry.activePositions, entry.closedPositions, entry.totalTrades,
-      entry.buyTrades, entry.sellTrades,
-      entry.avgWinRate, entry.avgHoldingPeriod, entry.maxDrawdown,
-      entry.keyDecisions, entry.riskEvents, entry.aiRecommendations,
+      entry.periodStart,
+      entry.periodEnd,
+      entry.periodType,
+      entry.totalReturn,
+      entry.totalReturnRub,
+      entry.totalDividends,
+      entry.totalCoupons,
+      entry.totalCommissions,
+      entry.activePositions,
+      entry.closedPositions,
+      entry.totalTrades,
+      entry.buyTrades,
+      entry.sellTrades,
+      entry.avgWinRate,
+      entry.avgHoldingPeriod,
+      entry.maxDrawdown,
+      entry.keyDecisions,
+      entry.riskEvents,
+      entry.aiRecommendations,
       entry.createdAt,
     );
 
-    console.log(`[Memory-Layer] Стратегическая память: ${periodType} агрегирована`);
+    console.log(
+      `[Memory-Layer] Стратегическая память: ${periodType} агрегирована`,
+    );
     return entry;
   },
 
@@ -448,13 +476,15 @@ const sessionManager = {
     initializeMemoryTables();
 
     const stmt = db.prepare('SELECT * FROM sessions WHERE session_id = ?');
-    const raw = stmt.get(sessionId) as {
-      session_id: string;
-      user_id: number;
-      last_activity: string;
-      context: string | null;
-      conversation_history: string | null;
-    } | undefined;
+    const raw = stmt.get(sessionId) as
+      | {
+          session_id: string;
+          user_id: number;
+          last_activity: string;
+          context: string | null;
+          conversation_history: string | null;
+        }
+      | undefined;
 
     if (raw) {
       const updateStmt = db.prepare(`
@@ -489,16 +519,18 @@ const sessionManager = {
   getById(sessionId: string): SessionState | undefined {
     initializeMemoryTables();
     const stmt = db.prepare('SELECT * FROM sessions WHERE session_id = ?');
-    const raw = stmt.get(sessionId) as {
-      id?: number;
-      session_id: string;
-      user_id: number;
-      last_activity: string;
-      context: string | null;
-      conversation_history: string | null;
-      created_at: string;
-      updated_at: string;
-    } | undefined;
+    const raw = stmt.get(sessionId) as
+      | {
+          id?: number;
+          session_id: string;
+          user_id: number;
+          last_activity: string;
+          context: string | null;
+          conversation_history: string | null;
+          created_at: string;
+          updated_at: string;
+        }
+      | undefined;
 
     if (!raw) return undefined;
 
@@ -508,7 +540,9 @@ const sessionManager = {
       userId: raw.user_id,
       lastActivity: raw.last_activity,
       context: raw.context ? JSON.parse(raw.context) : undefined,
-      conversationHistory: raw.conversation_history ? JSON.parse(raw.conversation_history) : undefined,
+      conversationHistory: raw.conversation_history
+        ? JSON.parse(raw.conversation_history)
+        : undefined,
       createdAt: raw.created_at,
       updatedAt: raw.updated_at,
     };

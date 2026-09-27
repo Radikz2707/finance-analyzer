@@ -29,7 +29,8 @@ interface OrderLike {
 // ────────────────────────
 
 /** Статус утверждения ордера */
-export type OrderApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'MODIFIED';
+export type OrderApprovalStatus =
+  'PENDING' | 'APPROVED' | 'REJECTED' | 'MODIFIED';
 
 /** Тип действия ордера */
 export type OrderActionType = 'BUY' | 'SELL' | 'HOLD' | 'REDUCE' | 'EXIT';
@@ -91,7 +92,10 @@ export function buildInteractiveOrders(
   for (const order of existingOrders) {
     const status = order.status || '';
     const side = (order.side || order.operation) as OrderActionType | undefined;
-    if ((status === 'NEW' || status === 'PARTIAL' || status === 'АКТИВНА') && side) {
+    if (
+      (status === 'NEW' || status === 'PARTIAL' || status === 'АКТИВНА') &&
+      side
+    ) {
       existingTickerActions.set(order.ticker, side);
     }
   }
@@ -142,7 +146,8 @@ export function buildInteractiveOrders(
       totalAmount: Math.round(totalAmount * 100) / 100,
       approvalStatus: 'PENDING',
       rationale,
-      guardrailWarnings: guardrailWarnings.length > 0 ? guardrailWarnings : undefined,
+      guardrailWarnings:
+        guardrailWarnings.length > 0 ? guardrailWarnings : undefined,
       createdAt: new Date().toISOString(),
     });
   }
@@ -201,10 +206,7 @@ function calculateRecommendedQuantity(
 /**
  * Формирует обоснование ордера.
  */
-function buildRationale(
-  asset: AssetAnalysis,
-  action: OrderActionType,
-): string {
+function buildRationale(asset: AssetAnalysis, action: OrderActionType): string {
   const pnlPercent =
     asset.balancePrice > 0 && asset.currentPrice > 0
       ? ((asset.currentPrice - asset.balancePrice) / asset.balancePrice) * 100
@@ -227,9 +229,7 @@ function buildRationale(
 /**
  * Проверяет guardrail-предупреждения для актива.
  */
-function checkGuardrailWarnings(
-  asset: AssetAnalysis,
-): string[] {
+function checkGuardrailWarnings(asset: AssetAnalysis): string[] {
   const warnings: string[] = [];
 
   // Проверка на большую концентрацию
@@ -257,10 +257,7 @@ function checkGuardrailWarnings(
 /**
  * Генерирует уникальный ID ордера.
  */
-function generateOrderId(
-  ticker: string,
-  action: OrderActionType,
-): string {
+function generateOrderId(ticker: string, action: OrderActionType): string {
   const timestamp = Date.now();
   return `${ticker}_${action}_${timestamp}`;
 }
@@ -272,9 +269,7 @@ function generateOrderId(
 /**
  * Формирует текст сообщения для Telegram с инлайн-кнопками.
  */
-export function formatTelegramOrderMessage(
-  orders: InteractiveOrder[],
-): string {
+export function formatTelegramOrderMessage(orders: InteractiveOrder[]): string {
   if (orders.length === 0) {
     return '📊 <b>Рекомендации по портфелю</b>\n\nНет активных рекомендаций. Портфель в цели.';
   }
@@ -336,9 +331,7 @@ export function buildTelegramInlineKeyboard(
     { text: '❌ Отклонить все', callback_data: 'reject_all' },
   ]);
 
-  keyboard.push([
-    { text: '📊 Статус ордеров', callback_data: 'order_status' },
-  ]);
+  keyboard.push([{ text: '📊 Статус ордеров', callback_data: 'order_status' }]);
 
   return keyboard;
 }
@@ -363,7 +356,7 @@ export function approveOrder(
     };
   }
 
-  const order = orders[orderIndex];
+  const order = orders[orderIndex]!;
   order.approvalStatus = 'APPROVED';
   orders[orderIndex] = order;
 
@@ -390,7 +383,7 @@ export function rejectOrder(
     };
   }
 
-  const order = orders[orderIndex];
+  const order = orders[orderIndex]!;
   order.approvalStatus = 'REJECTED';
   orders[orderIndex] = order;
 

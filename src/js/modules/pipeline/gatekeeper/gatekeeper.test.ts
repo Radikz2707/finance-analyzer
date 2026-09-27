@@ -2,7 +2,7 @@
  * Gatekeeper Tests — тесты для модуля фильтрации новостей.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+
 import { Gatekeeper } from './gatekeeper.js';
 import type { GatekeeperConfig, RawNewsItem, INewsSource, NewsSource } from './types.js';
 
@@ -64,8 +64,8 @@ describe('Gatekeeper', () => {
     const result = await gatekeeper.run();
 
     expect(result.approvedNews.length).toBe(2);
-    expect(result.approvedNews[0].relevantTickers).toContain('SBER');
-    expect(result.approvedNews[1].relevantTickers).toContain('GAZP');
+    expect(result.approvedNews[0]!.relevantTickers).toContain('SBER');
+    expect(result.approvedNews[1]!.relevantTickers).toContain('GAZP');
   });
 
   it('должен отфильтровать нерелевантные новости', async () => {
@@ -131,7 +131,7 @@ describe('Gatekeeper', () => {
     const result = await gatekeeper.run();
 
     expect(result.approvedNews.length).toBe(1);
-    expect(result.approvedNews[0].priority).toBe('critical');
+    expect(result.approvedNews[0]!.priority).toBe('critical');
   });
 
   it('должен определить высокий приоритет для дивидендов', async () => {
@@ -149,7 +149,7 @@ describe('Gatekeeper', () => {
     const result = await gatekeeper.run();
 
     expect(result.approvedNews.length).toBe(1);
-    expect(result.approvedNews[0].priority).toBe('high');
+    expect(result.approvedNews[0]!.priority).toBe('high');
   });
 
   it('должен отсечь шум', async () => {

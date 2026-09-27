@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+
 import { NewsResearchProvider } from './news-provider.js';
 import type {
   ResearchAsset,
@@ -132,7 +132,7 @@ describe('mock news response → NewsItem[]', () => {
 
     expect(snapshot.newsResearch).toBeDefined();
     expect(snapshot.newsResearch!.items.length).toBeGreaterThan(0);
-    expect(snapshot.newsResearch!.items[0].title).toBe('Сбербанк отчитался о прибыли');
+    expect(snapshot.newsResearch!.items[0]!.title).toBe('Сбербанк отчитался о прибыли');
   });
 });
 
@@ -160,7 +160,7 @@ describe('title/date/source/url нормализуются', () => {
       createContext(),
     );
 
-    expect(snapshot.newsResearch!.items[0].title).toBe('SBER: рекордная выручка');
+    expect(snapshot.newsResearch!.items[0]!.title).toBe('SBER: рекордная выручка');
   });
 
   it('date сохраняется в ISO 8601', async () => {
@@ -182,7 +182,7 @@ describe('title/date/source/url нормализуются', () => {
       createContext(),
     );
 
-    const dateStr = snapshot.newsResearch!.items[0].date;
+    const dateStr = snapshot.newsResearch!.items[0]!.date;
     expect(dateStr).toBeDefined();
     expect(dateStr).not.toBe('');
     // Проверяем, что дата валидна (ISO формат)
@@ -209,7 +209,7 @@ describe('title/date/source/url нормализуются', () => {
       createContext(),
     );
 
-    expect(snapshot.newsResearch!.items[0].source).toBe('Bloomberg');
+    expect(snapshot.newsResearch!.items[0]!.source).toBe('Bloomberg');
   });
 
   it('url берётся из RawNewsItem.link', async () => {
@@ -231,7 +231,7 @@ describe('title/date/source/url нормализуются', () => {
       createContext(),
     );
 
-    expect(snapshot.newsResearch!.items[0].url).toBe('https://bloomberg.com/news/sber');
+    expect(snapshot.newsResearch!.items[0]!.url).toBe('https://bloomberg.com/news/sber');
   });
 });
 
@@ -262,7 +262,7 @@ describe('publishedAt сохраняется', () => {
     const evidenceKeys = Object.keys(snapshot.evidence);
     expect(evidenceKeys.length).toBeGreaterThan(0);
 
-    const ev = snapshot.evidence[evidenceKeys[0]];
+    const ev = snapshot.evidence[evidenceKeys[0]!]!;
     expect(ev.publishedAt).toMatch(/^2025-01-15T08:00:00/);
     expect(ev.type).toBe('NEWS');
     expect(ev.source).toBe('Интерфакс');
@@ -722,7 +722,7 @@ describe('provider не придумывает sentiment', () => {
       createContext(),
     );
 
-    const sentiment = snapshot.newsResearch!.items[0].sentiment;
+    const sentiment = snapshot.newsResearch!.items[0]!.sentiment;
     expect(sentiment).toBe('UNKNOWN');
   });
 
@@ -745,7 +745,7 @@ describe('provider не придумывает sentiment', () => {
       createContext(),
     );
 
-    const sentiment = snapshot.newsResearch!.items[0].sentiment;
+    const sentiment = snapshot.newsResearch!.items[0]!.sentiment;
     expect(sentiment).toBe('POSITIVE');
   });
 
@@ -768,7 +768,7 @@ describe('provider не придумывает sentiment', () => {
       createContext(),
     );
 
-    const sentiment = snapshot.newsResearch!.items[0].sentiment;
+    const sentiment = snapshot.newsResearch!.items[0]!.sentiment;
     expect(sentiment).toBe('NEGATIVE');
   });
 });

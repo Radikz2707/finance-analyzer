@@ -2,7 +2,7 @@
  * BrowserGateway Tests — тесты для браузерного/ОС шлюза.
  */
 
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+
 import { BrowserGateway } from './browser-gateway.js';
 import type { ExternalAiConfig, ExternalAiRequest } from './types.js';
 

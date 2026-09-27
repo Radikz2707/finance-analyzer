@@ -44,6 +44,23 @@ import {
   type ValidationResult as StructuredValidationResult,
 } from './structured-ai-recommendation.js';
 
+/** Задержка (мс) */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Является ли ошибка Ollama транзиентной (стоит повторить запрос).
+ * HTTP 5xx и сетевые обрывы — временные сбои (модель ещё грузится,
+ * сервер перегружен); повтор обычно проходит успешно.
+ */
+function isTransientOllamaError(message?: string): boolean {
+  if (!message) return false;
+  return /50[0-9]|52[0-9]|ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|socket hang up|EPIPE|keep-alive/i.test(
+    message,
+  );
+}
+
 /** Результат запроса к ИИ */
 interface AiResponseResult {
   /** Текст ответа */
@@ -71,10 +88,13 @@ export function extractJsonFromAiResponse(text: string): RawAIJson | null {
   const jsonBlockPattern = /```json\s*([\s\S]*?)```/;
   let match = text.match(jsonBlockPattern);
   if (match) {
-    try {
-      return JSON.parse(match[1].trim()) as RawAIJson;
-    } catch {
-      // fall through
+    const jsonText = match[1];
+    if (jsonText) {
+      try {
+        return JSON.parse(jsonText.trim()) as RawAIJson;
+      } catch {
+        // fall through
+      }
     }
   }
 
@@ -82,10 +102,13 @@ export function extractJsonFromAiResponse(text: string): RawAIJson | null {
   const blockPattern = /```\s*([\s\S]*?)```/;
   match = text.match(blockPattern);
   if (match) {
-    try {
-      return JSON.parse(match[1].trim()) as RawAIJson;
-    } catch {
-      // fall through
+    const jsonText = match[1];
+    if (jsonText) {
+      try {
+        return JSON.parse(jsonText.trim()) as RawAIJson;
+      } catch {
+        // fall through
+      }
     }
   }
 
@@ -184,8 +207,7 @@ export class AiClient {
         stocksPct += a.currentPercent;
       if (t === 'О' || t === 'ОБЛИГАЦИЯ' || t === 'BOND')
         bondsPct += a.currentPercent;
-      if (t === 'Ф' || t === 'ETF' || t === 'FUND')
-        etfPct += a.currentPercent;
+      if (t === 'Ф' || t === 'ETF' || t === 'FUND') etfPct += a.currentPercent;
     }
     stocksPct = Math.round(stocksPct * 100) / 100;
     bondsPct = Math.round(bondsPct * 100) / 100;
@@ -465,7 +487,8 @@ export class AiClient {
     prompt +=
       '   - Объясни каждый статус на основе переданных targetPercent и текущих данных\n';
     prompt += '   - targetPercent = 0% → EXIT / ВЫХОД\n';
-    prompt += '   - targetPercent = — (прочерк) → цель не задана в Excel, укажи это\n';
+    prompt +=
+      '   - targetPercent = — (прочерк) → цель не задана в Excel, укажи это\n';
     prompt += '3. ПЛАН РЕБАЛАНСИРОВКИ:\n';
     prompt +=
       '   - Какие BUY / REDUCE / STABLE / EXIT имеют наивысший приоритет\n';
@@ -632,11 +655,14 @@ export class AiClient {
 
   /**
    * Получение OAuth токена GigaChat (с кэшированием на 90 секунд)
+   * @param httpsAgent — кастомный HTTPS-агент (rejectUnauthorized: false),
+   *   обязателен на машинах с корпоративными SSL-прокси/антивирусами,
+   *   иначе OAuth-эндпоинт падает с «unable to get local issuer certificate»
    */
   private gigaChatToken: string | null = null;
   private gigaChatTokenExpiry: number = 0;
 
-  private async getGigaChatToken(): Promise<string> {
+  private async getGigaChatToken(httpsAgent?: https.Agent): Promise<string> {
     // Проверяем, есть ли ещё действующий токен (оставляем 10 секунд запаса)
     if (this.gigaChatToken && Date.now() < this.gigaChatTokenExpiry - 10000) {
       return this.gigaChatToken;
@@ -663,7 +689,8 @@ export class AiClient {
           'Content-Type': 'application/x-www-form-urlencoded',
           Accept: 'application/json',
         },
-        timeout: 15000,
+        httpsAgent,
+        timeout: 30000,
       },
     );
 
@@ -704,8 +731,8 @@ export class AiClient {
       );
     }
 
-    // Получаем свежий OAuth токен
-    const accessToken = await this.getGigaChatToken();
+    // Получаем свежий OAuth токен (с тем же HTTPS-агентом, что и основной запрос)
+    const accessToken = await this.getGigaChatToken(httpsAgent);
 
     // Отправляем запрос к API
     const response = await axios.post(
@@ -877,7 +904,7 @@ export class AiClient {
     try {
       // Пробуем стриминг для лучшего UX
       console.log('[Ollama] calling streamChat...');
-      const streamResult: StreamResult = await streamChat(
+      let streamResult: StreamResult = await streamChat(
         messages,
         modelConfig.modelName,
         {
@@ -889,6 +916,30 @@ export class AiClient {
           stream: true,
         },
       );
+
+      // Один ретрай на транзиентные сбои (5xx, обрывы соединения):
+      // модель могла ещё не загрузиться или сервер был перегружен
+      if (!streamResult.success && isTransientOllamaError(streamResult.error)) {
+        console.log(
+          '[Ollama] ⚠️ Транзиентный сбой стриминга (' +
+            (streamResult.error || 'ошибка') +
+            '), повтор через 2 сек...',
+        );
+        await sleep(2000);
+        streamResult = await streamChat(
+          messages,
+          modelConfig.modelName,
+          {
+            numPredict: modelConfig.maxTokens,
+            temperature: modelConfig.temperature,
+          },
+          {
+            timeout: 300000, // 5 минут
+            stream: true,
+          },
+        );
+      }
+
       console.log(
         '[Ollama] streamChat returned, success:',
         streamResult.success,

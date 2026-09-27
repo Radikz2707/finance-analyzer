@@ -33,6 +33,12 @@ export interface AgentHealthCheck {
   responseTimeMs: number;
   /** Статус */
   status: 'healthy' | 'slow' | 'timeout' | 'error';
+  /**
+   * Реальный замер последнего выполнения агента (мс).
+   * Заполняется координатором через recordExecutionTime().
+   * Используется performHealthCheck вместо случайной симуляции.
+   */
+  lastExecutionTimeMs?: number;
   /** Текущее задание (если выполняется) */
   currentTask?: {
     /** ID задания */
@@ -119,6 +125,12 @@ export interface WatchdogConfig {
   enableVsCodeRestart?: boolean;
   /** Команда для перезапуска VS Code (опционально) */
   vsCodeRestartCommand?: string;
+  /**
+   * Симуляция времени ответа (по умолчанию false).
+   * Только для демо/тестов: при true performHealthCheck использует
+   * случайное время вместо реального замера recordExecutionTime().
+   */
+  simulateResponses?: boolean;
   /** verbose */
   verbose?: boolean;
 }

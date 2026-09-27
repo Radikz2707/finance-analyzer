@@ -59,7 +59,8 @@ function mergeResearchValue<T>(
 
     // existing тоже VALUE — проверяем конфликт
     if (hasValue(existing)) {
-      const sameValue = JSON.stringify(existing.value) === JSON.stringify(incoming.value);
+      const sameValue =
+        JSON.stringify(existing.value) === JSON.stringify(incoming.value);
       if (!sameValue) {
         conflicts.push({
           field,
@@ -74,7 +75,12 @@ function mergeResearchValue<T>(
       // Значения совпадают — объединяем evidenceIds
       return {
         ...incoming,
-        evidenceIds: [...new Set([...(existing.evidenceIds ?? []), ...(incoming.evidenceIds ?? [])])],
+        evidenceIds: [
+          ...new Set([
+            ...(existing.evidenceIds ?? []),
+            ...(incoming.evidenceIds ?? []),
+          ]),
+        ],
       } as ResearchValue<T>;
     }
 
@@ -112,8 +118,12 @@ function mergeObjects(
 
     // Оба — ResearchValue (discriminated union по status)
     if (
-      typeof sourceVal === 'object' && sourceVal !== null && 'status' in sourceVal &&
-      typeof targetVal === 'object' && targetVal !== null && 'status' in targetVal
+      typeof sourceVal === 'object' &&
+      sourceVal !== null &&
+      'status' in sourceVal &&
+      typeof targetVal === 'object' &&
+      targetVal !== null &&
+      'status' in targetVal
     ) {
       result[key] = mergeResearchValue(
         targetVal as ResearchValue<unknown>,
@@ -128,9 +138,12 @@ function mergeObjects(
 
     // Оба — объекты
     if (
-      typeof sourceVal === 'object' && sourceVal !== null &&
-      typeof targetVal === 'object' && targetVal !== null &&
-      !Array.isArray(sourceVal) && !Array.isArray(targetVal)
+      typeof sourceVal === 'object' &&
+      sourceVal !== null &&
+      typeof targetVal === 'object' &&
+      targetVal !== null &&
+      !Array.isArray(sourceVal) &&
+      !Array.isArray(targetVal)
     ) {
       result[key] = mergeObjects(
         targetVal as Record<string, unknown>,
@@ -173,13 +186,25 @@ function mergeSnapshots(
   // Слияние секций
   const sections: (keyof Pick<
     AssetResearchSnapshot,
-    'marketResearch' | 'macroResearch' | 'newsResearch' |
-    'issuerResearch' | 'bondResearch' | 'etfResearch' |
-    'riskAssessment' | 'investmentThesis' | 'aiRecommendation'
+    | 'marketResearch'
+    | 'macroResearch'
+    | 'newsResearch'
+    | 'issuerResearch'
+    | 'bondResearch'
+    | 'etfResearch'
+    | 'riskAssessment'
+    | 'investmentThesis'
+    | 'aiRecommendation'
   >)[] = [
-    'marketResearch', 'macroResearch', 'newsResearch',
-    'issuerResearch', 'bondResearch', 'etfResearch',
-    'riskAssessment', 'investmentThesis', 'aiRecommendation',
+    'marketResearch',
+    'macroResearch',
+    'newsResearch',
+    'issuerResearch',
+    'bondResearch',
+    'etfResearch',
+    'riskAssessment',
+    'investmentThesis',
+    'aiRecommendation',
   ];
 
   for (const section of sections) {
@@ -278,10 +303,14 @@ export class ResearchProviderRegistry {
     // Проверяем кэш перед вызовом провайдеров (пропускаем в тестах)
     const cacheKey = asset.ticker;
     const isTest = process.env.NODE_ENV === 'test' || process.env.VITEST;
-    const cached = !isTest ? researchCacheRepo.get(cacheKey, context.researchTimestamp ?? 'latest') : null;
+    const cached = !isTest
+      ? researchCacheRepo.get(cacheKey, context.researchTimestamp ?? 'latest')
+      : null;
 
     if (cached) {
-      console.log(`[ResearchCache] ✅ ${cacheKey} — данные из кэша (TTL ${context.ttlSeconds ?? 300}с)`);
+      console.log(
+        `[ResearchCache] ✅ ${cacheKey} — данные из кэша (TTL ${context.ttlSeconds ?? 300}с)`,
+      );
       try {
         const cachedSnapshot = JSON.parse(cached) as AssetResearchSnapshot;
         return {
@@ -296,12 +325,19 @@ export class ResearchProviderRegistry {
     }
 
     // Последовательно сливаем результаты
-    let merged = await matchingProviders[0].research(asset, context);
+    const firstProvider = matchingProviders[0]!;
+    let merged = await firstProvider.research(asset, context);
     const conflicts: ValueConflict[] = [];
 
     for (let i = 1; i < matchingProviders.length; i++) {
-      const next = await matchingProviders[i].research(asset, context);
-      const result = mergeSnapshots(merged, next, matchingProviders[0].constructor.name, matchingProviders[i].constructor.name);
+      const provider = matchingProviders[i]!;
+      const next = await provider.research(asset, context);
+      const result = mergeSnapshots(
+        merged,
+        next,
+        firstProvider.constructor.name,
+        provider.constructor.name,
+      );
       merged = result.snapshot;
       conflicts.push(...result.conflicts);
     }
@@ -316,9 +352,14 @@ export class ResearchProviderRegistry {
           context.researchTimestamp ?? 'latest',
           ttlSeconds,
         );
-        console.log(`[ResearchCache] 💾 ${cacheKey} — сохранено в кэш (TTL ${ttlSeconds}с)`);
+        console.log(
+          `[ResearchCache] 💾 ${cacheKey} — сохранено в кэш (TTL ${ttlSeconds}с)`,
+        );
       } catch (err) {
-        console.warn(`[ResearchCache] ⚠️ Ошибка сохранения кэша для ${cacheKey}:`, err);
+        console.warn(
+          `[ResearchCache] ⚠️ Ошибка сохранения кэша для ${cacheKey}:`,
+          err,
+        );
       }
 
       // Очищаем просроченные записи

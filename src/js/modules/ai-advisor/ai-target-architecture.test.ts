@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
 import { buildSystemPrompt } from './prompt-templates.js';
 import { AiClient } from './ai-client.js';
-import type { AssetAnalysis, PortfolioReportData } from '../portfolio-math/portfolio-math.js';
+import type {
+  AssetAnalysis,
+  PortfolioReportData,
+} from '../portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../portfolio-math/portfolio-validator.js';
 import { CalculatedIncome } from './income-calculator.js';
 import { UIOrdersData } from './types.js';
@@ -11,18 +13,22 @@ import type { InvestmentThesisResult } from '../research/investment-thesis/types
 
 // --- Helpers ---
 
-function createMockAssetAnalysis(ticker: string, name: string, options: {
-  currentPercent?: number;
-  targetPercent?: number;
-  deficitRub?: number;
-  status?: string;
-  balancePrice?: number;
-  currentPrice?: number;
-  dynamicsPercent?: number;
-  nkdRub?: number;
-  assetType?: string;
-  quantity?: number;
-}): AssetAnalysis {
+function createMockAssetAnalysis(
+  ticker: string,
+  name: string,
+  options: {
+    currentPercent?: number;
+    targetPercent?: number;
+    deficitRub?: number;
+    status?: string;
+    balancePrice?: number;
+    currentPrice?: number;
+    dynamicsPercent?: number;
+    nkdRub?: number;
+    assetType?: string;
+    quantity?: number;
+  },
+): AssetAnalysis {
   return {
     name,
     ticker,
@@ -30,7 +36,8 @@ function createMockAssetAnalysis(ticker: string, name: string, options: {
     currentPercent: options.currentPercent ?? 0,
     targetPercent: options.targetPercent,
     deficitRub: options.deficitRub ?? 0,
-    status: (options.status || 'HOLD') as 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW' | 'EXIT' | 'NO_TARGET',
+    status: (options.status || 'HOLD') as
+      'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW' | 'EXIT' | 'NO_TARGET',
     dynamicsPercent: options.dynamicsPercent ?? 0,
     nkdRub: options.nkdRub ?? 0,
     nominal: 100,
@@ -101,49 +108,61 @@ describe('AI Target Architecture Tests', () => {
     // Проверяем, что промпт содержит разделение ответственности
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain('targetPercent');
-    expect(prompt).toContain('AI НЕ создаёт новые targetPercent');
-    expect(prompt).toContain('AI НЕ изменяет BUY / REDUCE / STABLE / EXIT');
-    expect(prompt).toContain('используй только targetPercent из PortfolioMath');
+    expect(prompt).toContain(
+      'AI НЕ создаёт, НЕ изменяет и НЕ подменяет targetPercent',
+    );
+    expect(prompt).toContain('AI только интерпретирует');
+    expect(prompt).toContain('ИСКЛЮЧИТЕЛЬНО из PortfolioMath');
   });
 
   it('Тест 2: USER_TARGET остаётся неизменным', () => {
     const prompt = buildSystemPrompt(21);
     // Проверяем, что AI обязан использовать только targetPercent из PortfolioMath
-    expect(prompt).toContain('AI НЕ изменяет BUY / REDUCE / STABLE / EXIT');
-    expect(prompt).toContain('AI НЕ создаёт новые targetPercent');
+    expect(prompt).toContain('AI только интерпретирует');
+    expect(prompt).toContain(
+      'AI НЕ создаёт, НЕ изменяет и НЕ подменяет targetPercent',
+    );
   });
 
   it('Тест 3: PortfolioMath status остаётся неизменным', () => {
     const prompt = buildSystemPrompt(21);
-    expect(prompt).toContain('AI НЕ изменяет BUY / REDUCE / STABLE / EXIT');
-    expect(prompt).toContain('AI НЕ пересчитывает самостоятельно текущие веса');
+    expect(prompt).toContain('AI только интерпретирует');
+    expect(prompt).toContain(
+      'AI НЕ пересчитывает веса, deficitRub, surplusRub, суммы ребалансировки',
+    );
   });
 
   it('Тест 4: AI может предложить собственный target', () => {
     const prompt = buildSystemPrompt(21);
     // AI обязан использовать только targetPercent из PortfolioMath
-    expect(prompt).toContain('используй только targetPercent из PortfolioMath');
+    expect(prompt).toContain('ИСКЛЮЧИТЕЛЬНО из PortfolioMath');
     // NO_TARGET vs AI_RECOMMENDED_TARGET разделены
-    expect(prompt).toContain('NO_TARGET vs AI_RECOMMENDED_TARGET');
-    expect(prompt).toContain('AI_RECOMMENDED_TARGET_PERCENT — это ИСКЛЮЧИТЕЛЬНО AI-рекомендация');
+    expect(prompt).toContain('AI_RECOMMENDED_TARGET_PERCENT как рекомендацию');
+    expect(prompt).toContain(
+      'AI_RECOMMENDED_TARGET_PERCENT — ИСКЛЮЧИТЕЛЬНО рекомендация',
+    );
   });
 
   it('Тест 5: AI target не попадает обратно в PortfolioMath', () => {
     const prompt = buildSystemPrompt(21);
-    expect(prompt).toContain('AI НЕ создаёт новые targetPercent');
-    expect(prompt).toContain('AI НЕ изменяет BUY / REDUCE / STABLE / EXIT');
+    expect(prompt).toContain(
+      'AI НЕ создаёт, НЕ изменяет и НЕ подменяет targetPercent',
+    );
+    expect(prompt).toContain('AI только интерпретирует');
   });
 
   it('Тест 6: USER_TARGET=0 и AI_TARGET=3 корректно разделены', () => {
     const prompt = buildSystemPrompt(21);
-    expect(prompt).toContain('targetPercent = 0% → EXIT / ВЫХОД');
-    expect(prompt).toContain('targetPercent = 0% нельзя превращать в BUY');
+    expect(prompt).toContain('targetPercent = 0% → EXIT');
+    expect(prompt).toContain(
+      'AI НЕ создаёт, НЕ изменяет и НЕ подменяет targetPercent',
+    );
   });
 
   it('Тест 7: USER_TARGET=NOT_SET и AI_TARGET=3 корректно разделены', () => {
     const prompt = buildSystemPrompt(21);
-    expect(prompt).toContain('targetPercent отсутствует');
-    expect(prompt).toContain('«Цель не задана»');
+    expect(prompt).toContain('targetPercent отсутствует → NO_TARGET');
+    expect(prompt).toContain('AI_RECOMMENDED_TARGET_PERCENT как рекомендацию');
   });
 
   it('Тест 8: P&L одного ticker не попадает в другой', () => {
@@ -154,7 +173,7 @@ describe('AI Target Architecture Tests', () => {
       targetPercent: 0,
       deficitRub: -20000,
       status: 'EXIT',
-      balancePrice: 4.30,
+      balancePrice: 4.3,
       currentPrice: 4.19,
       dynamicsPercent: -2.7,
       quantity: 100,
@@ -165,8 +184,8 @@ describe('AI Target Architecture Tests', () => {
       targetPercent: 8,
       deficitRub: 50000,
       status: 'REDUCE',
-      balancePrice: 2409.80,
-      currentPrice: 996.00,
+      balancePrice: 2409.8,
+      currentPrice: 996.0,
       dynamicsPercent: -58.7,
       quantity: 50,
     });
@@ -198,7 +217,9 @@ describe('AI Target Architecture Tests', () => {
       ): string;
     }
 
-    const context = (client as unknown as PrivateAiClient).buildPortfolioContext(
+    const context = (
+      client as unknown as PrivateAiClient
+    ).buildPortfolioContext(
       analysis,
       inc,
       validation,
@@ -220,9 +241,9 @@ describe('AI Target Architecture Tests', () => {
     // PLZL должен иметь P&L от входа -58.7%
     expect(context).toContain('-58.7%');
 
-    // Проверяем, что каждый актив имеет свои USER_TARGET_PERCENT
-    expect(context).toContain('USER_TARGET_PERCENT: 0.0%');
-    expect(context).toContain('USER_TARGET_PERCENT: 8.0%');
+    // Проверяем, что каждый актив имеет свой targetPercent (колонка target% таблицы)
+    expect(context).toContain('EXIT | 0%');
+    expect(context).toContain('REDUCE | 8.0%');
   });
 
   it('Тест 9: Active order не увеличивает фактическую quantity', () => {
@@ -233,8 +254,8 @@ describe('AI Target Architecture Tests', () => {
       targetPercent: 15,
       deficitRub: 50000,
       status: 'BUY',
-      balancePrice: 280.00,
-      currentPrice: 285.00,
+      balancePrice: 280.0,
+      currentPrice: 285.0,
       dynamicsPercent: 2.5,
       quantity: 100,
     });
@@ -268,7 +289,9 @@ describe('AI Target Architecture Tests', () => {
       ): string;
     }
 
-    const context = (client as unknown as PrivateAiClient).buildPortfolioContext(
+    const context = (
+      client as unknown as PrivateAiClient
+    ).buildPortfolioContext(
       analysis,
       inc,
       validation,
@@ -281,31 +304,34 @@ describe('AI Target Architecture Tests', () => {
     );
 
     // Active orders должен быть отдельным блоком
-    expect(context).toContain('АКТИВНЫЕ ЗАЯВКИ');
+    expect(context).toContain('ЗАЯВКИ');
     expect(context).toContain('SBER: Заявка на BUY 50 шт.');
 
     // Quantity в контексте должна быть 100 (не 150)
-    expect(context).toContain('Текущая доля: 10.0%');
-    expect(context).not.toContain('Текущая доля: 15.0%');
+    expect(context).toContain('SBER | Сбербанк | 10.0%');
+    expect(context).toContain('| 100 |');
+    expect(context).not.toContain('| 150 |');
   });
 
   it('Тест 10: Cash учитывается как ограничение', () => {
     const prompt = buildSystemPrompt(21);
-    expect(prompt).toContain('Свободный кэш является реальным ограничением покупок');
-    expect(prompt).toContain('Не считать, что все BUY-дефициты можно выполнить одновременно, если свободного кэша недостаточно');
+    expect(prompt).toContain('Свободный кэш — реальное ограничение покупок');
+    expect(prompt).toContain('BUY = "есть дефицит относительно USER_TARGET"');
   });
 
   it('Тест 11: ETF не получает автоматически 3%', () => {
     const prompt = buildSystemPrompt(21);
-    expect(prompt).toContain('не назначает ETF/фондам/новым активам стандартные 3%');
+    expect(prompt).toContain(
+      'Новые инструменты: НЕ добавлять по собственной инициативе',
+    );
   });
 
   it('Тест 12: AI может оспаривать пользовательскую цель, но обязан явно обозначить это', () => {
     const prompt = buildSystemPrompt(21);
     // Проверяем, что AI обязан использовать только targetPercent из PortfolioMath
-    expect(prompt).toContain('НЕ предлагай новые целевые доли — используй только targetPercent из PortfolioMath');
-    // Проверяем, что AI не создаёт новые targetPercent
-    expect(prompt).toContain('AI НЕ создаёт новые targetPercent');
+    expect(prompt).toContain('ИСКЛЮЧИТЕЛЬНО из PortfolioMath');
+    // Проверяем, что AI может не согласиться с пользовательской целью, объяснив почему
+    expect(prompt).toContain('AI может не согласиться с USER_TARGET');
   });
 
   // --- Тесты на фактическое поведение buildPortfolioContext ---
@@ -351,7 +377,9 @@ describe('AI Target Architecture Tests', () => {
       ): string;
     }
 
-    const context = (client as unknown as PrivateAiClient).buildPortfolioContext(
+    const context = (
+      client as unknown as PrivateAiClient
+    ).buildPortfolioContext(
       analysis,
       inc,
       validation,
@@ -363,11 +391,9 @@ describe('AI Target Architecture Tests', () => {
       cbrRateData,
     );
 
-    // Проверяем, что targetPercent = 25.0 (как передано, без изменений)
-    expect(context).toContain('USER_TARGET_PERCENT: 25.0%');
-
-    // Проверяем, что status = BUY (как передано, без изменений)
-    expect(context).toContain('PORTFOLIO_MATH_STATUS: BUY');
+    // Проверяем, что targetPercent = 25.0 и status = BUY переданы как есть
+    // (колонки target% и Статус в таблице АКТИВЫ)
+    expect(context).toContain('| BUY | 25.0% |');
   });
 
   it('Тест 14: buildPortfolioContext НЕ изменяет PORTFOLIO_MATH_STATUS — EXIT остаётся EXIT', () => {
@@ -411,7 +437,9 @@ describe('AI Target Architecture Tests', () => {
       ): string;
     }
 
-    const context = (client as unknown as PrivateAiClient).buildPortfolioContext(
+    const context = (
+      client as unknown as PrivateAiClient
+    ).buildPortfolioContext(
       analysis,
       inc,
       validation,
@@ -424,9 +452,8 @@ describe('AI Target Architecture Tests', () => {
     );
 
     // PORTFOLIO_MATH_STATUS должен остаться EXIT (не изменён)
-    expect(context).toContain('PORTFOLIO_MATH_STATUS: EXIT');
-    // USER_TARGET_PERCENT должен остаться 0.0 (не изменён)
-    expect(context).toContain('USER_TARGET_PERCENT: 0.0%');
+    // USER_TARGET_PERCENT должен остаться 0 (не изменён) — колонки таблицы АКТИВЫ
+    expect(context).toContain('| EXIT | 0% |');
   });
 
   it('Тест 15: buildPortfolioContext НЕ изменяет статус NO_TARGET', () => {
@@ -470,7 +497,9 @@ describe('AI Target Architecture Tests', () => {
       ): string;
     }
 
-    const context = (client as unknown as PrivateAiClient).buildPortfolioContext(
+    const context = (
+      client as unknown as PrivateAiClient
+    ).buildPortfolioContext(
       analysis,
       inc,
       validation,
@@ -483,12 +512,9 @@ describe('AI Target Architecture Tests', () => {
     );
 
     // PORTFOLIO_MATH_STATUS должен остаться NO_TARGET (не изменён)
-    expect(context).toContain('PORTFOLIO_MATH_STATUS: NO_TARGET');
-    // USER_TARGET_PERCENT должен быть 'НЕ ЗАДАН' (не задан)
-    expect(context).toContain('USER_TARGET_PERCENT: НЕ ЗАДАН');
-    // AI_RECOMMENDED_TARGET_PERCENT явно отделён от USER_TARGET
-    expect(context).toContain('AI_RECOMMENDED_TARGET_PERCENT: AI формирует рекомендацию самостоятельно');
-    expect(context).toContain('НЕ пользовательская цель');
+    // target% отсутствует (targetPercent не задан) — в таблице выводится «—»
+    expect(context).toContain('| NO_TARGET | — |');
+    expect(context).toContain('NO_TARGET_TEST');
   });
 
   it('Тест 16: buildPortfolioContext НЕ изменяет REDUCE статус', () => {
@@ -532,7 +558,9 @@ describe('AI Target Architecture Tests', () => {
       ): string;
     }
 
-    const context = (client as unknown as PrivateAiClient).buildPortfolioContext(
+    const context = (
+      client as unknown as PrivateAiClient
+    ).buildPortfolioContext(
       analysis,
       inc,
       validation,
@@ -545,9 +573,8 @@ describe('AI Target Architecture Tests', () => {
     );
 
     // PORTFOLIO_MATH_STATUS должен остаться REDUCE (не изменён)
-    expect(context).toContain('PORTFOLIO_MATH_STATUS: REDUCE');
-    // USER_TARGET_PERCENT должен остаться 10.0 (не изменён)
-    expect(context).toContain('USER_TARGET_PERCENT: 10.0%');
+    // USER_TARGET_PERCENT должен остаться 10.0 (не изменён) — колонки таблицы АКТИВЫ
+    expect(context).toContain('| REDUCE | 10.0% |');
   });
 
   it('Тест 17: buildPortfolioContext НЕ изменяет HOLD статус', () => {
@@ -591,7 +618,9 @@ describe('AI Target Architecture Tests', () => {
       ): string;
     }
 
-    const context = (client as unknown as PrivateAiClient).buildPortfolioContext(
+    const context = (
+      client as unknown as PrivateAiClient
+    ).buildPortfolioContext(
       analysis,
       inc,
       validation,
@@ -604,8 +633,7 @@ describe('AI Target Architecture Tests', () => {
     );
 
     // PORTFOLIO_MATH_STATUS должен остаться HOLD (не изменён)
-    expect(context).toContain('PORTFOLIO_MATH_STATUS: HOLD');
-    // USER_TARGET_PERCENT должен остаться 12.0 (не изменён)
-    expect(context).toContain('USER_TARGET_PERCENT: 12.0%');
+    // USER_TARGET_PERCENT должен остаться 12.0 (не изменён) — колонки таблицы АКТИВЫ
+    expect(context).toContain('| HOLD | 12.0% |');
   });
 });

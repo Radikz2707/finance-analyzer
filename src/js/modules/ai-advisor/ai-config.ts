@@ -54,32 +54,24 @@ export const AI_MODELS: AiModelConfig[] = [
     priority: 2,
     requiresKey: true,
     envKey: 'GIGACHAT_API_KEY',
-    description: 'Бесплатная модель от Сбера, работает в РФ без VPN, до 1000 запросов/день',
+    description:
+      'Бесплатная модель от Сбера, работает в РФ без VPN, до 1000 запросов/день',
   },
   {
-    id: 'gpt-4o',
-    name: 'GPT-4o (OpenRouter)',
+    // GPT-4o (max_tokens 4096) не использовался из-за ошибки 402:
+    // остаток кредитов OpenRouter не покрывал стоимость даже промпта.
+    // gpt-4o-mini ~30x дешевле и работает с минимальным балансом.
+    id: 'gpt-4o-mini',
+    name: 'GPT-4o mini (OpenRouter)',
     baseUrl: 'https://openrouter.ai/api/v1/chat/completions',
-    modelName: 'openai/gpt-4o',
-    maxTokens: 4096,
+    modelName: 'openai/gpt-4o-mini',
+    maxTokens: 2048,
     temperature: 0.2,
     priority: 3,
     requiresKey: true,
     envKey: 'OPENROUTER_API_KEY',
     description:
-      'Облачная модель. Требует пополнения кредитов на OpenRouter.',
-  },
-  {
-    id: 'gigachat',
-    name: 'GigaChat (Сбер)',
-    baseUrl: 'https://api.giga.chat/v1/chat/completions',
-    modelName: 'GigaChat',
-    maxTokens: 8192,
-    temperature: 0.3,
-    priority: 4,
-    requiresKey: true,
-    envKey: 'GIGACHAT_API_KEY',
-    description: 'Бесплатная модель от Сбера, работает в РФ без VPN',
+      'Дешёвая облачная модель (~30x дешевле gpt-4o). Работает даже с минимальным остатком кредитов.',
   },
   {
     id: 'yandexgpt',
@@ -103,7 +95,7 @@ const MODEL_OVERRIDE =
 
 /** Настройка текущей модели */
 export const CURRENT_AI_MODEL: AiModelConfig =
-  AI_MODELS.find((m) => m.id === MODEL_OVERRIDE) || AI_MODELS[0];
+  AI_MODELS.find((m) => m.id === MODEL_OVERRIDE) ?? AI_MODELS[0]!;
 
 /** Получить все доступные модели, отфильтровав те, для которых нет ключей */
 export function getAvailableModels(): AiModelConfig[] {

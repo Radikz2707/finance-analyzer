@@ -26,11 +26,7 @@ import {
   query as memoryQuery,
   cleanup,
 } from './core.js';
-import {
-  saveOperational,
-  saveKpiSnapshot,
-  saveAnomaly,
-} from './memory-api.js';
+import { saveOperational, saveKpiSnapshot, saveAnomaly } from './memory-api.js';
 import type {
   MemoryEntryType,
   MemoryPriority,
@@ -99,7 +95,11 @@ function success<T>(data: T, durationMs: number): ApiResponse<T> {
  * @param durationMs — время выполнения в мс
  * @returns ApiResponse с success=false
  */
-function error(message: string, statusCode: number, durationMs: number): ApiResponse<never> {
+function error(
+  message: string,
+  statusCode: number,
+  durationMs: number,
+): ApiResponse<never> {
   return { success: false, error: message, statusCode, durationMs };
 }
 
@@ -111,10 +111,19 @@ function error(message: string, statusCode: number, durationMs: number): ApiResp
  */
 function timed<T>(fn: () => T | Promise<T>): Promise<ApiResponse<T>> {
   const start = Date.now();
-  return Promise.resolve(fn()).then(
-    (result) => success(result, Date.now() - start),
-    (err) => error(err instanceof Error ? err.message : String(err), 500, Date.now() - start),
-  );
+  // ВАЖНО: `.then(fn)` (а не `Promise.resolve(fn())`) — иначе синхронный throw
+  // внутри fn() происходит ДО создания промиса и не попадает в error-ветку.
+  return Promise.resolve()
+    .then(fn)
+    .then(
+      (result) => success(result, Date.now() - start),
+      (err) =>
+        error(
+          err instanceof Error ? err.message : String(err),
+          500,
+          Date.now() - start,
+        ),
+    );
 }
 
 // ──────────────────────────────────────────────
@@ -239,7 +248,9 @@ export async function getStrategicMemory(options?: {
  * @param params — параметры запроса (типы, ключевые слова, даты, лимиты)
  * @returns ApiResponse с найденными записями из обоих слоёв
  */
-export async function queryMemory(params: MemoryQuery): Promise<ApiResponse<MemoryQueryResult>> {
+export async function queryMemory(
+  params: MemoryQuery,
+): Promise<ApiResponse<MemoryQueryResult>> {
   return timed(() => memoryQuery(params));
 }
 
@@ -291,7 +302,9 @@ export interface SaveResult {
  * @param params — параметры записи (level, type, content, и дополнительные данные)
  * @returns ApiResponse с ID сохранённой записи
  */
-export async function saveMemory(params: SaveMemoryParams): Promise<ApiResponse<SaveResult>> {
+export async function saveMemory(
+  params: SaveMemoryParams,
+): Promise<ApiResponse<SaveResult>> {
   return timed(() => {
     let id: string;
 
@@ -309,7 +322,9 @@ export async function saveMemory(params: SaveMemoryParams): Promise<ApiResponse<
       } else if (params.type === 'anomaly' && params.anomalyData) {
         id = saveAnomaly(params.anomalyData);
       } else {
-        throw new Error('Для стратегической памяти необходимо указать kpiSnapshot или anomalyData');
+        throw new Error(
+          'Для стратегической памяти необходимо указать kpiSnapshot или anomalyData',
+        );
       }
     } else {
       throw new Error(`Неизвестный уровень памяти: ${params.level}`);
@@ -357,9 +372,16 @@ export interface CleanupResult {
  * @param params — параметры очистки (operational, strategic, daysThreshold)
  * @returns ApiResponse с количеством удалённых и сжатых записей
  */
-export async function cleanupMemory(params?: CleanupParams): Promise<ApiResponse<CleanupResult>> {
+export async function cleanupMemory(
+  params?: CleanupParams,
+): Promise<ApiResponse<CleanupResult>> {
   return timed(async () => {
-    const opts = { operational: true, strategic: true, daysThreshold: 14, ...params };
+    const opts = {
+      operational: true,
+      strategic: true,
+      daysThreshold: 14,
+      ...params,
+    };
 
     let operationalDeleted = 0;
     let strategicDeleted = 0;
@@ -381,7 +403,8 @@ export async function cleanupMemory(params?: CleanupParams): Promise<ApiResponse
       operationalDeleted,
       strategicDeleted,
       operationalArchived,
-      totalProcessed: operationalDeleted + strategicDeleted + operationalArchived,
+      totalProcessed:
+        operationalDeleted + strategicDeleted + operationalArchived,
     };
   });
 }

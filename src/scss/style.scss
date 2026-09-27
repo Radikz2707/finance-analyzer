@@ -4,6 +4,7 @@
 @use '../js/modules/portfolio-math/portfolio-math' as portfolioMath;
 @use '../js/modules/xlsx-parser/xlsx-parser' as xlsxParser;
 @use '../js/modules/ai-advisor/ai-advisor' as aiAdvisor;
+@use '../js/modules/harness-integration/harness' as harness;
 
 // ФУНКЦИОНАЛЬНЫЕ JS/TS МОДУЛИ
 @use '../js/modules/dashboard/dashboard' as dashboard;

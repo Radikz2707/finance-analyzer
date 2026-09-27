@@ -9,8 +9,8 @@ import { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
 function formatPrice(value: number): string {
   const formatted = value.toFixed(2);
   const parts = formatted.split('.');
-  const whole = parseInt(parts[0], 10);
-  const kopecks = parseInt(parts[1], 10);
+  const whole = parseInt(parts[0]!, 10);
+  const kopecks = parseInt(parts[1] ?? '0', 10);
   if (kopecks === 0) {
     return whole.toLocaleString('ru-RU');
   }
@@ -68,14 +68,14 @@ export function buildOrdersHtmlAndMd(
       '<tbody>';
 
     for (let a = 0; a < accountNames.length; a++) {
-      const account = accountNames[a];
+      const account = accountNames[a]!;
       const orders = accountsMap.get(account)!;
       const accountRowCount = orders.length;
 
       for (let i = 0; i < orders.length; i++) {
-        const order = orders[i];
+        const order = orders[i]!;
 
-        let opColor = order.operation === 'BUY' ? '#238636' : '#da3633';
+        let opColor = order.operation! === 'BUY' ? '#238636' : '#da3633';
         let badgeStatusClass = 'status-' + order.operation;
         if (order.status === 'ИСПОЛНЕНА') {
           badgeStatusClass = 'status-FILLED';
@@ -110,10 +110,12 @@ export function buildOrdersHtmlAndMd(
         }
 
         html +=
-          '<tr class="' + rowClass + '">' +
+          '<tr class="' +
+          rowClass +
+          '">' +
           accountCell +
           "<td class='instrument-name'><strong>" +
-          order.ticker +
+          order.ticker! +
           '</strong></td>' +
           '<td>' +
           "<span class='status-badge " +
@@ -121,20 +123,20 @@ export function buildOrdersHtmlAndMd(
           "' style='background-color: " +
           opColor +
           "; color: #fff;'>" +
-          order.operation +
+          order.operation! +
           '</span>' +
           '</td>' +
           '<td>' +
-          order.qty.toLocaleString('ru-RU') +
+          order.qty!.toLocaleString('ru-RU') +
           ' шт.</td>' +
           '<td>' +
-          formatPrice(order.price) +
+          formatPrice(order.price!) +
           ' ₽</td>' +
           "<td class='sum-cell'>" +
-          formatPrice(order.sum) +
+          formatPrice(order.sum!) +
           ' ₽</td>' +
           '<td>' +
-          order.status +
+          order.status! +
           '</td>' +
           '</tr>';
 
@@ -142,19 +144,19 @@ export function buildOrdersHtmlAndMd(
           '- ' +
           account +
           ' | ' +
-          order.ticker +
+          order.ticker! +
           ': Заявка на ' +
-          order.operation +
+          order.operation! +
           ' (' +
-          order.status +
+          order.status! +
           '), ' +
-          order.qty +
+          order.qty! +
           ' шт. по цене ' +
-          (order.isBond
-            ? formatPrice(order.pricePercent) + '% от номинала'
-            : formatPrice(order.price) + ' руб.') +
+          (order.isBond!
+            ? formatPrice(order.pricePercent!) + '% от номинала'
+            : formatPrice(order.price!) + ' руб.') +
           ' (Всего: ' +
-          formatPrice(order.sum) +
+          formatPrice(order.sum!) +
           ' руб.)\n';
       }
     }
@@ -185,8 +187,10 @@ export function buildAssetsTablesAndBars(
 
   // DIAGNOSTIC: показываем сколько активов пришло
   console.log(
-    '[BUILD_ASSETS_TABLES] assetsAnalysis.length = ' + assetsAnalysis.length +
-    ' | tickers = ' + assetsAnalysis.map(a => a.ticker).join(', '),
+    '[BUILD_ASSETS_TABLES] assetsAnalysis.length = ' +
+      assetsAnalysis.length +
+      ' | tickers = ' +
+      assetsAnalysis.map((a) => a.ticker).join(', '),
   );
 
   // Сортировка по динамике цены (убывание) — лучшие инструменты сверху
@@ -206,10 +210,13 @@ export function buildAssetsTablesAndBars(
   ];
 
   for (let i = 0; i < sortedAssets.length; i++) {
-    const item = sortedAssets[i];
+    const item = sortedAssets[i]!;
     const color = colors[i % colors.length];
     const widthFact = Math.min(100, Math.max(0, item.currentPercent * 4));
-    const widthTarget = Math.min(100, Math.max(0, (item.targetPercent ?? 0) * 4));
+    const widthTarget = Math.min(
+      100,
+      Math.max(0, (item.targetPercent ?? 0) * 4),
+    );
 
     barRows +=
       "<div class='asset-bars'>" +
@@ -282,13 +289,12 @@ export function buildAssetsTablesAndBars(
       !isPriceUnknown && currentPrice > 0 && balancePrice > 0
         ? ((currentPrice - balancePrice) / balancePrice) * 100
         : 0;
-    const pnlColor = pnlPercent > 0
-      ? '#56d364'
-      : pnlPercent < 0
-        ? '#ff7b72'
-        : '#e3b341';
-    const pnlDirection = pnlPercent > 0 ? 'up' : pnlPercent < 0 ? 'down' : 'same';
-    const pnlArrow = pnlDirection === 'up' ? '↑' : pnlDirection === 'down' ? '↓' : '↔';
+    const pnlColor =
+      pnlPercent > 0 ? '#56d364' : pnlPercent < 0 ? '#ff7b72' : '#e3b341';
+    const pnlDirection =
+      pnlPercent > 0 ? 'up' : pnlPercent < 0 ? 'down' : 'same';
+    const pnlArrow =
+      pnlDirection === 'up' ? '↑' : pnlDirection === 'down' ? '↓' : '↔';
 
     tableRows +=
       '<tr>' +
@@ -309,25 +315,43 @@ export function buildAssetsTablesAndBars(
       "<td><span class='status-badge status-" +
       (item.status === 'EXIT' ? 'EXIT' : item.status) +
       "'>" +
-      (item.status === 'EXIT' ? 'ВЫХОД' : item.status === 'NO_TARGET' ? 'БЕЗ ЦЕЛИ' : item.status) +
+      (item.status === 'EXIT'
+        ? 'ВЫХОД'
+        : item.status === 'NO_TARGET'
+          ? 'БЕЗ ЦЕЛИ'
+          : item.status) +
       '</span></td>' +
-      "<td class='price-info price-direction--" + pnlDirection + "'>" +
+      "<td class='price-info price-direction--" +
+      pnlDirection +
+      "'>" +
       "<div class='price-pair'>" +
       "<span class='price-entry'>" +
       (balancePrice > 0
-        ? balancePrice.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽'
+        ? balancePrice.toLocaleString('ru-RU', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          }) + ' ₽'
         : '—') +
       '</span>' +
       "<span class='price-current'>" +
       (currentPrice > 0
-        ? currentPrice.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽'
+        ? currentPrice.toLocaleString('ru-RU', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          }) + ' ₽'
         : '—') +
       '</span>' +
       '</div>' +
-      "<span class='price-arrow'>" + pnlArrow + '</span>' +
+      "<span class='price-arrow'>" +
+      pnlArrow +
+      '</span>' +
       '</td>' +
-      "<td class='pnl-cell' style='color: " + pnlColor + ";'>" +
-      "<span class='pnl-arrow'>" + pnlArrow + '</span>' +
+      "<td class='pnl-cell' style='color: " +
+      pnlColor +
+      ";'>" +
+      "<span class='pnl-arrow'>" +
+      pnlArrow +
+      '</span>' +
       "<span class='pnl-pct'>" +
       (isPriceUnknown || currentPrice === 0 || balancePrice === 0
         ? '—'
@@ -384,7 +408,7 @@ export function buildAssetsTablesAndBars(
   }
 
   if (buyAssets.length > 0) {
-    const topBuy = buyAssets[0];
+    const topBuy = buyAssets[0]!;
     const topTargetPct = topBuy.targetPercent ?? 0;
     const totalDeficit = buyAssets
       .reduce((sum, a) => sum + a.deficitRub, 0)
@@ -448,9 +472,7 @@ export interface QuotesBlockResult {
  * Генерация блока "Котировки акций" с таблицей всех акций
  * и мини-блоками топ/антитоп
  */
-export function buildQuotesBlock(
-  quotes: StockQuote[],
-): QuotesBlockResult {
+export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
   let quotesTableRows = '';
   let topGainers = '';
   let topLosers = '';
@@ -468,16 +490,18 @@ export function buildQuotesBlock(
 
   // Генерация строк таблицы
   for (const quote of quotes) {
-    const color = quote.dailyDynamicsPercent > 0
-      ? '#56d364'
-      : quote.dailyDynamicsPercent < 0
-        ? '#ff7b72'
-        : '#e3b341';
-    const arrow = quote.dailyDynamicsPercent > 0
-      ? '↑'
-      : quote.dailyDynamicsPercent < 0
-        ? '↓'
-        : '↔';
+    const color =
+      quote.dailyDynamicsPercent > 0
+        ? '#56d364'
+        : quote.dailyDynamicsPercent < 0
+          ? '#ff7b72'
+          : '#e3b341';
+    const arrow =
+      quote.dailyDynamicsPercent > 0
+        ? '↑'
+        : quote.dailyDynamicsPercent < 0
+          ? '↓'
+          : '↔';
 
     quotesTableRows +=
       '<tr>' +
@@ -486,14 +510,23 @@ export function buildQuotesBlock(
       '</strong></td>' +
       "<td class='quote-price'>" +
       (quote.currentPrice > 0
-        ? quote.currentPrice.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ₽'
+        ? quote.currentPrice.toLocaleString('ru-RU', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          }) + ' ₽'
         : '—') +
       '</td>' +
-      "<td class='quote-dynamics' style='color: " + color + ";'>" +
-      "<span class='quote-arrow'>" + arrow + '</span>' +
+      "<td class='quote-dynamics' style='color: " +
+      color +
+      ";'>" +
+      "<span class='quote-arrow'>" +
+      arrow +
+      '</span>' +
       "<span class='quote-value'>" +
       (quote.dailyDynamicsPercent !== 0
-        ? (quote.dailyDynamicsPercent > 0 ? '+' : '') + quote.dailyDynamicsPercent.toFixed(2) + '%'
+        ? (quote.dailyDynamicsPercent > 0 ? '+' : '') +
+          quote.dailyDynamicsPercent.toFixed(2) +
+          '%'
         : '0.00%') +
       '</span>' +
       '</td>' +
@@ -513,7 +546,9 @@ export function buildQuotesBlock(
         quote.shortName +
         '</span>' +
         "<span class='quote-item-value' style='color: #56d364;'>" +
-        '+' + quote.dailyDynamicsPercent.toFixed(2) + '%' +
+        '+' +
+        quote.dailyDynamicsPercent.toFixed(2) +
+        '%' +
         '</span>' +
         '</div>';
     });
@@ -533,7 +568,8 @@ export function buildQuotesBlock(
         quote.shortName +
         '</span>' +
         "<span class='quote-item-value' style='color: #ff7b72;'>" +
-        quote.dailyDynamicsPercent.toFixed(2) + '%' +
+        quote.dailyDynamicsPercent.toFixed(2) +
+        '%' +
         '</span>' +
         '</div>';
     });

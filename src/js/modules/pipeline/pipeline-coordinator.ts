@@ -6,13 +6,25 @@ import type {
 } from './agent/types.js';
 import { createPipelineState } from './agent/types.js';
 import { DataAgent, type DataAgentOutput } from './agents/data-agent.js';
-import { ResearchAgent, type ResearchAgentOutput } from './agents/research-agent.js';
-import { AnalysisAgent, type AnalysisAgentOutput } from './agents/analysis-agent.js';
+import {
+  ResearchAgent,
+  type ResearchAgentOutput,
+} from './agents/research-agent.js';
+import {
+  AnalysisAgent,
+  type AnalysisAgentOutput,
+} from './agents/analysis-agent.js';
 import { AiAgent, type AiAgentOutput } from './agents/ai-agent.js';
-import { NotificationAgent, type NotificationAgentOutput } from './agents/notification-agent.js';
+import {
+  NotificationAgent,
+  type NotificationAgentOutput,
+} from './agents/notification-agent.js';
 import { ReviewAgent, type ReviewResult } from './review/review-agent.js';
 import { aiMemoryImpl } from './ai-memory/index.js';
 import type { PortfolioKpiSnapshot } from './ai-memory/types.js';
+import { Watchdog } from './watchdog/watchdog.js';
+import type { AgentHealthReport } from './watchdog/types.js';
+import { DEFAULT_THRESHOLDS } from './watchdog/types.js';
 
 // ──────────────────────────────────────────────
 // 1. Pipeline stage definitions
@@ -20,12 +32,7 @@ import type { PortfolioKpiSnapshot } from './ai-memory/types.js';
 
 /** Этап конвейера */
 export type PipelineStage =
-  | 'data'
-  | 'research'
-  | 'analysis'
-  | 'ai'
-  | 'review'
-  | 'notification';
+  'data' | 'research' | 'analysis' | 'ai' | 'review' | 'notification';
 
 /** Результат выполнения одного этапа */
 export interface PipelineStageResult<T = unknown> {
@@ -51,6 +58,8 @@ export interface PipelineResult {
   interactiveOrders?: Array<{ ticker: string; action: string; id: string }>;
   /** Сводки по всем агентам */
   agentSummaries: Record<string, AgentSummary>;
+  /** Отчёт Watchdog о здоровье агентов (если были проверки) */
+  watchdogHealth?: AgentHealthReport;
   /** Успешен ли весь конвейер */
   success: boolean;
   /** Ошибка (если была) */
@@ -70,6 +79,30 @@ export interface PipelineConfig {
   review?: AgentConfig;
   notification?: AgentConfig;
 }
+
+/**
+ * Runtime-опции PipelineCoordinator (DI).
+ * Обе опции опциональны — без них поведение прежнее.
+ */
+export interface PipelineRuntimeOptions {
+  /** Watchdog для мониторинга агентов (по умолчанию создаётся новый) */
+  watchdog?: Watchdog;
+  /**
+   * Колбэк авто-архивации KPI после успешного run().
+   * Например: (result) => savePortfolioKpi(aiMemoryImpl, result).
+   */
+  memorySink?: (result: PipelineResult) => Promise<void> | void;
+}
+
+/** Имя агента для каждого этапа (используется Watchdog'ом) */
+const STAGE_AGENT_NAMES: Record<PipelineStage, string> = {
+  data: 'DataAgent',
+  research: 'ResearchAgent',
+  analysis: 'AnalysisAgent',
+  ai: 'AiAgent',
+  review: 'ReviewAgent',
+  notification: 'NotificationAgent',
+};
 
 /**
  * PipelineCoordinator — оркестратор мультиагентного конвейера.
@@ -109,7 +142,11 @@ export class PipelineCoordinator {
 
   private agentSummaries: Record<string, AgentSummary> = {};
   private reviewResultData: ReviewResult | null = null;
-  private interactiveOrdersData: Array<{ ticker: string; action: string; id: string }> = [];
+  private interactiveOrdersData: Array<{
+    ticker: string;
+    action: string;
+    id: string;
+  }> = [];
 
   /**
    * Сохранить результат этапа в оперативную память ИИ.
@@ -117,7 +154,9 @@ export class PipelineCoordinator {
   private saveToMemory(stage: PipelineStage, data: unknown): void {
     try {
       if (data == null) {
-        console.warn(`[Pipeline] saveToMemory: data is null for stage ${stage}`);
+        console.warn(
+          `[Pipeline] saveToMemory: data is null for stage ${stage}`,
+        );
         return;
       }
       const content = JSON.stringify(data, null, 2).substring(0, 2000);
@@ -159,7 +198,10 @@ export class PipelineCoordinator {
 
       // Получаем данные из sharedData если они есть
       if (this._state.sharedData.portfolio) {
-        const portfolio = this._state.sharedData.portfolio as Record<string, unknown>;
+        const portfolio = this._state.sharedData.portfolio as Record<
+          string,
+          unknown
+        >;
         snapshot.totalValue = (portfolio.totalValue as number) || 0;
         snapshot.returnPercent = (portfolio.returnPercent as number) || 0;
         snapshot.assetCount = (portfolio.assetCount as number) || 0;
@@ -172,8 +214,14 @@ export class PipelineCoordinator {
     }
   }
 
+  private readonly watchdog: Watchdog;
+  private readonly memorySink?: (
+    result: PipelineResult,
+  ) => Promise<void> | void;
+
   constructor(
     private config: PipelineConfig = {},
+    options: PipelineRuntimeOptions = {},
   ) {
     this._state = createPipelineState();
     this.dataAgent = new DataAgent(this.config.data);
@@ -182,6 +230,18 @@ export class PipelineCoordinator {
     this.aiAgent = new AiAgent(this.config.ai);
     this.reviewAgent = new ReviewAgent(this.config.review);
     this.notificationAgent = new NotificationAgent(this.config.notification);
+
+    this.watchdog = options.watchdog ?? new Watchdog({ verbose: false });
+    this.memorySink = options.memorySink;
+
+    // Инциденты только логируются — автоперезапуск VS Code остаётся
+    // ручным режимом (enableVsCodeRestart=false по умолчанию).
+    this.watchdog.onIncident((incident) => {
+      console.warn(
+        `[Pipeline][Watchdog] Инцидент: ${incident.agentName} — ` +
+          `${incident.message} (severity=${incident.severity})`,
+      );
+    });
   }
 
   get state(): PipelineState {
@@ -210,6 +270,9 @@ export class PipelineCoordinator {
     };
     this.agentSummaries = {};
 
+    // Живой мониторинг агентов: сторож стартует на каждый run().
+    this.watchdog.start();
+
     const totalStart = Date.now();
     let error: Error | undefined;
 
@@ -237,20 +300,14 @@ export class PipelineCoordinator {
 
       // ── Stage 2: Research Agent + Analysis Agent (параллельно) ──
       const [researchResult, analysisResult] = await Promise.all([
-        this.runStage<'research', ResearchAgentOutput>(
-          'research',
-          async () => {
-            const result = await this.researchAgent.execute(dataOutput);
-            return result.data as ResearchAgentOutput;
-          },
-        ),
-        this.runStage<'analysis', AnalysisAgentOutput>(
-          'analysis',
-          async () => {
-            const result = await this.analysisAgent.execute(dataOutput);
-            return result.data as AnalysisAgentOutput;
-          },
-        ),
+        this.runStage<'research', ResearchAgentOutput>('research', async () => {
+          const result = await this.researchAgent.execute(dataOutput);
+          return result.data as ResearchAgentOutput;
+        }),
+        this.runStage<'analysis', AnalysisAgentOutput>('analysis', async () => {
+          const result = await this.analysisAgent.execute(dataOutput);
+          return result.data as AnalysisAgentOutput;
+        }),
       ]);
 
       // Проверяем результаты параллельных этапов
@@ -343,17 +400,17 @@ export class PipelineCoordinator {
         : null;
 
       // ── Stage 5: Notification Agent (ждёт data + analysis + ai + review) ──
-      const notificationResult = await this.runStage<'notification', NotificationAgentOutput>(
+      const notificationResult = await this.runStage<
         'notification',
-        async () => {
-          const result = await this.notificationAgent.execute({
-            data: dataOutput,
-            analysis: analysisOutput,
-            ai: aiOutput,
-          });
-          return result.data as NotificationAgentOutput;
-        },
-      );
+        NotificationAgentOutput
+      >('notification', async () => {
+        const result = await this.notificationAgent.execute({
+          data: dataOutput,
+          analysis: analysisOutput,
+          ai: aiOutput,
+        });
+        return result.data as NotificationAgentOutput;
+      });
 
       if (!notificationResult.result.success) {
         error = new Error(
@@ -368,7 +425,15 @@ export class PipelineCoordinator {
       // Извлекаем интерактивные ордера из результата Notification Agent
       const notificationData = notificationResult.result.data;
       if (notificationData && 'interactiveOrders' in notificationData) {
-        const orders = (notificationData as { interactiveOrders: Array<{ ticker: string; action: string; id: string }> }).interactiveOrders;
+        const orders = (
+          notificationData as {
+            interactiveOrders: Array<{
+              ticker: string;
+              action: string;
+              id: string;
+            }>;
+          }
+        ).interactiveOrders;
         this.interactiveOrdersData = orders.map((o) => ({
           ticker: o.ticker,
           action: o.action,
@@ -379,7 +444,21 @@ export class PipelineCoordinator {
       // Сохраняем KPI-снимок в стратегическую память
       this.saveKpiSnapshot();
 
-      return this.buildResult(totalStart);
+      const result = this.buildResult(totalStart);
+
+      // Авто-архивация KPI во внешнюю стратегическую память (DI).
+      // Без memorySink ничего не происходит; падение колбэка не роняет run().
+      if (this.memorySink && result.success) {
+        try {
+          await this.memorySink(result);
+        } catch (sinkErr) {
+          const sinkMsg =
+            sinkErr instanceof Error ? sinkErr.message : String(sinkErr);
+          console.warn(`[Pipeline] Ошибка memorySink: ${sinkMsg}`);
+        }
+      }
+
+      return result;
     } catch (err) {
       error = err instanceof Error ? err : new Error(String(err));
       return this.buildResult(totalStart, error);
@@ -399,6 +478,7 @@ export class PipelineCoordinator {
       this.aiAgent.stop(),
       this.reviewAgent.stop(),
       this.notificationAgent.stop(),
+      this.watchdog.stop(),
     ]);
   }
 
@@ -421,10 +501,28 @@ export class PipelineCoordinator {
     execute: () => Promise<TData>,
   ): Promise<PipelineStageResult<TData>> {
     const stageStart = Date.now();
+    const agentName = STAGE_AGENT_NAMES[stage];
+
+    // Регистрируем агента в Watchdog и ставим текущее задание
+    this.watchdog.registerAgent(agentName);
+    this.watchdog.setAgentTask(
+      agentName,
+      this._state.pipelineId,
+      DEFAULT_THRESHOLDS.timeoutThresholdMs,
+    );
 
     try {
       const data = await execute();
       const durationMs = Date.now() - stageStart;
+
+      // После выполнения — проверка здоровья (регистрация остаётся в отчёте)
+      const check = await this.watchdog.checkAgent(agentName);
+      if (check.status !== 'healthy') {
+        console.warn(
+          `[Pipeline][Watchdog] Агент ${agentName}: статус «${check.status}» ` +
+            `(${check.responseTimeMs}мс)`,
+        );
+      }
 
       const result: PipelineStageResult<TData> = {
         stage,
@@ -445,6 +543,9 @@ export class PipelineCoordinator {
       const durationMs = Date.now() - stageStart;
       const error = err instanceof Error ? err : new Error(String(err));
 
+      // Агент упал — тоже фиксируем проверку здоровья
+      await this.watchdog.checkAgent(agentName);
+
       const result: PipelineStageResult<TData> = {
         stage,
         result: {
@@ -463,12 +564,14 @@ export class PipelineCoordinator {
     }
   }
 
-  private buildResult(
-    totalStart: number,
-    error?: Error,
-  ): PipelineResult {
+  private buildResult(totalStart: number, error?: Error): PipelineResult {
     // Обновляем сводки агентов
     this.agentSummaries = this.getAgentSummaries();
+
+    // Отчёт Watchdog попадает в результат только при реальных проверках
+    const watchdogHealth = this.watchdog.getHealthReport();
+    const healthIncluded =
+      watchdogHealth.agents.length > 0 ? watchdogHealth : undefined;
 
     return {
       pipelineId: this._state.pipelineId,
@@ -477,8 +580,12 @@ export class PipelineCoordinator {
       totalDurationMs: Date.now() - totalStart,
       stages: this.stageResults,
       reviewResult: this.reviewResultData || undefined,
-      interactiveOrders: this.interactiveOrdersData.length > 0 ? this.interactiveOrdersData : undefined,
+      interactiveOrders:
+        this.interactiveOrdersData.length > 0
+          ? this.interactiveOrdersData
+          : undefined,
       agentSummaries: this.agentSummaries,
+      watchdogHealth: healthIncluded,
       success: error === undefined,
       error,
     };

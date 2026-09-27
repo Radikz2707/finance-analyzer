@@ -162,7 +162,9 @@ async function runCleanup(options?: {
     };
 
     console.log(`[MemoryCleaner] Очистка завершена за ${duration}ms`);
-    console.log(`  Оперативная: удалено ${operationalDeleted}, сжато ${operationalArchived}`);
+    console.log(
+      `  Оперативная: удалено ${operationalDeleted}, сжато ${operationalArchived}`,
+    );
     console.log(`  Стратегическая: удалено ${strategicDeleted}`);
 
     setState('idle');
@@ -241,7 +243,8 @@ function checkAndExecuteSchedules(): void {
   for (const schedule of schedules) {
     if (!schedule.enabled) continue;
 
-    const [cronMinute, cronHour, cronDay, , cronDow] = schedule.cron.split(' ');
+    const [cronMinute = '*', cronHour = '*', cronDay = '*', , cronDow = '*'] =
+      schedule.cron.split(' ');
 
     // Простая проверка (без полной поддержки cron)
     const minuteMatch = cronMinute === '*' || parseInt(cronMinute) === minute;
@@ -252,7 +255,10 @@ function checkAndExecuteSchedules(): void {
     if (minuteMatch && hourMatch && dowMatch && dayMatch) {
       console.log(`[MemoryCleaner] Выполнение расписания: ${schedule.name}`);
       runCleanup(schedule.options).catch((err) => {
-        console.error(`[MemoryCleaner] Ошибка выполнения расписания "${schedule.name}":`, err);
+        console.error(
+          `[MemoryCleaner] Ошибка выполнения расписания "${schedule.name}":`,
+          err,
+        );
       });
     }
   }
@@ -290,7 +296,9 @@ function stopScheduler(): void {
  * Добавить расписание.
  * @param schedule — параметры расписания
  */
-function addSchedule(schedule: Omit<CleanupSchedule, 'enabled'> & { enabled?: boolean }): void {
+function addSchedule(
+  schedule: Omit<CleanupSchedule, 'enabled'> & { enabled?: boolean },
+): void {
   schedules.push({
     ...schedule,
     enabled: schedule.enabled ?? true,
@@ -360,11 +368,15 @@ function getStats(): {
  * @returns JSON-строка с историей
  */
 function exportHistory(): string {
-  return JSON.stringify({
-    exportedAt: new Date().toISOString(),
-    schedules,
-    lastResult,
-  }, null, 2);
+  return JSON.stringify(
+    {
+      exportedAt: new Date().toISOString(),
+      schedules,
+      lastResult,
+    },
+    null,
+    2,
+  );
 }
 
 // ──────────────────────────────────────────────

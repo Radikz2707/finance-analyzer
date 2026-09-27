@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+
 import { IssuerFundamentalsProvider } from './issuer-fundamentals-provider.js';
 import type { ResearchAsset } from './types.js';
 import type { IssuerFetcherAdapter, RawIssuerData } from './issuer-fetcher.js';
@@ -229,9 +229,9 @@ describe('Every evidenceId exists', () => {
     if (hasValue(fr.revenue)) {
       for (const id of fr.revenue.evidenceIds) {
         expect(snapshot.evidence[id]).toBeDefined();
-        expect(snapshot.evidence[id].id).toBe(id);
-        expect(snapshot.evidence[id].source).toBe('Finam');
-        expect(snapshot.evidence[id].claim).toBeDefined();
+        expect(snapshot.evidence[id]!.id).toBe(id);
+        expect(snapshot.evidence[id]!.source).toBe('Finam');
+        expect(snapshot.evidence[id]!.claim).toBeDefined();
       }
     }
   });
@@ -261,7 +261,7 @@ describe('Source URL сохранён', () => {
     expect(keys.length).toBeGreaterThan(0);
 
     for (const key of keys) {
-      const ev = snapshot.evidence[key];
+      const ev = snapshot.evidence[key]!;
       expect(ev.source).toBe('Finam');
       expect(ev.url).toBeDefined();
     }
@@ -276,7 +276,7 @@ describe('RetrievedAt сохраняется', () => {
 
     const keys = Object.keys(snapshot.evidence);
     for (const key of keys) {
-      const ev = snapshot.evidence[key];
+      const ev = snapshot.evidence[key]!;
       expect(ev.retrievedAt).toBeDefined();
       expect(typeof ev.retrievedAt).toBe('string');
     }

@@ -55,11 +55,11 @@ export function parseCron(cron: string): CronFields {
   }
 
   return {
-    minute: parseField(parts[0], 0, 59),
-    hour: parseField(parts[1], 0, 23),
-    dayOfMonth: parseField(parts[2], 1, 31),
-    month: parseField(parts[3], 1, 12),
-    dayOfWeek: parseField(parts[4], 0, 6),
+    minute: parseField(parts[0]!, 0, 59),
+    hour: parseField(parts[1]!, 0, 23),
+    dayOfMonth: parseField(parts[2]!, 1, 31),
+    month: parseField(parts[3]!, 1, 12),
+    dayOfWeek: parseField(parts[4]!, 0, 6),
   };
 }
 
@@ -77,8 +77,8 @@ function parseField(
   for (const part of field.split(',')) {
     if (part.includes('-')) {
       const [startStr, endStr] = part.split('-');
-      const start = parseInt(startStr, 10);
-      const end = parseInt(endStr, 10);
+      const start = parseInt(startStr ?? '', 10);
+      const end = parseInt(endStr ?? '', 10);
       if (isNaN(start) || isNaN(end) || start > end) {
         throw new Error(`Invalid range: ${part}`);
       }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+
 import { NotificationEngine } from './notifications.js';
 import type { PipelineResult } from '../pipeline/pipeline-coordinator.js';
 import type { ReviewResult } from '../pipeline/review/review-agent.js';
@@ -136,8 +136,8 @@ describe('NotificationEngine', () => {
 
     // Должен создать алерт для high-предупреждения
     expect(alerts.length).toBeGreaterThanOrEqual(1);
-    expect(alerts[0].type).toBe('alert');
-    expect(alerts[0].severity).toBe('high');
+    expect(alerts[0]!.type).toBe('alert');
+    expect(alerts[0]!.severity).toBe('high');
   });
 
   it('должен сгенерировать утренний дайджест', () => {

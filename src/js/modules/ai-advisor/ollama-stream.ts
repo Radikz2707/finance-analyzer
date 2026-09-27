@@ -92,6 +92,11 @@ export async function streamChat(
           think: false,
           options: {
             num_predict: options.numPredict || 4096,
+            // Явное контекстное окно: без него Ollama берёт дефолт модели
+            // (часто 2048–4096), и длинный промпт + num_predict дают 500
+            // «context length exceeded». 16384 достаточно для промпта ~4-5k
+            // токенов и ответа до 8192.
+            num_ctx: options.numCtx || 16384,
             temperature: options.temperature || 0.3,
             top_p: options.topP || 0.9,
             top_k: options.topK || 40,
@@ -106,9 +111,32 @@ export async function streamChat(
       );
       console.log('[STREAM] axios.post returned');
     } catch (axiosError) {
-      // Убран verbose-лог для защиты от вывода системного промпта
-      // console.error('[AXIOS_ERROR] FULL:', axiosError);
-      console.error('[AXIOS_ERROR] MESSAGE:', axiosError instanceof Error ? axiosError.message : String(axiosError));
+      // Логируем тело ответа — там реальная причина 4xx/5xx от Ollama
+      // (например «context length exceeded» или «model not found»).
+      // Без body диагностировать сбой невозможно.
+      const err = axiosError as Error & {
+        response?: { status?: number; data?: unknown };
+        code?: string;
+      };
+      if (err.response) {
+        let body = '';
+        try {
+          body =
+            typeof err.response.data === 'string'
+              ? err.response.data.slice(0, 500)
+              : JSON.stringify(err.response.data, null, 2).slice(0, 500);
+        } catch {
+          body = '<не удалось сериализовать body>';
+        }
+        console.error(
+          `[AXIOS_ERROR] status=${err.response.status ?? '?'} code=${err.code ?? '-'} body=${body || '<пусто>'}`,
+        );
+      } else {
+        console.error(
+          '[AXIOS_ERROR] MESSAGE:',
+          axiosError instanceof Error ? axiosError.message : String(axiosError),
+        );
+      }
       throw axiosError;
     }
 
@@ -128,7 +156,10 @@ export async function streamChat(
           if (!firstChunkLogged) {
             firstChunkLogged = true;
             console.debug('[OLLAMA_DEBUG] first chunk type:', typeof chunk);
-            console.debug('[OLLAMA_DEBUG] first chunk:', String(chunk).slice(0, 1000));
+            console.debug(
+              '[OLLAMA_DEBUG] first chunk:',
+              String(chunk).slice(0, 1000),
+            );
           }
 
           // Аккумулируем в line buffer
@@ -147,7 +178,10 @@ export async function streamChat(
 
               // Debug: логируем первый распаршенный JSON
               if (chunksReceived === 1 && !firstChunkLogged) {
-                console.debug('[OLLAMA_DEBUG] first parsed JSON keys:', Object.keys(json));
+                console.debug(
+                  '[OLLAMA_DEBUG] first parsed JSON keys:',
+                  Object.keys(json),
+                );
               }
 
               // Добавляем контент к полному ответу
@@ -319,15 +353,18 @@ export function formatStreamStats(result: StreamResult): string {
   }
 
   const timeSeconds = (result.totalDuration / 1_000_000_000).toFixed(2);
-  const tokensPerSecond = result.totalDuration > 0
-    ? (result.totalTokens / (result.totalDuration / 1_000_000_000)).toFixed(1)
-    : '0';
+  const tokensPerSecond =
+    result.totalDuration > 0
+      ? (result.totalTokens / (result.totalDuration / 1_000_000_000)).toFixed(1)
+      : '0';
 
   return [
     '✅ Ответ сгенерирован',
     '📝 Токенов: ' + result.totalTokens,
     '⏱️ Время: ' + timeSeconds + 'с',
     '🚀 Скорость: ' + tokensPerSecond + ' токенов/с',
-    '📊 Загрузка модели: ' + (result.loadDuration / 1_000_000_000).toFixed(2) + 'с',
+    '📊 Загрузка модели: ' +
+      (result.loadDuration / 1_000_000_000).toFixed(2) +
+      'с',
   ].join('\n');
 }

@@ -112,13 +112,18 @@ export class BrowserGateway {
       });
 
       // Ждём запуска
-      const timeout = this.happConfig.startupTimeoutMs ?? DEFAULT_HAPP_TIMEOUT_MS;
+      const timeout =
+        this.happConfig.startupTimeoutMs ?? DEFAULT_HAPP_TIMEOUT_MS;
       await this.sleep(timeout);
 
       if (this.happProcess?.pid) {
         this._state = 'running';
         this.stats.happStarts++;
-        console.log('[BrowserGateway] ✅ happ.exe запущен (PID: ' + this.happProcess.pid + ')');
+        console.log(
+          '[BrowserGateway] ✅ happ.exe запущен (PID: ' +
+            this.happProcess.pid +
+            ')',
+        );
         return true;
       }
 
@@ -219,11 +224,14 @@ export class BrowserGateway {
       // Устанавливаем localStorage если есть
       if (this.browserConfig.localStorage) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (this.page as any).addInitScript((storage: Record<string, string>) => {
-          for (const [key, value] of Object.entries(storage)) {
-            localStorage.setItem(key, value);
-          }
-        }, this.browserConfig.localStorage as Record<string, string>);
+        await (this.page as any).addInitScript(
+          (storage: Record<string, string>) => {
+            for (const [key, value] of Object.entries(storage)) {
+              localStorage.setItem(key, value);
+            }
+          },
+          this.browserConfig.localStorage as Record<string, string>,
+        );
       }
 
       this._state = 'running';
@@ -283,7 +291,7 @@ export class BrowserGateway {
         // Проверка API ключа через простой запрос
         const response = await fetch('https://api.openai.com/v1/models', {
           headers: {
-            'Authorization': `Bearer ${config.apiKey}`,
+            Authorization: `Bearer ${config.apiKey}`,
           },
         });
 
@@ -296,7 +304,9 @@ export class BrowserGateway {
         }
       } else {
         // Для других провайдеров — заглушка
-        console.log(`[BrowserGateway] ⚠️ Авторизация на ${provider} — заглушка`);
+        console.log(
+          `[BrowserGateway] ⚠️ Авторизация на ${provider} — заглушка`,
+        );
         this._state = 'running';
         return true;
       }
@@ -319,7 +329,9 @@ export class BrowserGateway {
 
     try {
       if (!this.aiConfig) {
-        throw new Error('AI provider not configured. Call authenticate() first.');
+        throw new Error(
+          'AI provider not configured. Call authenticate() first.',
+        );
       }
 
       let content: string;
@@ -336,7 +348,8 @@ export class BrowserGateway {
       // Обновляем статистику
       this.stats.successfulRequests++;
       this.stats.avgResponseTimeMs =
-        this.responseTimes.reduce((a, b) => a + b, 0) / this.responseTimes.length;
+        this.responseTimes.reduce((a, b) => a + b, 0) /
+        this.responseTimes.length;
 
       // Извлекаем quality score из ответа если есть
       const qualityScore = this.extractQualityScore(content);
@@ -409,7 +422,7 @@ export class BrowserGateway {
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${this.aiConfig.apiKey}`,
+        Authorization: `Bearer ${this.aiConfig.apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -436,7 +449,7 @@ export class BrowserGateway {
   private extractQualityScore(content: string): number | undefined {
     const match = content.match(/quality[_\s]?score[:\s]*(\d{1,3})/i);
     if (match) {
-      const score = parseInt(match[1], 10);
+      const score = parseInt(match[1] ?? '', 10);
       if (!isNaN(score) && score >= 0 && score <= 100) {
         return score;
       }
@@ -458,7 +471,9 @@ export class BrowserGateway {
         trimmed.startsWith('• ') ||
         trimmed.toLowerCase().startsWith('рекомендация:')
       ) {
-        recommendations.push(trimmed.replace(/^[-*•]\s*/i, '').replace(/^рекомендация:\s*/i, ''));
+        recommendations.push(
+          trimmed.replace(/^[-*•]\s*/i, '').replace(/^рекомендация:\s*/i, ''),
+        );
       }
     }
 

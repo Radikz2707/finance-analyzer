@@ -62,7 +62,10 @@ export class Watchdog {
 
   // Callbacks для интеграции
   private onIncidentDetected?: (incident: IncidentRecord) => void;
-  private onAgentRestartedCallback?: (agentName: string, context?: Record<string, unknown>) => void;
+  private onAgentRestartedCallback?: (
+    agentName: string,
+    context?: Record<string, unknown>,
+  ) => void;
 
   constructor(config?: WatchdogConfig) {
     this.config = {
@@ -71,7 +74,9 @@ export class Watchdog {
       maxRecoveryAttempts: config?.maxRecoveryAttempts ?? 3,
       restartDelayMs: config?.restartDelayMs ?? 2000,
       enableVsCodeRestart: config?.enableVsCodeRestart ?? false,
-      vsCodeRestartCommand: config?.vsCodeRestartCommand ?? 'code --reload-window',
+      vsCodeRestartCommand:
+        config?.vsCodeRestartCommand ?? 'code --reload-window',
+      simulateResponses: config?.simulateResponses ?? false,
       verbose: config?.verbose ?? false,
     };
   }
@@ -86,7 +91,9 @@ export class Watchdog {
   /**
    * Зарегистрировать callback при перезапуске агента.
    */
-  onAgentRestarted(callback: (agentName: string, context?: Record<string, unknown>) => void): void {
+  onAgentRestarted(
+    callback: (agentName: string, context?: Record<string, unknown>) => void,
+  ): void {
     this.onAgentRestartedCallback = callback;
   }
 
@@ -108,7 +115,7 @@ export class Watchdog {
     if (this.config.verbose) {
       console.log(
         `[Watchdog] Started: interval=${this.config.checkIntervalMs}ms, ` +
-        `thresholds=healthy:${this.config.thresholds.healthyMaxMs}ms/slow:${this.config.thresholds.slowThresholdMs}ms/timeout:${this.config.thresholds.timeoutThresholdMs}ms`,
+          `thresholds=healthy:${this.config.thresholds.healthyMaxMs}ms/slow:${this.config.thresholds.slowThresholdMs}ms/timeout:${this.config.thresholds.timeoutThresholdMs}ms`,
       );
     }
   }
@@ -155,7 +162,9 @@ export class Watchdog {
         await this.checkAgent(agentName);
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[Watchdog] Error checking agent ${agentName}: ${errorMsg}`);
+        console.error(
+          `[Watchdog] Error checking agent ${agentName}: ${errorMsg}`,
+        );
       }
     }
   }
@@ -164,13 +173,18 @@ export class Watchdog {
   getHealthReport(): AgentHealthReport {
     const agents = Array.from(this.healthChecks.values());
     const unhealthyAgents = agents.filter(
-      (a) => a.status === 'slow' || a.status === 'timeout' || a.status === 'error',
+      (a) =>
+        a.status === 'slow' || a.status === 'timeout' || a.status === 'error',
     );
 
-    const responseTimes = agents.map((a) => a.responseTimeMs).filter((t) => t > 0);
+    const responseTimes = agents
+      .map((a) => a.responseTimeMs)
+      .filter((t) => t > 0);
     const avgResponseTimeMs =
       responseTimes.length > 0
-        ? Math.round(responseTimes.reduce((sum, t) => sum + t, 0) / responseTimes.length)
+        ? Math.round(
+            responseTimes.reduce((sum, t) => sum + t, 0) / responseTimes.length,
+          )
         : 0;
     const maxResponseTimeMs = Math.max(...responseTimes, 0);
 
@@ -222,7 +236,23 @@ export class Watchdog {
         startedAt: new Date().toISOString(),
         deadlineMs,
       };
+      // Новый запуск — сбрасываем замер прошлого выполнения,
+      // чтобы поллинг во время работы не использовал устаревшие данные.
+      check.lastExecutionTimeMs = undefined;
     }
+  }
+
+  /**
+   * Записать реальное время последнего выполнения агента.
+   * Вызывается координатором сразу после завершения (успех или ошибка),
+   * до вызова checkAgent() — тогда проверка здоровья опирается на факт,
+   * а не на случайную симуляцию.
+   */
+  recordExecutionTime(agentName: string, responseTimeMs: number): void {
+    const check = this.healthChecks.get(agentName);
+    if (!check) return;
+    check.lastExecutionTimeMs = Math.max(0, responseTimeMs);
+    check.lastCheckedAt = new Date().toISOString();
   }
 
   /** Удалить агента из мониторинга */
@@ -238,17 +268,22 @@ export class Watchdog {
   /**
    * Выполнить проверку здоровья агента.
    * Подклассы могут переопределить этот метод.
+   *
+   * В продакшене (simulateResponses=false) использует РЕАЛЬНЫЙ замер
+   * последнего выполнения (recordExecutionTime), а не случайное значение:
+   *  - нет замера → агент считается healthy (не выдумываем таймауты);
+   *  - есть замер → статус по фактическому времени.
+   * Случайная симуляция (getRandomResponseTime) доступна только явно
+   * через конфиг simulateResponses для демо/тестов.
    */
   protected async performHealthCheck(
     agentName: string,
   ): Promise<AgentHealthCheck> {
     const lastCheck = this.healthChecks.get(agentName);
 
-    // Имитация проверки — в реальности здесь будет вызов к агенту
-    // Для примера: случайное время ответа
-    const mockResponseTime = this.getRandomResponseTime(agentName);
-
-    const responseTime = mockResponseTime;
+    const responseTime = this.config.simulateResponses
+      ? this.getRandomResponseTime(agentName)
+      : (lastCheck?.lastExecutionTimeMs ?? 0);
 
     // Определение статуса
     let status: AgentHealthCheck['status'] = 'healthy';
@@ -276,6 +311,24 @@ export class Watchdog {
     agentName: string,
     check: AgentHealthCheck,
   ): Promise<void> {
+    // Дедупликация: поллинг может вызывать проверку каждые checkIntervalMs.
+    // Не плодим пачку одинаковых инцидентов для одного агента — только
+    // один в пределах окна (двойной интервал проверки).
+    const dedupWindowMs = this.config.checkIntervalMs * 2;
+    const lastIncident = this.incidents
+      .filter((i) => i.agentName === agentName)
+      .sort(
+        (a, b) =>
+          new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime(),
+      )[0];
+    if (lastIncident) {
+      const elapsedSinceLast =
+        Date.now() - new Date(lastIncident.occurredAt).getTime();
+      if (elapsedSinceLast < dedupWindowMs) {
+        return;
+      }
+    }
+
     if (this.config.verbose) {
       console.log(`[Watchdog] ⚠️ Timeout detected for agent: ${agentName}`);
     }
@@ -288,7 +341,9 @@ export class Watchdog {
       type: 'timeout',
       severity: 'critical',
       message: `Agent ${agentName} exceeded timeout threshold (${this.config.thresholds.timeoutThresholdMs}ms)`,
-      context: check.currentTask ? { taskId: check.currentTask.taskId } : undefined,
+      context: check.currentTask
+        ? { taskId: check.currentTask.taskId }
+        : undefined,
       recoveryAttempts: 0,
     };
 
@@ -356,11 +411,16 @@ export class Watchdog {
       incident.message += ` — Recovery failed: ${errorMsg}`;
 
       if (this.config.verbose) {
-        console.error(`[Watchdog] ❌ Recovery failed for ${agentName}: ${errorMsg}`);
+        console.error(
+          `[Watchdog] ❌ Recovery failed for ${agentName}: ${errorMsg}`,
+        );
       }
 
       // Если включён перезапуск VS Code
-      if (this.config.enableVsCodeRestart && incident.recoveryAttempts >= this.config.maxRecoveryAttempts) {
+      if (
+        this.config.enableVsCodeRestart &&
+        incident.recoveryAttempts >= this.config.maxRecoveryAttempts
+      ) {
         await this.restartVsCode();
       }
     }
@@ -371,7 +431,9 @@ export class Watchdog {
    */
   private async restartVsCode(): Promise<void> {
     if (this.config.verbose) {
-      console.log(`[Watchdog] 🔄 Restarting VS Code: ${this.config.vsCodeRestartCommand}`);
+      console.log(
+        `[Watchdog] 🔄 Restarting VS Code: ${this.config.vsCodeRestartCommand}`,
+      );
     }
 
     try {

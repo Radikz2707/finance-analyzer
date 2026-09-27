@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+﻿import { describe, it, expect } from 'vitest';
 import { MacroResearchProvider } from './macro-provider.js';
 import type {
   ResearchAsset,
@@ -463,7 +463,7 @@ describe('source URL preserved', () => {
     expect(fx.status).toBe('VALUE');
 
     const evidenceId = fx.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.url).toBe('https://www.cbr-xml-daily.ru/daily_json.js');
     expect(ev.source).toBe('CBR XML-Daily mirror');
   });
@@ -482,7 +482,7 @@ describe('source URL preserved', () => {
     expect(keyRate.status).toBe('VALUE');
 
     const evidenceId = keyRate.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.url).toBe('https://www.cbr.ru/hd_base/KeyRate/');
     expect(ev.source).toBe('Bank of Russia');
   });
@@ -501,7 +501,7 @@ describe('source URL preserved', () => {
     expect(inflation.status).toBe('VALUE');
 
     const evidenceId = inflation.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.url).toBe('https://www.cbr.ru/statistics/ddkp/infl/');
     expect(ev.source).toBe('Bank of Russia');
   });
@@ -720,7 +720,7 @@ describe('derived fields use heuristic source', () => {
     expect(snapshot.macroResearch!.rateRegime.status).toBe('VALUE');
     
     const evidenceId = snapshot.macroResearch!.rateRegime.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.source).toContain('heuristic');
   });
 
@@ -737,7 +737,7 @@ describe('derived fields use heuristic source', () => {
     expect(snapshot.macroResearch!.inflationTrend.status).toBe('VALUE');
     
     const evidenceId = snapshot.macroResearch!.inflationTrend.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.source).toContain('heuristic');
   });
 
@@ -754,7 +754,7 @@ describe('derived fields use heuristic source', () => {
     expect(snapshot.macroResearch!.liquidityRegime.status).toBe('VALUE');
     
     const evidenceId = snapshot.macroResearch!.liquidityRegime.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.source).toContain('heuristic');
   });
 
@@ -771,7 +771,7 @@ describe('derived fields use heuristic source', () => {
     expect(snapshot.macroResearch!.economicCycle.status).toBe('VALUE');
     
     const evidenceId = snapshot.macroResearch!.economicCycle.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.source).toContain('heuristic');
   });
 
@@ -998,7 +998,7 @@ describe('Comprehensive new tests for keyRate/inflation', () => {
 
     const snapshot = await provider.research(createAsset(), createContext());
     const evidenceId = snapshot.macroResearch!.keyRate.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.source).toBe('Bank of Russia');
   });
 
@@ -1009,7 +1009,7 @@ describe('Comprehensive new tests for keyRate/inflation', () => {
 
     const snapshot = await provider.research(createAsset(), createContext());
     const evidenceId = snapshot.macroResearch!.inflation.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.source).toBe('Bank of Russia');
   });
 
@@ -1020,7 +1020,7 @@ describe('Comprehensive new tests for keyRate/inflation', () => {
 
     const snapshot = await provider.research(createAsset(), createContext());
     const evidenceId = snapshot.macroResearch!.keyRate.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.url).toBe('https://www.cbr.ru/hd_base/KeyRate/');
   });
 
@@ -1031,7 +1031,7 @@ describe('Comprehensive new tests for keyRate/inflation', () => {
 
     const snapshot = await provider.research(createAsset(), createContext());
     const evidenceId = snapshot.macroResearch!.inflation.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.url).toBe('https://www.cbr.ru/statistics/ddkp/infl/');
   });
 
@@ -1071,7 +1071,7 @@ describe('Comprehensive new tests for keyRate/inflation', () => {
 
     const snapshot = await provider.research(createAsset(), createContext());
     const evidenceId = snapshot.macroResearch!.fx.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     expect(ev.source).toBe('CBR XML-Daily mirror');
   });
 
@@ -1081,7 +1081,7 @@ describe('Comprehensive new tests for keyRate/inflation', () => {
 
     const snapshot = await provider.research(createAsset(), createContext());
     const evidenceId = snapshot.macroResearch!.fx.evidenceIds![0];
-    const ev = snapshot.evidence[evidenceId];
+    const ev = snapshot.evidence[evidenceId!]!;
     
     // claim не должен содержать "официальный" или "Bank of Russia"
     expect(ev.claim.toLowerCase()).not.toContain('официальный');

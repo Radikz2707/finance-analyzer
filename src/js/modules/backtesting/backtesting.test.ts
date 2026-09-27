@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+
 import { runBacktest } from './backtesting.js';
 import type { PipelineResult } from '../pipeline/pipeline-coordinator.js';
 
@@ -122,8 +122,8 @@ describe('runBacktest', () => {
     const backtestResult = await runBacktest(mockResult, 30);
 
     expect(backtestResult.assetResults.length).toBe(3);
-    expect(backtestResult.assetResults[0].ticker).toBeDefined();
-    expect(backtestResult.assetResults[0].recommendation).toBe('HOLD');
+    expect(backtestResult.assetResults[0]!.ticker).toBeDefined();
+    expect(backtestResult.assetResults[0]!.recommendation).toBe('HOLD');
     expect(backtestResult.overallAccuracy).toBeGreaterThanOrEqual(0);
     expect(backtestResult.overallAccuracy).toBeLessThanOrEqual(100);
     expect(backtestResult.summary).toContain('Backtesting');

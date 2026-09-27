@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+
 import axios from 'axios';
 
 // Изолируем сетевую среду и подменяем ответ от ProxyAPI для GigaChat
@@ -15,7 +15,7 @@ describe('Тестирование модуля интеграции с GigaChat
     };
     vi.mocked(axios.post).mockResolvedValue(mockedResponse);
 
-    expect(mockedResponse.data.choices[0].message.content).toContain(
+    expect(mockedResponse.data.choices![0]!.message.content).toContain(
       'Рекомендации',
     );
   });

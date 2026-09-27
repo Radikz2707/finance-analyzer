@@ -85,9 +85,9 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, mockAssets, 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].status).toBe('EXIT');
+    expect(result.assetsAnalysis[0]!.status).toBe('EXIT');
     // deficitRub = 5% * 100000 = 5000 (нужно продать)
-    expect(result.assetsAnalysis[0].deficitRub).toBe(5000);
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(5000);
   });
 
   it('Должен пропускать активы с target=0 и current=0', () => {
@@ -129,9 +129,9 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, mockAssets, 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].status).toBe('NEW');
+    expect(result.assetsAnalysis[0]!.status).toBe('NEW');
     // deficitRub = 10% * 100000 = 10000 (нужно купить)
-    expect(result.assetsAnalysis[0].deficitRub).toBe(10000);
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(10000);
   });
 
   it('Должен определять статус BUY: target=15, current=10 (deviation=-5 < -2)', () => {
@@ -152,9 +152,9 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, mockAssets, 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].status).toBe('BUY');
+    expect(result.assetsAnalysis[0]!.status).toBe('BUY');
     // deviationPct = 10 - 15 = -5, deficitRub = 5% * 100000 = 5000
-    expect(result.assetsAnalysis[0].deficitRub).toBe(5000);
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(5000);
   });
 
   it('Должен определять статус REDUCE: target=15, current=19 (deviation=+4 > +3)', () => {
@@ -175,9 +175,9 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, mockAssets, 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].status).toBe('REDUCE');
+    expect(result.assetsAnalysis[0]!.status).toBe('REDUCE');
     // deviationPct = 19 - 15 = +4, deficitRub = -4% * 100000 = -4000
-    expect(result.assetsAnalysis[0].deficitRub).toBe(-4000);
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(-4000);
   });
 
   it('Должен определять статус STABLE: target=15, current=14 (deviation=-1, в пределах порогов)', () => {
@@ -198,7 +198,7 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, mockAssets, 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].status).toBe('STABLE');
+    expect(result.assetsAnalysis[0]!.status).toBe('STABLE');
   });
 
   // ─── Тесты для targetPercentConflict и holdOnly ────────────────────────────
@@ -222,7 +222,7 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, mockAssets, 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].status).toBe('HOLD');
+    expect(result.assetsAnalysis[0]!.status).toBe('HOLD');
   });
 
   it('targetPercentConflict=true → статус HOLD (не BUY/REDUCE/EXIT)', () => {
@@ -245,9 +245,9 @@ describe('Инвестиционная математика и жесткие л
 
     expect(result.assetsAnalysis.length).toBe(1);
     // При конфликте target — статус HOLD, deficitRub = 0
-    expect(result.assetsAnalysis[0].status).toBe('HOLD');
-    expect(result.assetsAnalysis[0].targetPercent).toBeUndefined();
-    expect(result.assetsAnalysis[0].deficitRub).toBe(0);
+    expect(result.assetsAnalysis[0]!.status).toBe('HOLD');
+    expect(result.assetsAnalysis[0]!.targetPercent).toBeUndefined();
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(0);
   });
 
   it('no conflict: 15% + 15% → обычный расчёт BUY/REDUCE/STABLE', () => {
@@ -268,7 +268,7 @@ describe('Инвестиционная математика и жесткие л
 
     const math = new PortfolioMathModule();
     const buyResult = math.analyzePortfolio(mockMacro, buyAssets, 100000);
-    expect(buyResult.assetsAnalysis[0].status).toBe('BUY');
+    expect(buyResult.assetsAnalysis[0]!.status).toBe('BUY');
 
     // target=15, current=15 → STABLE
     const stableAssets: CurrentAsset[] = [
@@ -286,7 +286,7 @@ describe('Инвестиционная математика и жесткие л
     ];
 
     const stableResult = math.analyzePortfolio(mockMacro, stableAssets, 100000);
-    expect(stableResult.assetsAnalysis[0].status).toBe('STABLE');
+    expect(stableResult.assetsAnalysis[0]!.status).toBe('STABLE');
 
     // target=15, current=20 → REDUCE
     const reduceAssets: CurrentAsset[] = [
@@ -304,7 +304,7 @@ describe('Инвестиционная математика и жесткие л
     ];
 
     const reduceResult = math.analyzePortfolio(mockMacro, reduceAssets, 100000);
-    expect(reduceResult.assetsAnalysis[0].status).toBe('REDUCE');
+    expect(reduceResult.assetsAnalysis[0]!.status).toBe('REDUCE');
   });
 
   // ─── Тест на разницу bases: liquidation vs cost-basis ──────────────────────
@@ -343,18 +343,18 @@ describe('Инвестиционная математика и жесткие л
     const math = new PortfolioMathModule();
     const result = math.analyzePortfolio(macroWithDifferentBases, asset, liquidationBase);
 
-    expect(result.assetsAnalysis[0].status).toBe('BUY');
+    expect(result.assetsAnalysis[0]!.status).toBe('BUY');
 
     // deviation = 10 - 15 = -5%
     // deficitRub = 5% * 569341.60 = 28467.08 (liquidation basis)
     const expectedDeficit = Math.round(0.05 * 569341.60);
-    expect(result.assetsAnalysis[0].deficitRub).toBe(expectedDeficit);
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(expectedDeficit);
 
     // НЕ 33556.96 (cost-basis)
-    expect(result.assetsAnalysis[0].deficitRub).not.toBe(33557);
+    expect(result.assetsAnalysis[0]!.deficitRub).not.toBe(33557);
 
     // Проверяем точное значение
-    expect(result.assetsAnalysis[0].deficitRub).toBe(28467);
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(28467);
   });
 
   // ─── Тесты для targetPercent undefined / 0 / conflict ──────────────────────
@@ -376,10 +376,10 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, asset, 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].status).toBe('NO_TARGET');
-    expect(result.assetsAnalysis[0].targetPercent).toBeUndefined();
-    expect(result.assetsAnalysis[0].deficitRub).toBe(0);
-    expect(result.assetsAnalysis[0].priority).toBe(0);
+    expect(result.assetsAnalysis[0]!.status).toBe('NO_TARGET');
+    expect(result.assetsAnalysis[0]!.targetPercent).toBeUndefined();
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(0);
+    expect(result.assetsAnalysis[0]!.priority).toBe(0);
   });
 
   it('explicit target 0 → EXIT', () => {
@@ -400,9 +400,9 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, asset, 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].status).toBe('EXIT');
-    expect(result.assetsAnalysis[0].targetPercent).toBe(0);
-    expect(result.assetsAnalysis[0].deficitRub).toBe(10000); // 10% * 100000
+    expect(result.assetsAnalysis[0]!.status).toBe('EXIT');
+    expect(result.assetsAnalysis[0]!.targetPercent).toBe(0);
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(10000); // 10% * 100000
   });
 
   it('target 15 → normal rebalance BUY', () => {
@@ -422,9 +422,9 @@ describe('Инвестиционная математика и жесткие л
     const math = new PortfolioMathModule();
     const result = math.analyzePortfolio(mockMacro, asset, 100000);
 
-    expect(result.assetsAnalysis[0].status).toBe('BUY');
-    expect(result.assetsAnalysis[0].targetPercent).toBe(15);
-    expect(result.assetsAnalysis[0].deficitRub).toBe(5000); // 5% * 100000
+    expect(result.assetsAnalysis[0]!.status).toBe('BUY');
+    expect(result.assetsAnalysis[0]!.targetPercent).toBe(15);
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(5000); // 5% * 100000
   });
 
   it('targetPercentConflict → HOLD → deficitRub = 0', () => {
@@ -445,10 +445,10 @@ describe('Инвестиционная математика и жесткие л
     const math = new PortfolioMathModule();
     const result = math.analyzePortfolio(mockMacro, asset, 100000);
 
-    expect(result.assetsAnalysis[0].status).toBe('HOLD');
-    expect(result.assetsAnalysis[0].targetPercent).toBeUndefined();
-    expect(result.assetsAnalysis[0].deficitRub).toBe(0);
-    expect(result.assetsAnalysis[0].priority).toBe(0);
+    expect(result.assetsAnalysis[0]!.status).toBe('HOLD');
+    expect(result.assetsAnalysis[0]!.targetPercent).toBeUndefined();
+    expect(result.assetsAnalysis[0]!.deficitRub).toBe(0);
+    expect(result.assetsAnalysis[0]!.priority).toBe(0);
   });
 
   it('NO_TARGET не должен влиять на freeStocksPoolPercent', () => {
@@ -504,12 +504,12 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, [bondUnknownNominal], 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].priceUnit).toBe('UNKNOWN');
-    expect(result.assetsAnalysis[0].currentPrice).toBe(0);
+    expect(result.assetsAnalysis[0]!.priceUnit).toBe('UNKNOWN');
+    expect(result.assetsAnalysis[0]!.currentPrice).toBe(0);
     // nominal должен быть undefined → 0 (не 1000!)
-    expect(result.assetsAnalysis[0].nominal).toBe(0);
+    expect(result.assetsAnalysis[0]!.nominal).toBe(0);
     // balancePrice НЕ меняется
-    expect(result.assetsAnalysis[0].balancePrice).toBe(980);
+    expect(result.assetsAnalysis[0]!.balancePrice).toBe(980);
   });
 
   it('bond + nominal known + percent price → correct RUB price, priceUnit = PERCENT_OF_NOMINAL', () => {
@@ -531,11 +531,11 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, [bondKnownNominal], 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].priceUnit).toBe('PERCENT_OF_NOMINAL');
-    expect(result.assetsAnalysis[0].currentPrice).toBe(980);
-    expect(result.assetsAnalysis[0].nominal).toBe(1000);
-    expect(result.assetsAnalysis[0].balancePrice).toBe(970);
-    expect(result.assetsAnalysis[0].status).toBe('BUY');
+    expect(result.assetsAnalysis[0]!.priceUnit).toBe('PERCENT_OF_NOMINAL');
+    expect(result.assetsAnalysis[0]!.currentPrice).toBe(980);
+    expect(result.assetsAnalysis[0]!.nominal).toBe(1000);
+    expect(result.assetsAnalysis[0]!.balancePrice).toBe(970);
+    expect(result.assetsAnalysis[0]!.status).toBe('BUY');
   });
 
   it('stock → priceUnit = RUB, unchanged', () => {
@@ -557,10 +557,10 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, [stock], 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].priceUnit).toBe('RUB');
-    expect(result.assetsAnalysis[0].currentPrice).toBe(280);
-    expect(result.assetsAnalysis[0].balancePrice).toBe(270);
-    expect(result.assetsAnalysis[0].nominal).toBe(0);
+    expect(result.assetsAnalysis[0]!.priceUnit).toBe('RUB');
+    expect(result.assetsAnalysis[0]!.currentPrice).toBe(280);
+    expect(result.assetsAnalysis[0]!.balancePrice).toBe(270);
+    expect(result.assetsAnalysis[0]!.nominal).toBe(0);
   });
 
   it('ETF → priceUnit = RUB, unchanged', () => {
@@ -582,10 +582,10 @@ describe('Инвестиционная математика и жесткие л
     const result = math.analyzePortfolio(mockMacro, [etf], 100000);
 
     expect(result.assetsAnalysis.length).toBe(1);
-    expect(result.assetsAnalysis[0].priceUnit).toBe('RUB');
-    expect(result.assetsAnalysis[0].currentPrice).toBe(110);
-    expect(result.assetsAnalysis[0].balancePrice).toBe(108);
-    expect(result.assetsAnalysis[0].nominal).toBe(0);
+    expect(result.assetsAnalysis[0]!.priceUnit).toBe('RUB');
+    expect(result.assetsAnalysis[0]!.currentPrice).toBe(110);
+    expect(result.assetsAnalysis[0]!.balancePrice).toBe(108);
+    expect(result.assetsAnalysis[0]!.nominal).toBe(0);
   });
 
   it('bond UNKNOWN → P&L расчёт не влияет на balancePrice', () => {
@@ -606,9 +606,9 @@ describe('Инвестиционная математика и жесткие л
 
     const result = math.analyzePortfolio(mockMacro, [bond], 100000);
 
-    expect(result.assetsAnalysis[0].balancePrice).toBe(995.50);
-    expect(result.assetsAnalysis[0].currentPrice).toBe(0);
-    expect(result.assetsAnalysis[0].nominal).toBe(0);
-    expect(result.assetsAnalysis[0].priceUnit).toBe('UNKNOWN');
+    expect(result.assetsAnalysis[0]!.balancePrice).toBe(995.50);
+    expect(result.assetsAnalysis[0]!.currentPrice).toBe(0);
+    expect(result.assetsAnalysis[0]!.nominal).toBe(0);
+    expect(result.assetsAnalysis[0]!.priceUnit).toBe('UNKNOWN');
   });
 });

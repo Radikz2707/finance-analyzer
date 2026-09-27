@@ -17,7 +17,7 @@
  * 13. insufficient evidence → low confidence
  */
 
-import { describe, it, expect } from 'vitest';
+
 import { InvestmentThesisEngine } from '../research/investment-thesis/investment-thesis-engine.js';
 import {
   buildAssetResearchSnapshot,

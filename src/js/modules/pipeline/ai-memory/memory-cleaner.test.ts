@@ -2,7 +2,7 @@
  * Memory Cleaner Tests — тесты для модуля автоматической очистки памяти.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+
 import {
   runCleanup,
   cleanupOperational,
@@ -121,8 +121,8 @@ describe('MemoryCleaner — Расписания', () => {
   it('должна вернуть расписания', () => {
     const schedules = getSchedules();
     expect(schedules.length).toBeGreaterThan(0);
-    expect(schedules[0].name).toBeDefined();
-    expect(schedules[0].cron).toBeDefined();
+    expect(schedules[0]!.name).toBeDefined();
+    expect(schedules[0]!.cron).toBeDefined();
   });
 
   it('должна добавить расписание', () => {

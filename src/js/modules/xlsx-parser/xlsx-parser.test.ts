@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+
 import type { AggregatedAsset } from './xlsx-parser.js';
 
 // Моки создаём через vi.hoisted, чтобы они были доступны в hoisted-фабриках vi.mock
@@ -214,13 +214,13 @@ describe('XlsxParserModule', () => {
       const quotesMap = await parser.parseQuotesSheet();
 
       expect(quotesMap['SBER']).toBeDefined();
-      expect(quotesMap['SBER'].currentPrice).toBe(285);
-      expect(quotesMap['SBER'].dailyDynamicsPercent).toBe(2.5);
-      expect(quotesMap['SBER'].shortName).toBe('Сбербанк');
+      expect(quotesMap['SBER']!.currentPrice).toBe(285);
+      expect(quotesMap['SBER']!.dailyDynamicsPercent).toBe(2.5);
+      expect(quotesMap['SBER']!.shortName).toBe('Сбербанк');
 
       expect(quotesMap['TCSG']).toBeDefined();
-      expect(quotesMap['TCSG'].currentPrice).toBe(1620);
-      expect(quotesMap['TCSG'].dailyDynamicsPercent).toBe(-1.2);
+      expect(quotesMap['TCSG']!.currentPrice).toBe(1620);
+      expect(quotesMap['TCSG']!.dailyDynamicsPercent).toBe(-1.2);
     });
 
     it('должен фильтровать аномальные значения дневной динамики (> 25%)', async () => {
@@ -751,12 +751,13 @@ describe('XlsxParserModule', () => {
       const currentAssets = parser.aggregatedToCurrentAssets(aggregated);
 
       expect(currentAssets).toHaveLength(1);
-      expect(currentAssets[0].ticker).toBe('SBER');
-      expect(currentAssets[0].liquidationPercent).toBe(25);
-      expect(currentAssets[0].targetPercent).toBe(30);
-      expect(currentAssets[0].accountId).toBe('S04J3LB');
-      expect(currentAssets[0].accountType).toBe('IIS');
-      expect(currentAssets[0].holdOnly).toBe(false);
+      const asset1 = currentAssets[0]!;
+      expect(asset1.ticker).toBe('SBER');
+      expect(asset1.liquidationPercent).toBe(25);
+      expect(asset1.targetPercent).toBe(30);
+      expect(asset1.accountId).toBe('S04J3LB');
+      expect(asset1.accountType).toBe('IIS');
+      expect(asset1.holdOnly).toBe(false);
     });
 
     it('должен устанавливать accountId = undefined для агрегированных позиций', () => {
@@ -828,9 +829,10 @@ describe('XlsxParserModule', () => {
       const currentAssets = parser.aggregatedToCurrentAssets(aggregated);
 
       // Позиция на двух счетах → accountId = undefined
-      expect(currentAssets[0].accountId).toBeUndefined();
-      expect(currentAssets[0].accountType).toBeUndefined();
-      expect(currentAssets[0].quantity).toBe(50);
+      const asset2 = currentAssets[0]!;
+      expect(asset2.accountId).toBeUndefined();
+      expect(asset2.accountType).toBeUndefined();
+      expect(asset2.quantity).toBe(50);
     });
   });
 
@@ -1482,7 +1484,8 @@ describe('XlsxParserModule', () => {
       const currentAssets = parser.aggregatedToCurrentAssets(aggregated);
 
       // averageBalancePrice = 28000 / 100 = 280
-      expect(currentAssets[0].balancePrice).toBe(280);
+      const asset3 = currentAssets[0]!;
+      expect(asset3.balancePrice).toBe(280);
     });
   });
 
@@ -1621,8 +1624,9 @@ describe('XlsxParserModule', () => {
 
       const currentAssets = parser.aggregatedToCurrentAssets(aggregated);
 
-      expect(currentAssets[0].quantity).toBe(200);
-      expect(currentAssets[0].liquidationPercent).toBe(25);
+      const asset4 = currentAssets[0]!;
+      expect(asset4.quantity).toBe(200);
+      expect(asset4.liquidationPercent).toBe(25);
     });
   });
 });

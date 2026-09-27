@@ -23,12 +23,7 @@ import type {
   SourceMetadata,
 } from './types.js';
 import type { AssetResearchSnapshot, ResearchEvidence } from '../types.js';
-import {
-  value,
-  noData,
-  pct,
-  raw,
-} from '../helpers.js';
+import { value, noData, pct, raw } from '../helpers.js';
 
 export class MarketDataProvider implements ResearchProvider {
   /** Поддерживает все известные типы активов */
@@ -41,7 +36,8 @@ export class MarketDataProvider implements ResearchProvider {
     asset: ResearchAsset,
     context: ResearchContext,
   ): Promise<AssetResearchSnapshot> {
-    const { researchTimestamp, marketQuotes, macroData, newsData, sources } = context;
+    const { researchTimestamp, marketQuotes, macroData, newsData, sources } =
+      context;
 
     // --- Identity ---
     const identity = {
@@ -58,13 +54,30 @@ export class MarketDataProvider implements ResearchProvider {
 
     // --- Market Research ---
     const quote = marketQuotes[asset.ticker];
-    const marketResearch = this.buildMarketResearch(quote, asset.ticker, sources, researchTimestamp, evidence);
+    const marketResearch = this.buildMarketResearch(
+      quote,
+      asset.ticker,
+      sources,
+      researchTimestamp,
+      evidence,
+    );
 
     // --- Macro Research ---
-    const macroResearch = this.buildMacroResearch(macroData, sources, researchTimestamp, evidence);
+    const macroResearch = this.buildMacroResearch(
+      macroData,
+      sources,
+      researchTimestamp,
+      evidence,
+    );
 
     // --- News Research ---
-    const newsResearch = this.buildNewsResearch(newsData, asset, sources, researchTimestamp, evidence);
+    const newsResearch = this.buildNewsResearch(
+      newsData,
+      asset,
+      sources,
+      researchTimestamp,
+      evidence,
+    );
 
     return {
       identity,
@@ -103,9 +116,17 @@ export class MarketDataProvider implements ResearchProvider {
     return {
       currentPrice: value(quote.currentPrice, {
         unit: 'RUB',
-        evidenceIds: this.registerEvidence('MARKET', `Price ${ticker} = ${quote.currentPrice}`, sources, fetchedAt, evidence),
+        evidenceIds: this.registerEvidence(
+          'MARKET',
+          `Price ${ticker} = ${quote.currentPrice}`,
+          sources,
+          fetchedAt,
+          evidence,
+        ),
       }),
-      priceChange1D: pct(quote.dailyDynamicsPercent != null ? quote.dailyDynamicsPercent : null),
+      priceChange1D: pct(
+        quote.dailyDynamicsPercent != null ? quote.dailyDynamicsPercent : null,
+      ),
       priceChange1W: noData(),
       priceChange1M: noData(),
       priceChangeYTD: noData(),
@@ -127,26 +148,47 @@ export class MarketDataProvider implements ResearchProvider {
     evidence: Record<string, ResearchEvidence>,
   ): import('../types.js').MacroResearch {
     return {
-      keyRate: macro.keyRate != null
-        ? value(macro.keyRate, {
-            unit: '%',
-            evidenceIds: this.registerEvidence('MACRO', `Key rate ${macro.keyRate}%`, sources, fetchedAt, evidence),
-          })
-        : noData(),
+      keyRate:
+        macro.keyRate != null
+          ? value(macro.keyRate, {
+              unit: '%',
+              evidenceIds: this.registerEvidence(
+                'MACRO',
+                `Key rate ${macro.keyRate}%`,
+                sources,
+                fetchedAt,
+                evidence,
+              ),
+            })
+          : noData(),
       inflation: noData(),
       inflationTrend: noData(),
-      fx: macro.fxUsd != null
-        ? value(macro.fxUsd, {
-            unit: 'RUB/USD',
-            evidenceIds: this.registerEvidence('MACRO', `FX USD ${macro.fxUsd}`, sources, fetchedAt, evidence),
-          })
-        : noData(),
-      oil: macro.oil != null
-        ? value(macro.oil, {
-            unit: 'USD/bbl',
-            evidenceIds: this.registerEvidence('MACRO', `Oil ${macro.oil}`, sources, fetchedAt, evidence),
-          })
-        : noData(),
+      fx:
+        macro.fxUsd != null
+          ? value(macro.fxUsd, {
+              unit: 'RUB/USD',
+              evidenceIds: this.registerEvidence(
+                'MACRO',
+                `FX USD ${macro.fxUsd}`,
+                sources,
+                fetchedAt,
+                evidence,
+              ),
+            })
+          : noData(),
+      oil:
+        macro.oil != null
+          ? value(macro.oil, {
+              unit: 'USD/bbl',
+              evidenceIds: this.registerEvidence(
+                'MACRO',
+                `Oil ${macro.oil}`,
+                sources,
+                fetchedAt,
+                evidence,
+              ),
+            })
+          : noData(),
       commodityRegime: noData(),
       liquidityRegime: noData(),
       economicCycle: noData(),
@@ -207,13 +249,14 @@ export class MarketDataProvider implements ResearchProvider {
   ): string[] {
     if (sources.length === 0) return [];
 
-    const id = `${type}-${sources[0].name}-${fetchedAt.slice(0, 10).replace(/-/g, '')}`;
+    const firstSource = sources[0]!;
+    const id = `${type}-${firstSource.name}-${fetchedAt.slice(0, 10).replace(/-/g, '')}`;
 
     if (!evidence[id]) {
       evidence[id] = {
         id,
         type: type as ResearchEvidence['type'],
-        source: sources[0].name,
+        source: firstSource.name,
         url: '',
         publishedAt: fetchedAt,
         retrievedAt: fetchedAt,
@@ -229,10 +272,7 @@ export class MarketDataProvider implements ResearchProvider {
   // Helpers
   // ───────────────────────────────────────────
 
-  private isRelevantToAsset(
-    news: NewsDataItem,
-    asset: ResearchAsset,
-  ): boolean {
+  private isRelevantToAsset(news: NewsDataItem, asset: ResearchAsset): boolean {
     const keywords = [asset.ticker.toLowerCase(), asset.name.toLowerCase()];
     if (asset.issuer) {
       keywords.push(asset.issuer.toLowerCase());
@@ -241,23 +281,28 @@ export class MarketDataProvider implements ResearchProvider {
     return keywords.some((kw) => text.includes(kw));
   }
 
-  private relevanceToImportance(relevance: string): import('../types.js').NewsImportance {
+  private relevanceToImportance(
+    relevance: string,
+  ): import('../types.js').NewsImportance {
     switch (relevance) {
-      case 'high': return 'HIGH';
-      case 'medium': return 'MEDIUM';
-      case 'low': return 'LOW';
-      default: return 'MEDIUM';
+      case 'high':
+        return 'HIGH';
+      case 'medium':
+        return 'MEDIUM';
+      case 'low':
+        return 'LOW';
+      default:
+        return 'MEDIUM';
     }
   }
 
-  private relevanceToSentiment(_relevance: string): import('../types.js').NewsSentiment {
+  private relevanceToSentiment(
+    _relevance: string,
+  ): import('../types.js').NewsSentiment {
     return 'NEUTRAL';
   }
 
-  private computeRelevance(
-    news: NewsDataItem,
-    asset: ResearchAsset,
-  ): number {
+  private computeRelevance(news: NewsDataItem, asset: ResearchAsset): number {
     const keywords = [asset.ticker.toLowerCase(), asset.name.toLowerCase()];
     const text = `${news.title} ${news.summary}`.toLowerCase();
     const matches = keywords.filter((kw) => text.includes(kw)).length;

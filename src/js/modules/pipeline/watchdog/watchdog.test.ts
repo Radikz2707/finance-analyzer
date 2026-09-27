@@ -2,7 +2,7 @@
  * Watchdog Tests — тесты для модуля мониторинга процессов.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+
 import { Watchdog } from './watchdog.js';
 import type { WatchdogConfig, IncidentRecord } from './types.js';
 
@@ -37,14 +37,14 @@ describe('Watchdog', () => {
     watchdog.registerAgent('DataAgent');
     const report = watchdog.getHealthReport();
     expect(report.agents.length).toBe(1);
-    expect(report.agents[0].agentName).toBe('DataAgent');
+    expect(report.agents[0]!.agentName).toBe('DataAgent');
   });
 
   it('должен проверить здоровье агента', async () => {
     watchdog.registerAgent('DataAgent');
     const check = await watchdog.checkAgent('DataAgent');
-    expect(check.agentName).toBe('DataAgent');
-    expect(check.status).toBeDefined();
+    expect(check!.agentName).toBe('DataAgent');
+    expect(check!.status).toBeDefined();
     expect(check.responseTimeMs).toBeGreaterThan(0);
   });
 
@@ -54,7 +54,7 @@ describe('Watchdog', () => {
     watchdog['getRandomResponseTime'] = () => 1000; // healthy
     
     const check = await watchdog.checkAgent('DataAgent');
-    expect(check.status).toBe('healthy');
+    expect(check!.status).toBe('healthy');
   });
 
   it('должен определить slow статус', async () => {
@@ -62,8 +62,8 @@ describe('Watchdog', () => {
     
     watchdog['getRandomResponseTime'] = () => 8000; // slow
     
-    const check = await watchdog.checkAgent('DataAgent');
-    expect(check.status).toBe('slow');
+    const check = await watchdog.checkAgent('DataAgent')!;
+    expect(check!.status).toBe('slow');
   });
 
   it('должен определить timeout статус', async () => {
@@ -72,7 +72,7 @@ describe('Watchdog', () => {
     watchdog['getRandomResponseTime'] = () => 50000; // timeout
     
     const check = await watchdog.checkAgent('DataAgent');
-    expect(check.status).toBe('timeout');
+    expect(check!.status).toBe('timeout');
   });
 
   it('должен создать инцидент при timeout', async () => {
@@ -112,7 +112,7 @@ describe('Watchdog', () => {
     watchdog.registerAgent('DataAgent');
     watchdog.setAgentTask('DataAgent', 'task-123', 30000);
     
-    const check = watchdog.getHealthReport().agents[0];
+    const check = watchdog.getHealthReport().agents[0]!;
     expect(check.currentTask).toBeDefined();
     expect(check.currentTask!.taskId).toBe('task-123');
     expect(check.currentTask!.deadlineMs).toBe(30000);
@@ -160,7 +160,7 @@ describe('Watchdog', () => {
     
     const incidents = watchdog.getIncidents();
     expect(incidents.length).toBeGreaterThan(0);
-    expect(incidents[0].recoveryAttempts).toBeGreaterThan(0);
+    expect(incidents[0]!.recoveryAttempts).toBeGreaterThan(0);
   });
 
   it('должен ограничить попытки восстановления', async () => {
@@ -178,6 +178,6 @@ describe('Watchdog', () => {
     await limitedWatchdog.checkAgent('DataAgent');
     
     const incidents = limitedWatchdog.getIncidents();
-    expect(incidents[0].recoveryAttempts).toBeLessThanOrEqual(1);
+    expect(incidents[0]!.recoveryAttempts).toBeLessThanOrEqual(1);
   });
 });

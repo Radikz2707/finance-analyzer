@@ -87,6 +87,7 @@ function parseRssXml(xml: string): RawNewsItem[] {
 
   while ((itemMatch = itemRegex.exec(xml)) !== null) {
     const itemXml = itemMatch[1];
+    if (!itemXml) continue;
     const item: RawNewsItem = {
       title: extractTag(itemXml, 'title')?.trim() ?? '',
       link: extractTag(itemXml, 'link')?.trim() ?? '',
@@ -146,7 +147,7 @@ export class NewsFetcher {
         method: 'GET',
         headers: {
           'User-Agent': USER_AGENT,
-          'Accept': 'application/xml, text/xml, */*',
+          Accept: 'application/xml, text/xml, */*',
         },
         signal: controller.signal,
       });

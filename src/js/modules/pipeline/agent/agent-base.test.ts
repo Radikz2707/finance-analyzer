@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+
 import { AgentBase } from './agent-base.js';
 
 // ── Mock agent для тестов ──

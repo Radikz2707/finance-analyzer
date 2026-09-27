@@ -11,6 +11,11 @@ import type { AnalysisAgentOutput } from '../agents/analysis-agent.js';
 import type { AiAgentOutput } from '../agents/ai-agent.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
+import type {
+  ExternalAiProvider,
+  ExternalAiRequest,
+  ExternalAiResponse,
+} from '../browser-gateway/types.js';
 
 // ──────────────────────────────────────────────
 // Constants
@@ -33,7 +38,13 @@ export interface ReviewWarning {
   /** Уровень серьёзности */
   severity: 'low' | 'medium' | 'high';
   /** Тип предупреждения */
-  category: 'risk' | 'opportunity' | 'concentration' | 'diversification' | 'liquidity' | 'valuation';
+  category:
+    | 'risk'
+    | 'opportunity'
+    | 'concentration'
+    | 'diversification'
+    | 'liquidity'
+    | 'valuation';
   /** Текст предупреждения */
   message: string;
 }
@@ -70,6 +81,32 @@ export interface ReviewMetrics {
   timedOutReviewers: number;
 }
 
+/**
+ * Минимальный интерфейс внешнего AI-судьи.
+ *
+ * Намеренно узкий — чтобы не тащить тяжёлый BrowserGateway в тесты.
+ * Реальная обёртка создаётся фабрикой createExternalAiJudge().
+ */
+export interface ExternalAiJudge {
+  /** Провайдер (для отчёта в externalVerdict) */
+  provider?: ExternalAiProvider;
+  /** Отправить запрос внешнему судье */
+  request(req: ExternalAiRequest): Promise<ExternalAiResponse>;
+}
+
+/**
+ * Совещательный вердикт внешнего судьи.
+ * НЕ блокирует success — только информирует директора.
+ */
+export interface ExternalVerdict {
+  /** Провайдер вердикта */
+  provider: string;
+  /** Краткая сводка ответа */
+  summary: string;
+  /** Совещательный статус */
+  status: 'approved' | 'warning' | 'rejected';
+}
+
 /** Итоговый результат review */
 export interface ReviewResult {
   /** Результаты всех 3 ревизоров */
@@ -84,6 +121,8 @@ export interface ReviewResult {
   reviewedAt: string;
   /** Метрики производительности */
   metrics: ReviewMetrics;
+  /** Вердикт внешнего AI-судьи (опционально, совещательный) */
+  externalVerdict?: ExternalVerdict;
 }
 
 // ──────────────────────────────────────────────
@@ -94,40 +133,38 @@ export interface ReviewResult {
  * Review Agent — запускает 3 ревизора параллельно и агрегирует результаты.
  */
 export class ReviewAgent extends AgentBase {
-  constructor(config?: AgentConfig) {
+  private readonly externalJudge?: ExternalAiJudge;
+
+  constructor(config?: AgentConfig, externalJudge?: ExternalAiJudge) {
     super(config ?? { name: 'ReviewAgent' });
+    this.externalJudge = externalJudge;
   }
 
-  protected async executeInternal(
-    input: {
-      data: DataAgentOutput;
-      analysis: AnalysisAgentOutput;
-      ai: AiAgentOutput;
-    },
-  ): Promise<ReviewResult> {
+  protected async executeInternal(input: {
+    data: DataAgentOutput;
+    analysis: AnalysisAgentOutput;
+    ai: AiAgentOutput;
+  }): Promise<ReviewResult> {
     console.log('[ReviewAgent] >>> Запуск review-агентов параллельно');
 
     const { data, analysis, ai } = input;
     const reviewStart = Date.now();
 
     // Запускаем 3 ревизора параллельно с изоляцией ошибок и таймаутами
-    const [conservativeResult, aggressiveResult, riskManagerResult] = await Promise.all([
-      this.runReviewerWithTimeout(
-        'conservative',
-        'Консервативный ревизор',
-        () => this.runConservativeReviewer(data, analysis, ai),
-      ),
-      this.runReviewerWithTimeout(
-        'aggressive',
-        'Агрессивный ревизор',
-        () => this.runAggressiveReviewer(data, analysis, ai),
-      ),
-      this.runReviewerWithTimeout(
-        'risk_manager',
-        'Risk Manager',
-        () => this.runRiskManagerReviewer(data, analysis, ai),
-      ),
-    ]);
+    const [conservativeResult, aggressiveResult, riskManagerResult] =
+      await Promise.all([
+        this.runReviewerWithTimeout(
+          'conservative',
+          'Консервативный ревизор',
+          () => this.runConservativeReviewer(data, analysis, ai),
+        ),
+        this.runReviewerWithTimeout('aggressive', 'Агрессивный ревизор', () =>
+          this.runAggressiveReviewer(data, analysis, ai),
+        ),
+        this.runReviewerWithTimeout('risk_manager', 'Risk Manager', () =>
+          this.runRiskManagerReviewer(data, analysis, ai),
+        ),
+      ]);
 
     // Агрегируем результаты
     const reviewers = new Map<ReviewerType, ReviewerResult>();
@@ -145,12 +182,16 @@ export class ReviewAgent extends AgentBase {
         aggressive: aggressiveResult.durationMs,
         risk_manager: riskManagerResult.durationMs,
       },
-      successfulReviewers: [conservativeResult, aggressiveResult, riskManagerResult].filter(
-        (r) => !r.timedOut,
-      ).length,
-      timedOutReviewers: [conservativeResult, aggressiveResult, riskManagerResult].filter(
-        (r) => r.timedOut,
-      ).length,
+      successfulReviewers: [
+        conservativeResult,
+        aggressiveResult,
+        riskManagerResult,
+      ].filter((r) => !r.timedOut).length,
+      timedOutReviewers: [
+        conservativeResult,
+        aggressiveResult,
+        riskManagerResult,
+      ].filter((r) => r.timedOut).length,
     };
 
     // Вычисляем согласие между ревизорами (исключаем таймаутнутых)
@@ -159,7 +200,8 @@ export class ReviewAgent extends AgentBase {
       aggressiveResult,
       riskManagerResult,
     );
-    const hasDisagreement = agreementPercent < 80 || metrics.timedOutReviewers > 0;
+    const hasDisagreement =
+      agreementPercent < 80 || metrics.timedOutReviewers > 0;
 
     // Формируем итоговую рекомендацию
     const finalRecommendation = this.buildFinalRecommendation(
@@ -171,11 +213,23 @@ export class ReviewAgent extends AgentBase {
 
     console.log(
       `[ReviewAgent] ✅ Review завершён: согласие=${agreementPercent}%, ` +
-      `расхождения=${hasDisagreement ? 'ДА' : 'НЕТ'}, ` +
-      `время=${totalDurationMs}мс, ` +
-      `успешных=${metrics.successfulReviewers}, ` +
-      `таймаутов=${metrics.timedOutReviewers}`,
+        `расхождения=${hasDisagreement ? 'ДА' : 'НЕТ'}, ` +
+        `время=${totalDurationMs}мс, ` +
+        `успешных=${metrics.successfulReviewers}, ` +
+        `таймаутов=${metrics.timedOutReviewers}`,
     );
+
+    // ── Внешний AI-судья (опционально, совещательный статус) ──
+    // Любая ошибка → no-op: итоговый success НЕ меняется.
+    const externalVerdict = this.externalJudge
+      ? await this.runExternalJudge(this.externalJudge, {
+          agreementPercent,
+          hasDisagreement,
+          finalRecommendation,
+          reviewers,
+          metrics,
+        })
+      : undefined;
 
     return {
       reviewers,
@@ -184,6 +238,7 @@ export class ReviewAgent extends AgentBase {
       finalRecommendation,
       reviewedAt: new Date().toISOString(),
       metrics,
+      externalVerdict,
     };
   }
 
@@ -211,9 +266,7 @@ export class ReviewAgent extends AgentBase {
 
       const durationMs = Date.now() - startTime;
 
-      console.log(
-        `[ReviewAgent] ✅ ${name} завершён за ${durationMs}мс`,
-      );
+      console.log(`[ReviewAgent] ✅ ${name} завершён за ${durationMs}мс`);
 
       return {
         ...resolved,
@@ -221,7 +274,8 @@ export class ReviewAgent extends AgentBase {
         timedOut: false,
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
 
       console.warn(
         `[ReviewAgent] ⚠️ ${reviewerType} завершён с ошибкой: ${errorMessage}`,
@@ -275,7 +329,10 @@ export class ReviewAgent extends AgentBase {
     }
 
     // Проверяем свободные средства
-    if (macroGoals.freeCash > 0 && macroGoals.freeCash < macroGoals.totalBalance * 0.01) {
+    if (
+      macroGoals.freeCash > 0 &&
+      macroGoals.freeCash < macroGoals.totalBalance * 0.01
+    ) {
       warnings.push({
         severity: 'medium',
         category: 'liquidity',
@@ -287,13 +344,15 @@ export class ReviewAgent extends AgentBase {
       reviewerType: 'conservative',
       name: 'Консервативный ревизор',
       warnings,
-      recommendations: warnings.length > 0
-        ? 'Рекомендую снизить риски: диверсифицировать концентрацию, увеличить резерв'
-        : 'Риски приемлемы, но рекомендуется мониторинг',
+      recommendations:
+        warnings.length > 0
+          ? 'Рекомендую снизить риски: диверсифицировать концентрацию, увеличить резерв'
+          : 'Риски приемлемы, но рекомендуется мониторинг',
       confidence: warnings.length === 0 ? 85 : 60,
-      summary: warnings.length === 0
-        ? 'Консервативный анализ: риски минимальны'
-        : `Консервативный анализ: найдено ${warnings.length} предупреждений`,
+      summary:
+        warnings.length === 0
+          ? 'Консервативный анализ: риски минимальны'
+          : `Консервативный анализ: найдено ${warnings.length} предупреждений`,
       durationMs: 0,
       timedOut: false,
     };
@@ -335,13 +394,15 @@ export class ReviewAgent extends AgentBase {
       reviewerType: 'aggressive',
       name: 'Агрессивный ревизор',
       warnings,
-      recommendations: warnings.length > 0
-        ? `Возможности для роста: ${warnings.filter((w) => w.category === 'opportunity').length} активов`
-        : 'Не вижу явных возможностей для агрессивной стратегии',
+      recommendations:
+        warnings.length > 0
+          ? `Возможности для роста: ${warnings.filter((w) => w.category === 'opportunity').length} активов`
+          : 'Не вижу явных возможностей для агрессивной стратегии',
       confidence: 70,
-      summary: warnings.length === 0
-        ? 'Агрессивный анализ: явных возможностей нет'
-        : `Агрессивный анализ: найдено ${warnings.length} возможностей`,
+      summary:
+        warnings.length === 0
+          ? 'Агрессивный анализ: явных возможностей нет'
+          : `Агрессивный анализ: найдено ${warnings.length} возможностей`,
       durationMs: 0,
       timedOut: false,
     };
@@ -405,6 +466,107 @@ export class ReviewAgent extends AgentBase {
     };
   }
 
+  // ── External AI Judge ──
+
+  /**
+   * Запросить внешнего AI-судью (совещательно).
+   * Все вызовы в try/catch: падение судьи не влияет на success.
+   */
+  private async runExternalJudge(
+    judge: ExternalAiJudge,
+    reviewContext: {
+      agreementPercent: number;
+      hasDisagreement: boolean;
+      finalRecommendation: string;
+      reviewers: Map<ReviewerType, ReviewerResult>;
+      metrics: ReviewMetrics;
+    },
+  ): Promise<ExternalVerdict | undefined> {
+    try {
+      const request: ExternalAiRequest = {
+        task: 'judge',
+        input: {
+          agreementPercent: reviewContext.agreementPercent,
+          hasDisagreement: reviewContext.hasDisagreement,
+          finalRecommendation: reviewContext.finalRecommendation,
+          reviewers: Array.from(reviewContext.reviewers.values()).map((r) => ({
+            reviewerType: r.reviewerType,
+            name: r.name,
+            summary: r.summary,
+            confidence: r.confidence,
+            warnings: r.warnings.map((w) => w.message).slice(0, 20),
+          })),
+        },
+        context: {
+          totalDurationMs: reviewContext.metrics.totalDurationMs,
+          successfulReviewers: reviewContext.metrics.successfulReviewers,
+          timedOutReviewers: reviewContext.metrics.timedOutReviewers,
+        },
+      };
+
+      const response = await judge.request(request);
+
+      if (!response || !response.success) {
+        console.warn(
+          '[ReviewAgent] ⚠️ Внешний судья вернул ошибку (no-op): ' +
+            `${response?.error ?? 'empty response'}`,
+        );
+        return undefined;
+      }
+
+      const status = this.interpretExternalVerdict(response);
+      const summary =
+        response.content.trim().slice(0, 1000) ||
+        (response.recommendations ?? []).join('; ') ||
+        'Внешний судья: вердикт без текста';
+
+      console.log(
+        `[ReviewAgent] 🧑‍⚖️ Внешний судья: ${status} ` +
+          `(${response.modelUsed}, ${response.durationMs}ms)`,
+      );
+
+      return {
+        provider: judge.provider ?? 'custom',
+        summary,
+        status,
+      };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[ReviewAgent] ⚠️ Внешний судья недоступен (no-op): ${errorMsg}`,
+      );
+      return undefined;
+    }
+  }
+
+  /** Интерпретация вердикта внешнего судьи из ответа */
+  private interpretExternalVerdict(
+    response: ExternalAiResponse,
+  ): ExternalVerdict['status'] {
+    if (response.qualityScore !== undefined) {
+      if (response.qualityScore >= 80) return 'approved';
+      if (response.qualityScore >= 50) return 'warning';
+      return 'rejected';
+    }
+
+    const text = response.content.toLowerCase();
+    if (
+      text.includes('одобр') ||
+      text.includes('approved') ||
+      text.includes('позитив')
+    ) {
+      return 'approved';
+    }
+    if (
+      text.includes('отклон') ||
+      text.includes('reject') ||
+      text.includes('критич')
+    ) {
+      return 'rejected';
+    }
+    return 'warning';
+  }
+
   // ── Helpers ──
 
   private calculateAgreement(
@@ -414,7 +576,10 @@ export class ReviewAgent extends AgentBase {
   ): number {
     // Простая эвристика: считаем совпадение confidence
     const avgConfidence =
-      (conservative.confidence + aggressive.confidence + riskManager.confidence) / 3;
+      (conservative.confidence +
+        aggressive.confidence +
+        riskManager.confidence) /
+      3;
 
     // Если все confidence > 70% — согласие высокое
     if (
@@ -431,7 +596,9 @@ export class ReviewAgent extends AgentBase {
       ...aggressive.warnings,
       ...riskManager.warnings,
     ];
-    const highSeverityCount = allWarnings.filter((w) => w.severity === 'high').length;
+    const highSeverityCount = allWarnings.filter(
+      (w) => w.severity === 'high',
+    ).length;
 
     if (highSeverityCount > 2) {
       return 50;

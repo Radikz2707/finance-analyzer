@@ -32,6 +32,7 @@
     "push": "git add . && read -p 'Commit message: ' msg && git commit -m \"$msg\" && git push",
     "push:main": "git add . && git commit -m \"Updates\" && git push origin main",
     "cache:clear-ai": "node --import tsx scripts/clear-ai-cache.ts",
+    "harness": "node --import tsx scripts/harness-start.ts",
     "pipeline": "node --import tsx pipeline.ts run",
     "pipeline:schedule": "node --import tsx pipeline.ts schedule"
   },

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+
 import {
   suggestAllAutoTargets,
 } from './auto-target-allocator.js';
@@ -53,8 +53,8 @@ describe('Regression: auto-target-allocator semantics', () => {
     const results = suggestAllAutoTargets(assets, macroStocksPct, macroBondsPct);
 
     expect(results).toHaveLength(1);
-    expect(results[0].ticker).toBe('NOMACRO');
-    expect(results[0].suggestedTargetPercent).toBeGreaterThan(0);
+    expect(results[0]!.ticker).toBe('NOMACRO');
+    expect(results[0]!.suggestedTargetPercent).toBeGreaterThan(0);
   });
 
   // 3. target=0 остаётся EXIT (не получает suggestedTargetPercent)
@@ -166,7 +166,7 @@ describe('Regression: auto-target-allocator semantics', () => {
 
     // Только актив без цели должен попасть в auto-target
     expect(autoTargets).toHaveLength(1);
-    expect(autoTargets[0].ticker).toBe('NO_TARGET_ASSET');
+    expect(autoTargets[0]!.ticker).toBe('NO_TARGET_ASSET');
 
     // EXIT-актив не должен быть в результатах
     const exitFound = autoTargets.find((r) => r.ticker === 'EXIT_ASSET');

@@ -8,7 +8,7 @@
  *  4. Полную пост-обработку
  */
 
-import { describe, it, expect } from 'vitest';
+
 import {
   validateDirections,
   removeHallucinatedData,
@@ -78,9 +78,9 @@ describe('validateDirections', () => {
 
     expect(result.valid).toBe(false);
     expect(result.discrepancies).toHaveLength(1);
-    expect(result.discrepancies[0].ticker).toBe('SBER');
-    expect(result.discrepancies[0].portfolioMathStatus).toBe('BUY');
-    expect(result.discrepancies[0].severity).toBe('medium');
+    expect(result.discrepancies[0]!.ticker).toBe('SBER');
+    expect(result.discrepancies[0]!.portfolioMathStatus).toBe('BUY');
+    expect(result.discrepancies[0]!.severity).toBe('medium');
   });
 
   it('должна обнаруживать конфликт EXIT vs докупка', () => {
@@ -140,7 +140,7 @@ describe('removeHallucinatedData', () => {
     expect(result.cleanedText).not.toContain('1012.22');
     expect(result.cleanedText).toContain('[ДАННЫЕ_УДАЛЕНЫ]');
     expect(result.removedHallucinations).toHaveLength(1);
-    expect(result.removedHallucinations[0].type).toBe('price');
+    expect(result.removedHallucinations[0]!.type).toBe('price');
   });
 
   it('должна удалять "по цене [число] ₽"', () => {
@@ -157,7 +157,7 @@ describe('removeHallucinatedData', () => {
 
     expect(result.cleanedText).not.toContain('17 304');
     expect(result.cleanedText).toContain('[ДАННЫЕ_УДАЛЕНЫ]');
-    expect(result.removedHallucinations[0].type).toBe('amount');
+    expect(result.removedHallucinations[0]!.type).toBe('amount');
   });
 
   it('должна удалять "Рекомендуется продажа по текущей цене"', () => {
@@ -173,7 +173,7 @@ describe('removeHallucinatedData', () => {
     const result = removeHallucinatedData(text);
 
     expect(result.cleanedText).not.toContain('44 266');
-    expect(result.removedHallucinations[0].type).toBe('amount');
+    expect(result.removedHallucinations[0]!.type).toBe('amount');
   });
 
   it('должна удалять "[ТИКЕР] по цене [число]"', () => {
@@ -181,7 +181,7 @@ describe('removeHallucinatedData', () => {
     const result = removeHallucinatedData(text);
 
     expect(result.cleanedText).not.toContain('280');
-    expect(result.removedHallucinations[0].type).toBe('price');
+    expect(result.removedHallucinations[0]!.type).toBe('price');
   });
 
   it('должна удалять "[ТИКЕР]: [число] шт"', () => {
@@ -189,7 +189,7 @@ describe('removeHallucinatedData', () => {
     const result = removeHallucinatedData(text);
 
     expect(result.cleanedText).not.toContain('100 шт');
-    expect(result.removedHallucinations[0].type).toBe('quantity');
+    expect(result.removedHallucinations[0]!.type).toBe('quantity');
   });
 
   it('должна оставлять детерминированные данные без цен/количеств', () => {
@@ -223,7 +223,7 @@ describe('checkExcludedAssets', () => {
 
     expect(result.valid).toBe(false);
     expect(result.foundMentions).toHaveLength(1);
-    expect(result.foundMentions[0].assetName.toLowerCase()).toContain('итого');
+    expect(result.foundMentions[0]!.assetName.toLowerCase()).toContain('итого');
   });
 
   it('должна обнаруживать "Баланс"', () => {

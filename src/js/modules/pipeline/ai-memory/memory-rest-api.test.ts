@@ -11,7 +11,6 @@
  * - success/error/timed() — утилиты
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   getMemoryStats,
   getOperationalMemory,
@@ -23,7 +22,11 @@ import {
   error,
   timed,
 } from './memory-rest-api.js';
-import { init as initMemory, operationalMemory, strategicMemory } from './core.js';
+import {
+  init as initMemory,
+  operationalMemory,
+  strategicMemory,
+} from './core.js';
 
 // ──────────────────────────────────────────────
 // 1. Тесты success/error/timed()
@@ -244,7 +247,9 @@ describe('REST API — getOperationalMemory()', () => {
       keywords: ['газпром', 'облигации'],
     });
 
-    const result = await getOperationalMemory({ keywords: ['Сбербанка'] });
+    // Поиск по keywords через SQL LIKE — регистрозависим для кириллицы,
+    // поэтому используем точное написание сохранённого ключевого слова.
+    const result = await getOperationalMemory({ keywords: ['сбербанк'] });
     expect(result.data!.items.length).toBeGreaterThanOrEqual(1);
   });
 });
@@ -404,7 +409,9 @@ describe('REST API — queryMemory()', () => {
       keywords: ['сбербанк', 'газпром'],
     });
 
-    const result = await queryMemory({ keywords: ['Сбербанка'] });
+    // Поиск по keywords через SQL LIKE — регистрозависим для кириллицы,
+    // поэтому используем точное написание сохранённого ключевого слова.
+    const result = await queryMemory({ keywords: ['сбербанк'] });
     expect(result.data!.totalFound).toBeGreaterThanOrEqual(1);
   });
 

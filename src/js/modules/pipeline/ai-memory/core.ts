@@ -29,7 +29,11 @@ import {
   DEFAULT_MAX_STRATEGIC_ENTRIES,
   DEFAULT_KPI_ARCHIVE_INTERVAL_DAYS,
 } from './types';
-import { createDatabase, initializeMemoryTables, parseOperationalRow } from './database';
+import {
+  createDatabase,
+  initializeMemoryTables,
+  parseOperationalRow,
+} from './database';
 import {
   saveOperational,
   getOperationalRecent,
@@ -89,7 +93,9 @@ export function saveOperationalEntry(
 }
 
 /** Получить запись оперативной памяти по ID */
-export function getOperationalById(id: string): OperationalMemoryEntry | undefined {
+export function getOperationalById(
+  id: string,
+): OperationalMemoryEntry | undefined {
   const stmt = db.prepare('SELECT * FROM ai_operational_memory WHERE id = ?');
   const raw = stmt.get(id) as Record<string, unknown> | undefined;
   if (!raw) return undefined;
@@ -107,12 +113,18 @@ export function getOperationalByTypeList(type: MemoryEntryType, limit = 50) {
 }
 
 /** Искать записи оперативной памяти по ключевым словам */
-export function searchOperationalByKeywordsList(keywords: string[], limit = 50) {
+export function searchOperationalByKeywordsList(
+  keywords: string[],
+  limit = 50,
+) {
   return searchOperationalByKeywords(db, keywords, limit);
 }
 
 /** Получить записи оперативной памяти по приоритету */
-export function getOperationalByPriorityList(priority: 'critical' | 'high' | 'medium' | 'low', limit = 50) {
+export function getOperationalByPriorityList(
+  priority: 'critical' | 'high' | 'medium' | 'low',
+  limit = 50,
+) {
   return getOperationalByPriority(db, priority, limit);
 }
 
@@ -196,7 +208,10 @@ export function countStrategicList(): number {
 
 /** Удалить старые стратегические записи */
 export function cleanupStrategicOldList(daysThreshold?: number): number {
-  return cleanupStrategicOld(db, daysThreshold ?? (config.operationalTtlDays || 14) * 2);
+  return cleanupStrategicOld(
+    db,
+    daysThreshold ?? (config.operationalTtlDays || 14) * 2,
+  );
 }
 
 // ──────────────────────────────────────────────
@@ -225,12 +240,17 @@ export async function query(params: MemoryQuery): Promise<MemoryQueryResult> {
 
     // Запрос к оперативной памяти
     if (!params.strategicOnly) {
-      if (
-        params.types?.includes('conversation') ||
-        params.types?.includes('pipeline_result') ||
-        params.types?.includes('decision') ||
-        params.types?.includes('recommendation')
-      ) {
+      const hasOperationalTypes =
+        params.types === undefined ||
+        params.types.length === 0 ||
+        params.types.some(
+          (t) =>
+            t === 'conversation' ||
+            t === 'pipeline_result' ||
+            t === 'decision' ||
+            t === 'recommendation',
+        );
+      if (hasOperationalTypes) {
         if (params.keywords && params.keywords.length > 0) {
           const results = searchOperationalByKeywordsList(
             params.keywords,
@@ -238,12 +258,21 @@ export async function query(params: MemoryQuery): Promise<MemoryQueryResult> {
           );
           operationalEntries.push(...results);
         } else {
-          const types = params.types || [
-            'conversation',
-            'pipeline_result',
-            'decision',
-            'recommendation',
-          ];
+          const types =
+            params.types && params.types.length > 0
+              ? (params.types.filter(
+                  (t) =>
+                    t === 'conversation' ||
+                    t === 'pipeline_result' ||
+                    t === 'decision' ||
+                    t === 'recommendation',
+                ) as MemoryEntryType[])
+              : ([
+                  'conversation',
+                  'pipeline_result',
+                  'decision',
+                  'recommendation',
+                ] as MemoryEntryType[]);
           for (const type of types) {
             const results = getOperationalByTypeList(
               type,
@@ -257,14 +286,22 @@ export async function query(params: MemoryQuery): Promise<MemoryQueryResult> {
 
     // Запрос к стратегической памяти
     if (!params.operationalOnly) {
-      if (
-        params.types?.includes('kpi_snapshot') ||
-        params.types?.includes('trend_data') ||
-        params.types?.includes('anomaly')
-      ) {
-        const types = params.types.filter(
+      const hasStrategicTypes =
+        params.types === undefined ||
+        params.types.length === 0 ||
+        params.types.some(
           (t) => t === 'kpi_snapshot' || t === 'trend_data' || t === 'anomaly',
-        ) as Array<'kpi_snapshot' | 'trend_data' | 'anomaly'>;
+        );
+      if (hasStrategicTypes) {
+        const types =
+          params.types && params.types.length > 0
+            ? (params.types.filter(
+                (t) =>
+                  t === 'kpi_snapshot' || t === 'trend_data' || t === 'anomaly',
+              ) as Array<'kpi_snapshot' | 'trend_data' | 'anomaly'>)
+            : (['kpi_snapshot', 'trend_data', 'anomaly'] as Array<
+                'kpi_snapshot' | 'trend_data' | 'anomaly'
+              >);
 
         for (const type of types) {
           const results = getStrategicByTypeList(
@@ -511,7 +548,9 @@ export async function exportMarkdown(): Promise<string> {
  * @param format — формат экспорта: 'json' или 'markdown'
  * @returns экспортированные данные
  */
-export async function exportMemory(format: 'json' | 'markdown'): Promise<string> {
+export async function exportMemory(
+  format: 'json' | 'markdown',
+): Promise<string> {
   if (format === 'json') {
     return exportJson();
   } else {
@@ -552,7 +591,8 @@ export function getConfig(): AIMemoryConfig {
  * @param cfg — опциональная конфигурация
  */
 export function init(cfg?: Partial<AIMemoryConfig>): void {
-  const isTest = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
+  const isTest =
+    typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
   if (isTest) {
     db.close();
     db = createDatabase();

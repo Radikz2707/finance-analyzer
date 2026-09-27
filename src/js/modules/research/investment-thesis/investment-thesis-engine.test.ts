@@ -19,7 +19,7 @@
  * 15. generatedAt присутствует и валиден
  */
 
-import { describe, it, expect } from 'vitest';
+
 import { InvestmentThesisEngine } from './investment-thesis-engine.js';
 import type {
   AssetResearchSnapshot,

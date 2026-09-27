@@ -7,8 +7,22 @@ import type { QuikOrder } from '../../xlsx-parser/quik-orders-parser.js';
 import { XlsxParserModule } from '../../xlsx-parser/xlsx-parser.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
-import { Gatekeeper, RssNewsSource, MoexNewsSource } from '../gatekeeper/index.js';
+import {
+  Gatekeeper,
+  RssNewsSource,
+  MoexNewsSource,
+} from '../gatekeeper/index.js';
+import { QuikNewsSource } from '../../quik-gateway/index.js';
 import type { GatekeeperResult } from '../gatekeeper/types.js';
+import { fetchHistoricalBatch } from '../../finam-api/history-provider.js';
+import {
+  AnomalyDetector,
+  MoexQuoteProvider,
+} from '../../python-engine/index.js';
+import type {
+  AnomalyDetectionResult,
+  PriceSeriesInput,
+} from '../../python-engine/types.js';
 
 // ──────────────────────────────────────────────
 // 1. Data Agent output types
@@ -69,6 +83,8 @@ export interface DataAgentOutput {
   investedFunds: InvestedFundsData;
   /** Отфильтрованные новости от Gatekeeper */
   news: GatekeeperResult | null;
+  /** Статистические аномалии цен (Python Engine) */
+  anomalies: AnomalyDetectionResult[];
 }
 
 // ──────────────────────────────────────────────
@@ -131,6 +147,43 @@ export class DataAgent extends AgentBase {
         ]),
     );
 
+    // Шаг 5.1: Резервные котировки MOEX (Python Engine) — дополняем ТОЛЬКО
+    // отсутствующие тикеры. Excel остаётся основным источником; Moex — fallback.
+    // Любая ошибка (нет Python, сеть, пустой ответ) не прерывает конвейер.
+    try {
+      const missingTickers = assets
+        .map((a) => a.ticker.toUpperCase())
+        .filter(
+          (ticker) => !quotes[ticker] || quotes[ticker].currentPrice <= 0,
+        );
+      if (missingTickers.length > 0) {
+        const moexProvider = new MoexQuoteProvider();
+        const moexQuotes = await moexProvider.fetchQuotes(missingTickers);
+        let added = 0;
+        for (const [ticker, quote] of Object.entries(moexQuotes)) {
+          const key = ticker.toUpperCase();
+          if (quote.price > 0 && !quotes[key]) {
+            quotes[key] = {
+              ticker: key,
+              name: key,
+              shortName: key,
+              currentPrice: quote.price,
+              dailyDynamicsPercent: quote.changePct,
+            };
+            added++;
+          }
+        }
+        if (added > 0) {
+          console.log(
+            `[DataAgent] ✅ MOEX fallback: дополнено котировок по ${added} тикерам`,
+          );
+        }
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[DataAgent] ⚠️ MOEX-котировки недоступны: ${errorMsg}`);
+    }
+
     // Шаг 6: Активные заявки QUIK
     const activeOrders = this.parser.parsedActiveOrders;
 
@@ -140,30 +193,74 @@ export class DataAgent extends AgentBase {
     // Шаг 8: Вложенные средства
     const investedFunds = await this.parser.parseInvestedFunds();
 
-    // Шаг 9: Gatekeeper — фильтрация новостей (RSS + MOEX)
+    // Шаг 9: Gatekeeper — фильтрация новостей (RSS + MOEX + QUIK)
     let newsResult: GatekeeperResult | null = null;
     try {
       const monitoredTickers = assets.map((a) => a.ticker);
-      
-      // Создаём оба источника
+
+      // Создаём все источники новостей
       const rssSource = new RssNewsSource();
       const moexSource = new MoexNewsSource({ enabled: true, maxItems: 50 });
-      
+      // QUIK-канал: при недоступности терминала fetch() вернёт [] —
+      // поток данных не прерывается
+      const quikSource = new QuikNewsSource({ enabled: true });
+
       const gatekeeper = new Gatekeeper(
         {
           monitoredTickers,
           verbose: false,
         },
-        [rssSource, moexSource],
+        [rssSource, moexSource, quikSource],
       );
       newsResult = await gatekeeper.run();
       console.log(
         `[DataAgent] ✅ Gatekeeper: ${newsResult.approvedNews.length} новостей одобрено, ` +
-        `${newsResult.filteredOut.total} отфильтровано`,
+          `${newsResult.filteredOut.total} отфильтровано`,
       );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.warn(`[DataAgent] ⚠️ Gatekeeper ошибка: ${errorMsg}`);
+    }
+
+    // Шаг 10: Python Engine — статистические аномалии цен
+    let anomalies: AnomalyDetectionResult[] = [];
+    try {
+      const anomalyTickers = assets.map((a) => a.ticker);
+      const toDate = new Date().toISOString().slice(0, 10);
+      const fromDate = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+
+      const history = await fetchHistoricalBatch(
+        anomalyTickers,
+        fromDate,
+        toDate,
+        'D',
+      );
+
+      const series: PriceSeriesInput[] = [];
+      for (const [ticker, bars] of history) {
+        if (bars.length >= 21) {
+          series.push({
+            ticker,
+            prices: bars.map((b) => b.close),
+            dates: bars.map((b) => b.date),
+          });
+        }
+      }
+
+      if (series.length > 0) {
+        const detector = new AnomalyDetector();
+        anomalies = await detector.detectAnomalies(series);
+        const anomalyCount = anomalies.filter((a) => a.isLastAnomaly).length;
+        console.log(
+          `[DataAgent] 🐍 Python Engine: анализ ${anomalies.length} тикеров, ` +
+            `${anomalyCount} с аномалией на последнем баре`,
+        );
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[DataAgent] ⚠️ Python Engine ошибка: ${errorMsg}`);
     }
 
     const output: DataAgentOutput = {
@@ -187,11 +284,12 @@ export class DataAgent extends AgentBase {
         totalSales: historicalTrades.totalSalesSum,
       },
       news: newsResult,
+      anomalies,
     };
 
     console.log(
       `[DataAgent] ✅ Парсинг завершён: ${assets.length} активов, ` +
-      `${accounts.length} счетов, ${activeOrders.length} заявок`,
+        `${accounts.length} счетов, ${activeOrders.length} заявок`,
     );
 
     return output;

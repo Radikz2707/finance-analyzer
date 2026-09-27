@@ -62,7 +62,7 @@ export function calculatePortfolioReturn(
 
   let totalReturn = 0;
   for (let i = 0; i < weights.length; i++) {
-    totalReturn += weights[i] * assetReturns[i];
+    totalReturn += (weights[i] ?? 0) * (assetReturns[i] ?? 0);
   }
   return totalReturn;
 }
@@ -78,8 +78,11 @@ export function calculatePortfolioVolatility(
   let variance = 0;
 
   for (let i = 0; i < n; i++) {
+    const wi = weights[i] ?? 0;
+    const matrixRow = covarianceMatrix[i];
+    if (!matrixRow) continue;
     for (let j = 0; j < n; j++) {
-      variance += weights[i] * weights[j] * covarianceMatrix[i][j];
+      variance += wi * (weights[j] ?? 0) * (matrixRow[j] ?? 0);
     }
   }
 
@@ -104,10 +107,9 @@ export function calculateSortinoRatio(
     return 999; // Нет убыточных периодов
   }
 
-  const downsideVariance = downsideReturns.reduce(
-    (sum, r) => sum + Math.pow(r - targetReturn, 2),
-    0,
-  ) / downsideReturns.length;
+  const downsideVariance =
+    downsideReturns.reduce((sum, r) => sum + Math.pow(r - targetReturn, 2), 0) /
+    downsideReturns.length;
 
   const downsideDeviation = Math.sqrt(downsideVariance);
 
@@ -125,9 +127,10 @@ export function calculateSortinoRatio(
 /**
  * Построить матрицу ковариаций из исторических данных.
  */
-export function buildCovarianceMatrix(
-  tickerData: Map<string, OHLCVBar[]>,
-): { matrix: number[][]; tickers: string[] } {
+export function buildCovarianceMatrix(tickerData: Map<string, OHLCVBar[]>): {
+  matrix: number[][];
+  tickers: string[];
+} {
   const tickers = Array.from(tickerData.keys());
   const n = tickers.length;
 
@@ -138,7 +141,7 @@ export function buildCovarianceMatrix(
     const dailyReturns: number[] = [];
 
     for (let i = 1; i < bars.length; i++) {
-      const ret = (bars[i].close - bars[i - 1].close) / bars[i - 1].close;
+      const ret = (bars[i]!.close - bars[i - 1]!.close) / bars[i - 1]!.close;
       dailyReturns.push(ret);
     }
 
@@ -150,15 +153,17 @@ export function buildCovarianceMatrix(
 
   // Обрезаем до минимальной длины
   for (let i = 0; i < returns.length; i++) {
-    returns[i] = returns[i].slice(-minLen);
+    returns[i] = returns[i]!.slice(-minLen);
   }
 
   // Строим матрицу ковариаций
   const matrix: number[][] = Array.from({ length: n }, () => Array(n).fill(0));
 
   for (let i = 0; i < n; i++) {
+    const matrixRow = matrix[i];
+    if (!matrixRow) continue;
     for (let j = 0; j < n; j++) {
-      matrix[i][j] = calculateCovariance(returns[i], returns[j]);
+      matrixRow[j] = calculateCovariance(returns[i]!, returns[j]!);
     }
   }
 
@@ -179,7 +184,7 @@ function calculateCovariance(a: number[], b: number[]): number {
 
   let cov = 0;
   for (let i = 0; i < n; i++) {
-    cov += (a[i] - meanA) * (b[i] - meanB);
+    cov += ((a[i] ?? 0) - meanA) * ((b[i] ?? 0) - meanB);
   }
 
   return cov / (n - 1);
@@ -215,10 +220,13 @@ export function calculateEfficientFrontier(
     const dailyReturns: number[] = [];
 
     for (let i = 1; i < bars.length; i++) {
-      dailyReturns.push((bars[i].close - bars[i - 1].close) / bars[i - 1].close);
+      dailyReturns.push(
+        (bars[i]!.close - bars[i - 1]!.close) / bars[i - 1]!.close,
+      );
     }
 
-    const mean = dailyReturns.reduce((sum, r) => sum + r, 0) / dailyReturns.length;
+    const mean =
+      dailyReturns.reduce((sum, r) => sum + r, 0) / dailyReturns.length;
     avgReturns.push(mean * 252); // Годовые
   }
 
@@ -239,8 +247,10 @@ export function calculateEfficientFrontier(
 
     // Рассчитываем метрики
     const portReturn = calculatePortfolioReturn(weights, avgReturns);
-    const portVolatility = calculatePortfolioVolatility(weights, matrix) * Math.sqrt(252);
-    const sharpe = portVolatility > 0 ? (portReturn - 0.07) / portVolatility : 0;
+    const portVolatility =
+      calculatePortfolioVolatility(weights, matrix) * Math.sqrt(252);
+    const sharpe =
+      portVolatility > 0 ? (portReturn - 0.07) / portVolatility : 0;
 
     frontier.push({
       weights,
@@ -274,13 +284,13 @@ export function optimizePortfolio(
   }
 
   // Берём портфель с максимальным Sharpe
-  const optimal = frontier[0];
+  const optimal = frontier[0]!;
 
   // Формируем веса по тикерам
   const optimalWeights: PortfolioWeights[] = optimal.tickers.map(
     (ticker, i) => ({
       ticker,
-      weight: optimal.weights[i],
+      weight: optimal.weights[i] ?? 0,
     }),
   );
 
@@ -292,27 +302,35 @@ export function optimizePortfolio(
   const equalReturn = calculatePortfolioReturn(
     equalWeightReturns,
     optimal.tickers.map((_, i) => {
-      const bars = tickerData.get(optimal.tickers[i])!;
+      const bars = tickerData.get(optimal.tickers[i]!)!;
       const dailyReturns: number[] = [];
       for (let j = 1; j < bars.length; j++) {
-        dailyReturns.push((bars[j].close - bars[j - 1].close) / bars[j - 1].close);
+        dailyReturns.push(
+          (bars[j]!.close - bars[j - 1]!.close) / bars[j - 1]!.close,
+        );
       }
-      return dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length * 252;
+      return (
+        (dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length) * 252
+      );
     }),
   );
 
-  const equalVolatility = calculatePortfolioVolatility(equalWeightReturns, matrix) * Math.sqrt(252);
-  const equalSharpe = equalVolatility > 0 ? (equalReturn - 0.07) / equalVolatility : 0;
+  const equalVolatility =
+    calculatePortfolioVolatility(equalWeightReturns, matrix) * Math.sqrt(252);
+  const equalSharpe =
+    equalVolatility > 0 ? (equalReturn - 0.07) / equalVolatility : 0;
 
   // Рассчитываем Sortino для оптимального портфеля
   const optimalDailyReturns: number[] = [];
   for (let i = 1; i < optimal.tickers.length; i++) {
     let dayReturn = 0;
     for (let j = 0; j < optimal.tickers.length; j++) {
-      const bars = tickerData.get(optimal.tickers[j])!;
-      if (bars[i] && bars[i - 1]) {
-        const ret = (bars[i].close - bars[i - 1].close) / bars[i - 1].close;
-        dayReturn += optimal.weights[j] * ret;
+      const bars = tickerData.get(optimal.tickers[j]!)!;
+      const current = bars[i];
+      const previous = bars[i - 1];
+      if (current && previous) {
+        const ret = (current.close - previous.close) / previous.close;
+        dayReturn += (optimal.weights[j] ?? 0) * ret;
       }
     }
     optimalDailyReturns.push(dayReturn);
@@ -321,7 +339,13 @@ export function optimizePortfolio(
   const sortino = calculateSortinoRatio(optimalDailyReturns);
 
   // Формируем сводку
-  const summary = formatOptimizationResult(optimalWeights, optimal, equalReturn, equalSharpe, sortino);
+  const summary = formatOptimizationResult(
+    optimalWeights,
+    optimal,
+    equalReturn,
+    equalSharpe,
+    sortino,
+  );
 
   return {
     optimalWeights,
@@ -373,9 +397,10 @@ function formatOptimizationResult(
   text += 'Sharpe (оптимизация): ' + optimal.sharpeRatio.toFixed(2) + '\n';
   text += 'Sharpe (равные веса): ' + equalSharpe.toFixed(2) + '\n';
 
-  const improvement = equalSharpe > 0
-    ? ((optimal.sharpeRatio - equalSharpe) / Math.abs(equalSharpe) * 100)
-    : 0;
+  const improvement =
+    equalSharpe > 0
+      ? ((optimal.sharpeRatio - equalSharpe) / Math.abs(equalSharpe)) * 100
+      : 0;
   text += 'Улучшение: ' + improvement.toFixed(1) + '%\n';
 
   return text;

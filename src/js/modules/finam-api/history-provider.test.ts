@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+
 import { calculatePriceMetrics, formatMetrics } from './history-provider.js';
 import type { OHLCVBar } from './history-provider.js';
 

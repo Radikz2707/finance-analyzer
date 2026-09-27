@@ -38,6 +38,8 @@ export type OllamaShowResponse = Record<string, unknown>;
 export interface OllamaChatOptions {
   /** Максимальное количество токенов в ответе */
   numPredict?: number;
+  /** Контекстное окно модели в токенах (num_ctx) */
+  numCtx?: number;
   /** Температура генерации (0-1) */
   temperature?: number;
   /** Top-p для выборки */
@@ -94,17 +96,26 @@ export async function listModels(): Promise<OllamaModelInfo[]> {
 /**
  * Получение информации о конкретной модели
  */
-export async function showModelInfo(modelName: string): Promise<OllamaShowResponse | null> {
+export async function showModelInfo(
+  modelName: string,
+): Promise<OllamaShowResponse | null> {
   try {
-    const response = await axios.post(`${OLLAMA_BASE_URL}/api/show`, {
-      model: modelName,
-    }, {
-      timeout: 5000,
-    });
+    const response = await axios.post(
+      `${OLLAMA_BASE_URL}/api/show`,
+      {
+        model: modelName,
+      },
+      {
+        timeout: 5000,
+      },
+    );
     return response.data;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[Ollama] Ошибка получения информации о модели ${modelName}:`, errorMessage);
+    console.error(
+      `[Ollama] Ошибка получения информации о модели ${modelName}:`,
+      errorMessage,
+    );
     return null;
   }
 }
@@ -144,31 +155,32 @@ export async function pullModel(
           const lines = chunk.toString().split('\n');
           lines.forEach((line) => {
             if (!line.trim()) return;
-            
+
             try {
               const json = JSON.parse(line);
               const newStatus = json.status || '';
-              
+
               // Обновляем прогресс
               if (json.total && json.completed) {
                 total = json.total;
                 completed = json.completed;
-                const percent = total > 0 ? ((completed / total) * 100).toFixed(1) : 0;
-                
+                const percent =
+                  total > 0 ? ((completed / total) * 100).toFixed(1) : 0;
+
                 if (newStatus !== currentStatus) {
                   currentStatus = newStatus;
                   console.log(
                     `[Ollama] ${newStatus} ${modelName}: ${percent}%`,
                   );
                 }
-                
+
                 if (onProgress) {
                   onProgress(newStatus, completed, total);
                 }
               } else if (newStatus && newStatus !== currentStatus) {
                 currentStatus = newStatus;
                 console.log(`[Ollama] ${newStatus} ${modelName}`);
-                
+
                 if (onProgress) {
                   onProgress(newStatus, completed, total);
                 }
@@ -188,13 +200,19 @@ export async function pullModel(
       });
 
       response.data.on('error', (err: Error) => {
-        console.error(`[Ollama] ❌ Ошибка установки модели ${modelName}:`, err.message);
+        console.error(
+          `[Ollama] ❌ Ошибка установки модели ${modelName}:`,
+          err.message,
+        );
         resolve(false);
       });
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[Ollama] ❌ Критическая ошибка при установке модели ${modelName}:`, errorMessage);
+    console.error(
+      `[Ollama] ❌ Критическая ошибка при установке модели ${modelName}:`,
+      errorMessage,
+    );
     return false;
   }
 }
@@ -212,7 +230,10 @@ export async function deleteModel(modelName: string): Promise<boolean> {
     return true;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`[Ollama] ❌ Ошибка удаления модели ${modelName}:`, errorMessage);
+    console.error(
+      `[Ollama] ❌ Ошибка удаления модели ${modelName}:`,
+      errorMessage,
+    );
     return false;
   }
 }
@@ -225,20 +246,23 @@ export async function copyModel(
   destinationName: string,
 ): Promise<boolean> {
   try {
-    await axios.post(`${OLLAMA_BASE_URL}/api/copy`, {
-      source: sourceName,
-      destination: destinationName,
-    }, {
-      timeout: 10000,
-    });
-    console.log(`[Ollama] ✅ Модель ${sourceName} скопирована в ${destinationName}`);
+    await axios.post(
+      `${OLLAMA_BASE_URL}/api/copy`,
+      {
+        source: sourceName,
+        destination: destinationName,
+      },
+      {
+        timeout: 10000,
+      },
+    );
+    console.log(
+      `[Ollama] ✅ Модель ${sourceName} скопирована в ${destinationName}`,
+    );
     return true;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(
-      '[Ollama] ❌ Ошибка копирования модели:',
-      errorMessage,
-    );
+    console.error('[Ollama] ❌ Ошибка копирования модели:', errorMessage);
     return false;
   }
 }
@@ -436,7 +460,10 @@ export function validateArithmeticConsistency(
 ): string {
   if (deterministicAmounts.length === 0) return text;
 
-  const result = checkArithmeticAgainstDeterministic(text, deterministicAmounts);
+  const result = checkArithmeticAgainstDeterministic(
+    text,
+    deterministicAmounts,
+  );
 
   if (!result.valid) {
     console.warn(
@@ -464,14 +491,18 @@ function checkArithmeticAgainstDeterministic(
   const discrepancies: ArithmeticValidationResult['discrepancies'] = [];
 
   for (const det of deterministicAmounts) {
-    const tickerUpper = det.ticker.toUpperCase();
+    const tickerUpper = det.ticker!.toUpperCase();
 
     // Ищем структурированное поле BUY_AMOUNT_DETERMINISTIC
     if (det.buyAmount !== undefined && det.buyAmount > 0) {
-      const found = parseDeterministicField(text, tickerUpper, 'BUY_AMOUNT_DETERMINISTIC');
+      const found = parseDeterministicField(
+        text,
+        tickerUpper,
+        'BUY_AMOUNT_DETERMINISTIC',
+      );
       if (found !== null && Math.abs(found - det.buyAmount) > 0.01) {
         discrepancies.push({
-          ticker: det.ticker,
+          ticker: det.ticker!,
           field: 'buyAmount',
           expected: det.buyAmount,
           found,
@@ -481,10 +512,14 @@ function checkArithmeticAgainstDeterministic(
 
     // Ищем структурированное поле SELL_AMOUNT_DETERMINISTIC
     if (det.sellAmount !== undefined && det.sellAmount > 0) {
-      const found = parseDeterministicField(text, tickerUpper, 'SELL_AMOUNT_DETERMINISTIC');
+      const found = parseDeterministicField(
+        text,
+        tickerUpper,
+        'SELL_AMOUNT_DETERMINISTIC',
+      );
       if (found !== null && Math.abs(found - det.sellAmount) > 0.01) {
         discrepancies.push({
-          ticker: det.ticker,
+          ticker: det.ticker!,
           field: 'sellAmount',
           expected: det.sellAmount,
           found,
@@ -494,10 +529,14 @@ function checkArithmeticAgainstDeterministic(
 
     // Ищем структурированное поле LIQUIDATION_VALUE
     if (det.liquidationValue !== undefined && det.liquidationValue > 0) {
-      const found = parseDeterministicField(text, tickerUpper, 'LIQUIDATION_VALUE');
+      const found = parseDeterministicField(
+        text,
+        tickerUpper,
+        'LIQUIDATION_VALUE',
+      );
       if (found !== null && Math.abs(found - det.liquidationValue) > 0.01) {
         discrepancies.push({
-          ticker: det.ticker,
+          ticker: det.ticker!,
           field: 'liquidationValue',
           expected: det.liquidationValue,
           found,
@@ -534,15 +573,12 @@ function parseDeterministicField(
 
   // Ищем структуру: FIELD_NAME: ЧИСЛО ₽ или FIELD_NAME = ЧИСЛО ₽
   // Число может быть с разделителями тысяч (пробел, неразрывный пробел)
-  const pattern = new RegExp(
-    fieldName + '\\s*[:=]\\s*([\\d\\s,]+?)\\s*₽',
-    'i',
-  );
+  const pattern = new RegExp(fieldName + '\\s*[:=]\\s*([\\d\\s,]+?)\\s*₽', 'i');
   const match = context.match(pattern);
   if (!match) return null;
 
   // Парсим число из строки с разделителями
-  const raw = match[1].replace(/[\s,]/g, '');
+  const raw = (match[1] ?? '').replace(/[\s,]/g, '');
   const num = parseFloat(raw);
   return isNaN(num) ? null : num;
 }
@@ -551,10 +587,7 @@ function parseDeterministicField(
  * Валидация: проверяем что модель не упоминает компании извне портфеля
  * Удаляем или помечаем рекомендации по неизвестным тикерам
  */
-function validateAssetReferences(
-  text: string,
-  knownTickers: string[],
-): string {
+function validateAssetReferences(text: string, knownTickers: string[]): string {
   const lines = text.split('\n');
   const validatedLines: string[] = [];
 
@@ -562,7 +595,7 @@ function validateAssetReferences(
     // Проверяем строки с тикерами в таблицах
     const tickerMatch = line.match(/\|\s*([A-Z]{2,6})\s*\|/);
     if (tickerMatch) {
-      const ticker = tickerMatch[1];
+      const ticker = tickerMatch[1] ?? '';
       const isKnown = knownTickers.some(
         (kt) => kt.toUpperCase() === ticker.toUpperCase(),
       );
@@ -616,17 +649,23 @@ export function sanitizeAiNarrative(text: string): string {
 
   const hasKpi = (norm: string): boolean => {
     // Ключевое слово → : → число%
-    return /\b(убыток|прибыль|доходность|результат|итог|доход)\b[\s\S]*?:\s*[-+]?\d[\d,.]*\s*%/i.test(norm);
+    return /\b(убыток|прибыль|доходность|результат|итог|доход)\b[\s\S]*?:\s*[-+]?\d[\d,.]*\s*%/i.test(
+      norm,
+    );
   };
 
   const hasAggregate = (norm: string): boolean => {
     // Итого/всего → : → число + RUB
-    return /\b(итого|всего|общая?\s+сумма)\b[\s\S]*?:\s*[-+]?\d[\d\s,.]*RUB/i.test(norm);
+    return /\b(итого|всего|общая?\s+сумма)\b[\s\S]*?:\s*[-+]?\d[\d\s,.]*RUB/i.test(
+      norm,
+    );
   };
 
   const hasTransactionVerb = (norm: string): boolean => {
     // Глагол → на → число + RUB
-    return /\b(продать|купить|закрыть|открыть|сделать|выкупить|погасить)\b[\s\S]*?на\s+[\d\s]+RUB/i.test(norm);
+    return /\b(продать|купить|закрыть|открыть|сделать|выкупить|погасить)\b[\s\S]*?на\s+[\d\s]+RUB/i.test(
+      norm,
+    );
   };
 
   const filtered = sentences.filter((s) => {
@@ -755,10 +794,8 @@ export function formatModelList(models: OllamaModelInfo[]): string {
     const sizeStr = formatFileSize(model.size);
     const params = model.details?.parameterSize || 'N/A';
     const quant = model.details?.quantizationLevel || 'N/A';
-    
-    lines.push(
-      `${index + 1}. ${model.name} (${sizeStr}, ${params}, ${quant})`,
-    );
+
+    lines.push(`${index + 1}. ${model.name} (${sizeStr}, ${params}, ${quant})`);
   });
 
   return lines.join('\n');

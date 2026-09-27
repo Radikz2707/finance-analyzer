@@ -2,7 +2,6 @@
  * AI Memory Tests — тесты для двухслойной системы памяти ИИ.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
 import {
   operationalMemory,
   strategicMemory,
@@ -11,20 +10,20 @@ import {
   exportMemory,
   init,
 } from './core.js';
-import type {
-  PortfolioKpiSnapshot,
-} from './types.js';
+import type { PortfolioKpiSnapshot } from './types.js';
 
 // ──────────────────────────────────────────────
 // Тесты оперативной памяти
 // ──────────────────────────────────────────────
 
 describe('AI Memory — Оперативная память', () => {
-  beforeEach(() => {  init({ verbose: false });
+  beforeEach(() => {
+    init({ verbose: false });
   });
 
   it('должна сохранить запись', () => {
-    const id = operationalMemory.save({ createdAt: new Date().toISOString(),
+    const id = operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Тестовая запись',
       priority: 'medium',
@@ -36,7 +35,8 @@ describe('AI Memory — Оперативная память', () => {
   });
 
   it('должна получить запись по ID', () => {
-    const id = operationalMemory.save({ createdAt: new Date().toISOString(),
+    const id = operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'decision',
       content: 'Решение о покупке',
       priority: 'high',
@@ -50,14 +50,16 @@ describe('AI Memory — Оперативная память', () => {
   });
 
   it('должна вернуть последние N записей', () => {
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Запись 1',
       priority: 'low',
       keywords: ['тест'],
     });
 
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Запись 2',
       priority: 'low',
@@ -66,18 +68,20 @@ describe('AI Memory — Оперативная память', () => {
 
     const recent = operationalMemory.getRecent(1);
     expect(recent.length).toBe(1);
-    expect(recent[0].content).toBe('Запись 2');
+    expect(recent[0]!.content).toBe('Запись 2');
   });
 
   it('должна получить записи по типу', () => {
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Разговор 1',
       priority: 'medium',
       keywords: ['разговор'],
     });
 
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'pipeline_result',
       content: 'Результат pipeline',
       priority: 'high',
@@ -86,11 +90,12 @@ describe('AI Memory — Оперативная память', () => {
 
     const conversations = operationalMemory.getByType('conversation');
     expect(conversations.length).toBe(1);
-    expect(conversations[0].content).toBe('Разговор 1');
+    expect(conversations[0]!.content).toBe('Разговор 1');
   });
 
   it('должна искать по ключевым словам', () => {
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Обсуждение акций',
       priority: 'medium',
@@ -99,11 +104,12 @@ describe('AI Memory — Оперативная память', () => {
 
     const results = operationalMemory.searchByKeywords(['акции']);
     expect(results.length).toBe(1);
-    expect(results[0].keywords).toContain('акции');
+    expect(results[0]!.keywords).toContain('акции');
   });
 
   it('должна удалить запись', () => {
-    const id = operationalMemory.save({ createdAt: new Date().toISOString(),
+    const id = operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Удаляемая запись',
       priority: 'low',
@@ -120,7 +126,8 @@ describe('AI Memory — Оперативная память', () => {
   it('должна вернуть количество записей', () => {
     expect(operationalMemory.count()).toBe(0);
 
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Тест',
       priority: 'low',
@@ -136,7 +143,8 @@ describe('AI Memory — Оперативная память', () => {
 // ──────────────────────────────────────────────
 
 describe('AI Memory — Стратегическая память', () => {
-  beforeEach(() => {  init({ verbose: false });
+  beforeEach(() => {
+    init({ verbose: false });
   });
 
   it('должна сохранить KPI-снимок', () => {
@@ -179,8 +187,8 @@ describe('AI Memory — Стратегическая память', () => {
 
     const trend = strategicMemory.getKpiTrend(10);
     expect(trend.length).toBe(1);
-    expect(trend[0].totalValue).toBe(1000000);
-    expect(trend[0].returnPercent).toBe(12.5);
+    expect(trend[0]!.totalValue).toBe(1000000);
+    expect(trend[0]!.returnPercent).toBe(12.5);
   });
 
   it('должна сохранить и получить все записи', () => {
@@ -203,7 +211,7 @@ describe('AI Memory — Стратегическая память', () => {
 
     const all = strategicMemory.getAll();
     expect(all.length).toBe(1);
-    expect(all[0].raw).toBeDefined();
+    expect(all[0]!.raw).toBeDefined();
   });
 
   it('должна удалить запись', () => {
@@ -233,11 +241,13 @@ describe('AI Memory — Стратегическая память', () => {
 // ──────────────────────────────────────────────
 
 describe('AI Memory — Запросы', () => {
-  beforeEach(() => {  init({ verbose: false });
+  beforeEach(() => {
+    init({ verbose: false });
   });
 
   it('должен выполнить запрос к оперативной памяти', async () => {
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Тестовая запись',
       priority: 'medium',
@@ -281,19 +291,26 @@ describe('AI Memory — Запросы', () => {
   });
 
   it('должен отфильтровать по датам', async () => {
-    const now = new Date().toISOString();
+    // Диапазон с запасом вокруг момента сохранения: query() использует
+    // инклюзивный фильтр (createdAt >= from && createdAt <= to), поэтому
+    // точный диапазон [now, now], снятый ДО save(), терял запись из-за
+    // миллисекундной задержки между вызовами (флаки на медленных машинах).
+    const from = new Date(Date.now() - 1000).toISOString();
 
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Сегодняшняя запись',
       priority: 'medium',
       keywords: ['тест'],
     });
 
+    const to = new Date(Date.now() + 1000).toISOString();
+
     const result = await query({
       types: ['conversation'],
-      from: now,
-      to: now,
+      from,
+      to,
       maxResults: 10,
     });
 
@@ -306,11 +323,13 @@ describe('AI Memory — Запросы', () => {
 // ──────────────────────────────────────────────
 
 describe('AI Memory — Статистика и очистка', () => {
-  beforeEach(() => {  init({ verbose: false });
+  beforeEach(() => {
+    init({ verbose: false });
   });
 
   it('должна вернуть статистику', () => {
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Тест',
       priority: 'low',
@@ -323,7 +342,8 @@ describe('AI Memory — Статистика и очистка', () => {
   });
 
   it('должна очистить старые записи', () => {
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Старая запись',
       priority: 'low',
@@ -340,11 +360,13 @@ describe('AI Memory — Статистика и очистка', () => {
 // ──────────────────────────────────────────────
 
 describe('AI Memory — Экспорт', () => {
-  beforeEach(() => {  init({ verbose: false });
+  beforeEach(() => {
+    init({ verbose: false });
   });
 
   it('должен экспортировать в JSON', async () => {
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Тест',
       priority: 'low',
@@ -357,7 +379,8 @@ describe('AI Memory — Экспорт', () => {
   });
 
   it('должен экспортировать в Markdown', async () => {
-    operationalMemory.save({ createdAt: new Date().toISOString(),
+    operationalMemory.save({
+      createdAt: new Date().toISOString(),
       type: 'conversation',
       content: 'Тест',
       priority: 'low',

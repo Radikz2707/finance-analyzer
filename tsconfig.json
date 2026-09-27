@@ -3,15 +3,12 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": [
-      "DOM",
-      "DOM.Iterable",
-      "ES2022"
-    ],
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "allowJs": true,
     "checkJs": false,
     "noEmit": true,
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
     "strictFunctionTypes": true,
@@ -24,16 +21,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": [
-      "node"
-    ]
+    "types": ["node", "vitest/globals"]
   },
-  "include": [
-    "src/**/*"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "archives"
-  ]
+  "include": ["src/**/*"],
+  // src/js/modules/telegram-bot исключён из строгой проверки: модуль
+  // заблокирован для правок (.codeassistantignore), а его внутренняя
+  // индексация несовместима с noUncheckedIndexedAccess.
+  "exclude": ["node_modules", "dist", "archives", "src/js/modules/telegram-bot"]
 }

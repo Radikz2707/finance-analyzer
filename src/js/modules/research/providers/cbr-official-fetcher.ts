@@ -80,7 +80,10 @@ export class CbrOfficialFetchError extends Error {
  *     <tr><td>14.09.2026</td><td>14,00</td></tr>
  *     ...
  */
-function parseKeyRate(html: string): { rate: number | null; date: string | null } {
+function parseKeyRate(html: string): {
+  rate: number | null;
+  date: string | null;
+} {
   // Ищем таблицу с данными ключевой ставки
   // Находим строки таблицы: <tr>...</tr>
   const rowRegex = /<tr[^>]*>(.*?)<\/tr>/gis;
@@ -88,14 +91,21 @@ function parseKeyRate(html: string): { rate: number | null; date: string | null 
   let match;
 
   while ((match = rowRegex.exec(html)) !== null) {
-    rows.push(match[1]);
+    const row = match[1];
+    if (row) {
+      rows.push(row);
+    }
   }
 
   // Ищем строку с данными (не заголовки)
   // Обычно данные идут после заголовков с "Дата" и "Ставка"
   for (const row of rows) {
     // Пропускаем строки с заголовками
-    if (row.toLowerCase().includes('<th') || row.toLowerCase().includes('дата') || row.toLowerCase().includes('ставка')) {
+    if (
+      row.toLowerCase().includes('<th') ||
+      row.toLowerCase().includes('дата') ||
+      row.toLowerCase().includes('ставка')
+    ) {
       continue;
     }
 
@@ -105,8 +115,10 @@ function parseKeyRate(html: string): { rate: number | null; date: string | null 
     let cellMatch;
 
     while ((cellMatch = cellRegex.exec(row)) !== null) {
+      const raw = cellMatch[1];
+      if (!raw) continue;
       // Убираем HTML-теги из ячейки
-      const cellText = cellMatch[1].replace(/<[^>]+>/g, '').trim();
+      const cellText = raw.replace(/<[^>]+>/g, '').trim();
       if (cellText) {
         cells.push(cellText);
       }
@@ -114,8 +126,8 @@ function parseKeyRate(html: string): { rate: number | null; date: string | null 
 
     // Если нашли дату и ставку
     if (cells.length >= 2) {
-      const dateStr = cells[0];
-      const rateStr = cells[1].replace(',', '.');
+      const dateStr = cells[0]!;
+      const rateStr = cells[1]!.replace(',', '.');
       const rate = parseFloat(rateStr);
 
       if (!isNaN(rate) && rate > 0) {
@@ -136,20 +148,30 @@ function parseKeyRate(html: string): { rate: number | null; date: string | null 
  *     <tr><td>08.2026</td><td>14,00</td><td>6,33</td><td>4,00</td></tr>
  *     ...
  */
-function parseInflation(html: string): { rate: number | null; date: string | null } {
+function parseInflation(html: string): {
+  rate: number | null;
+  date: string | null;
+} {
   // Ищем строки таблицы
   const rowRegex = /<tr[^>]*>(.*?)<\/tr>/gis;
   const rows: string[] = [];
   let match;
 
   while ((match = rowRegex.exec(html)) !== null) {
-    rows.push(match[1]);
+    const row = match[1];
+    if (row) {
+      rows.push(row);
+    }
   }
 
   // Ищем строку с данными (не заголовки)
   for (const row of rows) {
     // Пропускаем строки с заголовками
-    if (row.toLowerCase().includes('<th') || row.toLowerCase().includes('инфляция') || row.toLowerCase().includes('ключевая ставка')) {
+    if (
+      row.toLowerCase().includes('<th') ||
+      row.toLowerCase().includes('инфляция') ||
+      row.toLowerCase().includes('ключевая ставка')
+    ) {
       continue;
     }
 
@@ -159,7 +181,9 @@ function parseInflation(html: string): { rate: number | null; date: string | nul
     let cellMatch;
 
     while ((cellMatch = cellRegex.exec(row)) !== null) {
-      const cellText = cellMatch[1].replace(/<[^>]+>/g, '').trim();
+      const raw = cellMatch[1];
+      if (!raw) continue;
+      const cellText = raw.replace(/<[^>]+>/g, '').trim();
       if (cellText) {
         cells.push(cellText);
       }
@@ -168,9 +192,9 @@ function parseInflation(html: string): { rate: number | null; date: string | nul
     // Инфляция — обычно 3-я колонка (индекс 2)
     // Структура: Дата | Ключевая ставка | Инфляция | Цель
     if (cells.length >= 3) {
-      const dateStr = cells[0];
+      const dateStr = cells[0]!;
       // Инфляция — 3-я колонка
-      const inflationStr = cells[2].replace(',', '.');
+      const inflationStr = cells[2]!.replace(',', '.');
       const rate = parseFloat(inflationStr);
 
       if (!isNaN(rate) && rate >= 0) {
@@ -226,12 +250,12 @@ export class CbrOfficialFetcher {
         fetch(KEYRATE_URL, {
           method: 'GET',
           signal: controller.signal,
-          headers: { 'Accept': 'text/html' },
+          headers: { Accept: 'text/html' },
         }).then((r) => r.text()),
         fetch(INFLATION_URL, {
           method: 'GET',
           signal: controller.signal,
-          headers: { 'Accept': 'text/html' },
+          headers: { Accept: 'text/html' },
         }).then((r) => r.text()),
       ]);
 

@@ -57,12 +57,16 @@ export interface HistoryResult {
  * API: https://api.finam.ru/api/v1/history-price
  * Документация: https://dev.finam.ru/docs/#api-history-price
  */
-async function fetchFromFinamAPI(request: FinamHistoryRequest): Promise<OHLCVBar[]> {
+async function fetchFromFinamAPI(
+  request: FinamHistoryRequest,
+): Promise<OHLCVBar[]> {
   const baseUrl = 'https://api.finam.ru';
   const apiKey = process.env.FINAM_API_KEY || '';
 
   if (!apiKey) {
-    console.warn('[FinamAPI] FINAM_API_KEY не установлен. Пропускаем загрузку.');
+    console.warn(
+      '[FinamAPI] FINAM_API_KEY не установлен. Пропускаем загрузку.',
+    );
     return [];
   }
 
@@ -71,7 +75,7 @@ async function fetchFromFinamAPI(request: FinamHistoryRequest): Promise<OHLCVBar
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + apiKey,
+        Authorization: 'Bearer ' + apiKey,
       },
       body: JSON.stringify({
         instrument_group: 'tmo', // MOEX
@@ -86,7 +90,14 @@ async function fetchFromFinamAPI(request: FinamHistoryRequest): Promise<OHLCVBar
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.warn('[FinamAPI] Ошибка загрузки для ' + request.ticker + ': ' + response.status + ' - ' + errorText);
+      console.warn(
+        '[FinamAPI] Ошибка загрузки для ' +
+          request.ticker +
+          ': ' +
+          response.status +
+          ' - ' +
+          errorText,
+      );
       return [];
     }
 
@@ -109,7 +120,10 @@ async function fetchFromFinamAPI(request: FinamHistoryRequest): Promise<OHLCVBar
 
     return bars;
   } catch (err) {
-    console.error('[FinamAPI] Исключение при загрузке ' + request.ticker + ':', err);
+    console.error(
+      '[FinamAPI] Исключение при загрузке ' + request.ticker + ':',
+      err,
+    );
     return [];
   }
 }
@@ -127,7 +141,15 @@ function saveBarsToDB(ticker: string, bars: OHLCVBar[]): void {
 
   const batch = db.transaction((barsToSave: OHLCVBar[]) => {
     for (const bar of barsToSave) {
-      stmt.run(ticker, bar.date, bar.open, bar.high, bar.low, bar.close, bar.volume);
+      stmt.run(
+        ticker,
+        bar.date,
+        bar.open,
+        bar.high,
+        bar.low,
+        bar.close,
+        bar.volume,
+      );
     }
   });
 
@@ -170,12 +192,20 @@ function getBarsFromDB(ticker: string, from: string, to: string): OHLCVBar[] {
  * Загрузить исторические данные для тикера.
  * Сначала проверяет кэш, затем загружает с Finam API.
  */
-export async function fetchHistoricalData(request: FinamHistoryRequest): Promise<HistoryResult> {
+export async function fetchHistoricalData(
+  request: FinamHistoryRequest,
+): Promise<HistoryResult> {
   // Проверяем кэш
   const cached = getBarsFromDB(request.ticker, request.from, request.to);
 
   if (cached.length > 0) {
-    console.log('[FinamHistory] ✅ ' + request.ticker + ' — данные из кэша (' + cached.length + ' свечей)');
+    console.log(
+      '[FinamHistory] ✅ ' +
+        request.ticker +
+        ' — данные из кэша (' +
+        cached.length +
+        ' свечей)',
+    );
     return {
       ticker: request.ticker,
       bars: cached,
@@ -187,12 +217,26 @@ export async function fetchHistoricalData(request: FinamHistoryRequest): Promise
   }
 
   // Загружаем с API
-  console.log('[FinamHistory] Загрузка ' + request.ticker + ' с Finam API (' + request.from + ' — ' + request.to + ')');
+  console.log(
+    '[FinamHistory] Загрузка ' +
+      request.ticker +
+      ' с Finam API (' +
+      request.from +
+      ' — ' +
+      request.to +
+      ')',
+  );
   const bars = await fetchFromFinamAPI(request);
 
   if (bars.length > 0) {
     saveBarsToDB(request.ticker, bars);
-    console.log('[FinamHistory] 💾 ' + request.ticker + ' — сохранено ' + bars.length + ' свечей');
+    console.log(
+      '[FinamHistory] 💾 ' +
+        request.ticker +
+        ' — сохранено ' +
+        bars.length +
+        ' свечей',
+    );
   }
 
   return {
@@ -265,32 +309,38 @@ export function calculatePriceMetrics(bars: OHLCVBar[]): {
   // Доходности по дням
   const dailyReturns: number[] = [];
   for (let i = 1; i < bars.length; i++) {
-    const ret = (bars[i].close - bars[i - 1].close) / bars[i - 1].close;
+    const ret = (bars[i]!.close - bars[i - 1]!.close) / bars[i - 1]!.close;
     dailyReturns.push(ret);
   }
 
   // Общая доходность
-  const totalReturn = (bars[bars.length - 1].close - bars[0].close) / bars[0].close;
+  const totalReturn =
+    (bars[bars.length - 1]!.close - bars[0]!.close) / bars[0]!.close;
 
   // Годовая доходность
   const days = bars.length;
   const years = days / 365;
-  const annualizedReturn = years > 0 ? Math.pow(1 + totalReturn, 1 / years) - 1 : 0;
+  const annualizedReturn =
+    years > 0 ? Math.pow(1 + totalReturn, 1 / years) - 1 : 0;
 
   // Волатильность (std dev daily returns)
-  const meanReturn = dailyReturns.reduce((sum, r) => sum + r, 0) / dailyReturns.length;
-  const variance = dailyReturns.reduce((sum, r) => sum + Math.pow(r - meanReturn, 2), 0) / dailyReturns.length;
+  const meanReturn =
+    dailyReturns.reduce((sum, r) => sum + r, 0) / dailyReturns.length;
+  const variance =
+    dailyReturns.reduce((sum, r) => sum + Math.pow(r - meanReturn, 2), 0) /
+    dailyReturns.length;
   const dailyVolatility = Math.sqrt(variance);
   const annualizedVolatility = dailyVolatility * Math.sqrt(252);
 
   // Sharpe Ratio (безрисковая ставка ~7%)
   const riskFreeRate = 0.07;
-  const sharpeRatio = annualizedVolatility > 0
-    ? (annualizedReturn - riskFreeRate) / annualizedVolatility
-    : 0;
+  const sharpeRatio =
+    annualizedVolatility > 0
+      ? (annualizedReturn - riskFreeRate) / annualizedVolatility
+      : 0;
 
   // Max Drawdown
-  let peak = bars[0].close;
+  let peak = bars[0]!.close;
   let maxDrawdown = 0;
   for (const bar of bars) {
     if (bar.close > peak) {
@@ -304,14 +354,16 @@ export function calculatePriceMetrics(bars: OHLCVBar[]): {
 
   // Win Rate (процент прибыльных дней)
   const winningDays = dailyReturns.filter((r) => r > 0).length;
-  const winRate = dailyReturns.length > 0 ? winningDays / dailyReturns.length : 0;
+  const winRate =
+    dailyReturns.length > 0 ? winningDays / dailyReturns.length : 0;
 
   // Лучший/худший день
   const bestDay = dailyReturns.length > 0 ? Math.max(...dailyReturns) : 0;
   const worstDay = dailyReturns.length > 0 ? Math.min(...dailyReturns) : 0;
 
   // Средний объём
-  const averageVolume = bars.reduce((sum, b) => sum + b.volume, 0) / bars.length;
+  const averageVolume =
+    bars.reduce((sum, b) => sum + b.volume, 0) / bars.length;
 
   return {
     totalReturn,
@@ -329,7 +381,9 @@ export function calculatePriceMetrics(bars: OHLCVBar[]): {
 /**
  * Сформировать строку метрик для Telegram.
  */
-export function formatMetrics(metrics: ReturnType<typeof calculatePriceMetrics>): string {
+export function formatMetrics(
+  metrics: ReturnType<typeof calculatePriceMetrics>,
+): string {
   let text = '<b>📊 Метрики</b>\n\n';
   text += 'Доходность: ' + (metrics.totalReturn * 100).toFixed(2) + '%\n';
   text += 'Годовая: ' + (metrics.annualizedReturn * 100).toFixed(2) + '%\n';
