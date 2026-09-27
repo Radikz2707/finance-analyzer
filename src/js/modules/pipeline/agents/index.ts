@@ -35,3 +35,24 @@ export {
   NotificationAgent,
   type NotificationAgentOutput,
 } from './notification-agent.js';
+export {
+  StrategistAgent,
+  type StrategistAgentInput,
+  type StrategistAgentOutput,
+  type StrategistDecision,
+  type StrategistProposal,
+} from './strategist-agent.js';
+export {
+  ScenarioAgent,
+  type ScenarioAgentInput,
+  type ScenarioAgentOutput,
+  type ScenarioResult,
+  type ScenarioChange,
+} from './scenario-agent.js';
+export {
+  runConsilium,
+  type ConsiliumInput,
+  type ConsiliumOutput,
+  type ConsiliumAssetDecision,
+  type ConsiliumVote,
+} from './consilium.js';
