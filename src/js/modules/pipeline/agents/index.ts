@@ -1,4 +1,17 @@
-export { DataAgent, type DataAgentOutput, type AccountInfo, type AssetQuote } from './data-agent.js';
+/**
+ * Готовые агенты конвейера.
+ *
+ * Экспортирует реализации агентов и их выходные типы:
+ * DataAgent (данные/позиции), ResearchAgent (исследование),
+ * AnalysisAgent (анализ портфеля), AiAgent (AI-рекомендации),
+ * NotificationAgent (уведомления).
+ */
+export {
+  DataAgent,
+  type DataAgentOutput,
+  type AccountInfo,
+  type AssetQuote,
+} from './data-agent.js';
 export {
   ResearchAgent,
   type ResearchAgentOutput,

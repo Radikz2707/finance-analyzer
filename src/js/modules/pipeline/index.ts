@@ -1,3 +1,10 @@
+/**
+ * Публичный API мультиагентного конвейера.
+ *
+ * Собирает в единую точку входа: базовые типы агентов и фабрики состояний,
+ * готовые агенты (Data/Research/Analysis/AI/Notification), оркестратор
+ * PipelineCoordinator, планировщик PipelineScheduler с cron-утилитами.
+ */
 export * from './agent/index.js';
 export * from './agents/index.js';
 export { PipelineCoordinator } from './pipeline-coordinator.js';
@@ -6,10 +13,7 @@ export type {
   PipelineStage,
   PipelineStageResult,
 } from './pipeline-coordinator.js';
-export {
-  PipelineScheduler,
-  type ScheduleEntry,
-} from './pipeline-scheduler.js';
+export { PipelineScheduler, type ScheduleEntry } from './pipeline-scheduler.js';
 export {
   parseCron,
   matchesCron,
