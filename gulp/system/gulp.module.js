@@ -2,6 +2,23 @@ import fs from 'fs';
 import path from 'path';
 import { config } from '../../gulp.config.js';
 
+/** Корень проекта: системные гулпфайлы Gulp запускает из gulp/system/ */
+const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
+
+/**
+ * Вернуть CWD в корень проекта.
+ *
+ * Gulp 5 при запуске через --gulpfile меняет process.cwd() на папку
+ * гулпфайла (gulp/system/), из-за чего относительные пути из
+ * gulp.config.js (src/js/modules и т.д.) ломаются. Без этого вызова
+ * модуль создавался в gulp/system/src/... вместо src/js/modules/...
+ */
+const ensureProjectCwd = () => {
+  if (process.cwd() !== PROJECT_ROOT) {
+    process.chdir(PROJECT_ROOT);
+  }
+};
+
 const toCamelCase = (str) =>
   str.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 
@@ -75,9 +92,10 @@ const updateStyleScss = (filePath, dirPath, name, camelName) => {
 };
 
 export const createModule = (done) => {
-  const name = process.argv
-    .find((arg) => arg.startsWith('--'))
-    ?.replace('--', '');
+  ensureProjectCwd();
+  // Имя модуля — ПОСЛЕДНИЙ --аргумент: --gulpfile/--cwd идут раньше
+  const dashedArgs = process.argv.filter((arg) => arg.startsWith('--'));
+  const name = dashedArgs[dashedArgs.length - 1]?.replace('--', '');
   if (!name) {
     console.log('\n❌ Укажите имя модуля! Пример: gulp module --my-block\n');
     return done();

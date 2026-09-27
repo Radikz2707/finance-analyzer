@@ -2,6 +2,19 @@ import fs from 'fs';
 import path from 'path';
 import { config } from '../../gulp.config.js';
 
+/** Корень проекта: системные гулпфайлы Gulp запускает из gulp/system/ */
+const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
+
+/**
+ * Вернуть CWD в корень проекта (Gulp меняет CWD на папку гулпфайла,
+ * из-за чего относительные пути из gulp.config.js ломаются).
+ */
+const ensureProjectCwd = () => {
+  if (process.cwd() !== PROJECT_ROOT) {
+    process.chdir(PROJECT_ROOT);
+  }
+};
+
 const toCamelCase = (str) =>
   str.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 
@@ -75,9 +88,10 @@ const updateStyleScss = (filePath, dirPath, name, camelName) => {
 };
 
 export const createPlugin = (done) => {
-  const name = process.argv
-    .find((arg) => arg.startsWith('--'))
-    ?.replace('--', '');
+  ensureProjectCwd();
+  // Имя плагина — ПОСЛЕДНИЙ --аргумент: --gulpfile/--cwd идут раньше
+  const dashedArgs = process.argv.filter((arg) => arg.startsWith('--'));
+  const name = dashedArgs[dashedArgs.length - 1]?.replace('--', '');
   if (!name) {
     console.log('\n❌ Укажите имя плагина! Пример: gulp plugin --my-plugin\n');
     return done();

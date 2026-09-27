@@ -2,6 +2,19 @@ import fs from 'fs';
 import path from 'path';
 import { config } from '../../gulp.config.js';
 
+/** Корень проекта: системные гулпфайлы Gulp запускает из gulp/system/ */
+const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
+
+/**
+ * Вернуть CWD в корень проекта (Gulp меняет CWD на папку гулпфайла,
+ * из-за чего относительные пути из gulp.config.js ломаются).
+ */
+const ensureProjectCwd = () => {
+  if (process.cwd() !== PROJECT_ROOT) {
+    process.chdir(PROJECT_ROOT);
+  }
+};
+
 const PROTECTED_NAMES = [
   'js',
   'scss',
@@ -136,7 +149,8 @@ const checkDirectorySafety = (dirPath) => {
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/\/\/.*/g, '')
         .replace(
-          /export\s+const\s+\w+\s*=\s*\(\s*\)\s*=>\s*\{\s*console\.log\([\s\S]*?\);?\s*\};?/gi,
+          // Шаблон заглушки из gulp.module.js / gulp.plugin.js допускает ": void"
+          /export\s+const\s+\w+\s*=\s*\(\s*\)\s*(:\s*void)?\s*=>\s*\{\s*console\.log\([\s\S]*?\);?\s*\};?/gi,
           '',
         )
         .trim();
@@ -147,9 +161,10 @@ const checkDirectorySafety = (dirPath) => {
 };
 
 export const remove = (done) => {
-  const blockName = process.argv
-    .find((arg) => arg.startsWith('--'))
-    ?.replace('--', '');
+  ensureProjectCwd();
+  // Имя компонента/модуля — ПОСЛЕДНИЙ --аргумент: --gulpfile/--cwd идут раньше
+  const dashedArgs = process.argv.filter((arg) => arg.startsWith('--'));
+  const blockName = dashedArgs[dashedArgs.length - 1]?.replace('--', '');
   if (!blockName) {
     console.log('\n❌ Ошибка: Укажите имя! Пример: gulp remove --header\n');
     return done();

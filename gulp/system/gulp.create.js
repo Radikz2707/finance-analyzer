@@ -2,6 +2,19 @@ import fs from 'fs';
 import path from 'path';
 import { config } from '../../gulp.config.js';
 
+/** Корень проекта: системные гулпфайлы Gulp запускает из gulp/system/ */
+const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
+
+/**
+ * Вернуть CWD в корень проекта (Gulp меняет CWD на папку гулпфайла,
+ * из-за чего относительные пути из gulp.config.js ломаются).
+ */
+const ensureProjectCwd = () => {
+  if (process.cwd() !== PROJECT_ROOT) {
+    process.chdir(PROJECT_ROOT);
+  }
+};
+
 const toCamelCase = (str) =>
   str.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 
@@ -15,6 +28,7 @@ const updateFileContent = (filePath, modifyCallback) => {
 };
 
 export function create(done) {
+  ensureProjectCwd();
   const args = process.argv.slice(3);
   let name = args.find((arg) => arg.startsWith('--'))?.replace(/^--/, '');
 
