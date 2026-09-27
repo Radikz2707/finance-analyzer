@@ -36,6 +36,19 @@ export function scripts() {
         '@': path.resolve(config.aliasPath),
         '@components': path.resolve(config.structure.components),
       },
+      // Node-only модули недоступны в браузере: заглушки (false = пустой модуль).
+      // Это позволяет собирать браузерный бандл, где используется db-manager
+      // (см. NormalModuleReplacementPlugin ниже) и другие Node-зависимые модули.
+      fallback: {
+        path: false,
+        fs: false,
+        os: false,
+        util: false,
+        child_process: false,
+        crypto: false,
+        stream: false,
+        buffer: false,
+      },
       // TypeScript-импорты используют расширение .js (bundler resolution),
       // поэтому webpack должен резолвить "./x.js" как "./x.ts"
       extensionAlias: {
@@ -86,7 +99,21 @@ export function scripts() {
         : false,
     },
     devtool: isProd ? 'source-map' : 'eval-cheap-module-source-map',
-    plugins: [],
+    plugins: [
+      // Браузерная сборка НЕ может включать better-sqlite3 (native Node-модуль).
+      // Подменяем db-manager на браузерную заглушку db-manager.browser.ts,
+      // которая возвращает пустые данные (страница не падает). Node-контур
+      // (tsx / npm scripts) не использует webpack — там остаётся настоящий модуль.
+      new webpack.NormalModuleReplacementPlugin(
+        /db-manager\/db-manager(\.js)?$/,
+        (resource) => {
+          resource.request = resource.request.replace(
+            /db-manager\/db-manager(\.js)?$/,
+            'db-manager/db-manager.browser.js',
+          );
+        },
+      ),
+    ],
   };
 
   // Локальная копия потока для безопасной трансляции контекста ошибок
