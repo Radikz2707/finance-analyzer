@@ -2,7 +2,21 @@ import fs from 'fs';
 import path from 'path';
 import { config } from '../../gulp.config.js';
 
+/** Корень проекта: системные гулпфайлы Gulp запускает из gulp/system/ */
+const PROJECT_ROOT = path.resolve(import.meta.dirname, '../..');
+
+/**
+ * Вернуть CWD в корень проекта (Gulp меняет CWD на папку гулпфайла,
+ * из-за чего относительные пути из gulp.config.js ломаются).
+ */
+const ensureProjectCwd = () => {
+  if (process.cwd() !== PROJECT_ROOT) {
+    process.chdir(PROJECT_ROOT);
+  }
+};
+
 export function createStructure(done) {
+  ensureProjectCwd();
   const srcFolder = config.srcFolder || 'src';
   const scssExtension = config.scssExtension || 'scss';
   const struct = config.structure;
@@ -74,8 +88,64 @@ if (document.readyState === 'complete') {
 
 console.log('🚀 Radik.Dev: TypeScript успешно инициализирован');`;
 
+  /**
+   * Шаблоны компонентов H-M-F: создаются ТОЛЬКО на чистом проекте.
+   * В живом проекте (index.html / style.scss уже существуют) их создание
+   * без подключения к app.ts и style.scss привело бы к «висящим» файлам.
+   */
+  const componentsMeta = [
+    {
+      name: 'header',
+      html: `<header class="header">
+  <div class="container">
+    <h1>Header Component</h1>
+  </div>
+</header>`,
+      scss: '.header { padding: 20px; background: #f4f4f4; }',
+      ts: `export const header = (): void => {
+  console.log('Header TS Loaded');
+};`,
+    },
+    {
+      name: 'main',
+      html: `<main class="main">
+  <div class="container">
+    <h2>Main Content</h2>
+  </div>
+</main>`,
+      scss: '.main { flex: 1 1 auto; padding: 40px 0; }',
+      ts: `export const main = (): void => {
+  console.log('Main TS Loaded');
+};`,
+    },
+    {
+      name: 'footer',
+      html: `<footer class="footer">
+  <div class="container">
+    <p>Footer Component</p>
+  </div>
+</footer>`,
+      scss: '.footer { padding: 20px; background: #333; color: #fff; }',
+      ts: `export const footer = (): void => {
+  console.log('Footer TS Loaded');
+};`,
+    },
+  ];
+
+  const mainScssPath = path.join(
+    srcFolder,
+    scssExtension,
+    `style.${scssExtension}`,
+  );
+  // Признак «чистого» проекта: нет ни index.html, ни style.scss —
+  // значит структура ещё не разворачивалась, можно создавать всё.
+  const isFreshProject =
+    !fs.existsSync(path.join(srcFolder, 'index.html')) &&
+    !fs.existsSync(mainScssPath);
+
   const folders = [
     srcFolder,
+    path.join(srcFolder, 'js'),
     path.join(srcFolder, scssExtension, 'base'),
     struct.components,
     struct.modules,
@@ -83,27 +153,28 @@ console.log('🚀 Radik.Dev: TypeScript успешно инициализиро�
     path.join(srcFolder, 'parts'),
     path.join(srcFolder, 'images', 'src'),
     path.join(srcFolder, 'fonts', 'src'),
-    path.join(struct.components, 'header'),
-    path.join(struct.components, 'header', 'img'),
-    path.join(struct.components, 'main'),
-    path.join(struct.components, 'main', 'img'),
-    path.join(struct.components, 'footer'),
-    path.join(struct.components, 'footer', 'img'),
   ];
 
+  let createdDirs = 0;
   folders.forEach((dir) => {
     if (dir && !fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
+      createdDirs++;
     }
   });
 
   const files = [
-    { path: path.join(srcFolder, 'index.html'), content: indexHTML },
-    { path: path.join(srcFolder, 'js', 'app.ts'), content: appJsContent },
     {
-      path: path.join(srcFolder, scssExtension, `style.${scssExtension}`),
-      content: styleSCSS,
+      path: path.join(srcFolder, 'index.html'),
+      content: indexHTML,
+      integration: true,
     },
+    {
+      path: path.join(srcFolder, 'js', 'app.ts'),
+      content: appJsContent,
+      integration: true,
+    },
+    { path: mainScssPath, content: styleSCSS, integration: true },
     {
       path: path.join(
         srcFolder,
@@ -112,72 +183,67 @@ console.log('🚀 Radik.Dev: TypeScript успешно инициализиро�
         `_zero.${scssExtension}`,
       ),
       content: zeroContent,
-    },
-
-    {
-      path: path.join(struct.components, 'header', 'header.html'),
-      content: `<header class="header">
-  <div class="container">
-    <h1>Header Component</h1>
-  </div>
-</header>`,
-    },
-    {
-      path: path.join(struct.components, 'header', `header.${scssExtension}`),
-      content: '.header { padding: 20px; background: #f4f4f4; }',
-    },
-    {
-      path: path.join(struct.components, 'header', 'header.ts'),
-      content: `export const header = (): void => {
-  console.log('Header TS Loaded');
-};`,
-    },
-
-    {
-      path: path.join(struct.components, 'main', 'main.html'),
-      content: `<main class="main">
-  <div class="container">
-    <h2>Main Content</h2>
-  </div>
-</main>`,
-    },
-    {
-      path: path.join(struct.components, 'main', `main.${scssExtension}`),
-      content: '.main { flex: 1 1 auto; padding: 40px 0; }',
-    },
-    {
-      path: path.join(struct.components, 'main', 'main.ts'),
-      content: `export const main = (): void => {
-  console.log('Main TS Loaded');
-};`,
-    },
-
-    {
-      path: path.join(struct.components, 'footer', 'footer.html'),
-      content: `<footer class="footer">
-  <div class="container">
-    <p>Footer Component</p>
-  </div>
-</footer>`,
-    },
-    {
-      path: path.join(struct.components, 'footer', `footer.${scssExtension}`),
-      content: '.footer { padding: 20px; background: #333; color: #fff; }',
-    },
-    {
-      path: path.join(struct.components, 'footer', 'footer.ts'),
-      content: `export const footer = (): void => {
-  console.log('Footer TS Loaded');
-};`,
+      integration: true,
     },
   ];
 
+  // H-M-F компоненты — только на чистом проекте, вместе с их img/.gitkeep
+  if (isFreshProject) {
+    componentsMeta.forEach((component) => {
+      const dirPath = path.join(struct.components, component.name);
+      files.push(
+        {
+          path: path.join(dirPath, `${component.name}.html`),
+          content: component.html,
+        },
+        {
+          path: path.join(dirPath, `${component.name}.${scssExtension}`),
+          content: component.scss,
+        },
+        {
+          path: path.join(dirPath, `${component.name}.ts`),
+          content: component.ts,
+        },
+        { path: path.join(dirPath, 'img', '.gitkeep'), content: '' },
+      );
+    });
+  }
+
+  let createdFiles = 0;
+  let skippedFiles = 0;
   files.forEach((file) => {
-    if (!fs.existsSync(file.path)) {
-      fs.writeFileSync(file.path, file.content);
+    // Гарантируем наличие родительской папки (защита от ENOENT)
+    const dirPath = path.dirname(file.path);
+    if (!fs.existsSync(dirPath)) {
+      fs.mkdirSync(dirPath, { recursive: true });
+      createdDirs++;
     }
+    // Никогда не перезаписываем существующие файлы (идемпотентность)
+    if (fs.existsSync(file.path)) {
+      skippedFiles++;
+      return;
+    }
+    fs.writeFileSync(file.path, file.content);
+    createdFiles++;
   });
 
-  console.log('✅ Модульная структура на TypeScript (H-M-F) создана!');
+  if (isFreshProject) {
+    console.log(
+      '\n✅ Модульная структура на TypeScript (H-M-F) создана с нуля.',
+    );
+  } else {
+    console.log(
+      '\n⚠️ Проект уже инициализирован: существующие файлы НЕ перезаписаны.',
+    );
+    console.log(
+      '   Создавайте компоненты/модули/плагины командами:\n' +
+        '   npm run create -- --<имя> | npm run module -- --<имя> | npm run plugin -- --<имя>',
+    );
+  }
+  console.log(
+    `   📁 Папок создано: ${createdDirs} | 📄 Файлов создано: ${createdFiles} | ⏭️ Пропущено (уже есть): ${skippedFiles}\n`,
+  );
   done();
 }
+
+export { createStructure as init };
