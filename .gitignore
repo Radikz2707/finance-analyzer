@@ -44,6 +44,11 @@ data/*-shm
 data/*-wal
 data/*-journal
 
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+
+
 # 📦 Локальные конфиги и скрипты автоматизации
 create-modules.js
 pipeline.ts
