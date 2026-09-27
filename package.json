@@ -17,6 +17,7 @@
     "init": "gulp --gulpfile gulp/system/gulp.init.js init",
     "create": "gulp --gulpfile gulp/system/gulp.create.js create",
     "module": "gulp --gulpfile gulp/system/gulp.module.js module",
+    "plugin": "gulp --gulpfile gulp/system/gulp.plugin.js plugin",
     "remove": "gulp --gulpfile gulp/system/gulp.remove.js remove",
     "help": "gulp --gulpfile gulp/system/gulp.help.js help",
     "lint": "cross-env NODE_NO_WARNINGS=1 G_MESSAGES_DEBUG=none node --no-deprecation node_modules/gulp/bin/gulp.js lintJs lintCss &&  npx tsc --noEmit",

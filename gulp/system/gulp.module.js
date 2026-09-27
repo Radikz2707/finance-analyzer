@@ -25,10 +25,14 @@ const toCamelCase = (str) =>
 const updateFileContent = (filePath, modifyCallback) => {
   if (!fs.existsSync(filePath)) return;
   const content = fs.readFileSync(filePath, 'utf-8');
-  const updatedContent = modifyCallback(content);
-  if (updatedContent !== content) {
-    fs.writeFileSync(filePath, updatedContent.trimEnd() + '\n');
-  }
+  // Сохраняем переводы строк файла (app.ts/style.scss в CRLF) —
+  // иначе каждый запуск ломает git-diff.
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
+  const normalized = content.replace(/\r\n/g, '\n');
+  const updatedContent = modifyCallback(normalized);
+  if (updatedContent === normalized) return;
+  const withEol = updatedContent.replace(/\n/g, eol);
+  fs.writeFileSync(filePath, withEol.endsWith(eol) ? withEol : withEol + eol);
 };
 
 const updateAppTs = (filePath, name, camelName) => {
@@ -39,29 +43,48 @@ const updateAppTs = (filePath, name, camelName) => {
     let newContent = content;
 
     if (!newContent.includes(importLine)) {
-      const targetMarker =
-        /\s*\n\/\/ ==========================================\n\/\/ 🧩 КОМПОНЕНТЫ И ИНТЕРФЕЙСНЫЕ БЛОКИ/;
-      if (targetMarker.test(newContent)) {
+      // 1) Секция компонентов — вставляем перед маркером
+      const componentsMarker =
+        /(\/\/\s*=+\s*\r?\n\/\/\s*🧩 КОМПОНЕНТЫ И ИНТЕРФЕЙСНЫЕ БЛОКИ)/;
+      if (componentsMarker.test(newContent)) {
         newContent = newContent.replace(
-          targetMarker,
-          `\n${importLine}\n\n// ==========================================\n// 🧩 КОМПОНЕНТЫ И ИНТЕРФЕЙСНЫЕ БЛОКИ`,
+          componentsMarker,
+          `${importLine}\n\n$1`,
         );
       } else {
-        const fallbackMarker =
-          '// ==========================================\n// 📦 ВНЕШНИЕ БИБЛИОТЕКИ И СИСТЕМНЫЕ МОДУЛИ\n// ==========================================';
-        newContent = newContent.replace(
-          fallbackMarker,
-          `${fallbackMarker}\n${importLine}`,
-        );
+        // 2) Fallback: секция внешних библиотек — вставляем сразу после блока.
+        //    НЕ захватываем перенос после закрывающей «// ====», иначе
+        //    импорты склеиваются в одну строку при повторных вставках.
+        const externalMarker =
+          /(\/\/\s*=+\s*\r?\n\/\/\s*📦 ВНЕШНИЕ БИБЛИОТЕКИ И СИСТЕМНЫЕ МОДУЛИ\r?\n\/\/\s*=+)/;
+        if (externalMarker.test(newContent)) {
+          newContent = newContent.replace(externalMarker, `$1\n${importLine}`);
+        } else {
+          // 3) Последний fallback: после последнего import
+          const lines = newContent.split('\n');
+          let lastImportIndex = -1;
+          lines.forEach((line, index) => {
+            if (/^\s*import\s/.test(line)) lastImportIndex = index;
+          });
+          if (lastImportIndex !== -1) {
+            lines.splice(lastImportIndex + 1, 0, importLine);
+            newContent = lines.join('\n');
+          }
+        }
       }
     }
 
     if (!newContent.includes(callLine)) {
-      const targetCallMarker = '// [ДИНАМИЧЕСКИЕ МОДУЛИ]';
-      newContent = newContent.replace(
-        targetCallMarker,
-        `${callLine}\n${targetCallMarker}`,
-      );
+      const callMarkers = [
+        /^(\s*)(\/\/\s*\[ДИНАМИЧЕСКИЕ МОДУЛИ\])/m,
+        /^(\s*)(\/\/\s*\[ВЫЗОВЫ ГЛАВНАЯ\])/m,
+      ];
+      for (const marker of callMarkers) {
+        if (marker.test(newContent)) {
+          newContent = newContent.replace(marker, `$1${callLine}\n$1$2`);
+          break;
+        }
+      }
     }
 
     return newContent.replace(/\n{3,}/g, '\n\n');
@@ -98,6 +121,12 @@ export const createModule = (done) => {
   const name = dashedArgs[dashedArgs.length - 1]?.replace('--', '');
   if (!name) {
     console.log('\n❌ Укажите имя модуля! Пример: gulp module --my-block\n');
+    return done();
+  }
+  if (name === 'gulpfile' || name === 'cwd') {
+    console.error(
+      `\n❌ Ошибка: Имя "${name}" конфликтует с CLI-флагом Gulp. Выберите другое имя.\n`,
+    );
     return done();
   }
 

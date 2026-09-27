@@ -34,20 +34,28 @@ const toCamelCase = (str) =>
 const updateFileContent = (filePath, modifyCallback) => {
   if (!fs.existsSync(filePath)) return;
   const content = fs.readFileSync(filePath, 'utf-8');
-  const updatedContent = modifyCallback(content);
-  fs.writeFileSync(filePath, updatedContent.trimEnd() + '\n');
+  // Сохраняем переводы строк файла (app.ts/style.scss в CRLF) —
+  // иначе удаление ресурса ломает git-diff всего файла.
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
+  const normalized = content.replace(/\r\n/g, '\n');
+  const updatedContent = modifyCallback(normalized);
+  if (updatedContent === normalized) return;
+  const withEol = updatedContent.replace(/\n/g, eol);
+  fs.writeFileSync(filePath, withEol.endsWith(eol) ? withEol : withEol + eol);
 };
 
 const cleanAppTs = (filePath, blockName, camelName) => {
   updateFileContent(filePath, (content) => {
-    const lines = content.split(/\r?\n/);
+    const lines = content.split('\n');
     const filteredLines = lines.filter((line) => {
       const trimmed = line.trim();
       const escapeRegExp = (string) =>
         string.replace(/[.*+?^{}()|[\]\\]/g, '\\$&');
       const escapedBlock = escapeRegExp(blockName);
+      // Учитываем как пути без расширения ('./modules/x/x'),
+      // так и с расширением ('./modules/x/x.js' / '.ts')
       const importRegex = new RegExp(
-        `^import\\s+.*\\s+from\\s+['"].*?\\/${escapedBlock}['"];?$`,
+        `^import\\s+.*\\s+from\\s+['"].*?\\/${escapedBlock}(?:\\.(?:js|ts))?['"];?$`,
       );
       return (
         !importRegex.test(trimmed) &&
