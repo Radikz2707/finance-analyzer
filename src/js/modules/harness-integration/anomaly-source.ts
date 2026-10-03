@@ -14,7 +14,7 @@
  */
 
 import { XlsxParserModule } from '../xlsx-parser/xlsx-parser.js';
-import { fetchHistoricalBatch } from '../finam-api/history-provider.js';
+import { fetchHistoricalBatch } from '../data-fetcher/index.js';
 import type { OHLCVBar } from '../finam-api/history-provider.js';
 import { AnomalyDetector } from '../python-engine/anomaly-detector.js';
 import type {
@@ -43,7 +43,7 @@ export type HistoryLoader = (
 export interface AnomalySourceDeps {
   /** Источник тикеров портфеля (по умолчанию — Excel-агрегация) */
   getTickers?: () => Promise<string[]>;
-  /** Загрузчик исторических цен (по умолчанию — Finam API + кэш SQLite) */
+  /** Загрузчик исторических цен (по умолчанию — Finam/MOEX + кэш SQLite) */
   fetchHistory?: HistoryLoader;
   /** Детектор аномалий (по умолчанию — AnomalyDetector с Python/TS-fallback) */
   detector?: Pick<AnomalyDetector, 'detectAnomalies'>;

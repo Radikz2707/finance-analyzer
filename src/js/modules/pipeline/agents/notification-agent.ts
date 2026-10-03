@@ -1,17 +1,24 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { exec } from 'node:child_process';
 import type { DataAgentOutput } from './data-agent.js';
 import type { AnalysisAgentOutput } from './analysis-agent.js';
 import type { AiAgentOutput } from './ai-agent.js';
+import type { ReviewResult } from '../review/review-agent.js';
+import type { ScenarioAgentOutput } from '../agents/scenario-agent.js';
+import type { StrategistAgentOutput } from '../agents/strategist-agent.js';
+import type { ConsiliumOutput } from '../agents/consilium.js';
 import type { QuikOrder } from '../../xlsx-parser/quik-orders-parser.js';
 import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
 import type { StockQuote } from '../../ai-advisor/report-builders.js';
 import { DashboardReportBuilder } from '../../../../components/dashboard-report/dashboard-report.js';
 import { getMarkdownTemplate } from '../../ai-advisor/report-templates.js';
+import { stripJsonBlockFromAiText } from '../../ai-advisor/json-sanitizer.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
-import { buildInteractiveOrders, type InteractiveOrder } from '../orders/interactive-orders.js';
+import {
+  buildInteractiveOrders,
+  type InteractiveOrder,
+} from '../orders/interactive-orders.js';
 
 // ──────────────────────────────────────────────
 // 1. Notification Agent output types
@@ -60,14 +67,16 @@ export class NotificationAgent extends AgentBase {
     this.mdPath = path.join(process.cwd(), 'report.md');
   }
 
-  protected async executeInternal(
-    input: {
-      data: DataAgentOutput;
-      analysis: AnalysisAgentOutput;
-      ai: AiAgentOutput;
-    },
-  ): Promise<NotificationAgentOutput> {
-    console.log('[NotificationAgent] >>> Генерация отчётов');
+  protected async executeInternal(input: {
+    data: DataAgentOutput;
+    analysis: AnalysisAgentOutput;
+    ai: AiAgentOutput;
+    review?: ReviewResult;
+    scenario?: ScenarioAgentOutput;
+    strategist?: StrategistAgentOutput;
+    consilium?: ConsiliumOutput;
+  }): Promise<NotificationAgentOutput> {
+    // silent — отчёт генерируется в файлы, не в консоль
 
     const { data, analysis, ai } = input;
     const { activeOrders, quotes } = data;
@@ -84,11 +93,7 @@ export class NotificationAgent extends AgentBase {
     );
 
     // ── Шаг 2: Генерация Markdown-отчёта ──
-    const mdContent = this.buildMarkdownReport(
-      data,
-      analysis,
-      ai,
-    );
+    const mdContent = this.buildMarkdownReport(data, analysis, ai);
 
     // ── Шаг 3: Запись файлов ──
     fs.writeFileSync(this.htmlPath, htmlContent, 'utf-8');
@@ -96,8 +101,8 @@ export class NotificationAgent extends AgentBase {
 
     console.log(
       '[NotificationAgent] ✅ Файлы записаны: ' +
-      `report.html (${htmlContent.length} байт), ` +
-      `report.md (${mdContent.length} байт)`,
+        `report.html (${htmlContent.length} байт), ` +
+        `report.md (${mdContent.length} байт)`,
     );
 
     // ── Шаг 4: Генерация интерактивных ордеров ──
@@ -148,7 +153,9 @@ export class NotificationAgent extends AgentBase {
     );
 
     // Строим DashboardReportBuilder с KPI-данными (единый вызов, без two-phase init)
-    const totalVal = this.calculateTotalVal(assetsAnalysis);
+    // Используем totalBalance из "Отчет по сделкам" (C10 = Итого активов),
+    // а не пересчитываем из assetsAnalysis (там currentPrice берётся из "Стоимость" = ликвидационная цена)
+    const totalVal = data.macroGoals.totalBalance;
     const totalNetProfitRub = data.historicalTrades.profitC11;
     const aiBoxHtml = this.buildAiBoxHtml(analysis, ai);
 
@@ -195,7 +202,7 @@ export class NotificationAgent extends AgentBase {
       .join('\n');
 
     // Формируем Markdown-шаблон
-    const totalVal = this.calculateTotalVal(assetsAnalysis);
+    const totalVal = data.macroGoals.totalBalance;
     const stocksPct = this.calcStocksPercent(assetsAnalysis);
     const bondsPct = this.calcBondsPercent(assetsAnalysis);
 
@@ -219,8 +226,10 @@ export class NotificationAgent extends AgentBase {
     );
 
     // Добавляем AI-текст в конец Markdown
+    // (очищенный от raw structured JSON — narrative приходит уже чистым,
+    // здесь повторная страховка на display-слое)
     if (ai.aiNarrative) {
-      return mdData + '\n\n---\n\n' + ai.aiNarrative;
+      return mdData + '\n\n---\n\n' + stripJsonBlockFromAiText(ai.aiNarrative);
     }
 
     return mdData;
@@ -258,50 +267,36 @@ export class NotificationAgent extends AgentBase {
       html += '\n';
     }
 
-    // AI-текст
-    html += ai.aiNarrative;
+    // AI-текст (raw structured JSON никогда не должен попадать в дашборд —
+    // stripJsonBlockFromAiText удаляет ```json / {"ticker": ...} блоки)
+    html += stripJsonBlockFromAiText(ai.aiNarrative);
     html += '</div>';
 
     return html;
   }
 
-  private calculateTotalVal(assetsAnalysis: AssetAnalysis[]): number {
-    return assetsAnalysis.reduce((sum, a) => {
-      const liqValue = (a.quantity ?? 0) * (a.currentPrice ?? 0);
-      return sum + liqValue;
-    }, 0);
-  }
-
   private calcStocksPercent(assetsAnalysis: AssetAnalysis[]): number {
-    return Math.round(
-      assetsAnalysis
-        .filter((a) => a.assetType === 'А' || a.assetType === 'Акция')
-        .reduce((sum, a) => sum + a.currentPercent, 0) * 100,
-    ) / 100;
+    return (
+      Math.round(
+        assetsAnalysis
+          .filter((a) => a.assetType === 'А' || a.assetType === 'Акция')
+          .reduce((sum, a) => sum + a.currentPercent, 0) * 100,
+      ) / 100
+    );
   }
 
   private calcBondsPercent(assetsAnalysis: AssetAnalysis[]): number {
-    return Math.round(
-      assetsAnalysis
-        .filter((a) => a.assetType === 'О' || a.assetType === 'Облигация')
-        .reduce((sum, a) => sum + a.currentPercent, 0) * 100,
-    ) / 100;
+    return (
+      Math.round(
+        assetsAnalysis
+          .filter((a) => a.assetType === 'О' || a.assetType === 'Облигация')
+          .reduce((sum, a) => sum + a.currentPercent, 0) * 100,
+      ) / 100
+    );
   }
 
-  private openInBrowser(filePath: string): boolean {
-    try {
-      const cleanPath = filePath.replace(/\\/g, '/');
-      const openCommand =
-        process.platform === 'win32'
-          ? `start "" "${cleanPath}"`
-          : `open "${cleanPath}"`;
-      exec(openCommand);
-      console.log(`[NotificationAgent] 🌐 Отчёт открыт в браузере: ${filePath}`);
-      return true;
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[NotificationAgent] ❌ Ошибка открытия браузера: ${errorMsg}`);
-      return false;
-    }
+  private openInBrowser(_filePath: string): boolean {
+    // Открывает только ai-advisor.ts, чтобы не было двух вкладок
+    return false;
   }
 }

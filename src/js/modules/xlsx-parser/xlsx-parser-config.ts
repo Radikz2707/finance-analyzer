@@ -82,10 +82,10 @@ export const SALES_KEYWORDS = ['ПРОДАЖ'];
 export const COMMISSION_KEYWORDS = ['КОМИССИ'];
 
 /** Набор ключевых слов для поиска количества сделок */
-export const TRADES_COUNT_KEYWORDS = ['ВСЕГО СДЕЛОК', 'КОЛИЧЕСТВО СДЕЛОК'];
+export const TRADES_COUNT_KEYWORDS = ['КОЛИЧЕСТВО СДЕЛОК', 'ВСЕГО СДЕЛОК'];
 
 /** Набор ключевых слов для поиска строки прибыли/убытка C10 */
-export const PROFIT_C10_KEYWORDS = ['ТЕКУЩАЯ(ИЙ) ПРИБЫЛЬ', 'ПРИБЫЛЬ (УБЫТОК)'];
+export const PROFIT_C10_KEYWORDS = ['ТЕКУЩАЯ', 'ПРИБЫЛЬ (УБЫТОК)'];
 
 /** Набор ключевых слов для поиска общей оценки активов */
 export const TOTAL_BALANCE_KEYWORDS = [
@@ -94,6 +94,7 @@ export const TOTAL_BALANCE_KEYWORDS = [
   'СТОИМОСТЬ ПОРТФЕЛЯ',
   'ОЦЕНКА АКТИВОВ',
   'АКТИВОВ',
+  'ВСЕГО АКТИВОВ',
 ];
 
 /** Набор ключевых слов для поиска ликвидного кэша */

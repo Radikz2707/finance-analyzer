@@ -4,13 +4,18 @@
  * Conservative Reviewer  — оценивает риски при падении рынка
  * Aggressive Reviewer    — ищет скрытый потенциал роста
  * Risk Manager           — проверяет соблюдение лимитов и диверсификации
+ *
+ * Каждый ревизор вызывает AI с промптом, ориентированным на его роль,
+ * затем дополняет результат детерминированными проверками.
  */
 
 import type { DataAgentOutput } from '../agents/data-agent.js';
 import type { AnalysisAgentOutput } from '../agents/analysis-agent.js';
 import type { AiAgentOutput } from '../agents/ai-agent.js';
+import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
+import { isOllamaRunning } from '../../ai-advisor/ollama-manager.js';
 import type {
   ExternalAiProvider,
   ExternalAiRequest,
@@ -21,8 +26,13 @@ import type {
 // Constants
 // ──────────────────────────────────────────────
 
-/** Таймаут для каждого ревизора (5 секунд) */
-const REVIEWER_TIMEOUT_MS = 5000;
+/** Таймаут для детерминированных проверок ревизора */
+// Должен быть БОЛЬШЕ внутреннего таймаута AI-вызова (AI_REVIEW_TIMEOUT_MS),
+// иначе ревизор всегда помечается timedOut при медленном ответе модели.
+const REVIEWER_TIMEOUT_MS = 15000;
+
+/** Таймаут для AI-вызова каждого ревизора */
+const AI_REVIEW_TIMEOUT_MS = 10000;
 
 // ──────────────────────────────────────────────
 // 1. Review types
@@ -134,6 +144,10 @@ export interface ReviewResult {
  */
 export class ReviewAgent extends AgentBase {
   private readonly externalJudge?: ExternalAiJudge;
+
+  /** Кэш проверки доступности Ollama (один раз на выполнение) */
+  private ollamaChecked = false;
+  private ollamaAvailable = false;
 
   constructor(config?: AgentConfig, externalJudge?: ExternalAiJudge) {
     super(config ?? { name: 'ReviewAgent' });
@@ -297,16 +311,69 @@ export class ReviewAgent extends AgentBase {
 
   // ── Reviewers ──
 
-  private runConservativeReviewer(
+  /**
+   * Консервативный ревизор: оценивает риски при падении рынка.
+   * Сначала AI-анализ, затем детерминированные проверки.
+   */
+  private async runConservativeReviewer(
     data: DataAgentOutput,
     analysis: AnalysisAgentOutput,
     _ai: AiAgentOutput,
-  ): ReviewerResult {
+  ): Promise<ReviewerResult> {
+    const startTime = Date.now();
     const warnings: ReviewWarning[] = [];
     const { macroGoals } = data;
-    const { assetsAnalysis } = analysis.portfolioAnalysis;
+    const assetsAnalysis = analysis.portfolioAnalysis.assetsAnalysis;
+    const totalValue = macroGoals.totalBalance;
+    const freeCash = macroGoals.freeCash;
 
-    // Проверяем концентрацию
+    // ── AI-анализ ──
+    try {
+      const assetsSummary = assetsAnalysis
+        .filter((a: AssetAnalysis) => a.currentPercent > 0)
+        .map(
+          (a: AssetAnalysis) =>
+            `${a.ticker}: ${a.currentPercent.toFixed(1)}%, статус=${a.status}, P&L=${a.unrealizedProfitRub?.toFixed(0)}₽`,
+        )
+        .join('; ');
+
+      const aiPrompt = `Ты — консервативный ревизор портфеля. Оцени риски при падении рынка.
+
+Данные портфеля:
+- Общая стоимость: ${totalValue?.toFixed(0)} руб
+- Свободный кэш: ${freeCash?.toFixed(0)} руб
+- Активы: ${assetsSummary}
+
+Найди:
+1. Активы с высокой концентрацией (>10%)
+2. Активы с резким падением (>5% за день)
+3. Риски недостаточного резерва
+
+Ответь ТОЛЬКО в формате JSON (без markdown, без пояснений):
+{"warnings":[{"ticker":"...","severity":"high|medium|low","category":"risk|concentration|liquidity","message":"..."}],"recommendation":"текст","confidence":75}`;
+
+      const aiResult = await this.callAiWithTimeout(
+        aiPrompt,
+        AI_REVIEW_TIMEOUT_MS,
+      );
+      if (aiResult) {
+        const parsed = JSON.parse(aiResult);
+        if (parsed?.warnings && Array.isArray(parsed.warnings)) {
+          for (const w of parsed.warnings) {
+            warnings.push({
+              ticker: w.ticker,
+              severity: w.severity,
+              category: w.category,
+              message: w.message,
+            });
+          }
+        }
+      }
+    } catch {
+      // AI не ответил — используем только детерминированные проверки
+    }
+
+    // ── Детерминированные проверки ──
     for (const asset of assetsAnalysis) {
       if (asset.currentPercent > 10) {
         warnings.push({
@@ -317,7 +384,6 @@ export class ReviewAgent extends AgentBase {
         });
       }
 
-      // Проверяем отрицательную динамику
       if (asset.dailyDynamicsPercent && asset.dailyDynamicsPercent < -5) {
         warnings.push({
           ticker: asset.ticker,
@@ -328,17 +394,15 @@ export class ReviewAgent extends AgentBase {
       }
     }
 
-    // Проверяем свободные средства
-    if (
-      macroGoals.freeCash > 0 &&
-      macroGoals.freeCash < macroGoals.totalBalance * 0.01
-    ) {
+    if (freeCash > 0 && freeCash < (totalValue ?? 0) * 0.01) {
       warnings.push({
         severity: 'medium',
         category: 'liquidity',
-        message: `Минимальный резерв свободных средств: ${macroGoals.freeCash.toFixed(0)} руб — нет запаса прочности`,
+        message: `Минимальный резерв свободных средств: ${freeCash.toFixed(0)} руб — нет запаса прочности`,
       });
     }
+
+    const durationMs = Date.now() - startTime;
 
     return {
       reviewerType: 'conservative',
@@ -353,21 +417,79 @@ export class ReviewAgent extends AgentBase {
         warnings.length === 0
           ? 'Консервативный анализ: риски минимальны'
           : `Консервативный анализ: найдено ${warnings.length} предупреждений`,
-      durationMs: 0,
+      durationMs,
       timedOut: false,
     };
   }
 
-  private runAggressiveReviewer(
+  /**
+   * Агрессивный ревизор: ищет скрытый потенциал роста.
+   * Сначала AI-анализ, затем детерминированные проверки.
+   */
+  private async runAggressiveReviewer(
     data: DataAgentOutput,
     analysis: AnalysisAgentOutput,
     _ai: AiAgentOutput,
-  ): ReviewerResult {
+  ): Promise<ReviewerResult> {
+    const startTime = Date.now();
     const warnings: ReviewWarning[] = [];
     const { quotes } = data;
-    const { assetsAnalysis } = analysis.portfolioAnalysis;
+    const assetsAnalysis = analysis.portfolioAnalysis.assetsAnalysis;
 
-    // Ищем недооценённые активы
+    // ── AI-анализ ──
+    try {
+      const buyAssets = assetsAnalysis
+        .filter((a: AssetAnalysis) => a.status === 'BUY')
+        .map(
+          (a: AssetAnalysis) =>
+            `${a.ticker} (дефицит=${a.deficitRub?.toFixed(0)}₽)`,
+        )
+        .join(', ');
+
+      const assetsSummary = assetsAnalysis
+        .filter((a: AssetAnalysis) => a.currentPercent > 0)
+        .map(
+          (a: AssetAnalysis) =>
+            `${a.ticker}: ${a.currentPercent.toFixed(1)}%, P&L=${a.unrealizedProfitRub?.toFixed(0)}₽`,
+        )
+        .join('; ');
+
+      const aiPrompt = `Ты — агрессивный ревизор портфеля. Ищи скрытый потенциал роста.
+
+Данные портфеля:
+- Активы: ${assetsSummary}
+- Статусы BUY: ${buyAssets || 'нет'}
+
+Найди:
+1. Активы с ростом >5% за день
+2. Активы со статусом BUY и дефицитом
+3. Возможности для агрессивной стратегии
+
+Ответь ТОЛЬКО в формате JSON:
+{"warnings":[{"ticker":"...","severity":"low|medium|high","category":"opportunity","message":"..."}],"recommendation":"текст","confidence":70}`;
+
+      const aiResult = await this.callAiWithTimeout(
+        aiPrompt,
+        AI_REVIEW_TIMEOUT_MS,
+      );
+      if (aiResult) {
+        const parsed = JSON.parse(aiResult);
+        if (parsed?.warnings && Array.isArray(parsed.warnings)) {
+          for (const w of parsed.warnings) {
+            warnings.push({
+              ticker: w.ticker,
+              severity: w.severity,
+              category: w.category,
+              message: w.message,
+            });
+          }
+        }
+      }
+    } catch {
+      // AI не ответил — используем только детерминированные проверки
+    }
+
+    // ── Детерминированные проверки ──
     for (const asset of assetsAnalysis) {
       const quote = quotes[asset.ticker];
       if (quote && quote.dailyDynamicsPercent > 5) {
@@ -379,7 +501,6 @@ export class ReviewAgent extends AgentBase {
         });
       }
 
-      // Проверяем дефицит
       if (asset.status === 'BUY' && asset.deficitRub > 0) {
         warnings.push({
           ticker: asset.ticker,
@@ -389,6 +510,8 @@ export class ReviewAgent extends AgentBase {
         });
       }
     }
+
+    const durationMs = Date.now() - startTime;
 
     return {
       reviewerType: 'aggressive',
@@ -403,34 +526,94 @@ export class ReviewAgent extends AgentBase {
         warnings.length === 0
           ? 'Агрессивный анализ: явных возможностей нет'
           : `Агрессивный анализ: найдено ${warnings.length} возможностей`,
-      durationMs: 0,
+      durationMs,
       timedOut: false,
     };
   }
 
-  private runRiskManagerReviewer(
+  /**
+   * Risk Manager: проверяет соблюдение лимитов и диверсификации.
+   * Сначала AI-анализ, затем детерминированные проверки.
+   */
+  private async runRiskManagerReviewer(
     _data: DataAgentOutput,
     analysis: AnalysisAgentOutput,
     _ai: AiAgentOutput,
-  ): ReviewerResult {
+  ): Promise<ReviewerResult> {
+    const startTime = Date.now();
     const warnings: ReviewWarning[] = [];
-    const { riskValidation } = analysis;
-    const { assetsAnalysis } = analysis.portfolioAnalysis;
+    const { riskValidation, portfolioAnalysis } = analysis;
+    const assetsAnalysis = portfolioAnalysis.assetsAnalysis;
 
-    // Проверяем валидацию рисков
-    for (const error of riskValidation.errors) {
-      warnings.push({
-        severity: 'high',
-        category: 'risk',
-        message: `Нарушение лимита: ${error}`,
-      });
+    const stockCount = assetsAnalysis.filter(
+      (a: AssetAnalysis) => a.assetType === 'А',
+    ).length;
+    const bondCount = assetsAnalysis.filter(
+      (a: AssetAnalysis) => a.assetType === 'О',
+    ).length;
+    const etfCount = assetsAnalysis.filter(
+      (a: AssetAnalysis) => a.assetType === 'Ф',
+    ).length;
+
+    // ── AI-анализ ──
+    try {
+      const validationErrors =
+        riskValidation.errors.join('; ') || 'нет нарушений';
+
+      const aiPrompt = `Ты — Risk Manager портфеля. Проверяй соблюдение лимитов и диверсификацию.
+
+Данные:
+- Ошибки валидации: ${validationErrors}
+- Акции: ${stockCount}, Облигации: ${bondCount}, Фонды(ETF): ${etfCount}
+- Всего активов: ${assetsAnalysis.length}
+
+Проверь:
+1. Нарушения лимитов
+2. Диверсификацию по типам
+3. Концентрацию
+
+Ответь ТОЛЬКО в формате JSON:
+{"warnings":[{"severity":"high|medium|low","category":"risk|diversification|concentration","message":"..."}],"recommendation":"текст","confidence":85}`;
+
+      const aiResult = await this.callAiWithTimeout(
+        aiPrompt,
+        AI_REVIEW_TIMEOUT_MS,
+      );
+      if (aiResult) {
+        const parsed = JSON.parse(aiResult);
+        if (parsed?.warnings && Array.isArray(parsed.warnings)) {
+          for (const w of parsed.warnings) {
+            // Избегаем дубликатов с детерминированными проверками
+            const exists = warnings.some(
+              (existing) => existing.message === w.message,
+            );
+            if (!exists) {
+              warnings.push({
+                severity: w.severity,
+                category: w.category,
+                message: w.message,
+              });
+            }
+          }
+        }
+      }
+    } catch {
+      // AI не ответил — используем только детерминированные проверки
     }
 
-    // Проверяем диверсификацию
-    const stockCount = assetsAnalysis.filter((a) => a.assetType === 'А').length;
-    const bondCount = assetsAnalysis.filter((a) => a.assetType === 'О').length;
+    // ── Детерминированные проверки ──
+    for (const error of riskValidation.errors) {
+      const exists = warnings.some((w) => w.message.includes(error));
+      if (!exists) {
+        warnings.push({
+          severity: 'high',
+          category: 'risk',
+          message: `Нарушение лимита: ${error}`,
+        });
+      }
+    }
 
-    if (stockCount === 0 && bondCount === 0) {
+    if (stockCount === 0 && bondCount === 0 && etfCount === 0) {
       warnings.push({
         severity: 'high',
         category: 'diversification',
@@ -450,6 +633,8 @@ export class ReviewAgent extends AgentBase {
       });
     }
 
+    const durationMs = Date.now() - startTime;
+
     return {
       reviewerType: 'risk_manager',
       name: 'Risk Manager',
@@ -461,7 +646,7 @@ export class ReviewAgent extends AgentBase {
       summary: riskValidation.isValid
         ? 'Risk Manager: лимиты соблюдены'
         : `Risk Manager: найдено ${riskValidation.errors.length} нарушений`,
-      durationMs: 0,
+      durationMs,
       timedOut: false,
     };
   }
@@ -568,6 +753,134 @@ export class ReviewAgent extends AgentBase {
   }
 
   // ── Helpers ──
+
+  /**
+   * Вызов AI с таймаутом.
+   * Приоритет провайдеров (как в AiClient):
+   *   1. Ollama (локально) — с быстрой проверкой доступности;
+   *   2. OpenRouter (openai/gpt-4o-mini), если Ollama недоступна и задан ключ;
+   *   3. null — ревизор продолжает с детерминированными проверками.
+   *
+   * Раньше здесь был прямой fetch к localhost:11434 без проверки: если Ollama
+   * не запущена, запрос зависал дольше REVIEWER_TIMEOUT_MS и все ревизоры
+   * помечались timedOut, хотя детерминированные проверки готовы мгновенно.
+   */
+  private async callAiWithTimeout(
+    prompt: string,
+    timeoutMs: number,
+  ): Promise<string | null> {
+    // 1. Локальная модель (Ollama)
+    if (await this.isOllamaReady()) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+        const response = await fetch('http://localhost:11434/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'qwen3.5:4b',
+            messages: [{ role: 'user', content: prompt }],
+            stream: false,
+            options: {
+              temperature: 0.2,
+              num_predict: 512,
+            },
+          }),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) return null;
+
+        const data = await response.json();
+        return data?.message?.content ?? null;
+      } catch {
+        return null;
+      }
+    }
+
+    // 2. Облачный fallback (OpenRouter) — вне тестового окружения
+    return this.callOpenRouterWithTimeout(prompt, timeoutMs);
+  }
+
+  /**
+   * Проверка доступности Ollama с кэшированием результата.
+   * 3 ревизора стартуют параллельно — достаточно одного запроса /api/tags.
+   */
+  private async isOllamaReady(): Promise<boolean> {
+    if (this.ollamaChecked) return this.ollamaAvailable;
+    this.ollamaChecked = true;
+    try {
+      this.ollamaAvailable = await isOllamaRunning();
+    } catch {
+      this.ollamaAvailable = false;
+    }
+    if (!this.ollamaAvailable) {
+      console.warn(
+        '[ReviewAgent] Ollama недоступна — ревизоры работают на детерминированных проверках',
+      );
+    }
+    return this.ollamaAvailable;
+  }
+
+  /**
+   * Fallback на OpenRouter (openai/gpt-4o-mini), если Ollama не запущена.
+   * Отключён в тестовом окружении, чтобы не совершать реальных сетевых запросов.
+   */
+  private async callOpenRouterWithTimeout(
+    prompt: string,
+    timeoutMs: number,
+  ): Promise<string | null> {
+    if (process.env.NODE_ENV === 'test' || process.env.VITEST) {
+      return null;
+    }
+
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) return null;
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+      const response = await fetch(
+        'https://openrouter.ai/api/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://github.com/finance-analyzer',
+            'X-Title': 'Finance Analyzer',
+          },
+          body: JSON.stringify({
+            model: 'openai/gpt-4o-mini',
+            messages: [
+              {
+                role: 'system',
+                content:
+                  'Ты — финансовый аналитик. Отвечай строго в запрошенном JSON-формате без markdown.',
+              },
+              { role: 'user', content: prompt },
+            ],
+            max_tokens: 512,
+            temperature: 0.2,
+          }),
+          signal: controller.signal,
+        },
+      );
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      return data?.choices?.[0]?.message?.content ?? null;
+    } catch {
+      return null;
+    }
+  }
 
   private calculateAgreement(
     conservative: ReviewerResult,

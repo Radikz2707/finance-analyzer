@@ -7,6 +7,7 @@
  */
 export * from './agent/index.js';
 export * from './agents/index.js';
+export * from './director/index.js';
 export { PipelineCoordinator } from './pipeline-coordinator.js';
 export type {
   PipelineResult,

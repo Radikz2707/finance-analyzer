@@ -71,6 +71,12 @@ function buildTopMovers(
 export function buildCompactKpi(
   result: PipelineResult,
 ): CompactPortfolioKpi | null {
+  // Защита: stages может быть undefined
+  if (!result?.stages) {
+    console.warn('[KpiSink] result.stages is undefined — пропуск KPI');
+    return null;
+  }
+
   const dataOutput = result.stages.data?.result.data as
     DataAgentOutput | undefined;
   const analysisOutput = result.stages.analysis?.result.data as
@@ -131,6 +137,14 @@ export function buildCompactKpi(
     return null;
   }
 
+  // Защита от записи нулевых KPI: если totalValue = 0, но доли есть — всё равно сохраняем
+  // (доли рассчитываются из реальных позиций, а не из macroGoals)
+  if (!hasValue && hasShares) {
+    console.warn(
+      '[KpiSink] ⚠️ totalBalance = 0, но доли активов есть — сохраняем KPI с нулевой стоимостью',
+    );
+  }
+
   return kpi;
 }
 
@@ -154,17 +168,50 @@ export async function savePortfolioKpi(
     return false;
   }
 
+  // Защита: stages может быть undefined
+  if (!result?.stages) {
+    console.warn('[KpiSink] result.stages is undefined — пропуск сохранения');
+    return false;
+  }
+
   const dataOutput = result.stages.data?.result.data as
     DataAgentOutput | undefined;
   const analysisOutput = result.stages.analysis?.result.data as
     AnalysisAgentOutput | undefined;
 
+  // DIAG: что пришло в kpi-sink
+  console.warn(
+    '[KpiSink] 🔍 investedFunds.totalNet=' +
+      (dataOutput?.investedFunds?.totalNet ?? 'undefined') +
+      ', profitC11=' +
+      (dataOutput?.historicalTrades?.profitC11 ?? 'undefined') +
+      ', totalBalance=' +
+      (dataOutput?.macroGoals?.totalBalance ?? 'undefined'),
+  );
+
   // Полный снапшот для стратегической памяти: реальные поля + нули
   // там, где данные недоступны (снапшот обязан быть полным по типу).
+  const investedNet = dataOutput?.investedFunds?.totalNet ?? 0;
+  const profitC11 = dataOutput?.historicalTrades?.profitC11 ?? 0;
+  const returnPercent =
+    investedNet > 0
+      ? Math.round(((profitC11 / investedNet) * 100) * 100) / 100
+      : 0;
+
+  // Защита от записи полностью нулевого KPI (данные из Excel не найдены)
+  if (kpi.totalValue === 0 && kpi.stocksShare === 0 && kpi.bondsShare === 0) {
+    console.warn(
+      '[KpiSink] ⛔ Пропуск сохранения KPI: все ключевые метрики = 0. ' +
+        'Проверьте Excel-файл: лист «Отчет по сделкам» (строка "Итого активов") ' +
+        'и лист «Цели» (целевые доли акций/облигаций).',
+    );
+    return false;
+  }
+
   const snapshot: PortfolioKpiSnapshot = {
     date: kpi.date,
     totalValue: kpi.totalValue ?? 0,
-    returnPercent: 0,
+    returnPercent: Math.round(returnPercent * 100) / 100,
     volatility: 0,
     sharpeRatio: 0,
     maxDrawdown: 0,

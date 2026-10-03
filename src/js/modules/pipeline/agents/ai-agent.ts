@@ -20,6 +20,7 @@ import {
 } from '../../ai-advisor/structured-ai-recommendation.js';
 import { sanitizeAiNarrative } from '../../ai-advisor/ollama-manager.js';
 import { postProcessAiText } from '../../ai-advisor/ai-validation.js';
+import { stripJsonBlockFromAiText } from '../../ai-advisor/json-sanitizer.js';
 import { buildPortfolioAssetContext } from '../../ai-advisor/snapshot-builder.js';
 import { hasValue } from '../../research/helpers.js';
 import { AgentBase } from '../agent/agent-base.js';
@@ -96,38 +97,33 @@ export class AiAgent extends AgentBase {
   private async loadMemoryContext(): Promise<string> {
     try {
       const memoryStats = getStats();
-      let context = '# Контекст из памяти ИИ\n\n';
-      context += '## Статистика памяти\n\n';
-      context += `- Оперативная память: ${memoryStats.operationalCount} записей\n`;
-      context += `- Стратегическая память: ${memoryStats.strategicCount} записей\n\n`;
+      let context = '## Память ИИ\n';
+      context += `Записей: ${memoryStats.operationalCount} оперативных, ${memoryStats.strategicCount} стратегических\n`;
 
-      // Загружаем последние результаты pipeline
-      const result = await memoryQuery({
-        types: ['pipeline_result'],
-        maxResults: 5,
-      });
-
-      if (result.operationalEntries.length > 0) {
-        context += '## Последние результаты pipeline\n\n';
-        for (const entry of result.operationalEntries.slice(0, 3)) {
-          context += `### ${entry.type} — ${entry.createdAt}\n\n`;
-          context += `${entry.content.substring(0, 1000)}\n\n`;
-        }
-      }
-
-      // Загружаем последние KPI-снимки
+      // КРАТКИЕ KPI-снимки — только последние 2
       const kpiResult = await memoryQuery({
         types: ['kpi_snapshot'],
-        maxResults: 3,
+        maxResults: 2,
       });
 
       if (kpiResult.strategicEntries.length > 0) {
-        context += '## Последние KPI-снимки\n\n';
-        for (const entry of kpiResult.strategicEntries.slice(0, 3)) {
+        context += '\nKPI:\n';
+        for (const entry of kpiResult.strategicEntries.slice(0, 2)) {
           if (entry.raw) {
-            context += `- **${entry.date}**: стоимость=${entry.raw.totalValue}, доходность=${entry.raw.returnPercent}%\n`;
+            context += `- ${entry.date}: ${entry.raw.totalValue}₽, ${entry.raw.returnPercent}%\n`;
           }
         }
+      }
+
+      // КРАТКАЯ сводка по прошлым pipeline — без полного контента
+      const result = await memoryQuery({
+        types: ['pipeline_result'],
+        maxResults: 1,
+      });
+
+      if (result.operationalEntries.length > 0) {
+        // Только дата (без полного текста)
+        context += `\nПоследний pipeline: ${result.operationalEntries[0]!.createdAt}\n`;
       }
 
       console.log('[AiAgent] Контекст из памяти загружен');
@@ -148,7 +144,10 @@ export class AiAgent extends AgentBase {
     // Загружаем контекст из памяти ИИ
     const memoryContext = await this.loadMemoryContext();
     if (memoryContext) {
-      console.log('[AiAgent] Контекст из памяти:', memoryContext.substring(0, 200));
+      console.log(
+        '[AiAgent] Контекст из памяти:',
+        memoryContext.substring(0, 200),
+      );
     }
 
     const { data, research, analysis } = input;
@@ -219,6 +218,24 @@ export class AiAgent extends AgentBase {
       freeStocksPoolPercent: 0,
     };
 
+    // Реальные доли акций и облигаций из анализа портфеля
+    const actualStocksPct =
+      Math.round(
+        portfolioAnalysis.assetsAnalysis
+          .filter(
+            (a) => a.assetType === 'А' || a.assetType === 'Акция',
+          )
+          .reduce((sum, a) => sum + a.currentPercent, 0) * 100,
+      ) / 100;
+    const actualBondsPct =
+      Math.round(
+        portfolioAnalysis.assetsAnalysis
+          .filter(
+            (a) => a.assetType === 'О' || a.assetType === 'Облигация',
+          )
+          .reduce((sum, a) => sum + a.currentPercent, 0) * 100,
+      ) / 100;
+
     const aiClientResult = await this.callAiClient(
       portfolioReportData,
       income,
@@ -231,6 +248,7 @@ export class AiAgent extends AgentBase {
       data.investedFunds,
       data.accounts,
       memoryContext,
+      { stocks: actualStocksPct, bonds: actualBondsPct },
     );
 
     // Шаг 4: Пост-обработка AI-текста
@@ -247,7 +265,9 @@ export class AiAgent extends AgentBase {
         portfolioAnalysis.assetsAnalysis,
       );
 
-      aiNarrative = postProcessResult.cleanedText;
+      // Финальная очистка от raw structured JSON (```json, {"ticker": ...})
+      // перед передачей narrative в дашборд/Markdown/Telegram
+      aiNarrative = stripJsonBlockFromAiText(postProcessResult.cleanedText);
       validationWarnings.push(...postProcessResult.warnings);
     }
 
@@ -300,6 +320,7 @@ export class AiAgent extends AgentBase {
     investedFunds: DataAgentOutput['investedFunds'],
     accounts: DataAgentOutput['accounts'],
     memoryContext: string,
+    assetClassPercents: { stocks: number; bonds: number },
   ): Promise<AiClientResult> {
     const aiClient = new AiClient();
 
@@ -335,7 +356,7 @@ export class AiAgent extends AgentBase {
         aiMacroData,
         thesisResults,
         undefined, // newsContext
-        { stocks: 0, bonds: 0 }, // assetClassPercents — placeholder
+        assetClassPercents, // assetClassPercents
         {
           profitC10: historicalTrades.profitC10,
           profitC11: historicalTrades.profitC11,

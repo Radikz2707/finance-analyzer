@@ -1,4 +1,6 @@
 
+import { CbrOfficialFetcher } from '../research/providers/cbr-official-fetcher.js';
+
 export interface CbrRateData {
   rate: number;
   date: string;
@@ -9,15 +11,15 @@ export interface CbrRateData {
 
 // Кэш в памяти: ставка + время последнего получения
 let cachedRate: CbrRateData | null = null;
-const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 часа
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 минут
 
 /**
  * Получить ключевую ставку ЦБ РФ.
  *
  * Приоритет источников:
  * 1. Переменная окружения CBK_RATE_OVERRIDE (для ручной настройки)
- * 2. Кэш в памяти (24 часа)
- * 3. Fallback: актуальная ставка
+ * 2. Кэш в памяти (5 минут)
+ * 3. Реальный запрос к cbr.ru
  */
 export async function getCbrKeyRate(): Promise<CbrRateData> {
   // 1. Проверяем кэш
@@ -45,12 +47,31 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
     }
   }
 
-  // 3. Fallback: актуальная ставка ЦБ (сентябрь 2026)
-  //    Для обновления: измените значение ниже или установите CBK_RATE_OVERRIDE
+  // 3. Реальный запрос к cbr.ru
+  try {
+    const fetcher = new CbrOfficialFetcher();
+    const result = await fetcher.fetch();
+
+    if (result.keyRate != null && result.keyRate > 0) {
+      cachedRate = {
+        rate: result.keyRate,
+        date: result.keyRateDate ?? new Date().toLocaleDateString('ru-RU'),
+        source: 'cbr.ru/hd_base/KeyRate/',
+        lastUpdated: new Date().toISOString(),
+        isFresh: true,
+      };
+      console.log('[ЦБ-СТАВКА] ✅ Получено с cbr.ru:', cachedRate.rate + '%');
+      return cachedRate;
+    }
+  } catch (err) {
+    console.warn('[ЦБ-СТАВКА] ⚠️ Ошибка получения с cbr.ru:', err instanceof Error ? err.message : err);
+  }
+
+  // 4. Fallback: последняя известная ставка
   const fallbackRate: CbrRateData = {
     rate: 14.0,
     date: '2026-09-08',
-    source: 'fallback (ручная актуализация, НЕ актуальные данные)',
+    source: 'fallback (cbr.ru недоступен)',
     lastUpdated: new Date().toISOString(),
     isFresh: false,
   };

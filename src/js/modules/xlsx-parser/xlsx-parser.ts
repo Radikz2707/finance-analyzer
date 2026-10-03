@@ -130,6 +130,7 @@ export class XlsxParserModule {
   private cachedIisOrdersSum: number = 0;
   private cachedBrokerOrdersSum: number = 0;
   private cachedFreeCashFromQuikSheet: number = 0;
+  private cachedInvestedFunds: number = 0;
   public parsedActiveOrders: QuikOrder[] = [];
   private nameToTickerMap: Record<string, string> = {};
   /** Кэш справочных данных по облигациям (ISIN → nominal) */
@@ -670,10 +671,7 @@ export class XlsxParserModule {
     const targetMap = await this.parseTargetMapFromMainSheet();
 
     // [DIAGNOSTIC] Сколько активов в unifiedPriceMap из QUIK
-    const quikAssetCount = Object.keys(unifiedPriceMap).length;
-    console.log(
-      `[DIAGNOSTIC] unifiedPriceMap из QUIK: ${quikAssetCount} активов: ${Object.keys(unifiedPriceMap).join(', ')}`,
-    );
+    // silent
 
     const accountsMap = new Map<
       string,
@@ -687,9 +685,7 @@ export class XlsxParserModule {
         name.toUpperCase().startsWith('ПОРТФ.'),
     );
 
-    console.log(
-      `[DIAGNOSTIC] Портфельные листы: ${portfolioSheets.join(', ') || 'НЕТ'}`,
-    );
+    // silent — portfolio sheets
 
     portfolioSheets.forEach((sheetName) => {
       const underscoreIdx = sheetName.indexOf('_');
@@ -748,11 +744,11 @@ export class XlsxParserModule {
       // и аномально длинные строки. Валидные названия инструментов (например 'Сбербанк')
       // НЕ являются числами, поэтому Number(name) === NaN — и они должны проходить дальше.
       if (!name || !isNaN(Number(name)) || name.length > 30) {
-        console.log(`[QUIK_SKIP] name='${name}' — фильтр`);
+        // silent
         continue;
       }
       if (config.FREE_CASH_ROW_KEYWORDS.some((kw) => name === kw)) {
-        console.log(`[QUIK_SKIP] name='${name}' — свободный кэш`);
+        // silent
         continue;
       }
       if (
@@ -760,7 +756,7 @@ export class XlsxParserModule {
           name.toUpperCase().includes(kw),
         )
       ) {
-        console.log(`[QUIK_SKIP] name='${name}' — EXCLUDED_ROW_KEYWORDS`);
+        // silent
         continue;
       }
 
@@ -768,24 +764,20 @@ export class XlsxParserModule {
         .trim()
         .toUpperCase();
       if (!ticker) {
-        console.log(`[QUIK_SKIP] name='${name}' — пустой ticker`);
+        // silent
         continue;
       }
 
       const assetType = String(row['Вид активов'] || row['Тип'] || '').trim();
       const quantity = this.parseValue(row['Позиция']);
       if (quantity <= 0) {
-        console.log(
-          `[QUIK_SKIP] name='${name}' ticker=${ticker} — quantity=${quantity}`,
-        );
+        // silent
         continue;
       }
 
       const priceLookup = unifiedPriceMap[ticker];
       if (!priceLookup) {
-        console.log(
-          `[QUIK_SKIP] name='${name}' ticker=${ticker} — нет в unifiedPriceMap`,
-        );
+        // silent
         continue;
       }
 
@@ -954,9 +946,7 @@ export class XlsxParserModule {
       }
     }
 
-    console.log(
-      `[DIAGNOSTIC] parseAggregatedPortfolio: ${tickerMap.size} активов из QUIK`,
-    );
+    // silent
 
     // 3. Считаем ОБЩУЮ ликвидационную стоимость всего портфеля
     let totalPortfolioLiqValue = 0;
@@ -1074,10 +1064,7 @@ export class XlsxParserModule {
     }
 
     // [DIAGNOSTIC] Показать все собранные активы
-    const allTickers = result.map((a) => `${a.ticker}(${a.name})`).join(', ');
-    console.log(
-      `[DIAGNOSTIC] parseAggregatedPortfolio: ${result.length} активов: ${allTickers}`,
-    );
+    // silent — allTickers больше не используется
 
     return result;
   }
@@ -1289,13 +1276,7 @@ export class XlsxParserModule {
         'RU000A10FXF8',
       ];
       if (portfolioIsins.includes(isin)) {
-        console.log(
-          '[BOND_REFERENCE] ' +
-            isin +
-            ' nominal=' +
-            (nominal !== undefined ? nominal + ' ₽' : 'NO_DATA') +
-            ' source=EXCEL_BONDS',
-        );
+        // silent — bond reference
       }
     }
 
@@ -1387,16 +1368,18 @@ export class XlsxParserModule {
       const reportRows =
         XLSX.utils.sheet_to_json<Record<string, unknown>>(reportSheet);
       for (const row of reportRows) {
-        // sheet_to_json может вернуть __EMPTY / __EMPTY_1 или именованные колонки
-        const name = String(row['__EMPTY'] || '')
+        // Новая структура: столбец A — название, столбец B — значение
+        const name = String(row['__EMPTY'] || row['A'] || '')
           .trim()
           .toUpperCase();
-        const value = this.parseValue(row['__EMPTY_1']);
+        const value = this.parseValue(row['__EMPTY_1'] || row['B']);
 
         if (name.includes('ЛИКВИДН') && name.includes('СРЕДСТВ')) {
           freeCash = value;
-        } else if (name.includes('ИТОГО АКТИВ')) {
+        } else if (name.includes('ИТОГО АКТИВ') || name.includes('ВСЕГО АКТИВ')) {
           totalBalance = value;
+        } else if (name.includes('ВНЕШ') || name.includes('ВЛОЖЕН')) {
+          this.cachedInvestedFunds = value;
         }
       }
     }
@@ -1498,10 +1481,11 @@ export class XlsxParserModule {
       const reportRows =
         XLSX.utils.sheet_to_json<Record<string, unknown>>(reportSheet);
       for (const row of reportRows) {
-        const name = String(row['__EMPTY'] || '')
+        // Новая структура: столбец A — название, столбец B — значение
+        const name = String(row['__EMPTY'] || row['A'] || '')
           .trim()
           .toUpperCase();
-        const value = this.parseValue(row['__EMPTY_1']);
+        const value = this.parseValue(row['__EMPTY_1'] || row['B']);
 
         if (name.includes('ВНЕС') && name.includes('СРЕДСТВ')) {
           if (value > 0) {
@@ -1509,6 +1493,11 @@ export class XlsxParserModule {
           }
         }
       }
+    }
+
+    // 2. Если не нашли — используем кэш из parseMacroGoals
+    if (this.cachedInvestedFunds > 0) {
+      return { totalNet: this.cachedInvestedFunds };
     }
 
     // 2. Если не нашли — считаем totalNet как сумму балансовых стоимостей всех позиций из QUIK
@@ -1600,15 +1589,17 @@ export class XlsxParserModule {
     let totalHistoricalCommission: number | undefined;
     let profitC10: number | undefined;
     let profitC11: number | undefined;
+    let tradesCount: number | undefined;
 
     if (reportSheet && reportSheet['!ref']) {
       const reportRows =
         XLSX.utils.sheet_to_json<Record<string, unknown>>(reportSheet);
       for (const row of reportRows) {
-        const name = String(row['__EMPTY'] || '')
+        // Новая структура: столбец A — название, столбец B — значение
+        const name = String(row['__EMPTY'] || row['A'] || '')
           .trim()
           .toUpperCase();
-        const value = this.parseValue(row['__EMPTY_1']);
+        const value = this.parseValue(row['__EMPTY_1'] || row['B']);
 
         if (name.includes('КУПЛЯ') || name.includes('ПОКУПК')) {
           totalPurchasesSum = value;
@@ -1623,15 +1614,17 @@ export class XlsxParserModule {
           profitC10 = value;
         } else if (name.includes('ПРИБЫЛЬ/УБЫТОК')) {
           profitC11 = value;
+        } else if (
+          config.TRADES_COUNT_KEYWORDS.some((kw) => name.includes(kw))
+        ) {
+          tradesCount = value;
         }
       }
     }
 
     // Если не нашли в «Отчете по сделкам» — считаем из QUIK
     if (totalPurchasesSum === undefined || totalSalesSum === undefined) {
-      console.log(
-        '\n⚠️ [HISTORICAL] Сводные строки не найдены. Считаем из листа QUIK...',
-      );
+      // silent
 
       const quikSheet = this.workbook?.Sheets[config.QUIK_SHEET_NAME];
       if (!quikSheet || !quikSheet['!ref']) {
@@ -1647,7 +1640,6 @@ export class XlsxParserModule {
 
       let purchasesSum = 0;
       let salesSum = 0;
-      let positionCount = 0;
 
       for (const row of quikRows) {
         const name = String(row['Инструмент'] || '').trim();
@@ -1671,21 +1663,13 @@ export class XlsxParserModule {
         if (liquidationPrice > 0) {
           salesSum += liquidationPrice;
         }
-        positionCount++;
       }
 
       if (totalPurchasesSum === undefined) totalPurchasesSum = purchasesSum;
       if (totalSalesSum === undefined) totalSalesSum = salesSum;
       if (profitC10 === undefined) profitC10 = salesSum - purchasesSum;
 
-      console.log(
-        '  → Позиций: ' +
-          positionCount +
-          ' | Вложено (баланс): ' +
-          purchasesSum.toLocaleString('ru-RU') +
-          ' | Текущая стоимость (ликвид): ' +
-          salesSum.toLocaleString('ru-RU'),
-      );
+      // silent — trades summary
     }
 
     if (totalPurchasesSum === undefined || totalPurchasesSum === 0) {
@@ -1701,7 +1685,7 @@ export class XlsxParserModule {
     }
 
     return {
-      tradesCount: 0,
+      tradesCount: tradesCount || 0,
       totalPurchasesSum,
       totalSalesSum,
       totalHistoricalCommission: totalHistoricalCommission || 0,

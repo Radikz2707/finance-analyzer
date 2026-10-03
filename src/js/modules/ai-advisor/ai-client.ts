@@ -140,6 +140,30 @@ export function extractJsonFromAiResponse(text: string): RawAIJson | null {
 }
 
 /**
+ * Строит массив детерминированных сумм для валидации арифметики AI.
+ */
+function buildDeterministicAmounts(
+  assetsAnalysis: AssetAnalysis[] | undefined | null,
+): DeterministicAmounts[] {
+  return (assetsAnalysis ?? [])
+    .filter((a): a is AssetAnalysis => a.currentPercent > 0)
+    .map((a: AssetAnalysis) => {
+      const det: DeterministicAmounts = {
+        ticker: a.ticker,
+        liquidationValue: a.currentPrice * a.quantity,
+        currentQuantity: a.quantity,
+      };
+      if (a.deficitRub > 0) {
+        det.buyAmount = a.deficitRub;
+      }
+      if (a.deficitRub < 0) {
+        det.sellAmount = Math.abs(a.deficitRub);
+      }
+      return det;
+    });
+}
+
+/**
  * Многомодельный клиент ИИ-советника
  * Поддержка: OpenRouter (Claude/GPT), GigaChat, YandexGPT, локальный fallback
  */
@@ -306,15 +330,6 @@ export class AiClient {
       '% | \u0424\u043e\u043d\u0434\u044b(ETF) ' +
       etfPct +
       '%\n\n';
-    // КРИТИЧЕСКИЕ ДАННЫЕ — ОБЯЗАТЕЛЬНО используй в ответе
-    ctx +=
-      '!!! СТРУКТУРА: Акции=' +
-      stocksPct +
-      '% Облигации=' +
-      bondsPct +
-      '% Фонды(ETF)=' +
-      etfPct +
-      '% !!!\n\n';
 
     if (snapshot && snapshot.accounts.length > 0) {
       ctx += '\u0421\u0447\u0435\u0442\u0430:';
@@ -337,27 +352,22 @@ export class AiClient {
       ctx += '\n';
     }
 
-    ctx +=
-      '\n=== \u0410\u041a\u0422\u0418\u0412\u042b (\u0442\u0430\u0431\u043b\u0438\u0446\u0430) ===\n';
-    ctx +=
-      '\u0424\u043e\u0440\u043c\u0430\u0442: [\u0422\u0418\u041f] \u0422\u0438\u043a\u0435\u0440 | \u0418\u043c\u044f | \u0414\u043e\u043b\u044f% | \u0426\u0435\u043d\u0430 | \u0412\u0445\u043e\u0434 | P&L% | \u041a\u043e\u043b-\u0432\u043e | \u041b\u0438\u043a\u0432\u0438\u0434\u0430\u0446\u0438\u044f | \u0414\u0435\u0444\u0438\u0446\u0438\u0442 | \u0421\u0442\u0430\u0442\u0443\u0441 | target% | ThesisConf | Thesis\n';
+    ctx += '\n=== \u0410\u041a\u0422\u0418\u0412\u042b ===\n';
+    ctx += '\u0424\u043e\u0440\u043c\u0430\u0442: [\u0422\u0418\u041f] \u0422\u0438\u043a\u0435\u0440 | \u0414\u043e\u043b\u044f% | \u0426\u0435\u043d\u0430 | \u0412\u0445\u043e\u0434 | P&L% | \u041a\u043e\u043b-\u0432\u043e | \u041b\u0438\u043a\u0432 | \u0414\u0435\u0444\u0438\u0446\u0438\u0442 | \u0421\u0442\u0430\u0442\u0443\u0441 | target% | Thesis\n';
 
     for (const a of assetsAnalysis) {
       if (a.currentPercent === 0 && a.targetPercent === 0) continue;
 
       const type =
-        a.assetType === 'А' || a.assetType === 'Акция'
-          ? '\u0410\u041a\u0426\u0418\u042F'
-          : a.assetType === 'О' || a.assetType === 'Облигация'
+        a.assetType === '\u0410' || a.assetType === '\u0410\u043a\u0446\u0438\u044f'
+          ? '\u0410\u041a\u0426\u0418\u042f'
+          : a.assetType === '\u041e' || a.assetType === '\u041e\u0431\u043b\u0438\u0433\u0430\u0446\u0438\u044f'
             ? '\u041e\u0411\u041b'
             : '\u0424\u041e\u041d\u0414';
 
       const pnlFromEntry =
         a.balancePrice > 0 && a.currentPrice > 0
-          ? (
-              ((a.currentPrice - a.balancePrice) / a.balancePrice) *
-              100
-            ).toFixed(1)
+          ? (((a.currentPrice - a.balancePrice) / a.balancePrice) * 100).toFixed(1) + '%'
           : '—';
 
       const liquidation = (a.currentPrice * a.quantity).toLocaleString('ru-RU');
@@ -369,17 +379,14 @@ export class AiClient {
             : '—';
 
       const thesis = thesisResults.get(a.ticker);
-      const thesisConf = thesis
-        ? thesis.confidence.level +
-          '(' +
-          thesis.confidence.value.toFixed(2) +
-          ')'
-        : 'NO_RESEARCH';
-      const thesisSummary = thesis
-        ? thesis.thesis.length > 80
-          ? thesis.thesis.substring(0, 80) + '...'
-          : thesis.thesis
-        : '\u041d\u0435\u0442 \u0434\u0430\u043d\u043d\u044b\u0445';
+      // Сокращённый thesis — только первый символ уровня и первые 40 символов
+      const thesisShort = thesis
+        ? (thesis.confidence.level[0] || '?') +
+          ': ' +
+          (thesis.thesis.length > 40
+            ? thesis.thesis.substring(0, 40) + '...'
+            : thesis.thesis)
+        : 'NO_DATA';
 
       const marketStatus = a.currentPrice <= 0 ? ' BLOCKED' : '';
       const targetPctStr =
@@ -394,8 +401,6 @@ export class AiClient {
         ' ' +
         a.ticker +
         ' | ' +
-        a.name +
-        ' | ' +
         a.currentPercent.toFixed(1) +
         '% | ' +
         a.currentPrice +
@@ -403,7 +408,7 @@ export class AiClient {
         a.balancePrice +
         ' | ' +
         pnlFromEntry +
-        '% | ' +
+        ' | ' +
         a.quantity +
         ' | ' +
         liquidation +
@@ -415,9 +420,7 @@ export class AiClient {
         ' | ' +
         targetPctStr +
         ' | ' +
-        thesisConf +
-        ' | ' +
-        thesisSummary +
+        thesisShort +
         '\n';
     }
 
@@ -437,7 +440,7 @@ export class AiClient {
     cbrRate: number,
     newsContext?: string,
     macroPercentages?: { stocks: number; bonds: number },
-    historicalData?: {
+    _historicalData?: {
       profitC10: number;
       profitC11: number;
       investedNet: number;
@@ -460,79 +463,29 @@ export class AiClient {
       prompt += 'НОВОСТНОЙ ФОН:\n' + newsContext + '\n\n';
     }
 
-    prompt += '=== ЗАДАЧА АНАЛИЗА ===\n';
-    prompt += 'Проанализируй портфель с учётом:\n';
-    prompt += '- Ключевая ставка ЦБ: ' + cbrRate + '%\n';
-    prompt +=
-      '- Текущая структура: Акции ' +
-      stocksPct +
-      '%, Облигации ' +
-      bondsPct +
-      '%\n';
-    prompt += '- Дата анализа: ' + currentMonth + '\n\n';
+    prompt += '=== ЗАДАЧА ===\n';
+    prompt += 'Проанализируй портфель:\n';
+    prompt += '- Ставка ЦБ: ' + cbrRate + '%\n';
+    prompt += '- Структура: Акции ' + stocksPct + '%, Облигации ' + bondsPct + '%\n';
+    prompt += '- Дата: ' + currentMonth + '\n\n';
 
-    prompt += '=== ЧТО НУЖНО ДАТЬ В ОТВЕТЕ ===\n';
-    prompt +=
-      '1. Макроэкономическая оценка: соответствует ли текущая структура (Акции ' +
-      stocksPct +
-      '% / Облигации ' +
-      bondsPct +
-      '%) макроэкономической обстановке ' +
-      currentMonth.charAt(0).toUpperCase() +
-      currentMonth.slice(1) +
-      ' года? Почему?\n';
-    prompt += '2. РЕКОМЕНДАЦИИ ПО КАЖДОМУ АКТИВУ:\n';
-    prompt +=
-      '   - Для каждого актива из списка укажи статус PortfolioMath: BUY / STABLE / REDUCE / EXIT / NO_TARGET\n';
-    prompt +=
-      '   - Объясни каждый статус на основе переданных targetPercent и текущих данных\n';
-    prompt += '   - targetPercent = 0% → EXIT / ВЫХОД\n';
-    prompt +=
-      '   - targetPercent = — (прочерк) → цель не задана в Excel, укажи это\n';
-    prompt += '3. ПЛАН РЕБАЛАНСИРОВКИ:\n';
-    prompt +=
-      '   - Какие BUY / REDUCE / STABLE / EXIT имеют наивысший приоритет\n';
-    prompt +=
-      '   - Как использовать свободный кэш с учётом фактического ограничения\n';
-    prompt += '   - Приоритет операций на основе deficitRub из PortfolioMath\n';
-    prompt += '4. ВЫХОД В ЗЕЛЁНУЮ ЗОНУ:\n';
-    prompt +=
-      '   - Текущий убыток: ' +
-      (historicalData?.profitC11 || 0) +
-      ' ₽ (' +
-      (historicalData?.profitC11
-        ? (
-            (historicalData.profitC11 / historicalData.investedNet) *
-            100
-          ).toFixed(2)
-        : '0') +
-      '% от вложенных)\n';
-    prompt +=
-      '   - Краткосрочные шаги (1-3 месяца): что продать/купить сейчас\n';
-    prompt +=
-      '   - Среднесрочные шаги (3-12 месяцев): диверсификация, купоны\n';
-    prompt += '   - Долгосрочные шаги (1+ лет): стратегия накопления\n';
-    prompt +=
-      '   - Ценовые уровни отслеживай только при наличии данных во входном контексте\n';
-    prompt += '5. НОВЫЕ ИНСТРУМЕНТЫ:\n';
-    prompt +=
-      '   - Не добавляй новые инструменты без явного запроса пользователя\n';
-    prompt += '   - Не создавай новые targetPercent\n';
-    prompt += '6. КРАТКОЕ РЕЗЮМЕ: что делать прямо сейчас (3-5 пунктов).\n\n';
+    prompt += '=== ОТВЕТ ===\n';
+    prompt += '1. Макро: соответствие структуры ставке ' + cbrRate + '%\n';
+    prompt += '2. Каждый актив: статус (BUY/STABLE/REDUCE/EXIT/NO_TARGET) + аргументация\n';
+    prompt += '   - targetPercent = 0% → EXIT\n';
+    prompt += '   - targetPercent = — → NO_TARGET\n';
+    prompt += '3. Ребалансировка: приоритет BUY/REDUCE/EXIT, кэш\n';
+    prompt += '4. Выход в плюс: 1-3 мес / 3-12 мес / 1+ лет\n';
+    prompt += '5. Мониторинг: котировки, макро\n';
+    prompt += '6. Новые инструменты: НЕ добавлять без запроса\n';
+    prompt += '7. Резюме: 3-5 действий\n\n';
 
-    prompt += '=== СТРОГИЕ ТРЕБОВАНИЯ К ОТВЕТУ ===\n';
-    prompt += '- Используй ТОЛЬКО данные из раздела «ДАННЫЕ ПОРТФЕЛЯ»\n';
-    prompt += '- НЕ упоминай компании, которых нет в списке активов\n';
-    prompt += '- НЕ выдумывай данные о сделках топ-менеджеров\n';
-    prompt += '- ВСЕ проценты и рубли должны соответствовать данным портфеля\n';
-    prompt += '- Ответь развёрнуто, с аргументацией и конкретными цифрами\n';
-    prompt +=
-      '- Используй структуру: 7 секций, пронумерованных 1., 2., 3., 4., 5., 6., 7.\n';
-    prompt += '- НЕ используй маркеры типа "$1." — только "1.", "2." и т.д.\n';
-    prompt +=
-      '- ⚠️ ВАЖНО: Данные агрегированы по всем счетам. Анализируй каждый актив как единый, не дублируй рекомендации по счетам.\n';
-    prompt +=
-      '- ⚠️ КРИТИЧЕСКИ: В секции 2 «РЕКОМЕНДАЦИИ ПО КАЖДОМУ АКТИВУ» ты ОБЯЗАН прокомментировать КАЖДЫЙ актив из таблицы активов. Без исключений. Если актив есть в таблице — о нём должна быть строка в рекомендациях. Никогда не пиши «актив не указан в списке» — это ошибка, если он там есть.\n';
+    prompt += '=== ВАЖНО ===\n';
+    prompt += '- Проценты: 47.7%, не 47.739999%\n';
+    prompt += '- Нет данных → «нет данных», НЕ выдумывать\n';
+    prompt += '- Аргументация: конкретные цифры\n';
+    prompt += '- BLOCKED → НЕ рекомендовать BUY/SELL\n';
+    prompt += '- Отвечай на русском, развёрнуто\n';
 
     return prompt;
   }
@@ -964,24 +917,7 @@ export class AiClient {
 
       // ARITHMETIC CONSISTENCY — проверяем суммы против deterministic
       console.log('[Ollama] calling validateArithmeticConsistency...');
-      const deterministicAmounts: DeterministicAmounts[] = (
-        assetsAnalysis ?? []
-      )
-        .filter((a): a is AssetAnalysis => a.currentPercent > 0)
-        .map((a: AssetAnalysis) => {
-          const det: DeterministicAmounts = {
-            ticker: a.ticker,
-            liquidationValue: a.currentPrice * a.quantity,
-            currentQuantity: a.quantity,
-          };
-          if (a.deficitRub > 0) {
-            det.buyAmount = a.deficitRub;
-          }
-          if (a.deficitRub < 0) {
-            det.sellAmount = Math.abs(a.deficitRub);
-          }
-          return det;
-        });
+      const deterministicAmounts = buildDeterministicAmounts(assetsAnalysis);
       const arithmeticValidatedResponse = validateArithmeticConsistency(
         validatedResponse,
         deterministicAmounts,
@@ -1024,24 +960,7 @@ export class AiClient {
         const validatedResponse = validateAiOutput(cleanedResponse);
 
         // ARITHMETIC CONSISTENCY — проверяем суммы против deterministic
-        const deterministicAmounts: DeterministicAmounts[] = (
-          assetsAnalysis ?? []
-        )
-          .filter((a): a is AssetAnalysis => a.currentPercent > 0)
-          .map((a: AssetAnalysis) => {
-            const det: DeterministicAmounts = {
-              ticker: a.ticker,
-              liquidationValue: a.currentPrice * a.quantity,
-              currentQuantity: a.quantity,
-            };
-            if (a.deficitRub > 0) {
-              det.buyAmount = a.deficitRub;
-            }
-            if (a.deficitRub < 0) {
-              det.sellAmount = Math.abs(a.deficitRub);
-            }
-            return det;
-          });
+        const deterministicAmounts = buildDeterministicAmounts(assetsAnalysis);
         const arithmeticValidatedResponse = validateArithmeticConsistency(
           validatedResponse,
           deterministicAmounts,
@@ -1257,9 +1176,11 @@ export class AiClient {
                 structuredValidation.errors,
               );
             }
-          } else {
-            console.warn('[AI] JSON-блок не найден в ответе');
-          }
+        } else {
+          console.warn('[AI] JSON-блок не найден в ответе');
+          // Логгируем начало ответа для отладки
+          console.log('[AI] Начало ответа AI:', aiText.slice(0, 500));
+        }
         } catch (err) {
           console.error('[AI] Ошибка парсинга JSON:', err);
         }

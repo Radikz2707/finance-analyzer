@@ -286,7 +286,7 @@ export class MoexNewsSource implements INewsSource {
       return [...this.cachedItems];
     }
 
-    console.log('[MoexNewsSource] Загрузка новостей из MOEX ISS API...');
+    // silent — news loaded
 
     try {
       // 1. Загружаем общие новости
@@ -299,9 +299,7 @@ export class MoexNewsSource implements INewsSource {
       this.cachedItems = generalItems.map(toRawNewsItem);
       this.lastFetchTime = now;
 
-      console.log(
-        `[MoexNewsSource] ✅ Загружено ${this.cachedItems.length} новостей из MOEX`,
-      );
+    // silent — news loaded
 
       return this.cachedItems;
     } catch (error) {
@@ -316,7 +314,7 @@ export class MoexNewsSource implements INewsSource {
   async fetchForTicker(ticker: string): Promise<RawNewsItem[]> {
     if (!this.enabled) return [];
 
-    console.log(`[MoexNewsSource] Загрузка новостей для ${ticker}...`);
+    // silent — news loaded for ticker
     const items = await fetchMoexNewsByTicker(ticker, 20);
     return items.map(toRawNewsItem);
   }

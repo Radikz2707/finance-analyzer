@@ -1,28 +1,17 @@
 /**
- * StrategistAgent — детерминированный стратег портфеля.
+ * StrategistAgent — независимый аналитический агент по стратегии и рискам.
  *
- * Роль: защитник главной цели портфеля — выход в ЗЕЛЁНУЮ ЗОНУ.
- * В отличие от LLM-агентов, стратег работает на жёстких правилах и не
- * может «забыть» про ограничения: решения, которые фиксируют глубокий
- * убыток без подтверждённого катализатора, блокируются для ЛЮБОГО
- * актива (не только для конкретных бумаг).
+ * Роль: аналитик, который оценивает структуру портфеля, концентрацию,
+ P&L, просадки и устойчивость. Может не согласиться с AI, предложить
+ альтернативное действие, оценить риски — но НЕ имеет права автоматически
+ блокировать или изменять решение AI.
  *
- * Источник данных: AssetAnalysis из PortfolioMath содержит balancePrice
- * (средняя цена покупки) и currentPrice — на их основе считается
- * просадка drawdownPercent. Правило применяется ко всем тикерам.
- *
- * Интеграция: StrategistAgent — самостоятельный агент конвейера; его
- * решение используется в Consilium (общем совещании агентов) и имеет
- * право вето над рекомендациями AI.
+ * Главный инвестиционный вывод определяется качеством совокупного анализа,
+ а не заранее прошитым veto.
  */
 
 import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
 import type { AiAction } from '../../research/types.js';
-import {
-  applyStrategistRules,
-  buildDeterministicAssetData,
-  type StrategistOverride,
-} from '../../ai-advisor/structured-ai-recommendation.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
 
@@ -33,7 +22,7 @@ import type { AgentConfig } from '../agent/types.js';
 /** Входные данные для одного актива: что предложил AI */
 export interface StrategistProposal {
   ticker: string;
-  /** Действие, предложенное AI (BUY/SELL/HOLD/REDUCE/AVOID или null) */
+  /** Действие, предложенное AI (BUY/SELL/HOLD/REDUCE/EXIT/AVOID/AVERAGE или null) */
   action: AiAction | null;
   /** Катализаторы, найденные AI (фундамент, отчёт, дивиденды...) */
   keyCatalysts?: string[];
@@ -55,12 +44,14 @@ export interface StrategistDecision {
   name: string;
   /** Действие, предложенное AI */
   suggestedAction: AiAction | null;
-  /** Итоговое действие после правил стратега */
+  /** Итоговое действие (совпадает с AI — стратег не блокирует) */
   finalAction: AiAction | null;
   /** Просадка от цены покупки, % (отрицательная = убыток) */
   drawdownPercent: number | null;
-  /** Данные о вмешательстве стратега (null = без вмешательства) */
-  veto: StrategistOverride | null;
+  /** Концентрация позиции, % */
+  concentrationPercent: number | null;
+  /** Примечание стратега (аналитическое, не блокирующее) */
+  note: string | null;
 }
 
 /** Выходные данные StrategistAgent */
@@ -71,8 +62,6 @@ export interface StrategistAgentOutput {
   summary: {
     /** Сколько активов проверено */
     assetsChecked: number;
-    /** Сколько действий AI заблокировано/переопределено */
-    actionsBlocked: number;
     /** Текущая цель портфеля (для отчётов и объяснений) */
     goal: string;
   };
@@ -83,12 +72,14 @@ export interface StrategistAgentOutput {
 // ──────────────────────────────────────────────
 
 /**
- * StrategistAgent — агент-стратег.
+ * StrategistAgent — агент-аналитик стратегии и рисков.
  *
  * Задачи:
- * - проверить ВСЕ предложения AI против правил защиты портфеля;
- * - заблокировать SELL/REDUCE при просадке глубже порога без катализатора;
- * - вернуть veto с человекочитаемой причиной для отчёта/консилиума.
+ * - оценить структуру и концентрацию портфеля;
+ * - указать на риски концентрации, просадки, P&L;
+ * - предложить альтернативное действие (но НЕ блокировать AI);
+ * - оценить устойчивость портфеля;
+ * - сравнить стратегии.
  *
  * Все вычисления синхронные (без I/O и LLM) — агент не может зависнуть.
  */
@@ -114,12 +105,10 @@ export class StrategistAgent extends AgentBase {
     }
 
     const decisions: StrategistDecision[] = [];
-    let actionsBlocked = 0;
 
     for (const proposal of proposals) {
       const asset = assetByTicker.get(proposal.ticker.toUpperCase());
 
-      // Актив не найден в анализе — не можем применить правила (данных нет)
       if (!asset) {
         decisions.push({
           ticker: proposal.ticker,
@@ -127,58 +116,104 @@ export class StrategistAgent extends AgentBase {
           suggestedAction: proposal.action,
           finalAction: proposal.action,
           drawdownPercent: null,
-          veto: null,
+          concentrationPercent: null,
+          note: 'Актив не найден в анализе.',
         });
         continue;
       }
 
-      const det = buildDeterministicAssetData(asset, []);
-      const guarded = applyStrategistRules(
-        det,
+      // Расчёт просадки
+      const balancePrice = asset.balancePrice ?? 0;
+      const currentPrice = asset.currentPrice ?? 0;
+      const drawdownPercent =
+        balancePrice > 0 && currentPrice > 0
+          ? ((currentPrice - balancePrice) / balancePrice) * 100
+          : null;
+
+      // Концентрация
+      const concentrationPercent = asset.currentPercent || null;
+
+      // Аналитическое примечание (не блокирующее)
+      const note = this.buildStrategistNote(
         proposal.action,
-        proposal.keyCatalysts ?? [],
+        drawdownPercent,
+        concentrationPercent,
+        asset.unrealizedProfitRub ?? 0,
         proposal.rationale ?? null,
       );
 
-      const decision: StrategistDecision = {
+      decisions.push({
         ticker: asset.ticker,
         name: asset.name,
         suggestedAction: proposal.action,
-        finalAction: guarded.action,
-        drawdownPercent: det.drawdownPercent,
-        veto: guarded.override,
-      };
-
-      if (guarded.override) {
-        actionsBlocked++;
-      }
-
-      decisions.push(decision);
+        finalAction: proposal.action, // стратег НЕ изменяет action AI
+        drawdownPercent,
+        concentrationPercent,
+        note,
+      });
     }
 
     return {
       decisions,
       summary: {
         assetsChecked: assetsAnalysis.length,
-        actionsBlocked,
         goal:
-          'Зелёная зона: не фиксировать глубокий убыток без катализатора; ' +
-          'приоритет — восстановление и рост, а не реализация потерь.',
+          'Максимизировать потенциальную прибыль портфеля, вывести портфель ' +
+          'в зелёную зону, сохраняя надёжность и устойчивость.',
       },
     };
   }
 
   // ── Helpers ──
 
+  private buildStrategistNote(
+    action: AiAction | null,
+    drawdownPercent: number | null,
+    concentrationPercent: number | null,
+    unrealizedPnl: number,
+    rationale: string | null,
+  ): string | null {
+    const notes: string[] = [];
+
+    // Указание на глубокую просадку (аналитика, не блокировка)
+    if (drawdownPercent !== null && drawdownPercent < -30) {
+      notes.push(
+        `Глубокая просадка: ${drawdownPercent.toFixed(1)}% от цены покупки. ` +
+          `Нереализованный P&L: ${unrealizedPnl.toFixed(0)} ₽.`,
+      );
+    }
+
+    // Указание на высокую концентрацию
+    if (concentrationPercent !== null && concentrationPercent > 25) {
+      notes.push(
+        `Высокая концентрация: ${concentrationPercent.toFixed(1)}% портфеля.`,
+      );
+    }
+
+    // Если AI предлагает EXIT/SELL при большой прибыли — похвала
+    if (
+      (action === 'SELL' || action === 'EXIT') &&
+      unrealizedPnl > 0 &&
+      drawdownPercent !== null &&
+      drawdownPercent > 0
+    ) {
+      notes.push(
+        `AI предлагает ${action} при нереализованной прибыли ${unrealizedPnl.toFixed(0)} ₽. ` +
+          `Обоснование: ${rationale || 'не указано'}.`,
+      );
+    }
+
+    return notes.length > 0 ? notes.join(' ') : null;
+  }
+
   private emptyResult(): StrategistAgentOutput {
     return {
       decisions: [],
       summary: {
         assetsChecked: 0,
-        actionsBlocked: 0,
         goal:
-          'Зелёная зона: не фиксировать глубокий убыток без катализатора; ' +
-          'приоритет — восстановление и рост, а не реализация потерь.',
+          'Максимизировать потенциальную прибыль портфеля, вывести портфель ' +
+          'в зелёную зону, сохраняя надёжность и устойчивость.',
       },
     };
   }

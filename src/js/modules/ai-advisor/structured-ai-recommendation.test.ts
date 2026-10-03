@@ -7,6 +7,8 @@ import {
   type RawAIJson,
   type DeterministicAssetData,
 } from './structured-ai-recommendation.js';
+import { stripJsonBlockFromAiText } from './ai-advisor.js';
+import { assertFinalAiDisplaySafe } from './ollama-manager.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
@@ -530,9 +532,49 @@ describe('StructuredAIRecommendation', () => {
     });
   });
 
-  // Test 22: Strategist — защита портфеля от фиксации глубокого убытка
-  describe('Strategist: DRAWDOWN GUARD', () => {
-    it('SELL при просадке 58% без катализатора → заблокирован, действие HOLD', () => {
+  // ═══════════════════════════════════════════════════════════
+  // NEW REGRESSION TESTS — свободная инвестиционная логика AI
+  // ═══════════════════════════════════════════════════════════
+
+  // Test 23: EXIT — валидное AI действие
+  describe('Regression: EXIT is valid AI action', () => {
+    it('EXIT проходит валидацию как допустимое действие', () => {
+      const json: RawAIJson = {
+        ticker: 'PLZL',
+        recommendedTargetPercent: 0,
+        recommendedAction: 'EXIT',
+        confidence: 0.85,
+        rationale: 'Фундаментальное ухудшение, санкции, выход из позиции',
+        targetReason: 'Целевая доля 0%',
+        keyRisks: ['Санкции', 'Падение выручки'],
+        keyCatalysts: ['Новые санкции'],
+        agreementWithPortfolioMath: 'DISAGREE',
+      };
+      const result = validateStructuredAIJson(json, ['PLZL']);
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+    });
+
+    it('AVERAGE проходит валидацию как допустимое действие', () => {
+      const json: RawAIJson = {
+        ticker: 'SBER',
+        recommendedTargetPercent: 15,
+        recommendedAction: 'AVERAGE',
+        confidence: 0.7,
+        rationale: 'Усреднение позиции при недооценке',
+        targetReason: 'Увеличение доли до 15%',
+        keyRisks: ['Волатильность'],
+        keyCatalysts: ['Дивиденды'],
+        agreementWithPortfolioMath: 'AGREE',
+      };
+      const result = validateStructuredAIJson(json, ['SBER']);
+      expect(result.valid).toBe(true);
+    });
+  });
+
+  // Test 24: Глубокий убыток НЕ блокирует SELL
+  describe('Regression: deep loss does NOT block SELL', () => {
+    it('SELL при просадке -58% → НЕ блокируется, действие SELL', () => {
       const det = createDet({
         ticker: 'PLZL',
         name: 'Полюс',
@@ -543,11 +585,11 @@ describe('StructuredAIRecommendation', () => {
       });
       const aiJson: RawAIJson = {
         ticker: 'PLZL',
-        recommendedTargetPercent: 5,
+        recommendedTargetPercent: 0,
         recommendedAction: 'SELL',
         confidence: 0.8,
-        rationale: 'Зафиксировать убыток и переложить средства',
-        targetReason: 'Снижение доли',
+        rationale: 'Фундаментальное ухудшение бизнеса, снижение маржи',
+        targetReason: 'Снижение доли до 0%',
         keyRisks: ['Волатильность'],
         keyCatalysts: [],
         agreementWithPortfolioMath: 'AGREE',
@@ -555,32 +597,44 @@ describe('StructuredAIRecommendation', () => {
       const validation = validateStructuredAIJson(aiJson, ['PLZL']);
       const result = buildStructuredAIRecommendation(det, aiJson, validation);
 
-      expect(result.recommendedAction).toBe('HOLD');
-      expect(result.strategistOverride).not.toBeNull();
-      expect(result.strategistOverride!.originalAction).toBe('SELL');
-      expect(result.drawdownPercent).toBe(-58);
-    });
-
-    it('SELL при просадке 58% С катализатором → не блокируется', () => {
-      const det = createDet({
-        drawdownPercent: -58,
-        balancePrice: 1000,
-        currentPrice: 420,
-      });
-      const aiJson: RawAIJson = {
-        ...createValidAIJson(),
-        recommendedAction: 'SELL',
-        rationale: 'Продажа из-за снижения мультипликаторов и слабого отчёта',
-        keyCatalysts: ['Реструктуризация бизнеса'],
-      };
-      const validation = validateStructuredAIJson(aiJson, ['SBER']);
-      const result = buildStructuredAIRecommendation(det, aiJson, validation);
-
       expect(result.recommendedAction).toBe('SELL');
       expect(result.strategistOverride).toBeNull();
     });
+  });
 
-    it('BUY не блокируется даже при глубокой просадке', () => {
+  // Test 25: Глубокий убыток НЕ блокирует EXIT
+  describe('Regression: deep loss does NOT block EXIT', () => {
+    it('EXIT при просадке -70% → НЕ блокируется, действие EXIT', () => {
+      const det = createDet({
+        ticker: 'PLZL',
+        name: 'Полюс',
+        balancePrice: 1000,
+        currentPrice: 300,
+        drawdownPercent: -70,
+        unrealizedProfitRub: -70000,
+      });
+      const aiJson: RawAIJson = {
+        ticker: 'PLZL',
+        recommendedTargetPercent: 0,
+        recommendedAction: 'EXIT',
+        confidence: 0.9,
+        rationale: 'Полный выход из позиции, санкции',
+        targetReason: 'Целевая доля 0%',
+        keyRisks: ['Санкции'],
+        keyCatalysts: [],
+        agreementWithPortfolioMath: 'AGREE',
+      };
+      const validation = validateStructuredAIJson(aiJson, ['PLZL']);
+      const result = buildStructuredAIRecommendation(det, aiJson, validation);
+
+      expect(result.recommendedAction).toBe('EXIT');
+      expect(result.strategistOverride).toBeNull();
+    });
+  });
+
+  // Test 26: Глубокий убыток НЕ блокирует REDUCE
+  describe('Regression: deep loss does NOT block REDUCE', () => {
+    it('REDUCE при просадке -58% → НЕ блокируется, действие REDUCE', () => {
       const det = createDet({
         drawdownPercent: -58,
         balancePrice: 1000,
@@ -588,60 +642,184 @@ describe('StructuredAIRecommendation', () => {
       });
       const aiJson: RawAIJson = {
         ...createValidAIJson(),
-        recommendedAction: 'BUY',
+        ticker: 'PLZL',
+        recommendedAction: 'REDUCE',
+        rationale: 'Снижение целевой доли с 12% до 5%',
+        keyCatalysts: [],
       };
-      const validation = validateStructuredAIJson(aiJson, ['SBER']);
+      const validation = validateStructuredAIJson(aiJson, ['PLZL']);
       const result = buildStructuredAIRecommendation(det, aiJson, validation);
 
-      expect(result.recommendedAction).toBe('BUY');
+      expect(result.recommendedAction).toBe('REDUCE');
       expect(result.strategistOverride).toBeNull();
     });
+  });
 
-    it('SELL при небольшой просадке (выше порога -30%) не блокируется', () => {
+  // Test 27: AI может выбрать BUY при PortfolioMath REDUCE
+  describe('Regression: AI can BUY when PortfolioMath = REDUCE', () => {
+    it('PortfolioMath=REDUCE, AI=BUY → AI действие сохраняется', () => {
       const det = createDet({
+        portfolioMathStatus: 'REDUCE',
         drawdownPercent: -10,
         balancePrice: 300,
         currentPrice: 270,
       });
       const aiJson: RawAIJson = {
         ...createValidAIJson(),
-        recommendedAction: 'SELL',
-        rationale: 'Уменьшить концентрацию позиции',
-        keyCatalysts: [],
+        ticker: 'PLZL',
+        recommendedAction: 'BUY',
+        recommendedTargetPercent: 15,
+        rationale: 'Недооценка, сильные фундаментальные показатели',
+        targetReason: 'Увеличение доли выше целевой',
+        agreementWithPortfolioMath: 'DISAGREE',
       };
-      const validation = validateStructuredAIJson(aiJson, ['SBER']);
+      const validation = validateStructuredAIJson(aiJson, ['PLZL']);
       const result = buildStructuredAIRecommendation(det, aiJson, validation);
 
-      expect(result.recommendedAction).toBe('SELL');
-      expect(result.strategistOverride).toBeNull();
+      expect(result.recommendedAction).toBe('BUY');
+      expect(result.portfolioMathStatus).toBe('REDUCE');
+      expect(result.agreementWithPortfolioMath).toBe('DISAGREE');
     });
+  });
 
-    it('REDUCE при просадке 58% без катализатора → заблокирован (HOLD)', () => {
+  // Test 28: AI может выбрать HOLD при PortfolioMath BUY
+  describe('Regression: AI can HOLD when PortfolioMath = BUY', () => {
+    it('PortfolioMath=BUY, AI=HOLD → AI действие сохраняется', () => {
       const det = createDet({
-        drawdownPercent: -58,
-        balancePrice: 1000,
-        currentPrice: 420,
+        portfolioMathStatus: 'BUY',
+        drawdownPercent: 5,
+        balancePrice: 250,
+        currentPrice: 262,
       });
       const aiJson: RawAIJson = {
         ...createValidAIJson(),
-        recommendedAction: 'REDUCE',
-        rationale: 'Перевес доли, продать часть',
-        keyCatalysts: [],
+        ticker: 'PLZL',
+        recommendedAction: 'HOLD',
+        rationale: 'Нет катализаторов для роста, ждать',
+        targetReason: 'Текущая доля достаточна',
+        agreementWithPortfolioMath: 'DISAGREE',
       };
-      const validation = validateStructuredAIJson(aiJson, ['SBER']);
+      const validation = validateStructuredAIJson(aiJson, ['PLZL']);
       const result = buildStructuredAIRecommendation(det, aiJson, validation);
 
       expect(result.recommendedAction).toBe('HOLD');
-      expect(result.strategistOverride!.originalAction).toBe('REDUCE');
+      expect(result.portfolioMathStatus).toBe('BUY');
+      expect(result.agreementWithPortfolioMath).toBe('DISAGREE');
     });
+  });
 
-    it('drawdownPercent рассчитывается из balancePrice/currentPrice', () => {
-      const asset = createAsset({ balancePrice: 1000, currentPrice: 420 });
-      const det = buildDeterministicAssetData(asset);
+  // Test 29: AI может предложить собственную целевую долю
+  describe('Regression: AI can set own target', () => {
+    it('AI_RECOMMENDED_TARGET ≠ USER_TARGET', () => {
+      const det = createDet({
+        userTargetPercent: 10,
+        portfolioMathStatus: 'STABLE',
+      });
+      const aiJson: RawAIJson = {
+        ...createValidAIJson(),
+        ticker: 'PLZL',
+        recommendedTargetPercent: 15,
+        recommendedAction: 'BUY',
+        rationale: 'Увеличение целевой доли до 15%',
+        targetReason: 'Уверенность в росте бизнеса',
+        agreementWithPortfolioMath: 'DISAGREE',
+      };
+      const validation = validateStructuredAIJson(aiJson, ['PLZL']);
+      const result = buildStructuredAIRecommendation(det, aiJson, validation);
 
-      expect(det.balancePrice).toBe(1000);
-      expect(det.drawdownPercent).toBeCloseTo(-58, 1);
-      expect(det.unrealizedProfitRub).toBe(4163);
+      expect(result.userTargetPercent).toBe(10);
+      expect(result.recommendedTargetPercent).toBe(15);
+      expect(result.recommendedAction).toBe('BUY');
+    });
+  });
+
+  // Test 30: USER_TARGET остаётся фактом, AI не меняет
+  describe('Regression: USER_TARGET_PERCENT is user fact, AI cannot change', () => {
+    it('userTargetPercent = 10 остаётся 10, AI не меняет', () => {
+      const det = createDet({ userTargetPercent: 10 });
+      const aiJson: RawAIJson = {
+        ...createValidAIJson(),
+        ticker: 'PLZL',
+        recommendedTargetPercent: 999,
+        rationale: 'AI предлагает 999%',
+        targetReason: 'Абсурдная рекомендация',
+        agreementWithPortfolioMath: 'DISAGREE',
+      };
+      const validation = validateStructuredAIJson(aiJson, ['PLZL']);
+      const result = buildStructuredAIRecommendation(det, aiJson, validation);
+
+      expect(result.userTargetPercent).toBe(10);
+      // AI target может быть любым — это рекомендация
+      expect(result.recommendedTargetPercent).toBe(999);
+    });
+  });
+
+  // Test 31: PortfolioMath status остаётся фактом
+  describe('Regression: PortfolioMath status is math fact, AI cannot change', () => {
+    it('portfolioMathStatus = REDUCE остаётся REDUCE, AI не меняет', () => {
+      const det = createDet({ portfolioMathStatus: 'REDUCE' });
+      const aiJson: RawAIJson = {
+        ...createValidAIJson(),
+        ticker: 'PLZL',
+        recommendedAction: 'BUY',
+        rationale: 'AI предлагает BUY',
+        agreementWithPortfolioMath: 'DISAGREE',
+      };
+      const validation = validateStructuredAIJson(aiJson, ['PLZL']);
+      const result = buildStructuredAIRecommendation(det, aiJson, validation);
+
+      expect(result.portfolioMathStatus).toBe('REDUCE');
+      expect(result.recommendedAction).toBe('BUY');
+    });
+  });
+
+  // Test 32: AI может явно DISAGREE с PortfolioMath
+  describe('Regression: AI can explicitly DISAGREE with PortfolioMath', () => {
+    it('agreementWithPortfolioMath = DISAGREE при разных действиях', () => {
+      const det = createDet({ portfolioMathStatus: 'REDUCE' });
+      const aiJson: RawAIJson = {
+        ...createValidAIJson(),
+        ticker: 'PLZL',
+        recommendedAction: 'EXIT',
+        rationale: 'Полный выход из позиции, не согласен с REDUCE',
+        targetReason: 'Целевая доля 0%',
+        agreementWithPortfolioMath: 'DISAGREE',
+      };
+      const validation = validateStructuredAIJson(aiJson, ['PLZL']);
+      const result = buildStructuredAIRecommendation(det, aiJson, validation);
+
+      expect(result.portfolioMathStatus).toBe('REDUCE');
+      expect(result.recommendedAction).toBe('EXIT');
+      expect(result.agreementWithPortfolioMath).toBe('DISAGREE');
+    });
+  });
+
+  // Test 33: При отсутствии данных AI не выдумывает значения
+  describe('Regression: AI does not invent missing data', () => {
+    it('NO_DATA → rationale не содержит "недооценен"', () => {
+      const det = createDet({
+        ticker: 'UNKNOWN',
+        name: 'Unknown Asset',
+        currentPrice: null,
+        drawdownPercent: null,
+        marketDataValid: false,
+      });
+      const aiJson: RawAIJson = {
+        ticker: 'UNKNOWN',
+        recommendedTargetPercent: 5,
+        recommendedAction: 'HOLD',
+        confidence: 0.3,
+        rationale: 'Нет данных о цене — удерживать позицию до получения данных',
+        targetReason: 'Нет данных для изменения',
+        keyRisks: ['Нет данных'],
+        keyCatalysts: [],
+        agreementWithPortfolioMath: 'UNCERTAIN',
+      };
+      const validation = validateStructuredAIJson(aiJson, ['UNKNOWN']);
+      const result = buildStructuredAIRecommendation(det, aiJson, validation);
+
+      expect(result.recommendedAction).toBe('HOLD');
+      expect(result.rationale).toContain('Нет данных');
     });
   });
 
@@ -657,6 +835,174 @@ describe('StructuredAIRecommendation', () => {
       // aiBoxHtml = header + priceAlerts + newAssetsWarning + validationAlerts + incomeWidget + stripJsonBlockFromAiText(aiResult.text)
       // stripJsonBlockFromAiText удаляет ```json ... ``` и ``` ... ``` блоки
       // Остается только narrative текст от AI
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════
+  // REGRESSION TEST: Problem 1 — raw JSON leakage в финальный report
+  // ═══════════════════════════════════════════════════════════
+
+  describe('Regression: Problem 1 — raw JSON leakage to final report', () => {
+    it('stripJsonBlockFromAiText удаляет structured JSON из AI-текста', () => {
+      const rawAiText = `
+### 7. Краткое резюме (3-5 действий)
+
+1. Реализовать продажи: Закрыть позицию по STME.
+2. Перераспределить: Использовать средства для покупки SBER.
+
+\`\`\`json
+{
+  "ticker": "STME",
+  "recommendedTargetPercent": 0.0,
+  "recommendedAction": "EXIT",
+  "confidence": 0.95,
+  "rationale": "Актив в убытке",
+  "targetReason": "Снижение концентрации",
+  "keyRisks": ["Волатильность"],
+  "keyCatalysts": ["Исполнение заявок"],
+  "agreementWithPortfolioMath": "AGREE"
+}
+\`\`\`
+
+Это всё.
+`;
+
+      const cleaned = stripJsonBlockFromAiText(rawAiText);
+
+      // JSON-блок удалён целиком
+      expect(cleaned).not.toContain('```json');
+      expect(cleaned).not.toContain('```');
+      expect(cleaned).not.toContain('"ticker"');
+      expect(cleaned).not.toContain('"recommendedTargetPercent"');
+      expect(cleaned).not.toContain('"recommendedAction"');
+      expect(cleaned).not.toContain('"agreementWithPortfolioMath"');
+      expect(cleaned).not.toContain('"confidence"');
+
+      // Narrative текст сохранён
+      expect(cleaned).toContain('Краткое резюме');
+      expect(cleaned).toContain('Реализовать продажи');
+      expect(cleaned).toContain('Перераспределить');
+      expect(cleaned).toContain('Это всё');
+    });
+
+    it('stripJsonBlockFromAiText удаляет inline JSON {"ticker": ...}', () => {
+      const rawAiText = 'Рекомендация: {"ticker": "PLZL", "recommendedTargetPercent": 0, "recommendedAction": "EXIT"} — закрыть позицию.';
+      const cleaned = stripJsonBlockFromAiText(rawAiText);
+
+      expect(cleaned).not.toContain('"ticker"');
+      expect(cleaned).not.toContain('"recommendedTargetPercent"');
+      expect(cleaned).not.toContain('"recommendedAction"');
+      expect(cleaned).toContain('закрыть позицию');
+    });
+
+    it('assertFinalAiDisplaySafe НЕ выбрасывает ошибку после stripJsonBlockFromAiText', () => {
+      const rawAiText = `
+### 7. Краткое резюме
+1. Продать PLZL.
+
+\`\`\`json
+{
+  "ticker": "PLZL",
+  "recommendedTargetPercent": 0.0,
+  "recommendedAction": "EXIT",
+  "confidence": 0.9,
+  "rationale": "test",
+  "targetReason": "test",
+  "keyRisks": [],
+  "keyCatalysts": [],
+  "agreementWithPortfolioMath": "AGREE"
+}
+\`\`\`
+`;
+
+      const cleaned = stripJsonBlockFromAiText(rawAiText);
+
+      // Эта строка НЕ должна выбросить ошибку
+      expect(() => assertFinalAiDisplaySafe(cleaned)).not.toThrow();
+    });
+
+    it('PIPELINE PATH: structuredJson во входе → final text НЕ содержит JSON-ключей', () => {
+      // Симулируем реальный pipeline path:
+      // 1. AI возвращает текст с JSON-блоком
+      // 2. stripJsonBlockFromAiText очищает текст
+      // 3. assertFinalAiDisplaySafe проверяет чистоту
+
+      const aiResponseWithJson = `
+📋 Экспертное заключение ИИ-советника (октябрь 2026 г.)
+
+## 1. Макро и структура портфеля
+Ситуация: Октябрь 2026 г. Ключевая ставка ЦБ РФ — 14%.
+
+## 2. Рекомендации по каждому активу
+
+| Тикер | Тип | Статус |
+| :--- | :--- | :--- |
+| STME | Фонд | EXIT |
+
+## 7. Краткое резюме
+
+1. Реализовать продажи: Закрыть позицию по STME.
+2. Перераспределить: Использовать средства для покупки SBER.
+
+\`\`\`json
+{
+  "ticker": "STME",
+  "recommendedTargetPercent": 0.0,
+  "recommendedAction": "EXIT",
+  "confidence": 0.95,
+  "rationale": "Актив в убытке (-5.5%). ETF на акции с высокой волатильностью.",
+  "targetReason": "Снижение концентрации в убыточных фондах.",
+  "keyRisks": ["Волатильность рынка", "Риск проскальзывания при продаже"],
+  "keyCatalysts": ["Исполнение заявок на продажу"],
+  "agreementWithPortfolioMath": "AGREE"
+}
+\`\`\`
+`;
+
+      // Шаг 1: Очищаем текст
+      const cleanedText = stripJsonBlockFromAiText(aiResponseWithJson);
+
+      // Шаг 2: Проверяем, что ключи structured JSON удалены
+      expect(cleanedText).not.toContain('recommendedTargetPercent');
+      expect(cleanedText).not.toContain('recommendedAction');
+      expect(cleanedText).not.toContain('agreementWithPortfolioMath');
+      expect(cleanedText).not.toContain('"ticker"');
+      expect(cleanedText).not.toContain('{"ticker"');
+      expect(cleanedText).not.toContain('```json');
+      expect(cleanedText).not.toContain('```');
+
+      // Шаг 3: assertFinalAiDisplaySafe НЕ выбрасывает ошибку
+      expect(() => assertFinalAiDisplaySafe(cleanedText)).not.toThrow();
+
+      // Шаг 4: Narrative текст сохранён
+      expect(cleanedText).toContain('Экспертное заключение');
+      expect(cleanedText).toContain('Краткое резюме');
+      expect(cleanedText).toContain('Реализовать продажи');
+      expect(cleanedText).toContain('Перераспределить');
+    });
+
+    it('stripJsonBlockFromAiText сохраняет narrative при множественных JSON-блоках', () => {
+      const rawAiText = `
+Первый блок:
+\`\`\`json
+{"ticker": "STME", "recommendedAction": "EXIT"}
+\`\`\`
+
+Текст между блоками.
+
+Второй блок:
+{"ticker": "PLZL", "recommendedTargetPercent": 0}
+
+Финальный текст.
+`;
+
+      const cleaned = stripJsonBlockFromAiText(rawAiText);
+
+      expect(cleaned).not.toContain('"ticker"');
+      expect(cleaned).not.toContain('"recommendedAction"');
+      expect(cleaned).not.toContain('"recommendedTargetPercent"');
+      expect(cleaned).toContain('Текст между блоками');
+      expect(cleaned).toContain('Финальный текст');
     });
   });
 });

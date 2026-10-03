@@ -67,10 +67,9 @@ export interface DeterministicAssetData {
 /**
  * Переопределение действия стратегом.
  *
- * Стратег — детерминированный слой защиты портфеля (НЕ LLM): применяет
- * жёсткие правила, которые AI не может обойти. Основное правило:
- * нельзя фиксировать глубокий убыток (продавать в минус) без
- * подтверждённого катализатора — цель портфеля выход в зелёную зону.
+ * Стратег — независимый аналитический агент. Он может указать на риск,
+ * не согласиться с AI, предложить альтернативное действие, но НЕ имеет
+ * права автоматически блокировать или изменять решение AI.
  */
 export interface StrategistOverride {
   /** Первоначальное действие, предложенное AI (до вмешательства стратега) */
@@ -272,7 +271,15 @@ export function validateStructuredAIJson(
   }
 
   // 2. recommendedAction входит в допустимый AiAction
-  const validActions: AiAction[] = ['BUY', 'SELL', 'HOLD', 'REDUCE', 'AVOID'];
+  const validActions: AiAction[] = [
+    'BUY',
+    'SELL',
+    'HOLD',
+    'REDUCE',
+    'EXIT',
+    'AVOID',
+    'AVERAGE',
+  ];
   if (json.recommendedAction !== null) {
     if (typeof json.recommendedAction !== 'string') {
       errors.push({
@@ -402,15 +409,6 @@ export function buildStructuredAIRecommendation(
     ? aiJson.agreementWithPortfolioMath
     : 'UNCERTAIN';
 
-  // Правила стратега: детерминированная защита портфеля от фиксации
-  // глубокого убытка. Этот слой AI обойти не может.
-  const strategist = applyStrategistRules(
-    det,
-    recommendedAction,
-    aiJson.keyCatalysts || [],
-    aiJson.rationale,
-  );
-
   return {
     // IDENTITY
     ticker: det.ticker,
@@ -433,12 +431,12 @@ export function buildStructuredAIRecommendation(
     activeOrders: det.activeOrders,
     activeOrderConflict: det.activeOrderConflict,
 
-    // STRATEGIST
-    strategistOverride: strategist.override,
+    // STRATEGIST: больше не блокирует действия AI
+    strategistOverride: null,
 
-    // AI (из aiJson, валидированные; action мог быть переопределён стратегом)
+    // AI (из aiJson, валидированные; действие НЕ переопределяется стратегом)
     recommendedTargetPercent: aiJson.recommendedTargetPercent,
-    recommendedAction: strategist.action,
+    recommendedAction,
     confidence: aiJson.confidence,
     rationale: aiJson.rationale || null,
     targetReason: aiJson.targetReason || null,
@@ -454,7 +452,15 @@ export function buildStructuredAIRecommendation(
 
 function validAiAction(value: string | null): value is AiAction {
   if (!value) return false;
-  const valid: AiAction[] = ['BUY', 'SELL', 'HOLD', 'REDUCE', 'AVOID'];
+  const valid: AiAction[] = [
+    'BUY',
+    'SELL',
+    'HOLD',
+    'REDUCE',
+    'EXIT',
+    'AVOID',
+    'AVERAGE',
+  ];
   return valid.includes(value as AiAction);
 }
 
@@ -465,116 +471,15 @@ function validMathAgreement(value: string | null): value is MathAgreement {
 }
 
 // ──────────────────────────────────────────────
-// 9. Strategist rules — детерминированная защита портфеля
+// 9. Strategist rules — удалены
 // ──────────────────────────────────────────────
-
-/**
- * Порог просадки: глубже этого значения (в %) продажа позиции без
- * подтверждённого катализатора блокируется и заменяется на HOLD.
- * Цель портфеля — выход в зелёную зону, а не фиксация глубокого убытка.
- */
-export const STRATEGIST_LOSS_BLOCK_THRESHOLD_PCT = -30;
-
-/** Действия, уменьшающие позицию (потенциальная фиксация убытка) */
-const SELL_LIKE_ACTIONS: ReadonlySet<AiAction> = new Set(['SELL', 'REDUCE']);
-
-/** Явные признаки «фиксации убытка» — это НЕ веская причина для продажи */
-const LOSS_FIX_PATTERNS: readonly string[] = [
-  'зафиксировать убыток',
-  'зафиксиров',
-  'stop-loss',
-  'стоп-лосс',
-  'сократить потери',
-  'уменьшить убыток',
-  'списать',
-  'выйти в ноль',
-];
-
-/** Признаки веской причины для продажи (фундамент/оценка/катализатор) */
-const SELL_REASON_HINTS: readonly string[] = [
-  'фундамент',
-  'оценк',
-  'мультипликатор',
-  'дисконт',
-  'дивиденд',
-  'выкуп',
-  'байбэк',
-  'рост',
-  'отчёт',
-  'перспектив',
-  'недооцен',
-  'долг',
-  'свободный денежный',
-  'ebitda',
-  'прибыл',
-  'выручк',
-  'геополитик',
-  'санкци',
-  'ключевая ставка',
-  'процентн',
-  'инфляци',
-];
-
-/**
- * Есть ли в rationale веская причина для продажи?
- * Признаки «фиксации убытка» не считаются веской причиной.
- */
-function hasSellRationale(rationale: string | null): boolean {
-  if (!rationale) return false;
-  const r = rationale.toLowerCase();
-  if (LOSS_FIX_PATTERNS.some((p) => r.includes(p))) return false;
-  return SELL_REASON_HINTS.some((h) => r.includes(h));
-}
-
-/**
- * Применить правила стратега к действию AI.
- *
- * Блокирует SELL/REDUCE при глубокой просадке (drawdownPercent ниже
- * STRATEGIST_LOSS_BLOCK_THRESHOLD_PCT), если нет подтверждённого
- * катализатора (keyCatalysts) или веской причины в rationale.
- * В этом случае действие заменяется на HOLD, а причина переопределения
- * сохраняется в override для отображения пользователю.
- *
- * @param det       Детерминированные данные актива (содержат drawdownPercent).
- * @param action    Действие, предложенное AI.
- * @param catalysts Список катализаторов от AI.
- * @param rationale Обоснование AI.
- * @returns Итоговое действие (возможно изменённое) и информацию об override.
- */
-export function applyStrategistRules(
-  det: DeterministicAssetData,
-  action: AiAction | null,
-  catalysts: string[],
-  rationale: string | null,
-): { action: AiAction | null; override: StrategistOverride | null } {
-  // Правило применяется только к продаже/уменьшению при известной просадке
-  if (
-    !action ||
-    !SELL_LIKE_ACTIONS.has(action) ||
-    det.drawdownPercent === null ||
-    det.drawdownPercent > STRATEGIST_LOSS_BLOCK_THRESHOLD_PCT
-  ) {
-    return { action, override: null };
-  }
-
-  const hasCatalyst = catalysts.length > 0 || hasSellRationale(rationale);
-  if (hasCatalyst) {
-    return { action, override: null };
-  }
-
-  return {
-    action: 'HOLD',
-    override: {
-      originalAction: action,
-      reason:
-        'Стратег заблокировал ' +
-        action +
-        ': просадка ' +
-        det.drawdownPercent.toFixed(1) +
-        '% от цены покупки без подтверждённого катализатора. ' +
-        'Цель портфеля — выход в зелёную зону: фиксация глубокого убытка ' +
-        'не является стратегией. Держать позицию до появления катализатора ' +
-        'или улучшения фундаментальных показателей.',
-    },
-  };
-}
+//
+// Все инвестиционные veto/guardrail-правила удалены:
+// - STRATEGIST_LOSS_BLOCK_THRESHOLD_PCT (-30%) — удалён
+// - SELL/REDUCE блокировка при глубокой просадке — удалена
+// - LOSS_FIX_PATTERNS / SELL_REASON_HINTS — удалены
+// - applyStrategistRules — удалена
+//
+// AI имеет полную свободу инвестиционного анализа и принятия решений.
+// AI самостоятельно определяет BUY/SELL/HOLD/REDUCE/EXIT/AVERAGE.
+// AI может не соглашаться с PortfolioMath и USER_TARGET.

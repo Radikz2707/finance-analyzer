@@ -22,11 +22,18 @@ export class PortfolioValidator {
     let totalBondsPercent = 0;
 
     assets.forEach((asset) => {
-      // Автоматически определяем тип инструмента по наличию НКД
-      const isBond = asset.nkdRub !== undefined && asset.nkdRub > 0;
+      // Определяем тип по столбцу "Вид активов" из Excel
+      const isBond =
+        asset.assetType === 'О' ||
+        asset.assetType === 'Облигация';
+      const isFund =
+        asset.assetType === 'Ф' ||
+        asset.assetType === 'Фонд';
 
       if (isBond) {
         totalBondsPercent += asset.targetPercent ?? 0;
+      } else if (isFund) {
+        // Фонды не учитываем ни в акции, ни в облигации
       } else {
         totalStocksPercent += asset.targetPercent ?? 0;
       }

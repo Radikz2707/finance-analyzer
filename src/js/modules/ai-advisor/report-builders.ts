@@ -185,13 +185,7 @@ export function buildAssetsTablesAndBars(
   let concentrationBlock = '';
   let rebalanceBlock = '';
 
-  // DIAGNOSTIC: показываем сколько активов пришло
-  console.log(
-    '[BUILD_ASSETS_TABLES] assetsAnalysis.length = ' +
-      assetsAnalysis.length +
-      ' | tickers = ' +
-      assetsAnalysis.map((a) => a.ticker).join(', '),
-  );
+  // silent — assets загружены
 
   // Сортировка по динамике цены (убывание) — лучшие инструменты сверху
   const sortedAssets = [...assetsAnalysis].sort(

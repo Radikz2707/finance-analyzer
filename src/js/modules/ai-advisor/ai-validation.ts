@@ -78,11 +78,15 @@ const EXCLUDED_ASSET_PATTERNS: RegExp[] = [
   /рубль\w*/gi,
   /руб\.(?:\s|$)/gi,
   /итого\w*/gi,
-  /баланс\w*/gi,
-  /всего\w*/gi,
-  /общая?\s+сумма/gi,
-  /сумма\s+портфеля/gi,
-  /общая?\s+стоимость/gi,
+  // "баланс" ловим только в агрегатном контексте, не в "сбалансирован" или "балансовая стоимость"
+  /баланс\s+портфеля/gi,
+  /баланс\s+счетов/gi,
+  /баланс\s+позиций/gi,
+  // "всего" ловим ТОЛЬКО в контексте "всего портфеля", "всего купонов" и т.п.
+  /всего\s+портфеля/gi,
+  /всего\s+купон[а-яё]*/gi,
+  /всего\s+дивиденд[а-яё]*/gi,
+  /всего\s+сумм[а-яё]/gi,
 ];
 
 /**
@@ -137,13 +141,85 @@ const HALLUCINATED_AMOUNT_PATTERNS: RegExp[] = [
 /**
  * Направления, которые конфликтуют с PortfolioMath status.
  * BUY конфликтует с REDUCE/EXIT, REDUCE/EXIT конфликтует с BUY.
+ *
+ * Ключ — PortfolioMath status, значение — массив сырых слов-маркеров,
+ * которые ищутся в AI-тексте. При обнаружении конфликта сырой маркер
+ * нормализуется через normalizeAiDirection() в нормализованное действие.
  */
 const CONFLICTING_DIRECTIONS: Record<string, string[]> = {
-  BUY: ['REDUCE', 'EXIT', 'sell', 'продаж', 'закрыт', 'выйти'],
+  BUY: ['REDUCE', 'EXIT', 'sell', 'продаж', 'закрыт', 'выйти', 'сниз'],
   REDUCE: ['BUY', 'куп', 'докуп', 'увелич'],
   EXIT: ['BUY', 'куп', 'докуп', 'увелич'],
   NEW: ['BUY', 'куп', 'докуп'],
 };
+
+// ============================================================================
+// Нормализация AI-направлений (кириллица → нормализованное действие)
+// ============================================================================
+
+/**
+ * Нормализует сырое слово/фразу из AI-текста в нормализованное действие.
+ *
+ * Допустимые очевидные варианты:
+ *   - `купить`, `покупать`, `покупка`, `куп` → BUY
+ *   - `держать`, `удерживать` → HOLD
+ *   - `снизить`, `сократить` → REDUCE
+ *   - `продать` → SELL
+ *   - `полностью выйти`, `закрыть позицию`, `выйти` → EXIT
+ *   - `усреднить`, `докупать для усреднения` → AVERAGE
+ *   - `избегать` → AVOID
+ *
+ * Если текст неоднозначен или не распознаётся — возвращает null.
+ * НЕ угадывает и НЕ превращает любой неизвестный текст в BUY.
+ */
+export function normalizeAiDirection(raw: string): string | null {
+  if (!raw) return null;
+
+  const normalized = raw.trim().toLowerCase();
+
+  // EXIT (полный выход) — проверяем первым, так как содержит "выйти"/"закрыть"
+  if (
+    /полностью\s+выйти|закрыть\s+позици[юу]|выйти\s+из\s+позици[иы]|полный\s+выход|закрыт[аыу]?/i.test(
+      normalized,
+    ) ||
+    /\bexit\b/i.test(normalized)
+  ) {
+    return 'EXIT';
+  }
+
+  // SELL (продажа)
+  if (/продат[ьы]|продаж[аы]|sell/i.test(normalized)) {
+    return 'SELL';
+  }
+
+  // AVERAGE (усреднение)
+  if (/усредн[иить]|докуп[аыть]\s+для\s+усреднен[иия]|усреднен[иия]|average/i.test(normalized)) {
+    return 'AVERAGE';
+  }
+
+  // REDUCE (снижение)
+  if (/сниз[иить]?|сократ[иить]|уменьш[иить]|reduce/i.test(normalized)) {
+    return 'REDUCE';
+  }
+
+  // BUY (покупка)
+  if (/куп[иить]?|покуп[аа]ть|покупк[аы]|buy/i.test(normalized)) {
+    return 'BUY';
+  }
+
+  // HOLD (удержание)
+  if (/держ[аа]ть|удерживат[ь]|hold/i.test(normalized)) {
+    return 'HOLD';
+  }
+
+  // AVOID (избегание)
+  if (/избег[аа]ть|avoid/i.test(normalized)) {
+    return 'AVOID';
+  }
+
+  // Не распознаётся — возвращаем null (не угадываем)
+  return null;
+}
 
 // ============================================================================
 // 1. Валидация направлений
@@ -211,10 +287,13 @@ export function validateDirections(
           severity = 'medium';
         }
 
+        // Нормализуем сырое слово в нормализованное действие
+        const normalizedDirection = normalizeAiDirection(conflicting);
+
         discrepancies.push({
           ticker: asset.ticker,
           portfolioMathStatus: portfolioStatus,
-          aiSuggestedDirection: conflicting,
+          aiSuggestedDirection: normalizedDirection ?? conflicting,
           severity,
         });
 

@@ -84,7 +84,6 @@ export interface ScenarioAgentOutput {
 // ──────────────────────────────────────────────
 
 const BASE_CHANGE_THRESHOLD_PCT = 1.5; // значимое улучшение структуры, п.п.
-const DRAWDOWN_BLOCK_PCT = -30; // продажа глубже этой просадки исключается
 const MIN_BUDGET_RUB = 5000; // минимальный бюджет для сценария покупки
 const MIN_BUY_RUB = 1000; // минимальная сумма покупки
 
@@ -199,10 +198,7 @@ export class ScenarioAgent extends AgentBase {
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
       `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}.`;
 
-    if (loss < -1000) {
-      verdict = 'WORSENS';
-      rationale += ` Фиксируется убыток ${this.fmtRub(loss)} — против цели портфеля (зелёная зона).`;
-    } else if (
+    if (
       baselineDeviation - dev >= BASE_CHANGE_THRESHOLD_PCT &&
       result.projectedUnrealizedPnL >= baselinePnL
     ) {
@@ -226,9 +222,8 @@ export class ScenarioAgent extends AgentBase {
   }
 
   /**
-   * Оптимизированный сценарий: исключает продажи активов в глубокой
-   * просадке; покупки финансируются свободными средствами либо продажей
-   * прибыльных позиций.
+   * Оптимизированный сценарий: пересчитывает структуру и P&L
+   * без ограничений по просадке. AI имеет свободу выбора.
    */
   private buildOptimizedScenario(
     assets: AssetAnalysis[],
@@ -236,31 +231,13 @@ export class ScenarioAgent extends AgentBase {
     proposed: ScenarioChange[],
     baselineDeviation: number,
   ): ScenarioResult | null {
-    const safeChanges: ScenarioChange[] = [];
-    const assetByTicker = new Map(
-      assets.map((a) => [a.ticker.toUpperCase(), a]),
-    );
+    const optimizedChanges: ScenarioChange[] = [...proposed];
 
-    for (const change of proposed) {
-      const asset = assetByTicker.get(change.ticker.toUpperCase());
-      const drawdown = this.drawdownOf(asset);
-
-      // Продажа/уменьшение позиции в глубокой просадке — исключаем
-      if (
-        (change.action === 'SELL' || change.action === 'REDUCE') &&
-        drawdown !== null &&
-        drawdown <= DRAWDOWN_BLOCK_PCT
-      ) {
-        continue; // не фиксируем глубокий убыток
-      }
-      safeChanges.push(change);
-    }
-
-    if (safeChanges.length === 0) {
+    if (optimizedChanges.length === 0) {
       return null;
     }
 
-    const result = this.applyChanges(assets, total, safeChanges);
+    const result = this.applyChanges(assets, total, optimizedChanges);
     const dev = result.structureDeviationPct;
     const loss = result.realizedLossRub;
     const improved = baselineDeviation - dev >= BASE_CHANGE_THRESHOLD_PCT;
@@ -273,14 +250,14 @@ export class ScenarioAgent extends AgentBase {
           : 'NEUTRAL';
 
     const rationale =
-      'Продажи в глубокой просадке исключены. ' +
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
-      `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}.`;
+      `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}. ` +
+      `Зафиксировано: ${this.fmtRub(Math.max(0, -loss))}.`;
 
     return {
       id: 'S3_optimized',
-      title: 'Оптимизированный — без фиксации глубоких убытков',
-      changes: safeChanges,
+      title: 'Оптимизированный — пересчёт без ограничений',
+      changes: optimizedChanges,
       structureDeviationPct: dev,
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
       realizedLossRub: Math.max(0, -loss),
@@ -291,7 +268,7 @@ export class ScenarioAgent extends AgentBase {
 
   /**
    * Гибкий сценарий: докупаем дефицитные активы за счёт продажи
-   * прибыльных (или свободных средств), не трогая глубокие просадки.
+   * прибыльных (или свободных средств).
    */
   private buildFlexibleScenario(
     assets: AssetAnalysis[],
@@ -451,14 +428,7 @@ export class ScenarioAgent extends AgentBase {
     );
   }
 
-  /** Просадка актива от цены покупки, % */
-  private drawdownOf(asset: AssetAnalysis | undefined): number | null {
-    if (!asset) return null;
-    const balance = asset.balancePrice ?? 0;
-    const price = asset.currentPrice ?? 0;
-    if (balance <= 0 || price <= 0) return null;
-    return ((price - balance) / balance) * 100;
-  }
+  // drawdownOf удалён — больше не используется (не блокируем по просадке)
 
   /** Выбрать лучший сценарий: макс. улучшение структуры при отсутствии глубокого убытка */
   private pickBest(scenarios: ScenarioResult[]): ScenarioResult | null {

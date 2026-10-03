@@ -70,14 +70,20 @@ def get_candles(
 
 
 def get_quotes(tickers: list[str]) -> dict[str, Any]:
-    """Последние котировки нескольких тикеров за один запрос."""
+    """Последние котировки нескольких тикеров за один запрос.
+
+    ВАЖНО: запрос идёт БЕЗ привязки к доске (boards/...).
+    Портфель может содержать акции (TQBR), облигации (EQOB) и ETF (TQTF);
+    раньше board=TQBR отдавал пустой marketdata для не-акций, и провайдер
+    сообщал «Пустой/некорректный ответ get_quotes».
+    """
     clean = [t for t in tickers if t]
     if not clean:
         return {"ok": False, "error": "empty tickers"}
 
     joined = ",".join(clean)
     url = (
-        f"{ISS_BASE}/engines/stock/markets/shares/boards/TQBR/securities.json?"
+        f"{ISS_BASE}/engines/stock/markets/shares/securities.json?"
         f"iss.meta=off&iss.only=marketdata"
         f"&marketdata.columns=SECID,LAST,LASTCHANGEPCT,VALTODAY,VALTODAY_USD"
         f"&securities={urllib.parse.quote(joined)}"
@@ -90,6 +96,17 @@ def get_quotes(tickers: list[str]) -> dict[str, Any]:
 
     columns = data["marketdata"]["columns"]
     rows = data["marketdata"]["data"]
-    quotes = [dict(zip(columns, row)) for row in rows if row and row[0] in clean]
+
+    # Один SECID может присутствовать на нескольких досках —
+    # берём первую валидную строку на каждый инструмент.
+    quotes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not row or not row[0] or row[0] not in clean:
+            continue
+        if row[0] in seen:
+            continue
+        seen.add(row[0])
+        quotes.append(dict(zip(columns, row)))
 
     return {"ok": True, "quotes": quotes}

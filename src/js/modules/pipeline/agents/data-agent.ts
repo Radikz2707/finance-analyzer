@@ -14,7 +14,7 @@ import {
 } from '../gatekeeper/index.js';
 import { QuikNewsSource } from '../../quik-gateway/index.js';
 import type { GatekeeperResult } from '../gatekeeper/types.js';
-import { fetchHistoricalBatch } from '../../finam-api/history-provider.js';
+import { fetchHistoricalBatch } from '../../data-fetcher/index.js';
 import {
   AnomalyDetector,
   MoexQuoteProvider,

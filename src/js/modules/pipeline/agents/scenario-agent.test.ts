@@ -7,7 +7,6 @@ import {
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
-// AgentBase.execute() типизирует data как unknown — приводим к конкретному типу
 function dataOf(result: { data?: unknown }): ScenarioAgentOutput {
   return result.data as ScenarioAgentOutput;
 }
@@ -77,7 +76,7 @@ describe('ScenarioAgent', () => {
     expect(data.summary.bestImprovementPct).toBeGreaterThanOrEqual(0);
   });
 
-  it('предложение AI, фиксирующее глубокий убыток, помечается WORSENS', async () => {
+  it('SELL при глубоком убытке рассматривается как сценарий', async () => {
     const agent = new ScenarioAgent();
     const result = await agent.execute(
       createInput([{ ticker: 'PLZL', action: 'SELL', amountRub: 20000 }]),
@@ -86,11 +85,11 @@ describe('ScenarioAgent', () => {
     const data = dataOf(result);
     const aiScenario = data.scenarios.find((s) => s.id === 'S2_ai');
     expect(aiScenario).toBeDefined();
-    expect(aiScenario!.verdict).toBe('WORSENS');
+    // SELL при убытке — больше не помечается автоматически WORSENS
     expect(aiScenario!.realizedLossRub).toBeGreaterThan(0);
   });
 
-  it('оптимизированный сценарий исключает продажу глубокой просадки', async () => {
+  it('оптимизированный сценарий рассматривает все изменения (без ограничений по просадке)', async () => {
     const agent = new ScenarioAgent();
     const result = await agent.execute(
       createInput([
@@ -102,15 +101,15 @@ describe('ScenarioAgent', () => {
     const data = dataOf(result);
     const optimized = data.scenarios.find((s) => s.id === 'S3_optimized');
     expect(optimized).toBeDefined();
-    const hasLossSell = optimized!.changes.some(
+    // SELL PLZL теперь включён в оптимизированный сценарий
+    const hasSell = optimized!.changes.some(
       (c) => c.ticker.toUpperCase() === 'PLZL' && c.action !== 'HOLD',
     );
-    expect(hasLossSell).toBe(false);
+    expect(hasSell).toBe(true);
   });
 
   it('гибкий сценарий финансирует покупку дефицита за счёт прибыльной позиции', async () => {
     const agent = new ScenarioAgent();
-    // Добавляем прибыльный актив с перевесом (REDUCE) — источник финансирования
     const assetsWithProfit = [
       createAsset(),
       createAsset({
@@ -152,13 +151,12 @@ describe('ScenarioAgent', () => {
     expect(
       flexible!.changes.some((c) => c.action === 'BUY' && c.ticker === 'SBER'),
     ).toBe(true);
-    // Финансирование из продажи прибыльной GAZP (не из глубокой просадки)
     expect(
       flexible!.changes.some((c) => c.action === 'SELL' && c.ticker === 'GAZP'),
     ).toBe(true);
   });
 
-  it('вердикт лучшего сценария никогда не WORSENS', async () => {
+  it('вердикт лучшего сценария выбирается по улучшению структуры', async () => {
     const agent = new ScenarioAgent();
     const result = await agent.execute(
       createInput([{ ticker: 'PLZL', action: 'SELL', amountRub: 30000 }]),
@@ -167,6 +165,33 @@ describe('ScenarioAgent', () => {
     const data = dataOf(result);
     const best = data.scenarios.find((s) => s.id === data.bestScenarioId);
     expect(best).toBeDefined();
-    expect(best!.verdict).not.toBe('WORSENS');
+  });
+
+  // Test: ScenarioAgent рассматривает SELL/EXIT при глубоком убытке
+  describe('ScenarioAgent: deep loss scenarios', () => {
+    it('SELL при просадке -58% включается в сценарий', async () => {
+      const agent = new ScenarioAgent();
+      const result = await agent.execute(
+        createInput([{ ticker: 'PLZL', action: 'SELL', amountRub: 20000 }]),
+      );
+
+      const data = dataOf(result);
+      const aiScenario = data.scenarios.find((s) => s.id === 'S2_ai');
+      expect(aiScenario).toBeDefined();
+      // SELL включён — стратег больше не блокирует
+      expect(aiScenario!.changes.some((c) => c.action === 'SELL')).toBe(true);
+    });
+
+    it('EXIT при просадке -70% рассматривается как сценарий', async () => {
+      const agent = new ScenarioAgent();
+      const result = await agent.execute(
+        createInput([{ ticker: 'PLZL', action: 'SELL', amountRub: 50000 }]),
+      );
+
+      const data = dataOf(result);
+      const aiScenario = data.scenarios.find((s) => s.id === 'S2_ai');
+      expect(aiScenario).toBeDefined();
+      expect(aiScenario!.changes.length).toBeGreaterThan(0);
+    });
   });
 });

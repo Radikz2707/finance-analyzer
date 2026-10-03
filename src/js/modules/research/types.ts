@@ -275,7 +275,14 @@ export interface InvestmentThesis {
 // 11. AIRecommendation
 // ──────────────────────────────────────────────
 
-export type AiAction = 'BUY' | 'SELL' | 'HOLD' | 'REDUCE' | 'AVOID';
+export type AiAction =
+  | 'BUY'
+  | 'SELL'
+  | 'HOLD'
+  | 'REDUCE'
+  | 'EXIT'
+  | 'AVOID'
+  | 'AVERAGE';
 
 export type PortfolioMathStatus =
   | 'HOLD'

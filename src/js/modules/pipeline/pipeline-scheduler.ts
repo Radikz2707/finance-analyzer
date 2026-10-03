@@ -1,5 +1,16 @@
 import { PipelineCoordinator } from './pipeline-coordinator.js';
+import { savePortfolioKpi } from './ai-memory/kpi-sink.js';
+import { aiMemoryImpl } from './ai-memory/index.js';
 import type { AgentConfig } from './agent/types.js';
+
+/** Обёртка для KPI sink: aiMemoryImpl + PipelineResult */
+const kpiSink = async (result: import('./pipeline-coordinator.js').PipelineResult): Promise<void> => {
+  try {
+    await savePortfolioKpi(aiMemoryImpl, result);
+  } catch {
+    // silently ignore — KPI не критичен для pipeline
+  }
+};
 
 // ──────────────────────────────────────────────
 // 1. Schedule entry
@@ -288,7 +299,7 @@ export class PipelineScheduler {
 
   private async executePipeline(): Promise<void> {
     try {
-      const coordinator = new PipelineCoordinator();
+      const coordinator = new PipelineCoordinator({}, { memorySink: kpiSink });
       const result = await coordinator.run();
 
       if (result.success) {
@@ -309,13 +320,16 @@ export class PipelineScheduler {
     schedule: ScheduleEntry,
   ): Promise<void> {
     try {
-      const coordinator = new PipelineCoordinator({
-        data: schedule.agentConfig,
-        research: schedule.agentConfig,
-        analysis: schedule.agentConfig,
-        ai: schedule.agentConfig,
-        notification: schedule.agentConfig,
-      });
+      const coordinator = new PipelineCoordinator(
+        {
+          data: schedule.agentConfig,
+          research: schedule.agentConfig,
+          analysis: schedule.agentConfig,
+          ai: schedule.agentConfig,
+          notification: schedule.agentConfig,
+        },
+        { memorySink: kpiSink },
+      );
       const result = await coordinator.run();
 
       if (result.success) {

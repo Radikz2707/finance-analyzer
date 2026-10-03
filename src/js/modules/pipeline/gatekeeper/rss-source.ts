@@ -123,7 +123,8 @@ export class RssNewsSource implements INewsSource {
 
       try {
         const response = await axios.get(source.url, {
-          timeout: 10000,
+          // Habr и Investing.com отвечают медленно — 10с часто не хватает
+          timeout: 20000,
           headers: {
             'User-Agent': this.userAgent,
             Accept: 'application/rss+xml, application/xml, text/xml, */*',

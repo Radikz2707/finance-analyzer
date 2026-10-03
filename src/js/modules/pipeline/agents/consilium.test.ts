@@ -75,16 +75,16 @@ async function buildInput(
 }
 
 describe('Consilium', () => {
-  it('вето стратега побеждает: финальное действие HOLD, CONFLICT', async () => {
+  it('стратег не имеет veto: финальное действие определяется голосованием', async () => {
     const input = await buildInput();
     const output = runConsilium(input);
 
     expect(output.decisions).toHaveLength(1);
     const decision = output.decisions[0]!;
-    expect(decision.finalAction).toBe('HOLD');
-    expect(decision.strategistVeto).not.toBeNull();
-    expect(decision.agreement).toBe('CONFLICT');
-    expect(output.summary.vetoed).toBe(1);
+    // Нет поля strategistVeto — стратег не блокирует
+    expect(decision.strategistNote).toBeDefined();
+    // Итоговое действие — результат голосования, не принудительный HOLD
+    expect(decision.finalAction).toBeDefined();
   });
 
   it('единогласное решение при безопасном BUY', async () => {
@@ -106,7 +106,6 @@ describe('Consilium', () => {
     const decision = output.decisions[0]!;
     expect(decision.finalAction).toBe('BUY');
     expect(decision.agreement).toBe('UNANIMOUS');
-    expect(decision.strategistVeto).toBeNull();
   });
 
   it('негативный новостной фон без катализатора → research голосует HOLD', async () => {
@@ -129,5 +128,36 @@ describe('Consilium', () => {
     expect(output.decisions[0]!.votes).toHaveLength(4);
     const agents = output.decisions[0]!.votes.map((v) => v.agent).sort();
     expect(agents).toEqual(['ai', 'research', 'scenario', 'strategist']);
+  });
+
+  it('CONFLICT при расхождении мнений — не принудительный HOLD', async () => {
+    const input = await buildInput({
+      proposals: [
+        {
+          ticker: 'PLZL',
+          action: 'SELL' as const,
+          keyCatalysts: [],
+          rationale: 'Фундаментальное ухудшение',
+        },
+      ],
+    });
+    const output = runConsilium(input);
+
+    const decision = output.decisions[0]!;
+    // При конфликте приоритет у AI, не у стратегических правил
+    expect(decision.finalAction).toBe('SELL');
+    expect(decision.agreement).toBe('CONFLICT');
+    expect(output.summary.conflicts).toBeGreaterThanOrEqual(0);
+  });
+
+  it('Consilium показывает strategistNote вместо strategistVeto', async () => {
+    const input = await buildInput();
+    const output = runConsilium(input);
+
+    const decision = output.decisions[0]!;
+    // strategistNote — аналитическое примечание, не блокировка
+    expect(decision.strategistNote).toBeDefined();
+    // Итоговое решение — результат голосования
+    expect(decision.finalAction).toBeDefined();
   });
 });

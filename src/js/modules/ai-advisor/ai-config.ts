@@ -35,14 +35,14 @@ export const AI_MODELS: AiModelConfig[] = [
     id: 'ollama',
     name: 'Ollama (локально)',
     baseUrl: 'http://localhost:11434/api/chat',
-    modelName: 'qwen3:14b',
-    maxTokens: 8192,
+    modelName: 'qwen3.5:9b',
+    maxTokens: 3072,
     temperature: 0.2,
     priority: 1,
     requiresKey: false,
     envKey: '',
     description:
-      'Локальная модель 14B, работает без VPN и ключей, полностью бесплатно.',
+      'Локальная модель 9B, баланс скорости и качества. Быстрее 14b в 2 раза.',
   },
   {
     id: 'gigachat',

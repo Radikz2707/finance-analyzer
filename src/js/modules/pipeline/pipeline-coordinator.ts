@@ -20,8 +20,14 @@ import {
   type NotificationAgentOutput,
 } from './agents/notification-agent.js';
 import { ReviewAgent, type ReviewResult } from './review/review-agent.js';
+import { ScenarioAgent, type ScenarioAgentOutput } from './agents/scenario-agent.js';
+import {
+  StrategistAgent,
+  type StrategistAgentOutput,
+  type StrategistProposal,
+} from './agents/strategist-agent.js';
+import { runConsilium, type ConsiliumOutput } from './agents/consilium.js';
 import { aiMemoryImpl } from './ai-memory/index.js';
-import type { PortfolioKpiSnapshot } from './ai-memory/types.js';
 import { Watchdog } from './watchdog/watchdog.js';
 import type { AgentHealthReport } from './watchdog/types.js';
 import { DEFAULT_THRESHOLDS } from './watchdog/types.js';
@@ -30,9 +36,16 @@ import { DEFAULT_THRESHOLDS } from './watchdog/types.js';
 // 1. Pipeline stage definitions
 // ──────────────────────────────────────────────
 
-/** Этап конвейера */
+/** Этап конвейера (consilium не отдельный этап — работает синхронно) */
 export type PipelineStage =
-  'data' | 'research' | 'analysis' | 'ai' | 'review' | 'notification';
+  | 'data'
+  | 'research'
+  | 'analysis'
+  | 'ai'
+  | 'review'
+  | 'scenario'
+  | 'strategist'
+  | 'notification';
 
 /** Результат выполнения одного этапа */
 export interface PipelineStageResult<T = unknown> {
@@ -54,6 +67,12 @@ export interface PipelineResult {
   stages: Record<PipelineStage, PipelineStageResult | null>;
   /** Результаты review */
   reviewResult?: ReviewResult;
+  /** Результаты Scenario Agent */
+  scenarioResult?: ScenarioAgentOutput;
+  /** Результаты Strategist Agent */
+  strategistResult?: StrategistAgentOutput;
+  /** Результаты Consilium */
+  consiliumResult?: ConsiliumOutput;
   /** Интерактивные ордера от Notification Agent */
   interactiveOrders?: Array<{ ticker: string; action: string; id: string }>;
   /** Сводки по всем агентам */
@@ -77,6 +96,8 @@ export interface PipelineConfig {
   analysis?: AgentConfig;
   ai?: AgentConfig;
   review?: AgentConfig;
+  scenario?: AgentConfig;
+  strategist?: AgentConfig;
   notification?: AgentConfig;
 }
 
@@ -101,6 +122,8 @@ const STAGE_AGENT_NAMES: Record<PipelineStage, string> = {
   analysis: 'AnalysisAgent',
   ai: 'AiAgent',
   review: 'ReviewAgent',
+  scenario: 'ScenarioAgent',
+  strategist: 'StrategistAgent',
   notification: 'NotificationAgent',
 };
 
@@ -129,6 +152,8 @@ export class PipelineCoordinator {
   private analysisAgent: AnalysisAgent;
   private aiAgent: AiAgent;
   private reviewAgent: ReviewAgent;
+  private scenarioAgent: ScenarioAgent;
+  private strategistAgent: StrategistAgent;
   private notificationAgent: NotificationAgent;
 
   private stageResults: Record<PipelineStage, PipelineStageResult | null> = {
@@ -137,11 +162,16 @@ export class PipelineCoordinator {
     analysis: null,
     ai: null,
     review: null,
+    scenario: null,
+    strategist: null,
     notification: null,
   };
 
   private agentSummaries: Record<string, AgentSummary> = {};
   private reviewResultData: ReviewResult | null = null;
+  private scenarioResultData: ScenarioAgentOutput | null = null;
+  private strategistResultData: StrategistAgentOutput | null = null;
+  private consiliumResultData: ConsiliumOutput | null = null;
   private interactiveOrdersData: Array<{
     ticker: string;
     action: string;
@@ -176,44 +206,6 @@ export class PipelineCoordinator {
     }
   }
 
-  /**
-   * Сохранить KPI-снимок в стратегическую память.
-   */
-  private saveKpiSnapshot(): void {
-    try {
-      const snapshot: PortfolioKpiSnapshot = {
-        date: new Date().toISOString(),
-        totalValue: 0,
-        returnPercent: 0,
-        volatility: 0,
-        sharpeRatio: 0,
-        maxDrawdown: 0,
-        assetCount: 0,
-        stocksPercent: 0,
-        bondsPercent: 0,
-        dividendIncome: 0,
-        realizedProfit: 0,
-        unrealizedProfit: 0,
-      };
-
-      // Получаем данные из sharedData если они есть
-      if (this._state.sharedData.portfolio) {
-        const portfolio = this._state.sharedData.portfolio as Record<
-          string,
-          unknown
-        >;
-        snapshot.totalValue = (portfolio.totalValue as number) || 0;
-        snapshot.returnPercent = (portfolio.returnPercent as number) || 0;
-        snapshot.assetCount = (portfolio.assetCount as number) || 0;
-      }
-
-      aiMemoryImpl.saveStrategicKpi(snapshot);
-      console.log('[Pipeline] KPI-снимок сохранён в стратегическую память');
-    } catch (err) {
-      console.warn('[Pipeline] Ошибка записи KPI в память:', err);
-    }
-  }
-
   private readonly watchdog: Watchdog;
   private readonly memorySink?: (
     result: PipelineResult,
@@ -229,6 +221,8 @@ export class PipelineCoordinator {
     this.analysisAgent = new AnalysisAgent(this.config.analysis);
     this.aiAgent = new AiAgent(this.config.ai);
     this.reviewAgent = new ReviewAgent(this.config.review);
+    this.scenarioAgent = new ScenarioAgent(this.config.scenario);
+    this.strategistAgent = new StrategistAgent(this.config.strategist);
     this.notificationAgent = new NotificationAgent(this.config.notification);
 
     this.watchdog = options.watchdog ?? new Watchdog({ verbose: false });
@@ -266,6 +260,8 @@ export class PipelineCoordinator {
       analysis: null,
       ai: null,
       review: null,
+      scenario: null,
+      strategist: null,
       notification: null,
     };
     this.agentSummaries = {};
@@ -399,7 +395,135 @@ export class PipelineCoordinator {
         ? reviewResult.result.data!
         : null;
 
-      // ── Stage 5: Notification Agent (ждёт data + analysis + ai + review) ──
+      // Извлекаем данные для новых агентов (в scope для всех этапов)
+      const assetsAnalysisList = analysisOutput.portfolioAnalysis.assetsAnalysis;
+      const macroGoalsData = dataOutput.macroGoals;
+      const assetsAnalysisJson = JSON.parse(JSON.stringify(assetsAnalysisList));
+      const macroGoalsJson = JSON.parse(JSON.stringify(macroGoalsData));
+
+      // ── Stage 4.5: Scenario Agent (сценарии "что если") ──
+      const scenarioResult = await this.runStage<
+        'scenario',
+        ScenarioAgentOutput
+      >('scenario', async () => {
+        // Извлекаем proposed changes из AI-рекомендаций
+        const proposedChanges: Array<{
+          ticker: string;
+          action: 'BUY' | 'SELL' | 'REDUCE' | 'HOLD';
+          amountRub: number;
+        }> = [];
+
+        if (aiResult.result.success && aiOutput.structuredRecommendations) {
+          for (const [ticker, rec] of aiOutput.structuredRecommendations) {
+            if (rec.recommendedAction && rec.recommendedAction !== 'HOLD') {
+              const asset = assetsAnalysisJson.find(
+                (a: { ticker: string; deficitRub?: number }) =>
+                  a.ticker.toUpperCase() === ticker.toUpperCase(),
+              );
+              proposedChanges.push({
+                ticker,
+                action: rec.recommendedAction as 'BUY' | 'SELL' | 'REDUCE' | 'HOLD',
+                amountRub: asset?.deficitRub ?? 0,
+              });
+            }
+          }
+        }
+
+        const scenarioInput = {
+          assetsAnalysis: assetsAnalysisJson,
+          totalPortfolioValue: macroGoalsJson.totalBalance ?? 0,
+          freeCashRub: macroGoalsJson.freeCash ?? 0,
+          proposedChanges: proposedChanges.map((c) => ({
+            ticker: c.ticker,
+            action: c.action === 'SELL' ? 'SELL' : c.action,
+            amountRub: Math.abs(c.amountRub),
+          })),
+        };
+
+        const result = await this.scenarioAgent.execute(scenarioInput);
+        return result.data as ScenarioAgentOutput;
+      });
+
+      if (!scenarioResult.result.success) {
+        console.warn(
+          `[Pipeline] Scenario Agent warning: ${scenarioResult.result.error?.message}`,
+        );
+      }
+
+      this.scenarioResultData = scenarioResult.result.success
+        ? scenarioResult.result.data!
+        : { scenarios: [], bestScenarioId: null, summary: { scenariosBuilt: 0, baselineDeviationPct: 0, bestImprovementPct: 0 } };
+
+      // ── Stage 4.6: Strategist Agent (правила защиты) ──
+      const strategistResult = await this.runStage<
+        'strategist',
+        StrategistAgentOutput
+      >('strategist', async () => {
+        const proposals: StrategistProposal[] = [];
+
+        if (aiResult.result.success && aiOutput.structuredRecommendations) {
+          for (const [ticker, rec] of aiOutput.structuredRecommendations) {
+            proposals.push({
+              ticker,
+              action: rec.recommendedAction,
+              keyCatalysts: rec.keyCatalysts ?? [],
+              rationale: rec.rationale ?? null,
+            });
+          }
+        }
+
+        const strategistInput = {
+          assetsAnalysis: assetsAnalysisJson,
+          proposals,
+        };
+
+        const result = await this.strategistAgent.execute(strategistInput);
+        return result.data as StrategistAgentOutput;
+      });
+
+      if (!strategistResult.result.success) {
+        console.warn(
+          `[Pipeline] Strategist Agent warning: ${strategistResult.result.error?.message}`,
+        );
+      }
+
+      this.strategistResultData = strategistResult.result.success
+        ? strategistResult.result.data!
+        : { decisions: [], summary: { assetsChecked: 0, goal: '' } };
+
+      // ── Stage 4.7: Consilium (совещание агентов) ──
+      if (this.scenarioResultData && this.strategistResultData) {
+        const proposals: Array<{
+          ticker: string;
+          action: import('./agents/strategist-agent.js').StrategistProposal['action'];
+          keyCatalysts?: string[];
+          rationale?: string | null;
+        }> = [];
+        if (aiResult.result.success && aiOutput.structuredRecommendations) {
+          for (const [ticker, rec] of aiOutput.structuredRecommendations) {
+            proposals.push({
+              ticker,
+              action: rec.recommendedAction,
+              keyCatalysts: rec.keyCatalysts ?? [],
+              rationale: rec.rationale ?? null,
+            });
+          }
+        }
+
+        const consiliumOutput = runConsilium({
+          assetsAnalysis: assetsAnalysisJson,
+          proposals,
+          strategistOutput: this.strategistResultData,
+          scenarioOutput: this.scenarioResultData,
+          newsContext: researchOutput?.allConflicts
+            ?.map((c) => `${c.field}: ${c.providerA}=${c.valueA} vs ${c.providerB}=${c.valueB}`)
+            .join('; ') ?? '',
+        });
+
+        this.consiliumResultData = consiliumOutput;
+      }
+
+      // ── Stage 5: Notification Agent (ждёт data + analysis + ai + review + consilium) ──
       const notificationResult = await this.runStage<
         'notification',
         NotificationAgentOutput
@@ -408,6 +532,10 @@ export class PipelineCoordinator {
           data: dataOutput,
           analysis: analysisOutput,
           ai: aiOutput,
+          review: this.reviewResultData ?? undefined,
+          scenario: this.scenarioResultData ?? undefined,
+          strategist: this.strategistResultData ?? undefined,
+          consilium: this.consiliumResultData ?? undefined,
         });
         return result.data as NotificationAgentOutput;
       });
@@ -441,13 +569,10 @@ export class PipelineCoordinator {
         }));
       }
 
-      // Сохраняем KPI-снимок в стратегическую память
-      this.saveKpiSnapshot();
-
+      // Строим итоговый результат
       const result = this.buildResult(totalStart);
 
-      // Авто-архивация KPI во внешнюю стратегическую память (DI).
-      // Без memorySink ничего не происходит; падение колбэка не роняет run().
+      // Сохраняем KPI-снимок через memorySink (реальные данные из PipelineResult)
       if (this.memorySink && result.success) {
         try {
           await this.memorySink(result);
@@ -477,6 +602,8 @@ export class PipelineCoordinator {
       this.analysisAgent.stop(),
       this.aiAgent.stop(),
       this.reviewAgent.stop(),
+      this.scenarioAgent.stop(),
+      this.strategistAgent.stop(),
       this.notificationAgent.stop(),
       this.watchdog.stop(),
     ]);
@@ -490,6 +617,8 @@ export class PipelineCoordinator {
       analysis: this.analysisAgent.getSummary(),
       ai: this.aiAgent.getSummary(),
       review: this.reviewAgent.getSummary(),
+      scenario: this.scenarioAgent.getSummary(),
+      strategist: this.strategistAgent.getSummary(),
       notification: this.notificationAgent.getSummary(),
     };
   }
@@ -578,8 +707,11 @@ export class PipelineCoordinator {
       startedAt: this._state.startedAt,
       completedAt: new Date().toISOString(),
       totalDurationMs: Date.now() - totalStart,
-      stages: this.stageResults,
+      stages: this.stageResults as Record<PipelineStage, PipelineStageResult | null>,
       reviewResult: this.reviewResultData || undefined,
+      scenarioResult: this.scenarioResultData || undefined,
+      strategistResult: this.strategistResultData || undefined,
+      consiliumResult: this.consiliumResultData || undefined,
       interactiveOrders:
         this.interactiveOrdersData.length > 0
           ? this.interactiveOrdersData

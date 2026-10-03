@@ -12,7 +12,7 @@ import type { PipelineResult } from '../pipeline/pipeline-coordinator.js';
 import {
   fetchHistoricalData,
   calculatePriceMetrics,
-} from '../finam-api/history-provider.js';
+} from '../data-fetcher/index.js';
 
 // ──────────────────────────────────────────────
 // 1. Backtesting types

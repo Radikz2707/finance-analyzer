@@ -231,6 +231,11 @@ export class DashboardReportBuilder {
       '.rebalance-summary strong { color: #fff; font-weight: 600; }' +
       '.highlight-total { color: #56d364; font-weight: 700; }' +
       '.ai-box-styled { border-left: 4px solid #388bfd; white-space: pre-wrap; line-height: 1.6; font-size: 13px; }' +
+      '.ai-recommendations-table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 12px; }' +
+      '.ai-recommendations-table th { background: rgba(56, 139, 255, 0.1); color: #58a6ff; font-weight: 600; padding: 8px 10px; text-align: left; border-bottom: 2px solid #30363d; }' +
+      '.ai-recommendations-table td { padding: 8px 10px; border-bottom: 1px solid #30363d; color: #c9d1d9; }' +
+      '.ai-recommendations-table tr:hover td { background: rgba(56, 139, 255, 0.04); }' +
+      '.ai-recommendations-table td:first-child { font-weight: 600; color: #58a6ff; }' +
       // === income-widget ===
       '.income-widget { background: linear-gradient(135deg, rgba(56, 211, 100, 0.06) 0%, rgba(35, 134, 54, 0.1) 100%); border: 1px solid rgba(56, 211, 100, 0.25); border-radius: 12px; padding: 20px 24px; margin-bottom: 20px; color: #e6edf2; position: relative; overflow: hidden; }' +
       '.income-widget::before { content: \'\'; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, #38d364, transparent); opacity: 0.6; }' +
@@ -423,7 +428,7 @@ export class DashboardReportBuilder {
       : '';
     const c10Color = kpiData?.c10Color ?? '';
     const c11Color = kpiData?.c11Color ?? '';
-    const cbrRate = kpiData?.cbrRate ?? 0;
+    const cbrRate = (kpiData?.cbrRate && kpiData.cbrRate > 0) ? kpiData.cbrRate : 14.0;
     const dateStr = kpiData?.dateStr ?? '';
     const timeStr = kpiData?.timeStr ?? '';
     const aiBoxHtml = kpiData?.aiBoxHtml ?? '';

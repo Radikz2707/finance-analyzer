@@ -12,7 +12,7 @@
 
 export * from './ai-advisor.js';
 export { AiClient } from './ai-client.js';
-export { postProcessAiText } from './ai-validation.js';
+export { postProcessAiText, validateDirections, normalizeAiDirection } from './ai-validation.js';
 export { sanitizeAiNarrative, assertFinalAiDisplaySafe, assertFinalReportSafe } from './ollama-manager.js';
 export { buildStructuredAIRecommendation, type StructuredAIAssetRecommendation } from './structured-ai-recommendation.js';
 export { buildAssetResearchSnapshot, buildPortfolioAssetContext } from './snapshot-builder.js';

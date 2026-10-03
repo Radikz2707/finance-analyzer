@@ -14,6 +14,7 @@ import {
   removeHallucinatedData,
   checkExcludedAssets,
   postProcessAiText,
+  normalizeAiDirection,
 } from './ai-validation.js';
 import type { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
 
@@ -315,5 +316,186 @@ describe('postProcessAiText', () => {
 
     // Проверка что есть предупреждения
     expect(result.warnings.length).toBeGreaterThan(0);
+  });
+});
+
+// ============================================================================
+// Тесты нормализации AI-направлений (Problem 2: AI=«куп» → AI=BUY)
+// ============================================================================
+
+describe('normalizeAiDirection', () => {
+  it('должна нормализовать "куп" → BUY', () => {
+    expect(normalizeAiDirection('куп')).toBe('BUY');
+  });
+
+  it('должна нормализовать "купить" → BUY', () => {
+    expect(normalizeAiDirection('купить')).toBe('BUY');
+  });
+
+  it('должна нормализовать "покупать" → BUY', () => {
+    expect(normalizeAiDirection('покупать')).toBe('BUY');
+  });
+
+  it('должна нормализовать "покупка" → BUY', () => {
+    expect(normalizeAiDirection('покупка')).toBe('BUY');
+  });
+
+  it('должна нормализовать "BUY" → BUY', () => {
+    expect(normalizeAiDirection('BUY')).toBe('BUY');
+  });
+
+  it('должна нормализовать "продать" → SELL', () => {
+    expect(normalizeAiDirection('продать')).toBe('SELL');
+  });
+
+  it('должна нормализовать "продажа" → SELL', () => {
+    expect(normalizeAiDirection('продажа')).toBe('SELL');
+  });
+
+  it('должна нормализовать "SELL" → SELL', () => {
+    expect(normalizeAiDirection('SELL')).toBe('SELL');
+  });
+
+  it('должна нормализовать "держать" → HOLD', () => {
+    expect(normalizeAiDirection('держать')).toBe('HOLD');
+  });
+
+  it('должна нормализовать "удерживать" → HOLD', () => {
+    expect(normalizeAiDirection('удерживать')).toBe('HOLD');
+  });
+
+  it('должна нормализовать "HOLD" → HOLD', () => {
+    expect(normalizeAiDirection('HOLD')).toBe('HOLD');
+  });
+
+  it('должна нормализовать "снизить" → REDUCE', () => {
+    expect(normalizeAiDirection('снизить')).toBe('REDUCE');
+  });
+
+  it('должна нормализовать "сократить" → REDUCE', () => {
+    expect(normalizeAiDirection('сократить')).toBe('REDUCE');
+  });
+
+  it('должна нормализовать "REDUCE" → REDUCE', () => {
+    expect(normalizeAiDirection('REDUCE')).toBe('REDUCE');
+  });
+
+  it('должна нормализовать "полностью выйти" → EXIT', () => {
+    expect(normalizeAiDirection('полностью выйти')).toBe('EXIT');
+  });
+
+  it('должна нормализовать "закрыть позицию" → EXIT', () => {
+    expect(normalizeAiDirection('закрыть позицию')).toBe('EXIT');
+  });
+
+  it('должна нормализовать "выйти из позиции" → EXIT', () => {
+    expect(normalizeAiDirection('выйти из позиции')).toBe('EXIT');
+  });
+
+  it('должна нормализовать "EXIT" → EXIT', () => {
+    expect(normalizeAiDirection('EXIT')).toBe('EXIT');
+  });
+
+  it('должна нормализовать "усреднить" → AVERAGE', () => {
+    expect(normalizeAiDirection('усреднить')).toBe('AVERAGE');
+  });
+
+  it('должна нормализовать "AVERAGE" → AVERAGE', () => {
+    expect(normalizeAiDirection('AVERAGE')).toBe('AVERAGE');
+  });
+
+  it('должна нормализовать "избегать" → AVOID', () => {
+    expect(normalizeAiDirection('избегать')).toBe('AVOID');
+  });
+
+  it('должна возвращать null для неоднозначного текста', () => {
+    expect(normalizeAiDirection('неясно')).toBeNull();
+  });
+
+  it('должна возвращать null для пустой строки', () => {
+    expect(normalizeAiDirection('')).toBeNull();
+  });
+
+  it('должна возвращать null для null', () => {
+    expect(normalizeAiDirection(null as unknown as string)).toBeNull();
+  });
+
+  it('должна возвращать null для случайных слов, не являющихся действиями', () => {
+    expect(normalizeAiDirection('рост')).toBeNull();
+    expect(normalizeAiDirection('падение')).toBeNull();
+    expect(normalizeAiDirection('волатильность')).toBeNull();
+    expect(normalizeAiDirection('дивиденды')).toBeNull();
+  });
+});
+
+describe('DIRECTION_CONFLICT: нормализованные предупреждения', () => {
+  it('не должен содержать "AI=куп" — только нормализованные действия', () => {
+    const assets: AssetAnalysis[] = [
+      createMockAsset({
+        ticker: 'PLZL',
+        status: 'REDUCE',
+        deficitRub: -44266,
+      }),
+    ];
+
+    const aiText = 'PLZL: нужно купить больше, так как позиция недооценена.';
+    const result = validateDirections(aiText, assets);
+
+    expect(result.valid).toBe(false);
+    expect(result.discrepancies).toHaveLength(1);
+    // aiSuggestedDirection должен быть нормализован
+    expect(result.discrepancies[0]!.aiSuggestedDirection).toBe('BUY');
+    // НЕ должно быть "куп"
+    expect(result.discrepancies[0]!.aiSuggestedDirection).not.toBe('куп');
+  });
+
+  it('должен нормализовать "закрыть позицию" → EXIT', () => {
+    const assets: AssetAnalysis[] = [
+      createMockAsset({
+        ticker: 'PLZL',
+        status: 'BUY',
+        deficitRub: 100000,
+      }),
+    ];
+
+    const aiText = 'PLZL: нужно закрыть позицию из-за санкций.';
+    const result = validateDirections(aiText, assets);
+
+    expect(result.valid).toBe(false);
+    expect(result.discrepancies[0]!.aiSuggestedDirection).toBe('EXIT');
+  });
+
+  it('должен нормализовать "снизить" → REDUCE', () => {
+    const assets: AssetAnalysis[] = [
+      createMockAsset({
+        ticker: 'SBER',
+        status: 'BUY',
+        deficitRub: 100000,
+      }),
+    ];
+
+    const aiText = 'SBER: рекомендуется снизить позицию.';
+    const result = validateDirections(aiText, assets);
+
+    expect(result.valid).toBe(false);
+    expect(result.discrepancies[0]!.aiSuggestedDirection).toBe('REDUCE');
+  });
+
+  it('должен возвращать исходное слово, если нормализация невозможна', () => {
+    const assets: AssetAnalysis[] = [
+      createMockAsset({
+        ticker: 'TEST',
+        status: 'BUY',
+        deficitRub: 100000,
+      }),
+    ];
+
+    // Слово, которое не распознаётся как действие
+    const aiText = 'TEST: тестовое слово X.';
+    // Это слово не в CONFLICTING_DIRECTIONS, поэтому конфликт не найдется
+    const result = validateDirections(aiText, assets);
+    // Если бы слово было в CONFLICTING_DIRECTIONS и не нормализовалось бы,
+    // оно осталось бы как есть
+    expect(result.valid).toBe(true);
   });
 });

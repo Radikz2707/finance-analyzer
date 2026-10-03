@@ -1,24 +1,25 @@
 /**
  * Consilium — общее совещание агентов портфеля.
  *
- * Роль: решения о продаже/покупке НЕ принимаются одним агентом.
+ * Роль: решения о продаже/покупке принимаются на основе совокупного анализа.
  * Каждое значимое действие выносится на голосование всех участников:
  *   - ai         — LLM-рекомендация (предложение);
- *   - strategist — детерминированные правила защиты (зелёная зона);
+ *   - strategist — независимая аналитическая оценка (риски, структура, P&L);
  *   - scenario   — агент «что если» (лучший сценарий по структуре/P&L);
  *   - research   — новостной фон (катализаторы/риски).
  *
  * Принципы:
- * 1. Вето стратега имеет наивысший приоритет (безопасность > прибыль).
- * 2. Research без новостей не блокирует, но предпочитает HOLD при
- *    отсутствии катализаторов.
- * 3. Итоговое решение фиксирует согласие: UNANIMOUS/MAJORITY/CONFLICT —
- *    пользователь всегда видит, был ли консенсус.
+ * 1. У каждого агента есть голос, но ни у кого нет безусловного veto.
+ * 2. При конфликте мнений — CONFLICT, а не принудительный HOLD.
+ * 3. Главный инвестиционный вывод определяется качеством совокупного анализа.
+ * 4. Consilium показывает: какое решение предложил AI, что считает strategist,
+ *    какие сценарии рассмотрены, что показывает research, где согласие,
+ *    где конфликт, почему итоговое решение принято.
  */
 
 import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
 import type { AiAction } from '../../research/types.js';
-import type { StrategistOverride } from '../../ai-advisor/structured-ai-recommendation.js';
+// StrategistOverride больше не используется — стратег не имеет veto
 import type {
   StrategistAgentOutput,
   StrategistProposal,
@@ -47,8 +48,8 @@ export interface ConsiliumAssetDecision {
   agreement: 'UNANIMOUS' | 'MAJORITY' | 'CONFLICT';
   /** Все голоса */
   votes: ConsiliumVote[];
-  /** Вето стратега (если применялось) */
-  strategistVeto: StrategistOverride | null;
+  /** Стратегическое примечание (если есть) */
+  strategistNote: string | null;
   /** Лучший сценарий, поддержанный агентом сценариев */
   bestScenarioId: string | null;
 }
@@ -75,7 +76,6 @@ export interface ConsiliumOutput {
     unanimous: number;
     majority: number;
     conflicts: number;
-    vetoed: number;
   };
 }
 
@@ -111,8 +111,7 @@ const POSITIVE_NEWS_HINTS: readonly string[] = [
  * Голос агента research по активу.
  *
  * Без новостного контекста или при негативном фоне без катализатора —
- * осторожный HOLD (не даём поводов для панических продаж).
- * Позитивный фон — поддержка предлагаемых действий (кроме продаж в убыток).
+ * осторожный HOLD. Позитивный фон — поддержка предлагаемых действий.
  */
 function researchVote(
   proposedAction: AiAction,
@@ -194,7 +193,6 @@ export function runConsilium(input: ConsiliumInput): ConsiliumOutput {
   let unanimous = 0;
   let majority = 0;
   let conflicts = 0;
-  let vetoed = 0;
 
   for (const proposal of proposals) {
     const key = proposal.ticker.toUpperCase();
@@ -209,14 +207,15 @@ export function runConsilium(input: ConsiliumInput): ConsiliumOutput {
       note: 'Предложение LLM-советника.',
     };
 
-    // 2. Голос стратега — итоговое действие после правил
-    const strategistAction = strategistDecision?.finalAction ?? 'HOLD';
+    // 2. Голос стратега — аналитическая оценка (без veto)
+    //    Стратег голосует тем же действием, что и AI, но может предложить альтернативу
+    const strategistAction: AiAction = strategistDecision?.finalAction ?? 'HOLD';
     const strategistVote: ConsiliumVote = {
       agent: 'strategist',
       action: strategistAction,
-      note: strategistDecision?.veto
-        ? 'Вето: ' + strategistDecision.veto.reason
-        : 'Правила защиты портфеля соблюдены.',
+      note: strategistDecision?.note
+        ? 'Аналитика: ' + strategistDecision.note
+        : 'Структура и риски проверены.',
     };
 
     // 3. Голос сценариста — из лучшего сценария
@@ -240,44 +239,35 @@ export function runConsilium(input: ConsiliumInput): ConsiliumOutput {
       research,
     ];
 
-    // 5. Подсчёт голосов
-    const veto = strategistDecision?.veto ?? null;
+    // 5. Подсчёт голосов (без veto стратега)
     let finalAction: AiAction;
     let agreement: ConsiliumAssetDecision['agreement'];
 
-    if (veto) {
-      // Вето стратега имеет высший приоритет
-      finalAction = strategistAction;
-      agreement = 'CONFLICT';
-      vetoed++;
-      conflicts++;
+    const actionCounts = new Map<AiAction, number>();
+    for (const v of votes) {
+      actionCounts.set(v.action, (actionCounts.get(v.action) ?? 0) + 1);
+    }
+    const sorted = [...actionCounts.entries()].sort((a, b) => b[1] - a[1]);
+    const topEntry = sorted[0];
+    const secondCount = sorted[1]?.[1] ?? 0;
+
+    const topAction: AiAction = topEntry ? topEntry[0] : 'HOLD';
+    const topCount = topEntry ? topEntry[1] : 0;
+
+    if (topCount === votes.length) {
+      agreement = 'UNANIMOUS';
+      unanimous++;
+      finalAction = topAction;
+    } else if (topCount >= 3 || (topCount === 2 && secondCount === 1)) {
+      agreement = 'MAJORITY';
+      majority++;
+      finalAction = topAction;
     } else {
-      const actionCounts = new Map<AiAction, number>();
-      for (const v of votes) {
-        actionCounts.set(v.action, (actionCounts.get(v.action) ?? 0) + 1);
-      }
-      const sorted = [...actionCounts.entries()].sort((a, b) => b[1] - a[1]);
-      const topEntry = sorted[0];
-      const secondCount = sorted[1]?.[1] ?? 0;
-
-      // votes гарантированно непустой (4 участника), но защищаемся от крайностей
-      const topAction: AiAction = topEntry ? topEntry[0] : 'HOLD';
-      const topCount = topEntry ? topEntry[1] : 0;
-
-      if (topCount === votes.length) {
-        agreement = 'UNANIMOUS';
-        unanimous++;
-        finalAction = topAction;
-      } else if (topCount >= 3 || (topCount === 2 && secondCount === 1)) {
-        agreement = 'MAJORITY';
-        majority++;
-        finalAction = topAction;
-      } else {
-        // Ничья 2:2 — стратег (безопасность) решает спор
-        agreement = 'CONFLICT';
-        conflicts++;
-        finalAction = strategistAction;
-      }
+      // Ничья или конфликт — показываем CONFLICT, не принуждаем к HOLD
+      agreement = 'CONFLICT';
+      conflicts++;
+      // При конфликте приоритет у AI (качество анализа > детерминированных правил)
+      finalAction = aiVote.action;
     }
 
     decisions.push({
@@ -286,7 +276,7 @@ export function runConsilium(input: ConsiliumInput): ConsiliumOutput {
       finalAction,
       agreement,
       votes,
-      strategistVeto: veto,
+      strategistNote: strategistDecision?.note ?? null,
       bestScenarioId: scenarios?.bestScenarioId ?? null,
     });
   }
@@ -298,7 +288,6 @@ export function runConsilium(input: ConsiliumInput): ConsiliumOutput {
       unanimous,
       majority,
       conflicts,
-      vetoed,
     },
   };
 }
