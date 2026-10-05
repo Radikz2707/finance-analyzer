@@ -141,6 +141,8 @@ function makeDataOutput(): DataAgentOutput {
     investedFunds: { totalNet: 400000, totalPurchases: 0, totalSales: 0 },
     news: null,
     anomalies: [],
+    keyRate: 21,
+    keyRateDate: '29.10.2024',
   };
 }
 
@@ -266,7 +268,7 @@ describe('PipelineCoordinator — Watchdog integration', () => {
     expect(result.success).toBe(true);
 
     const report = watchdog.getHealthReport();
-    expect(report.agents).toHaveLength(6);
+    expect(report.agents).toHaveLength(8);
 
     const names = report.agents.map((a) => a.agentName).sort();
     expect(names).toEqual(
@@ -276,6 +278,8 @@ describe('PipelineCoordinator — Watchdog integration', () => {
         'AnalysisAgent',
         'AiAgent',
         'ReviewAgent',
+        'ScenarioAgent',
+        'StrategistAgent',
         'NotificationAgent',
       ].sort(),
     );
@@ -288,7 +292,7 @@ describe('PipelineCoordinator — Watchdog integration', () => {
 
     // Отчёт попадает в PipelineResult
     expect(result.watchdogHealth).toBeDefined();
-    expect(result.watchdogHealth!.agents).toHaveLength(6);
+    expect(result.watchdogHealth!.agents).toHaveLength(8);
     expect(result.watchdogHealth!.unhealthyAgents).toHaveLength(0);
 
     await coordinator.shutdown();

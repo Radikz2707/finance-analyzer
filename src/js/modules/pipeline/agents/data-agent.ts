@@ -23,6 +23,8 @@ import type {
   AnomalyDetectionResult,
   PriceSeriesInput,
 } from '../../python-engine/types.js';
+import { getCbrKeyRate } from '../../ai-advisor/cbr-rate.js';
+import { positionsRepo } from '../../db-manager/db-manager.js';
 
 // ──────────────────────────────────────────────
 // 1. Data Agent output types
@@ -85,6 +87,10 @@ export interface DataAgentOutput {
   news: GatekeeperResult | null;
   /** Статистические аномалии цен (Python Engine) */
   anomalies: AnomalyDetectionResult[];
+  /** Ключевая ставка ЦБ РФ */
+  keyRate: number;
+  /** Дата обновления ключевой ставки */
+  keyRateDate: string;
 }
 
 // ──────────────────────────────────────────────
@@ -126,6 +132,40 @@ export class DataAgent extends AgentBase {
 
     // Шаг 3: Макро-цели
     const macroGoals = await this.parser.parseMacroGoals();
+
+    // Шаг 2.5: Сохранение позиций в БД
+    for (const asset of assets) {
+      try {
+        const totalCost = (asset.quantity || 0) * (asset.balancePrice || 0);
+        const currentMarketValue =
+          (asset.quantity || 0) * (asset.currentPrice || 0);
+
+        const validAssetType = ['STOCK', 'BOND', 'ETF', 'CASH', 'OTHER'].includes(
+          asset.assetType.toUpperCase(),
+        )
+          ? (asset.assetType.toUpperCase() as
+              'STOCK' | 'BOND' | 'ETF' | 'CASH' | 'OTHER')
+          : 'OTHER';
+
+        positionsRepo.upsert({
+          ticker: asset.ticker,
+          name: asset.name,
+          assetType: validAssetType,
+          issuer: asset.name,
+          currency: 'RUB',
+          market: 'MOEX',
+          quantity: asset.quantity || 0,
+          avgPrice: asset.balancePrice || 0,
+          totalCost: totalCost,
+          currentPrice: asset.currentPrice || 0,
+          currentMarketValue: currentMarketValue,
+          targetPercent: asset.targetPercent,
+          status: 'ACTIVE',
+        });
+      } catch (e) {
+        console.error(`[DataAgent] ❌ Ошибка сохранения ${asset.ticker}:`, e);
+      }
+    }
 
     // Шаг 4: Информация о счетах
     const accounts = await this.parser.parseAccountsInfo();
@@ -263,6 +303,21 @@ export class DataAgent extends AgentBase {
       console.warn(`[DataAgent] ⚠️ Python Engine ошибка: ${errorMsg}`);
     }
 
+    // Шаг 11: Ключевая ставка ЦБ РФ
+    let keyRate = 0;
+    let keyRateDate = '—';
+    try {
+      const cbrRateData = await getCbrKeyRate();
+      keyRate = cbrRateData.rate;
+      keyRateDate = cbrRateData.date;
+      console.log(
+        `[DataAgent] 🏛️ Ключевая ставка ЦБ: ${keyRate}% (от ${keyRateDate})`,
+      );
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.warn(`[DataAgent] ⚠️ Ошибка получения ключевой ставки: ${errorMsg}`);
+    }
+
     const output: DataAgentOutput = {
       aggregated,
       assets,
@@ -285,6 +340,8 @@ export class DataAgent extends AgentBase {
       },
       news: newsResult,
       anomalies,
+      keyRate,
+      keyRateDate,
     };
 
     console.log(

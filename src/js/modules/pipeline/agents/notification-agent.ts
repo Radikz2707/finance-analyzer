@@ -10,7 +10,7 @@ import type { ConsiliumOutput } from '../agents/consilium.js';
 import type { QuikOrder } from '../../xlsx-parser/quik-orders-parser.js';
 import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
 import type { StockQuote } from '../../ai-advisor/report-builders.js';
-import { DashboardReportBuilder } from '../../../../components/dashboard-report/dashboard-report.js';
+import { DashboardReportBuilder } from '../../../../components/dashboard/dashboard.js';
 import { getMarkdownTemplate } from '../../ai-advisor/report-templates.js';
 import { stripJsonBlockFromAiText } from '../../ai-advisor/json-sanitizer.js';
 import { AgentBase } from '../agent/agent-base.js';
@@ -210,6 +210,18 @@ export class NotificationAgent extends AgentBase {
       .map((s) => `${s.name} (${s.ticker}): ${s.quantity} шт.`)
       .join(', ');
 
+    // Предупреждение о новых активах без целевой доли
+    const newAssets = assetsAnalysis.filter((item) => item.status === 'NEW');
+    let newAssetsWarningMd = '';
+    if (newAssets.length > 0) {
+      newAssetsWarningMd =
+        '\n⚠️ ВНИМАНИЕ: Обнаружены новые активы без указанной цели в Excel:\n' +
+        newAssets
+          .map((item) => `* ${item.name} (Укажите целевой % в столбце S)`)
+          .join('\n') +
+        '\n';
+    }
+
     const mdData = getMarkdownTemplate(
       new Date().toLocaleDateString('ru-RU'),
       totalVal.toLocaleString('ru-RU'),
@@ -217,6 +229,7 @@ export class NotificationAgent extends AgentBase {
       stocksPct,
       bondsPct,
       assetsListMd +
+        newAssetsWarningMd +
         '\n' +
         priceAlertsMd +
         '\n\n### 💰 Динамическая аналитика купонов и объявленных дивидендов:\n' +
@@ -248,6 +261,18 @@ export class NotificationAgent extends AgentBase {
       '<div class="ai-box-styled">' +
       `📋 Экспертное заключение ИИ-советника (${currentMonth.charAt(0).toUpperCase() + currentMonth.slice(1)})\n` +
       `🤖 Использована модель: ${ai.aiClientResult.modelUsed}\n\n`;
+
+    // Предупреждение о новых активах
+    const newAssets = analysis.portfolioAnalysis.assetsAnalysis.filter(
+      (item) => item.status === 'NEW',
+    );
+    if (newAssets.length > 0) {
+      html +=
+        '<div class="warning-box" style="padding: 15px; background: rgba(163, 113, 247, 0.1); border: 1px solid #a371f7; border-radius: 6px; margin-bottom: 15px;">' +
+        '⚠️ Внимание: В вашем портфеле обнаружены новые инструменты без установленной целевой доли: ' +
+        newAssets.map((item) => item.name).join(', ') +
+        '. Пожалуйста, пропишите желаемый процент в столбце S вашей Excel-таблицы.</div>\n\n';
+    }
 
     // Ценовые алерты
     if (analysis.priceAlerts.length > 0) {

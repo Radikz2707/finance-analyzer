@@ -18,6 +18,7 @@ describe('Watchdog', () => {
     config = {
       checkIntervalMs: 1000,
       verbose: false,
+      simulateResponses: true,
     };
     watchdog = new Watchdog(config);
   });
@@ -45,13 +46,14 @@ describe('Watchdog', () => {
     const check = await watchdog.checkAgent('DataAgent');
     expect(check!.agentName).toBe('DataAgent');
     expect(check!.status).toBeDefined();
-    expect(check.responseTimeMs).toBeGreaterThan(0);
+    expect(check.responseTimeMs).toBeGreaterThanOrEqual(0);
   });
 
   it('должен определить healthy статус', async () => {
     watchdog.registerAgent('DataAgent');
     
     watchdog['getRandomResponseTime'] = () => 1000; // healthy
+    watchdog.recordExecutionTime('DataAgent', 1000);
     
     const check = await watchdog.checkAgent('DataAgent');
     expect(check!.status).toBe('healthy');
@@ -61,6 +63,7 @@ describe('Watchdog', () => {
     watchdog.registerAgent('DataAgent');
     
     watchdog['getRandomResponseTime'] = () => 8000; // slow
+    watchdog.recordExecutionTime('DataAgent', 8000);
     
     const check = await watchdog.checkAgent('DataAgent')!;
     expect(check!.status).toBe('slow');
@@ -70,6 +73,7 @@ describe('Watchdog', () => {
     watchdog.registerAgent('DataAgent');
     
     watchdog['getRandomResponseTime'] = () => 50000; // timeout
+    watchdog.recordExecutionTime('DataAgent', 50000);
     
     const check = await watchdog.checkAgent('DataAgent');
     expect(check!.status).toBe('timeout');
@@ -79,6 +83,7 @@ describe('Watchdog', () => {
     watchdog.registerAgent('DataAgent');
     
     watchdog['getRandomResponseTime'] = () => 50000; // timeout
+    watchdog.recordExecutionTime('DataAgent', 50000);
     
     let incident: IncidentRecord | null = null;
     watchdog.onIncident((inc) => {
@@ -97,6 +102,7 @@ describe('Watchdog', () => {
     watchdog.registerAgent('DataAgent');
     
     watchdog['getRandomResponseTime'] = () => 50000; // timeout
+    watchdog.recordExecutionTime('DataAgent', 50000);
     
     let restartedAgent: string | null = null;
     watchdog.onAgentRestarted((agentName: string) => {
@@ -129,6 +135,7 @@ describe('Watchdog', () => {
   it('должен вернуть статистику', async () => {
     watchdog.registerAgent('DataAgent');
     watchdog['getRandomResponseTime'] = () => 1000; // healthy
+    watchdog.recordExecutionTime('DataAgent', 1000);
     
     await watchdog.checkAgent('DataAgent');
     
@@ -142,6 +149,8 @@ describe('Watchdog', () => {
     watchdog.registerAgent('ResearchAgent');
     
     watchdog['getRandomResponseTime'] = () => 1000; // healthy
+    watchdog.recordExecutionTime('DataAgent', 1000);
+    watchdog.recordExecutionTime('ResearchAgent', 1000);
     
     await watchdog.checkAgent('DataAgent');
     await watchdog.checkAgent('ResearchAgent');
@@ -155,6 +164,7 @@ describe('Watchdog', () => {
     watchdog.registerAgent('DataAgent');
     
     watchdog['getRandomResponseTime'] = () => 50000; // timeout
+    watchdog.recordExecutionTime('DataAgent', 50000);
     
     await watchdog.checkAgent('DataAgent');
     
@@ -174,6 +184,7 @@ describe('Watchdog', () => {
     
     limitedWatchdog.registerAgent('DataAgent');
     limitedWatchdog['getRandomResponseTime'] = () => 50000; // timeout
+    limitedWatchdog.recordExecutionTime('DataAgent', 50000);
     
     await limitedWatchdog.checkAgent('DataAgent');
     

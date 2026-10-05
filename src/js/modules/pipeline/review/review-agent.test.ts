@@ -13,6 +13,8 @@ describe('ReviewAgent', () => {
       verbose: false,
       retries: 0,
     });
+    // Отключаем Ollama в тестах, чтобы не делать сетевых запросов
+    (agent as unknown as { isOllamaReady: () => Promise<boolean> }).isOllamaReady = () => Promise.resolve(false);
   });
 
   it('should execute and return review results', async () => {
@@ -49,6 +51,8 @@ describe('ReviewAgent', () => {
       },
       news: null,
       anomalies: [],
+      keyRate: 21,
+      keyRateDate: '29.10.2024',
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -133,6 +137,8 @@ describe('ReviewAgent', () => {
       },
       news: null,
       anomalies: [],
+      keyRate: 21,
+      keyRateDate: '29.10.2024',
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -219,6 +225,8 @@ describe('ReviewAgent', () => {
       },
       news: null,
       anomalies: [],
+      keyRate: 21,
+      keyRateDate: '29.10.2024',
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -314,6 +322,8 @@ describe('ReviewAgent', () => {
       },
       news: null,
       anomalies: [],
+      keyRate: 21,
+      keyRateDate: '29.10.2024',
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -401,6 +411,8 @@ describe('ReviewAgent', () => {
       },
       news: null,
       anomalies: [],
+      keyRate: 21,
+      keyRateDate: '29.10.2024',
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -486,6 +498,8 @@ describe('ReviewAgent', () => {
       },
       news: null,
       anomalies: [],
+      keyRate: 21,
+      keyRateDate: '29.10.2024',
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -571,6 +585,8 @@ describe('ReviewAgent — внешний AI-судья', () => {
       },
       news: null,
       anomalies: [],
+      keyRate: 21,
+      keyRateDate: '29.10.2024',
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -629,6 +645,7 @@ describe('ReviewAgent — внешний AI-судья', () => {
       { name: 'ReviewAgent', verbose: false, retries: 0 },
       judge,
     );
+    (agent as unknown as { isOllamaReady: () => Promise<boolean> }).isOllamaReady = () => Promise.resolve(false);
     const result = await agent.execute(buildInput());
 
     expect(result.success).toBe(true);
@@ -651,6 +668,7 @@ describe('ReviewAgent — внешний AI-судья', () => {
       { name: 'ReviewAgent', verbose: false, retries: 0 },
       judge,
     );
+    (agent as unknown as { isOllamaReady: () => Promise<boolean> }).isOllamaReady = () => Promise.resolve(false);
     const result = await agent.execute(buildInput());
 
     expect(result.success).toBe(true);
@@ -675,6 +693,7 @@ describe('ReviewAgent — внешний AI-судья', () => {
       { name: 'ReviewAgent', verbose: false, retries: 0 },
       judge,
     );
+    (agent as unknown as { isOllamaReady: () => Promise<boolean> }).isOllamaReady = () => Promise.resolve(false);
     const result = await agent.execute(buildInput());
 
     expect(result.success).toBe(true);
@@ -688,6 +707,7 @@ describe('ReviewAgent — внешний AI-судья', () => {
       verbose: false,
       retries: 0,
     });
+    (agent as unknown as { isOllamaReady: () => Promise<boolean> }).isOllamaReady = () => Promise.resolve(false);
     const result = await agent.execute(buildInput());
 
     expect(result.success).toBe(true);

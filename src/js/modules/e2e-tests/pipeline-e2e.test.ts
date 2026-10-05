@@ -408,6 +408,8 @@ describe('E2E: сквозной конвейер (без сети и AI)', () =>
       },
       news: gatekeeperResult,
       anomalies,
+      keyRate: 0,
+      keyRateDate: '—',
     };
 
     // Минимальные mock-данные анализа (без AI-вызовов)
@@ -471,6 +473,7 @@ describe('E2E: сквозной конвейер (без сети и AI)', () =>
       verbose: false,
       retries: 0,
     });
+    (reviewAgent as unknown as { isOllamaReady: () => Promise<boolean> }).isOllamaReady = () => Promise.resolve(false);
 
     const agentResult = await reviewAgent.execute({ data, analysis, ai });
 

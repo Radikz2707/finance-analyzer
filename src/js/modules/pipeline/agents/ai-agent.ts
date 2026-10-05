@@ -26,6 +26,11 @@ import { hasValue } from '../../research/helpers.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
 import { query as memoryQuery, getStats } from '../ai-memory/index.js';
+import { positionsRepo } from '../../db-manager/db-manager.js';
+import {
+  getRecoveryOnlyTickers,
+  buildGuardrailsContext,
+} from '../guardrails/guardrails.js';
 
 // ──────────────────────────────────────────────
 // 1. AI Agent output types
@@ -211,6 +216,19 @@ export class AiAgent extends AgentBase {
         ' активов',
     );
 
+    // Шаг 3: Guardrails — проверка RECOVERY_ONLY
+    const recoveryTickers = getRecoveryOnlyTickers(positionsRepo);
+    const guardrailsContext = buildGuardrailsContext(
+      recoveryTickers,
+      positionsRepo,
+    );
+    if (recoveryTickers.length > 0) {
+      console.log(
+        '[GUARDRAILS] ⚠️ Активы в режиме RECOVERY_ONLY:',
+        recoveryTickers.join(', '),
+      );
+    }
+
     // Шаг 3: Вызов AiClient (GigaChat)
     const portfolioReportData: PortfolioReportData = {
       macro: data.macroGoals,
@@ -249,6 +267,7 @@ export class AiAgent extends AgentBase {
       data.accounts,
       memoryContext,
       { stocks: actualStocksPct, bonds: actualBondsPct },
+      guardrailsContext,
     );
 
     // Шаг 4: Пост-обработка AI-текста
@@ -321,6 +340,7 @@ export class AiAgent extends AgentBase {
     accounts: DataAgentOutput['accounts'],
     memoryContext: string,
     assetClassPercents: { stocks: number; bonds: number },
+    guardrailsContext: string,
   ): Promise<AiClientResult> {
     const aiClient = new AiClient();
 
@@ -367,6 +387,7 @@ export class AiAgent extends AgentBase {
         },
         accounts.map((a) => ({ name: a.name, value: a.value })),
         memoryContext,
+        guardrailsContext,
       );
 
       return {
