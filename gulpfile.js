@@ -14,7 +14,9 @@ async function ensureTsNodeRegistered() {
 }
 
 // Импорты инфраструктуры // Серверное ядро и утилиты отладки с автоматической изоляцией имён
-import { isProd } from './gulp/server.js';
+// eslint-disable-next-line no-unused-vars, @typescript-eslint/no-unused-vars
+import * as gulpConfig from './gulp.config.js';
+import { isProd, copyDashboard } from './gulp/server.js';
 import { lintCss, lintJs } from './gulp/lint.js';
 import { cleandist, zipFiles, deployLocal } from './gulp/utils.js';
 import { getBuildSignature } from './gulp/system/gulp.cache.js';
@@ -66,7 +68,7 @@ const TASK_FILE_MAP = {
  */
 
 /**
-Динамический загрузчик изолированных Gulp-модулей (Lazy Loading)
+ Динамический загрузчик изолированных Gulp-модулей (Lazy Loading)
 */
 const runTask = (taskName) => {
   const gulpTaskWrapper = async (done) => {
@@ -113,29 +115,27 @@ export const build = series(
 // Сценарий локальной разработки по умолчанию (Команда: npx gulp или npm run dev)
 export default series(
   parallel(runTask('fonts'), runTask('fontsStyle'), runTask('favs')),
-  parallel(runTask('html')),
+  parallel(runTask('html'), copyDashboard),
   parallel(compileAssets),
   runTask('browsersync'),
   runTask('startwatch'),
 );
 
 // 📊 Автоматический инвестиционный конвейер аналитики QUIK и GigaChat
+// Теперь использует единый pipeline (мультиагентный конвейер) вместо legacy ai-advisor.ts
 export const analyze = async (done) => {
   try {
-    // Используем глобальный guard — ensureTsNodeRegistered() вызывает
-    // register() ровно один раз, предотвращая утечку памяти от повторной
-    // регистрации хуков ts-node при многократных запусках таски.
     await ensureTsNodeRegistered();
-
-    // Импортируем напрямую исходный файл .ts без привязки к сборке Webpack
-    const { parseExcelAndFetchRecommendations } =
-      await import('./src/js/modules/ai-advisor/ai-advisor.ts');
-    await parseExcelAndFetchRecommendations();
+    const { execSync } = await import('child_process');
+    execSync('node --import tsx pipeline.ts run', {
+      stdio: 'inherit',
+      cwd: process.cwd(),
+    });
     done();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error('\x1b[31m[analyze] Ошибка конвейера:\x1b[0m', msg);
-    done(); // Гарантированный вызов done() предотвращает зависание Gulp-планировщика
+    done();
   }
 };
 
@@ -165,3 +165,74 @@ export const fonts = runTask('fonts');
 export const fontsStyle = runTask('fontsStyle');
 export const browsersync = runTask('browsersync');
 export const startwatch = runTask('startwatch');
+
+// 🚀 Единая команда: pipeline + dev-сервер + открытие страницы
+export const start = async () => {
+  try {
+    console.log('[START] Запуск pipeline...');
+    
+    // Запускаем pipeline как отдельный процесс
+    const { execSync } = await import('child_process');
+    execSync('node --import tsx pipeline.ts run', { 
+      stdio: 'inherit',
+      cwd: process.cwd()
+    });
+    
+    console.log('[START] ✅ Pipeline завершён.');
+  } catch (error) {
+    console.error('[START] ❌ Ошибка pipeline:', error.message);
+  }
+  
+  // Запускаем dev-сервер
+  console.log('[START] Запуск dev-сервера...');
+  await runTask('browsersync')();
+  await runTask('startwatch')();
+  
+  // Открываем dashboard в браузере
+  setTimeout(async () => {
+    try {
+      const open = await import('open');
+      await open.default('http://localhost:8080/components/dashboard/dashboard.html');
+      console.log('[START] 🌐 Dashboard открыт в браузере');
+    } catch {
+      console.log('[START] 🌐 Откройте http://localhost:8080/components/dashboard/dashboard.html вручную');
+    }
+  }, 2000);
+};
+
+// 🚀 Команда: pipeline + dev-сервер + открытие страницы (альтернативный запуск)
+async function runPipelineAndServer() {
+  try {
+    console.log('[PIPELINE] Запуск pipeline...');
+    
+    const { execSync } = await import('child_process');
+    execSync('node --import tsx pipeline.ts run', { 
+      stdio: 'inherit',
+      cwd: process.cwd()
+    });
+    
+    console.log('[PIPELINE] ✅ Pipeline завершён.');
+  } catch (error) {
+    console.error('[PIPELINE] ❌ Ошибка pipeline:', error.message);
+  }
+  
+  // Запускаем dev-сервер
+  console.log('[PIPELINE] Запуск dev-сервера...');
+  await runTask('browsersync')();
+  await runTask('startwatch')();
+  
+  // Открываем dashboard в браузере
+  setTimeout(async () => {
+    try {
+      const open = await import('open');
+      await open.default('http://localhost:8080/components/dashboard/dashboard.html');
+      console.log('[PIPELINE] 🌐 Dashboard открыт в браузере');
+    } catch {
+      console.log('[PIPELINE] 🌐 Откройте http://localhost:8080/components/dashboard/dashboard.html вручную');
+    }
+  }, 2000);
+}
+
+// Экспорт функций для Gulp
+export { runPipelineAndServer as pipelineTask };
+export const pipeline = runPipelineAndServer;

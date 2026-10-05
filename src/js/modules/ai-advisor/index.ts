@@ -10,8 +10,7 @@
  * @module ai-advisor
  */
 
-export * from './ai-advisor.js';
-export { AiClient } from './ai-client.js';
+export * from './ai-client.js';
 export { postProcessAiText, validateDirections, normalizeAiDirection } from './ai-validation.js';
 export { sanitizeAiNarrative, assertFinalAiDisplaySafe, assertFinalReportSafe } from './ollama-manager.js';
 export { buildStructuredAIRecommendation, type StructuredAIAssetRecommendation } from './structured-ai-recommendation.js';
@@ -30,5 +29,6 @@ export { PortfolioConfig } from '../../config/portfolio-config.js';
 export { getCbrKeyRate, clearCbrRateCache, formatCbrRateDisplay, getCachedRate, type CbrRateData } from './cbr-rate.js';
 export { buildFallbackReport } from './fallback-report-builder.js';
 export { AI_MODELS, CURRENT_AI_MODEL, getAvailableModels, isOllamaAvailable, getOllamaStatus, getNextModel, type AiModelConfig } from './ai-config.js';
+export { stripJsonBlockFromAiText } from './json-sanitizer.js';
 
 export type * from './types.js';

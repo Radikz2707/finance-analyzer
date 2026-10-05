@@ -5,7 +5,7 @@ import {
   sanitizeAiNarrative,
   type DeterministicAmounts,
 } from './ollama-manager.js';
-import { stripJsonBlockFromAiText } from './ai-advisor.js';
+import { stripJsonBlockFromAiText } from './json-sanitizer.js';
 
 describe('AI Output Validation — Regression Tests', () => {
   describe('validateAiOutput — forbidden phrases', () => {

@@ -7,7 +7,7 @@ import {
   type RawAIJson,
   type DeterministicAssetData,
 } from './structured-ai-recommendation.js';
-import { stripJsonBlockFromAiText } from './ai-advisor.js';
+import { stripJsonBlockFromAiText } from './json-sanitizer.js';
 import { assertFinalAiDisplaySafe } from './ollama-manager.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────
