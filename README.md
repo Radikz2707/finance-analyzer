@@ -6,6 +6,15 @@
 
 ---
 
+## 📚 Документация
+
+- [**ARCHITECTURE.md**](ARCHITECTURE.md:1) — архитектура системы: слои и модули, поток данных, конфигурация, запуск, диаграмма зависимостей;
+- [**CONTRIBUTING.md**](CONTRIBUTING.md:1) — как добавить модуль, агента pipeline или research-провайдера, конвенции, процесс проверки, чек-лист PR;
+- [**AI-AGENT-PLAN.md**](AI-AGENT-PLAN.md:1) — мастер-план развития проекта и статусы задач;
+- [**SECURITY.md**](SECURITY.md:1) — безопасность: модель угроз, слои защиты (SecurityAgent/TerminalAgent/guardrails), секреты, чек-лист разработчика.
+
+---
+
 ## 🎯 Возможности
 
 - **Парсинг Excel** — автоматический обход листа QUIK с извлечением позиций, цен, НКД и целевых долей
@@ -78,24 +87,66 @@ npm run analyze
 
 ## ⚙️ Команды проекта
 
-| Команда                      | Описание                                             |
-| :--------------------------- | :--------------------------------------------------- |
-| `npm run analyze`            | **Запуск анализа:** парсинг Excel + генерация отчёта |
-| `npm run dev`                | Разработка: запуск Gulp-сервера для фронтенда        |
-| `npm run build`              | Сборка фронтенда (тесты + линтинг + билд)            |
-| `npm run test`               | Тесты Vitest в режиме watch                          |
-| `npm run test:run`           | Тесты Vitest однократный прогон                      |
-| `npm run test:run -- <путь>` | Прогон одного файла тестов (см. раздел «Разработка») |
-| `npm run lint`               | Проверка TS (ESLint) и SCSS (Stylelint)              |
-| `npm run init`               | Инициализация структуры компонентов                  |
-| `npm run create`             | Создание нового компонента                           |
-| `npm run module`             | Создание нового JS-модуля                            |
-| `npm run remove`             | Удаление компонента                                  |
-| `npm run help`               | Справка по Gulp-командам                             |
-| `npm run audit`              | Аудит кода в `.audit/audit.md`                       |
-| `npm run blueprint`          | Генерация дерева файлов в `.audit/`                  |
-| `npm run pipeline`           | **Мультиагентный конвейер:** однократный запуск      |
-| `npm run pipeline:schedule`  | Запуск с cron-расписанием (утро/периодически)        |
+| Команда                      | Описание                                                |
+| :--------------------------- | :------------------------------------------------------ |
+| `npm run analyze`            | **Запуск анализа:** парсинг Excel + генерация отчёта    |
+| `npm run dev`                | Разработка: запуск Gulp-сервера для фронтенда           |
+| `npm run build`              | Сборка фронтенда (тесты + линтинг + билд)               |
+| `npm run test`               | Тесты Vitest в режиме watch                             |
+| `npm run test:run`           | Тесты Vitest однократный прогон                         |
+| `npm run test:run -- <путь>` | Прогон одного файла тестов (см. раздел «Разработка»)    |
+| `npm run lint`               | Проверка TS (ESLint) и SCSS (Stylelint)                 |
+| `npm run init`               | Инициализация структуры компонентов                     |
+| `npm run create`             | Создание нового компонента                              |
+| `npm run module`             | Создание нового JS-модуля                               |
+| `npm run remove`             | Удаление компонента                                     |
+| `npm run help`               | Справка по Gulp-командам                                |
+| `npm run audit`              | Аудит кода в `.audit/audit.md`                          |
+| `npm run blueprint`          | Генерация дерева файлов в `.audit/`                     |
+| `npm run pipeline`           | **Мультиагентный конвейер:** однократный запуск         |
+| `npm run pipeline:schedule`  | Запуск с cron-расписанием (утро/периодически)           |
+| `npm run harness`            | Фоновый процесс: диспетчер + QUIK + Telegram-алерты     |
+| `npm run chat`               | Чат с Финансовым Директором в терминале (CLI)           |
+| `npm run bench`              | Бенчмарки производительности pipeline                   |
+| `npm run test:integration`   | Интеграционные тесты (включаются через RUN_INTEGRATION) |
+| `npm run lint:gulp`          | Проверка типов Gulp-задач (`tsc -p gulp/tsconfig.json`) |
+| `npm run update-modules`     | Интерактивное обновление npm-зависимостей               |
+| `npm run cache:clear-ai`     | Очистка кэша ИИ (память/кеши)                           |
+
+---
+
+## 📦 Десктоп-приложение (Electron)
+
+Собирается из `desktop/` в нативный Windows-клиент: esbuild CJS-бандлы
+(main/preload/renderer), `contextIsolation: true`, IPC-стриминг событий аудита
+Директора. База памяти ИИ в упакованном приложении хранится в
+`%APPDATA%\finance-analyzer\ai-memory.db` (автодетект упакованности по
+`resources/app.asar`, см. [`database.ts`](src/js/modules/pipeline/ai-memory/database.ts:38)).
+
+| Команда                   | Описание                                                          |
+| :------------------------ | :---------------------------------------------------------------- |
+| `npm run app:dev`         | Десктоп в режиме разработки (сборка бандлов + запуск Electron)    |
+| `npm run app:dev:offline` | Десктоп без внешнего ИИ-провайдера (режим offline)                |
+| `npm run app:build:js`    | Только бандлы (esbuild + sass) в `desktop/dist/`                  |
+| `npm run app:rebuild`     | Пересборка native-модулей под ABI Electron (нужны VS Build Tools) |
+| `npm run app:typecheck`   | Проверка типов desktop (`tsc -p desktop/tsconfig.json --noEmit`)  |
+| `npm run app:build`       | Полная сборка: бандл + rebuild + NSIS-установщик + portable       |
+| `npm run app:build:dir`   | Быстрая сборка без инсталлятора (`release/win-unpacked/`)         |
+
+### 🔖 Релизы и версии
+
+Версия приложения — semver (`major.minor.patch`) из `package.json`. Она
+автоматически попадает в имя установщика (`Finance Analyzer-<version>-setup.exe`),
+заголовок окна и бейдж в шапке UI.
+
+| Команда                 | Эффект                                     |
+| :---------------------- | :----------------------------------------- |
+| `npm run release:patch` | +1 к patch (1.0.0 → 1.0.1) + полная сборка |
+| `npm run release:minor` | +1 к minor (1.0.1 → 1.1.0) + полная сборка |
+| `npm run release:major` | +1 к major (1.1.0 → 2.0.0) + полная сборка |
+
+Каждый `npm version` создаёт git-коммит и тег `v<версия>`. Для произвольной
+версии: `npm version 2.0.1 && npm run app:build`.
 
 ---
 
@@ -144,7 +195,7 @@ finance-analyzer/
 │   │   │   ├── harness-integration/# 🛰 UI-интеграция: диспетчер + QUIK + Telegram (Фаза 5)
 │   │   │   └── telegram-bot/       # Telegram-бот для управления
 │   │   └── app.ts                  # Точка входа фронтенда
-│   └── components/                 # БЭМ-компоненты (dashboard-report)
+│   └── components/                 # БЭМ-компоненты (dashboard)
 ├── quik/                           # 📡 QLua-скрипты для терминала QUIK (Фаза 3)
 ├── data/                           # Данные (orders.csv, quik/ и др.)
 ├── gulp/                           # Gulp-задачи
@@ -552,10 +603,8 @@ Watchdog-мониторинг, реальный Telegram-отправитель 
   с результатами ревизии и добавляет совещательный `externalVerdict` в
   `ReviewResult`. Вердикт **не блокирует `success`**: ошибка/отсутствие
   судьи → no-op.
-- [`external-ai-judge.ts`](src/js/modules/pipeline/review/external-ai-judge.ts) —
-  фабрика `createExternalAiJudge(gateway, provider = 'openai')`: обёртка над
-  `BrowserGateway.validate()`. Возвращает `null`, если шлюз не сконфигурирован
-  (`getState() !== 'running'`).
+- Контракт `ExternalAiJudge` объявлен в `review-agent.ts`; реализация фабрики
+  (`createExternalAiJudge` через `BrowserGateway`) в текущей сборке не подключена.
 
 ### 2. Watchdog-мониторинг агентов (`pipeline-coordinator.ts`)
 

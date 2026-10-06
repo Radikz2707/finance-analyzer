@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { QuikOrder } from '../../js/modules/xlsx-parser/quik-orders-parser';
 import { AssetAnalysis } from '../../js/modules/portfolio-math/portfolio-math.js';
 import { buildOrdersHtmlAndMd, buildAssetsTablesAndBars, buildQuotesBlock, StockQuote } from '../../js/modules/ai-advisor/report-builders.js';
@@ -106,6 +108,9 @@ export class DashboardReportBuilder {
       topGainers,
       topLosers,
     } = this.data;
+
+    // Загружаем скрипт Director Chat
+    const directorScript = loadDirectorChatScript();
 
     return (
       '<!DOCTYPE html>' +
@@ -265,6 +270,29 @@ export class DashboardReportBuilder {
       '.income-widget .income-empty-icon { font-size: 32px; opacity: 0.4; line-height: 1; }' +
       '.income-widget .income-empty-text { font-size: 13px; font-weight: 500; color: #8b949e; }' +
       '.income-widget .income-empty-hint { font-size: 11px; color: #6e7681; }' +
+      // === Director Chat Styles ===
+      '.director-chat-container{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;margin:20px auto;max-width:640px;font-family:system-ui,sans-serif;}' +
+      '.director-chat-container h3{color:#58a6ff;margin:0 0 15px 0;font-size:16px;}' +
+      '.director-chat-messages{max-height:400px;overflow-y:auto;margin-bottom:15px;padding:10px;background:#0d1117;border-radius:8px;display:flex;flex-direction:column;gap:8px;}' +
+      '.dc-msg{padding:8px 10px;border-radius:8px;max-width:92%;white-space:pre-wrap;}' +
+      '.dc-msg-user{align-self:flex-end;background:#2d5aa0;}' +
+      '.dc-msg-director{align-self:flex-start;background:#3a3a4c;}' +
+      '.dc-role{font-size:11px;opacity:.7;margin-bottom:2px;}' +
+      '.dc-text{font-size:14px;line-height:1.45;color:#c9d1d9;}' +
+      '.director-chat-input-container{display:flex;gap:8px;}' +
+      '.director-chat-input{flex:1;padding:8px 10px;border-radius:8px;border:1px solid #555;background:#14141f;color:#eee;font-size:14px;}' +
+      '.director-chat-input:focus{outline:none;border-color:#58a6ff;}' +
+      '.director-chat-send{padding:8px 16px;border-radius:8px;border:none;background:#2d5aa0;color:#fff;cursor:pointer;font-size:14px;}' +
+      '.director-chat-send:hover{background:#3a7bd5;}' +
+      '.director-chat-send:disabled{background:#30363d;color:#8b949e;cursor:not-allowed;}' +
+      '.director-chat-message .role { font-size: 11px; color: #8b949e; margin-bottom: 4px; font-weight: 600; }' +
+      '.director-chat-message .text { font-size: 13px; color: #c9d1d9; line-height: 1.5; white-space: pre-wrap; }' +
+      '.director-chat-input-container { display: flex; gap: 10px; }' +
+      '.director-chat-input { flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; color: #c9d1d9; font-size: 13px; }' +
+      '.director-chat-input:focus { outline: none; border-color: #58a6ff; }' +
+      '.director-chat-send { background: #238636; color: #fff; border: none; border-radius: 8px; padding: 10px 20px; font-size: 13px; font-weight: 600; cursor: pointer; }' +
+      '.director-chat-send:hover { background: #2ea043; }' +
+      '.director-chat-send:disabled { background: #30363d; color: #8b949e; cursor: not-allowed; }' +
       '</style>' +
       '</head>' +
       '<body>' +
@@ -374,6 +402,61 @@ export class DashboardReportBuilder {
       ' | finance-analyzer v2.1.0' +
       '</div>' +
       '</div>' +
+      '<!-- Director Chat Widget -->' +
+      "<div id='directorChat' class='director-chat-container'>" +
+      '<h3>🎯 Director — инвестиционный координатор</h3>' +
+      '<div class="director-chat-messages" id="directorChatMessages"></div>' +
+      '<div class="director-chat-input-container">' +
+      '<input type="text" class="director-chat-input" id="directorChatInput" placeholder="Задайте вопрос о портфеле...">' +
+      '<button class="director-chat-send" id="directorChatSend">Отправить</button>' +
+      '</div>' +
+      '</div>' +
+      '<script>' +
+      // Director Chat JS — inline (works with file:// protocol)
+      '(function(){' +
+      'var container=document.getElementById(\'directorChat\');' +
+      'if(!container)return;' +
+      'var messagesEl=container.querySelector(\'#directorChatMessages\');' +
+      'var inputEl=container.querySelector("#directorChatInput");' +
+      'var sendBtn=container.querySelector("#directorChatSend");' +
+      'var history=[];' +
+      'function addMsg(role,text){' +
+      'history.push({role:role,text:text});' +
+      'var cls=role==="user"?"dc-msg-user":"dc-msg-director";' +
+      'var label=role==="user"?"Вы":"Director";' +
+      'var div=document.createElement("div");' +
+      'div.className="dc-msg "+cls;' +
+      'div.innerHTML="<div class=\\"dc-role\\">"+label+"</div><div class=\\"dc-text\\">"+text+"</div>";' +
+      'messagesEl.appendChild(div);' +
+      'messagesEl.scrollTop=messagesEl.scrollHeight;' +
+      '}' +
+      'function sendMessage(){' +
+      'if(!inputEl)return;' +
+      'var text=inputEl.value.trim();' +
+      'if(!text)return;' +
+      'addMsg("user",text);' +
+      'inputEl.value="";' +
+      'sendBtn.disabled=true;' +
+      'sendBtn.textContent="Думаю...";' +
+      'if(typeof processDirectorMessage==="function"){' +
+      'processDirectorMessage(text).then(function(response){' +
+      'addMsg("director",response.summary||response);' +
+      '}).catch(function(err){' +
+      'addMsg("director","Ошибка: "+(err.message||err));' +
+      '}).finally(function(){' +
+      'sendBtn.disabled=false;' +
+      'sendBtn.textContent="Отправить";' +
+      '});' +
+      '}else{' +
+      'addMsg("director","Director ещё не инициализирован. Проверьте консоль (F12).");' +
+      'sendBtn.disabled=false;' +
+      'sendBtn.textContent="Отправить";' +
+      '}' +
+      '}' +
+      'if(sendBtn)sendBtn.addEventListener("click",sendMessage);' +
+      'if(inputEl)inputEl.addEventListener("keydown",function(e){if(e.key==="Enter")sendMessage();});' +
+      '})()' +
+      '</script>' +
       '</body>' +
       '<script>' +
       'var _sortDir="desc";' +
@@ -397,6 +480,17 @@ export class DashboardReportBuilder {
       '_sortDir=_sortDir==="desc"?"asc":"desc";' +
       'if(indicator)indicator.textContent=_sortDir==="desc"?"↓":"↑";' +
       '}' +
+      '</script>' +
+      '<script>' +
+      // Embed Director Chat widget inline (works with file:// protocol)
+      '(function(){' +
+      'var scriptContent=' + JSON.stringify(directorScript) + ';' +
+      'if(scriptContent){' +
+      'var scriptEl=document.createElement(\'script\');' +
+      'scriptEl.textContent=scriptContent;' +
+      'document.head.appendChild(scriptEl);' +
+      '}' +
+      '})()' +
       '</script>' +
       '</html>'
     );
@@ -458,4 +552,20 @@ export class DashboardReportBuilder {
       topLosers: quotesBlock.topLosers,
     });
   }
+}
+
+/**
+ * Загружает содержимое director-chat-init.min.js
+ * Возвращает пустую строку, если файл не найден
+ */
+function loadDirectorChatScript(): string {
+  try {
+    const scriptPath = path.join(process.cwd(), 'dist', 'js', 'director-chat-init.min.js');
+    if (fs.existsSync(scriptPath)) {
+      return fs.readFileSync(scriptPath, 'utf-8');
+    }
+  } catch {
+    // silently fail
+  }
+  return '';
 }

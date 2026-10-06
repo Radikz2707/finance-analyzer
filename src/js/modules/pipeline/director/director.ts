@@ -22,6 +22,13 @@ import {
   AGENT_ROLE_LABELS,
 } from './delegation-planner.js';
 import {
+  buildHelpText,
+  executeChatCommand,
+  parseChatInput,
+  type ChatCommand,
+  type ChatCommandSources,
+} from './director-chat-commands.js';
+import {
   DirectorAgentFacade,
   actionLabel,
   type DirectorAgentPayload,
@@ -35,6 +42,7 @@ import type {
   AgentOpinion,
   AgentResultEntry,
   ChatMessage,
+  DirectorAuditEvent,
   DirectorChatSession,
   DirectorConfig,
   DirectorFactsContext,
@@ -146,6 +154,12 @@ export class DirectorAgent implements IDirectorAgent {
       this.currentSessionId ?? undefined,
     );
     this.currentSessionId = session.sessionId;
+
+    // 0. Системные команды чата (/status, /log, /undo, /help)
+    const parsed = parseChatInput(message);
+    if (parsed.kind === 'command') {
+      return this.handleChatCommand(parsed.command, message);
+    }
 
     // 1. Интерпретация вопроса
     let interpreted = parseUserMessage(message);
@@ -345,6 +359,7 @@ export class DirectorAgent implements IDirectorAgent {
       recommendation,
       consilium,
       followUps,
+      agentResults,
     );
     this.chat.appendMessage(this.currentSessionId, 'director', replyText, {
       taskId: task.taskId,
@@ -392,6 +407,19 @@ export class DirectorAgent implements IDirectorAgent {
     const session = this.chat.restoreSession(sessionId);
     this.currentSessionId = session.sessionId;
     return session;
+  }
+
+  /** События аудит-лога Director (для команд чата и внешних интеграций) */
+  getAuditEvents(): DirectorAuditEvent[] {
+    return this.audit.getAll();
+  }
+
+  /** Добавить системное сообщение в текущую сессию чата */
+  addSystemMessage(text: string): ChatMessage {
+    const session = this.chat.getOrCreateSession(
+      this.currentSessionId ?? undefined,
+    );
+    return this.chat.appendMessage(session.sessionId, 'system', text);
   }
 
   // ──────────────────────────────────────────────
@@ -485,6 +513,93 @@ export class DirectorAgent implements IDirectorAgent {
   }
 
   // ──────────────────────────────────────────────
+  // Системные команды чата
+  // ──────────────────────────────────────────────
+
+  /**
+   * Обработать системную команду (/status, /log, /undo, /help).
+   * Команда НЕ проходит полный цикл делегирования: ответ строится на
+   * реально доступных данных (состояние, аудит, история, память).
+   */
+  private async handleChatCommand(
+    command: ChatCommand,
+    message: string,
+  ): Promise<DirectorResponse> {
+    const session = this.chat.getOrCreateSession(
+      this.currentSessionId ?? undefined,
+    );
+    this.currentSessionId = session.sessionId;
+    this.chat.appendMessage(session.sessionId, 'user', message);
+
+    const reply = executeChatCommand(
+      { kind: 'command', command },
+      this.collectCommandSources(),
+    );
+    const text = reply?.text ?? buildHelpText();
+
+    this.chat.appendMessage(session.sessionId, 'system', text);
+    this.audit.record(
+      'director.chat_message_sent',
+      'Системная команда /' + command.name,
+      {
+        metadata: { command: command.name, known: command.known },
+      },
+    );
+    this._state = 'idle';
+
+    return {
+      text,
+      plan: this.emptyPlan('Системная команда /' + command.name),
+      connectedAgents: [],
+      needsConsilium: false,
+    };
+  }
+
+  /** Собрать снимок данных для системных команд (честно, из доступного) */
+  private collectCommandSources(): ChatCommandSources {
+    const history = this.getChatHistory();
+    const lastDirectorMessage = [...history]
+      .reverse()
+      .find((m) => m.role === 'director');
+    const events = this.audit.getAll();
+    const lastEvent = events[events.length - 1];
+    const completedTasks = events.filter(
+      (e) => e.type === 'director.synthesis_created',
+    ).length;
+
+    return {
+      state: this._state,
+      chatMessageCount: history.length,
+      completedTasks,
+      strategicMemoryCount: this.memory.getStrategicMemory().length,
+      connectedAgents: lastDirectorMessage?.connectedAgents?.map((role) => ({
+        role,
+        label: AGENT_ROLE_LABELS[role] ?? role,
+      })),
+      auditEvents: events,
+      lastActionDescription:
+        lastEvent?.message ??
+        (lastDirectorMessage ? lastDirectorMessage.text.slice(0, 160) : null),
+      canUndo: false,
+    };
+  }
+
+  /** Пустой план для ответов на системные команды */
+  private emptyPlan(reason: string): DirectorPlan {
+    return {
+      taskId:
+        'cmd-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+      userQuestion: reason,
+      goal: reason,
+      connectedAgents: [],
+      agentAssignments: [],
+      discussionTopics: [],
+      needsConsilium: false,
+      directorSynthesis: '',
+    };
+  }
+
+  // ──────────────────────────────────────────────
   // Helpers
   // ──────────────────────────────────────────────
 
@@ -538,6 +653,7 @@ export class DirectorAgent implements IDirectorAgent {
     recommendation: DirectorTask['recommendation'],
     consilium: MultiRoundConsiliumOutput | undefined,
     followUps: string[],
+    agentResults: AgentResultEntry[],
   ): string {
     const lines: string[] = [];
 
@@ -579,6 +695,28 @@ export class DirectorAgent implements IDirectorAgent {
             consilium.pointsOfDisagreement.slice(0, 2).join('; ') +
             '.',
         );
+      }
+    }
+
+    // Действия action-агентов (file/terminal): результат должен дойти до
+    // пользователя человекочитаемо («Файл создан», «доступно в десктопном
+    // режиме», «Операция отклонена»...)
+    const actionSummaries = agentResults
+      .filter(
+        (entry) =>
+          entry.success && (entry.role === 'file' || entry.role === 'terminal'),
+      )
+      .map(
+        (entry) =>
+          (entry.data as unknown as DirectorAgentPayload | undefined)?.summary,
+      )
+      .filter((summary): summary is string => Boolean(summary));
+
+    if (actionSummaries.length > 0) {
+      lines.push('');
+      lines.push('Выполненные действия:');
+      for (const summary of actionSummaries) {
+        lines.push('• ' + summary);
       }
     }
 

@@ -8,6 +8,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
 // Мягко импортируем нотификатор. Если пакета нет в node_modules, проект не упадет
+/** @type {{ notify: (options: Record<string, unknown>) => void } | null} */
 let notifier = null;
 try {
   notifier = require('node-notifier');
@@ -24,11 +25,15 @@ const execOptions = {
 
 /**
  * Функция безопасного экранирования путей для Windows-сред
+ * @param {string | null} p
+ * @returns {string}
  */
 const sanitizePath = (p) => (p ? p.replace(/[&|;`]/g, '') : '');
 
 /**
  * Получает путь к CLI-модулю через node (обходит bash-обёртки на Windows).
+ * @param {string} moduleName - имя пакета (stylelint | eslint)
+ * @returns {string}
  */
 const cliPath = (moduleName) => {
   const ext = moduleName === 'stylelint' ? '.mjs' : '.js';
@@ -36,6 +41,11 @@ const cliPath = (moduleName) => {
 };
 
 // === БЕЗОПАСНЫЙ ТАСК STYLELINT (ВАЛИДАЦИЯ SCSS) ===
+/**
+ * Запуск stylelint по SCSS. В prod-режиме ошибки фатальны (+ --fix).
+ * @param {string | GulpDone | null} [arg] - путь к файлу или колбэк gulp
+ * @returns {Promise<void>}
+ */
 export const lintCss = (arg = null) => {
   return new Promise((resolve, reject) => {
     const filePath = typeof arg === 'function' ? null : arg;
@@ -54,12 +64,9 @@ export const lintCss = (arg = null) => {
     );
 
     // Используем node напрямую, чтобы обойти bash-обёртки на Windows
-    const cmd = process.platform === 'win32'
-      ? 'node'
-      : 'npx';
-    const cli = process.platform === 'win32'
-      ? cliPath('stylelint')
-      : 'stylelint';
+    const cmd = process.platform === 'win32' ? 'node' : 'npx';
+    const cli =
+      process.platform === 'win32' ? cliPath('stylelint') : 'stylelint';
 
     execFile(cmd, [cli, ...args], execOptions, (err, stdout, stderr) => {
       if (stdout) {
@@ -104,6 +111,11 @@ export const lintCss = (arg = null) => {
 };
 
 // === БЕЗОПАСНЫЙ ТАСК ESLINT (ВАЛИДАЦИЯ JS / TS) ===
+/**
+ * Запуск eslint по src/, gulpfile.js и gulp/**. В prod-режиме ошибки фатальны.
+ * @param {string | GulpDone | null} [arg] - путь к файлу или колбэк gulp
+ * @returns {Promise<void>}
+ */
 export const lintJs = (arg = null) => {
   return new Promise((resolve, reject) => {
     const filePath = typeof arg === 'function' ? null : arg;
@@ -124,12 +136,8 @@ export const lintJs = (arg = null) => {
     if (isProdBuild) args.push('--fix');
 
     // Используем node напрямую, чтобы обойти bash-обёртки на Windows
-    const cmd = process.platform === 'win32'
-      ? 'node'
-      : 'npx';
-    const cli = process.platform === 'win32'
-      ? cliPath('eslint')
-      : 'eslint';
+    const cmd = process.platform === 'win32' ? 'node' : 'npx';
+    const cli = process.platform === 'win32' ? cliPath('eslint') : 'eslint';
 
     execFile(cmd, [cli, ...args], execOptions, (err, stdout, stderr) => {
       if (stdout) {

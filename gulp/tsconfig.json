@@ -1,0 +1,39 @@
+{
+  // ═══ Проверка типов build-контура (gulp) ═══════════════════════════════
+  // Запуск: npm run lint:gulp  →  npx tsc -p gulp/tsconfig.json
+  //
+  // Файлы gulp/*.js остаются JavaScript (gulp CLI загружает их напрямую без
+  // tsx), поэтому используется JSDoc-типизация + checkJs: tsc проверяет
+  // сигнатуры, объявленные в JSDoc-комментариях, и корректность их вызовов.
+  //
+  // В scope проверки входит «ядро сборки»: конфиг + 4 ключевых таска +
+  // server.js (общий источник onError/isProd/bs/safeReload).
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    // Индексы вида info.errors[0] намеренно не фаталятся (gulp-код опирается
+    // на наличие данных из webpack/stylelint без runtime-проверок).
+    "noUncheckedIndexedAccess": false
+  },
+  "include": [
+    "globals.d.ts",
+    "vendor.d.ts",
+    "../gulp.config.js",
+    "utils.js",
+    "scripts.js",
+    "lint.js",
+    "styles.js",
+    "server.js"
+  ]
+}

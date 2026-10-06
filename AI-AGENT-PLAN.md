@@ -1,0 +1,336 @@
+# План развития Finance Analyzer — единый мастер-план
+
+> Статус каждого пункта проверен по коду 05.10.2026.
+> План объединяет два направления:
+>
+> 1. **Инженерное качество** — стабильность, тесты, безопасность, документация (приоритеты P0–P4);
+> 2. **ИИ-агенты управления компьютером** — автономные операции с файлами, терминалом и процессами.
+
+---
+
+## ✅ Уже сделано (подтверждено в коде)
+
+### Инженерное качество
+
+- [x] **P0: Унификация Legacy → Pipeline.** Монолит `ai-advisor.ts` удалён, единая точка входа — [`pipeline`](src/js/modules/pipeline/index.ts:1). Удалены `src/js/index.ts`, `watch.ts`, `app-integration.ts`.
+- [x] **Тесты ключевых модулей:** [`data-fetcher`](src/js/modules/data-fetcher/index.test.ts:1), [`data-quality`](src/js/modules/data-quality/validation.test.ts:1), [`moex-api`](src/js/modules/moex-api/history-provider.test.ts:1), [`finam-api`](src/js/modules/finam-api/history-provider.test.ts:1), [`portfolio-math`](src/js/modules/portfolio-math/portfolio-math.test.ts:1), notifications, backtesting, resource-monitor, xlsx-parser, quik-gateway (4 файла), research (7 файлов), rag/vector-store, **pipeline (24 тестовых файла)**.
+- [x] **Сквозные проверки зелёные:** `npm run lint` + `tsc --noEmit` + `test:run` = **65 файлов / 1046 тестов**.
+- [x] **Единый запуск `npm run dev` (дашборд + harness одним процессом)** — [`dev-launcher.ts`](scripts/dev-launcher.ts:1) оркестрирует два дочерних процесса в одном терминале: веб-дашборд (`node node_modules/gulp/bin/gulp.js start`, префикс `[📊 дашборд]`, голубой) и фоновый harness (`node --import tsx scripts/harness-start.ts`, префикс `[🔄 harness]`, жёлтый); построчная буферизация по `\n` (`splitStream` — ANSI не рвётся, строки не смешиваются), stderr дополнительно помечается красным `[ERR]`; Ctrl+C/SIGTERM → вежливый SIGTERM обоим детям, таймаут 5 с → SIGKILL, итоговый код — код завершившегося первым ребёнка (`computeExitCode`, 0 при остановке пользователем); падение одного процесса НЕ убивает второй: harness с невалидным `.env` (`assertEnvValid` → код 1) роняет только себя — предупреждение «harness остановился с кодом 1 (см. логи выше), дашборд продолжает работу» и дашборд живёт дальше. Чистые утилиты — [`dev-launcher-utils.ts`](scripts/dev-launcher-utils.ts:1) (префиксы, `splitStream`, `buildChildCommands` с env-переопределениями `DEV_CMD_DASHBOARD`/`DEV_CMD_HARNESS` для фиктивных команд в тестах, `computeExitCode`). Тесты: [`dev-launcher.test.ts`](scripts/dev-launcher.test.ts:1) — 16 (unit + e2e с фиктивными командами: оба префикса в выводе, код 0; e2e с SIGTERM — POSIX-only, на Windows graceful-проверка ручная — сигналы недоступны, `process.kill` = TerminateProcess). Проверки: `npx vitest run scripts/dev-launcher.test.ts` ✅ · `npx tsc --noEmit` ✅ · `npx eslint` по новым файлам ✅ · регресс `scripts/` + `harness-integration` ✅ (82 теста) · ручной `npm run dev` ✅ (оба префикса, harness логирует режим active, stderr с `[ERR]`; Ctrl+C — интерактивно). **Карта команд:** `npm run dev` — дашборд + harness в одном терминале; `npm run start` — только дашборд; `npm run harness` — только фоновый harness; `npm run chat` — CLI-чат Директора (отдельный терминал).
+
+### ИИ-агенты (направление из исходного плана)
+
+- [x] **DirectorAgent** — [`director.ts`](src/js/modules/pipeline/director/director.ts:85): делегирование, память, аудит, Consilium.
+- [x] **PipelineCoordinator** — [`pipeline-coordinator.ts`](src/js/modules/pipeline/pipeline-coordinator.ts:148): 8 стадий, watchdog, memorySink.
+- [x] **Director-чат** — [`director-chat-widget.ts`](src/js/modules/pipeline/director/director-chat-widget.ts:21).
+- [x] **CLI-чат Директора (`npm run chat`)** — живое наблюдение за агентами и Консилиумом: одна команда `node --import tsx scripts/director-chat.ts` запускает интерактивный диалог с Директором; стриминг аудита через `DirectorAuditLog.onEvent()` ([`director-audit.ts`](src/js/modules/pipeline/director/director-audit.ts:22)) выводит в реальном времени план делегирования, мнения каждого агента по мере поступления, раунды Консилиума (позиции ролей и смены позиций →), синтез Director и реальные File/Terminal операции через SecurityAgent (файлы действительно создаются). Рендер-модуль [`director-chat-render.ts`](scripts/director-chat-render.ts:1) — чистые функции (ANSI без зависимостей, работают и без TTY). Режимы: интерактивный REPL со спецкомандами `/help`, `/status`, `/log N`, `/panel` (через `agent-panel-model`), `/quit`; `--once "вопрос"` — один вопрос и выход (для проверок/CI). Данные: `EXCEL_FILE_PATH` → факты через XlsxParserModule; без файла — честный режим «без данных портфеля». Роль «ai»: Ollama (если доступен, быстрая проверка с таймаутом) с детерминированным fallback-исполнителем; принудительный офлайн — `DIRECTOR_CHAT_AI=off`. Тесты: [`director-audit.test.ts`](src/js/modules/pipeline/director/director-audit.test.ts:1) (onEvent: порядок/отписка), [`director-chat-render.test.ts`](scripts/director-chat-render.test.ts:1) (17 проверок форматирования), [`director-chat-smoke.test.ts`](scripts/director-chat-smoke.test.ts:1) (e2e `--once` «Сравни Сбер и Газпром»: план, результаты агентов, Раунд 1, ответ).
+- [x] **FileAgent (этап 1.1)** — [`file-agent.ts`](src/js/modules/pipeline/agents/file-agent.ts:1): чтение (текст/JSON/YAML), запись, удаление с защитой, перемещение, листинг, поиск (glob), валидация путей. 22 теста.
+- [x] **Роль `file` в планировщике (этап 1.3, частично)** — [`director-types.ts`](src/js/modules/pipeline/director/director-types.ts:69), [`delegation-planner.ts`](src/js/modules/pipeline/director/delegation-planner.ts:24).
+- [x] **TerminalAgent (этап 2.1)** — [`terminal-agent.ts`](src/js/modules/pipeline/agents/terminal-agent.ts:1): whitelist read/npm/git команд, blacklist опасных паттернов, таймауты, ограничение вывода, журнал команд, изоляция cwd. 32 теста.
+- [x] **SecurityAgent (этап 2.2)** — [`security-agent.ts`](src/js/modules/pipeline/agents/security-agent.ts:1): валидация операций file/terminal/http/process до выполнения, вердикты allow/deny/require-confirmation, чёрный список/инъекции (переиспользует blacklist TerminalAgent), изоляция путей через `isInside`, http-whitelist (https + MOEX/CBR/Finam), аудит через `getDecisions()` + AuditLog. 38 тестов.
+- [x] **Роль `terminal` в планировщике (этап 2.3)** — [`director-types.ts`](src/js/modules/pipeline/director/director-types.ts:69), [`delegation-planner.ts`](src/js/modules/pipeline/director/delegation-planner.ts:24), [`multi-round-consilium.ts`](src/js/modules/pipeline/director/multi-round-consilium.ts:53).
+- [x] **HistoryAgent (этап 2.5)** — [`history-agent.ts`](src/js/modules/pipeline/agents/history-agent.ts:1): систематическое хранилище истории действий агентов — событие `{ id, agentName, role?, action, detail?, status: success|failed|blocked, durationMs?, createdAt, runId?, taskId? }`; запись `record()`/`append()`/`recordFromResult()` (совместимость с `AgentResult`); поиск `find()` (агент/статус/диапазон времени/подстрока в detail, лимит, сортировка — новые сверху); цепочки выполнения `trace()`/`chain()` через сквозной `runId` (генерируется `startRun()`); экспорт `exportToJson()` с защитой пути (переиспользует `isInside` FileAgent) и markdown-сводка `exportSummary()`; обёртка `wrapAgentExecution()` фиксирует «запуск → результат» без изменения AgentBase. Экспорт из [`agents/index.ts`](src/js/modules/pipeline/agents/index.ts:81). 29 тестов.
+- [x] **PackageAgent (этап 4.1)** — [`package-agent.ts`](src/js/modules/pipeline/agents/package-agent.ts:1): install/update/uninstall для npm и pip (команды формируются агентом, выполняются ТОЛЬКО через TerminalAgent, danger-правила применяются автоматически); статическая проверка конфликтов без сети — package.json: пакет в dependencies и devDependencies с разными диапазонами → error, одинаковые → warning (дублирование), несоответствие peerDependencies → warning (ограничение статики зафиксировано); requirements.txt: дубликаты → error/warning; resolve-conflicts — детерминированное «простое слияние» (одна секция + новейший диапазон, npm в фоне НЕ запускается — предлагается `npm install`); dryRun = true по умолчанию; запись package.json — только в корне проекта (валидация путей как в FileAgent); мутации npm install/update при error-конфликтах блокируются. Экспорт из [`agents/index.ts`](src/js/modules/pipeline/agents/index.ts:81). Тесты: [`package-agent.test.ts`](src/js/modules/pipeline/agents/package-agent.test.ts:1) — 28 проверок.
+- [x] **BrowserAgent (этап 4.2)** — [`browser-agent.ts`](src/js/modules/pipeline/agents/browser-agent.ts:1): веб-мониторинг (search / fetch-page / prices / news / refresh) со слоями «API → fallback браузер → честный «нет данных»»; search — поиск по новостным источникам (research/NewsFetcher Google News RSS + gatekeeper/RssNewsSource, прямого поискового API в проекте нет — зафиксированное дизайн-решение); fetch-page — только через DI `browserGateway.navigate()` с собственным whitelist доменов `DEFAULT_ALLOWED_DOMAINS` (moex.com, cbr.ru, finam.ru, investing.com + RSS-ленты; SecurityAgent свой список не экспортирует), только https, лимит контента 200 КБ, таймаут 15 с, посторонний домен → deny; prices — MOEX ISS через [`moex-api/history-provider.ts`](src/js/modules/moex-api/history-provider.ts:266) (последняя закрытая свеча), браузер — только fallback через `withFallback` (circuit-breaker) с парсингом MOEX ISS JSON; news — провайдер → браузерный RSS fallback → опциональный кэш → «нет данных», дедупликация по url и лимит; refresh(sources) — последовательный опрос с интервалами, дедупликация и кэш по fingerprint (+TTL, повторный вызов не дублирует). Все внешние зависимости инжектируются (DI: browserGateway/newsProvider/priceProvider/newsCache), тесты — моки без сети. Экспорт из [`agents/index.ts`](src/js/modules/pipeline/agents/index.ts:100). Тесты: [`browser-agent.test.ts`](src/js/modules/pipeline/agents/browser-agent.test.ts:1) — 25 проверок.
+- [x] **Интеграция action-агентов в Director-фасад (фабрика/роутер)** — [`agent-factory.ts`](src/js/modules/pipeline/agents/agent-factory.ts:1) (Node-only реестр `ActionAgentRegistry` с lazy-созданием и кэшем: базовый набор `file`/`terminal` для Director + инфраструктурные package/browser/config/process/scheduler/learning/auto-repair для прямого вызова; безопасные корни по умолчанию `[process.cwd()]`, таймауты 15с/30с; `createDefaultActionAgents()`), [`action-input-builder.ts`](src/js/modules/pipeline/director/action-input-builder.ts:1) (чистый роутер входа БЕЗ Node-зависимостей: из `InterpretedQuestion` извлекает действие+путь («создай файл», «прочитай», «удали», «переименуй», «найди», «покажи содержимое») и команду+аргументы («выполни команду», npm/git/pip/npx, «сделай коммит», «собери проект»); `null` при невозможности извлечения — честный отказ, переиспользует `looksLikeFileRequest`/`looksLikeTerminalRequest`), расширение [`agent-facade.ts`](src/js/modules/pipeline/director/agent-facade.ts:149): case'ы `file`/`terminal` через новый DI `actionAgents?: { file?; terminal? }` + шлюз `security?: ActionSecurityGate` (deny → «Операция отклонена», require-confirmation → «Требуется подтверждение», выполнение не запускается); при отсутствии агента (браузерная сборка) — честный `success=true` payload «…доступны в десктопном режиме» вместо `default: throw`; summary action-агентов доходит до пользователя через секцию «Выполненные действия» в [`director.ts`](src/js/modules/pipeline/director/director.ts:649). Проводка в Node-вход: [`harness-bootstrap.ts`](src/js/modules/harness-integration/harness-bootstrap.ts:170) — `createNodeDirector()` собирает фабрику + SecurityAgent (адаптер `check`→`validate`) в `DirectorAgent`. Тесты: [`action-input-builder.test.ts`](src/js/modules/pipeline/director/action-input-builder.test.ts:1) (21), [`agent-factory.test.ts`](src/js/modules/pipeline/agents/agent-factory.test.ts:1) (8), [`director-action-agents.test.ts`](src/js/modules/pipeline/director/director-action-agents.test.ts:1) (6: реальное создание `src/test.ts` в temp-корне через фасад, fallback «десктопный режим» без агентов, security deny/require-confirmation без создания файла). **Ограничение браузерного режима (ВАЖНО):** File/Terminal используют Node `fs`/`child_process` и в браузерной сборке не запускаются — чат дашборда честно отвечает «доступно в десктопном режиме»; реальное исполнение — только в Node-контуре (`createNodeDirector`/CLI/тесты).
+
+---
+
+## 🎯 Этап 1: Инженерное качество — закрыть долги (1–2 недели)
+
+### 1.1 Завершить покрытие тестами (P1)
+
+Модули БЕЗ тестов (проверено по файловой структуре):
+
+| Модуль                                                                                 | Путь                                                               | Что тестировать                                                                                                   |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| ✅ memory-layer                                                                        | [`memory-layer/`](src/js/modules/memory-layer/index.ts:1)          | ✅ CRUD памяти, типы, TTL — [`memory-layer.test.ts`](src/js/modules/memory-layer/memory-layer.test.ts:1)          |
+| ✅ dashboard (модуль)                                                                  | [`dashboard/`](src/js/modules/dashboard/dashboard.ts:1)            | ✅ рендер виджетов, обработка пустых данных — [`dashboard.test.ts`](src/js/modules/dashboard/dashboard.test.ts:1) |
+| telegram-bot                                                                           | [`telegram-bot/`](src/js/modules/telegram-bot/)                    | команды бота, ответы                                                                                              |
+| python-engine                                                                          | [`python-engine/`](src/js/modules/python-engine/index.ts:1)        | anomaly-detector, python-bridge (кроме moex-quote-provider)                                                       |
+| db-manager                                                                             | [`db-manager/`](src/js/modules/db-manager/db-manager.browser.ts:1) | CRUD, миграции                                                                                                    |
+| report-export / portfolio-optimizer / portfolio-snapshot / adaptive-scheduler / logger | соответствующие папки                                              | ключевые публичные функции                                                                                        |
+
+- [x] **Интеграционные smoke-тесты реальных API** (MOEX ISS, CBR, Finam, Google News RSS) — [`integration-tests/api-smoke.test.ts`](src/js/modules/integration-tests/api-smoke.test.ts:1): запуск `npm run test:integration` (`cross-env RUN_INTEGRATION=1 vitest run src/js/modules/integration-tests`); в обычном `test:run` пропускаются через `it.skipIf(RUN_INTEGRATION)` с честным сообщением «запустите npm run test:integration»; assert'ы только на форму ответов (поля/типы/непустые массивы), таймауты 30 с; MOEX ISS — история candles + marketdata SBER (живая цена прогоняется через `MarketDataProvider`); CBR — официальный XML `XML_daily.asp`, `MacroFetcher` (курс USD) и `CbrOfficialFetcher` (ключевая ставка); Finam — только при наличии `FINAM_API_KEY` (`it.skipIf(!process.env.FINAM_API_KEY)`); Google News RSS — retry 1×, при блокировке честный fail с причиной, опциональный пропуск `NEWS_ALLOW_BLOCKED_SKIP=1`; контракт `ResearchProvider` (без сети). Проверки: `npx tsc --noEmit` ✅, `npx eslint` ✅, обычный `test:run` (интеграционные пропущены, 9 skipped) ✅; `npm run test:integration` на этой машине: 7 passed / 1 failed / 1 skipped — упал только Google News RSS (`Request timeout`, блокировка на территории РФ — smoke честно сигнализирует; остальные API доступны), Finam пропущен (нет `FINAM_API_KEY`); с `NEWS_ALLOW_BLOCKED_SKIP=1` — 7 passed / 2 skipped (зелёный).
+
+### 1.2 Circuit breaker + retry + fallback chain (P1) ✅
+
+- [x] Модуль [`circuit-breaker.ts`](src/js/modules/pipeline/infrastructure/circuit-breaker.ts:1): `CircuitBreaker` (closed → open → halfOpen → closed; `failureThreshold=3`, cooldown `resetTimeoutMs=30с`, счётчики успехов/ошибок, `onStateChange`, `CircuitOpenError`), `withRetry` (exponential backoff 2× + опциональный jitter, `retryable` по умолчанию — всё кроме `CircuitOpenError`), `withFallback` (primary → fallbacks, метки источников, `{ value, source, attempts }`).
+- [x] Роутер ИИ [`provider-router.ts`](src/js/modules/ai-advisor/provider-router.ts:1): цепочка Ollama → OpenRouter → GigaChat → YandexGPT с per-provider circuit breaker; подключён в [`ai-client.ts`](src/js/modules/ai-advisor/ai-client.ts:1140) без изменения контрактов `AiClient`.
+- [x] Фабрика [`provider-fallback.ts`](src/js/modules/research/providers/provider-fallback.ts:1) — `withProviderFallback` для цепочки данных MOEX → CBR → Finam.
+- [ ] ⚠️ **Данные (MOEX → CBR → Finam):** подключение в `DataFetcher`/`ResearchProviderRegistry` отложено — существующие тесты фиксируют проброс первой ошибки и merge-семантику ([`data-fetcher/index.test.ts`](src/js/modules/data-fetcher/index.test.ts:410), [`registry.test.ts`](src/js/modules/research/providers/registry.test.ts:1)); включать поэтапно вместе с обновлением этих тестов.
+- [x] Тесты: [`circuit-breaker.test.ts`](src/js/modules/pipeline/infrastructure/circuit-breaker.test.ts:1) — 20 проверок (размыкание, half-open, cooldown, backoff-задержки, fallback chain, `CircuitOpenError` не триггерит fallback).
+
+### 1.3 Валидация .env при старте (P2) ✅
+
+Сейчас `dotenv/config` без схемы — ошибка в имени переменной обнаруживается только при первом вызове API.
+
+- [x] Схема обязательных ключей (токены AI, Telegram, пути) + понятные ошибки запуска;
+- [x] сверка с [`package.json`](package.json:1)/[`.env.template`](.env.template:1);
+- [ ] pre-commit проверка, что `.env` не попал в git (хук-проверка остаётся на CI/pre-commit-этап).
+
+**Реализовано:** [`env-validation.ts`](src/js/config/env-validation.ts:1) — `validateEnv()` (схема из 18 ключей, сверена с `.env.template` и фактическим чтением `process.env.*` в коде; форматы URL/token/path/boolean/number/csv/enum, placeholder-детекция) и `assertEnvValid()` с подсказкой «скопируйте .env.template → .env». Экспорт — [`config/index.ts`](src/js/config/index.ts:1). Подключение: [`harness-start.ts`](scripts/harness-start.ts:51) (жёстко, с загрузкой dotenv) и [`harness-bootstrap.ts`](src/js/modules/harness-integration/harness-bootstrap.ts:70) (мягко, warning в fallback-режиме). Браузерный бандл не затронут: валидатор не импортирует dotenv/fs и не имеет side-effect'ов. Тесты: [`env-validation.test.ts`](src/js/config/env-validation.test.ts:1) — 16 проверок, включая сверку ключей схемы с `.env.template`.
+
+### 1.4 Вернуть telegram-bot в strict-режим (P2) 🔒
+
+Сейчас [`tsconfig.json`](tsconfig.json:30) исключает `src/js/modules/telegram-bot` из проверки `noUncheckedIndexedAccess`.
+
+- Убрать из `exclude`;
+- исправить индексации и приведение типов;
+- зафиксировать в CI, что исключений нет.
+
+> 🔒 **Заблокировано (проверено 05.10.2026):** папка `src/js/modules/telegram-bot/` существует, но её содержимое скрыто в `.codeassistantignore` (раздел «📱 Telegram-бот (локальные файлы)», правило `src/js/modules/telegram-bot/`). Чтение файлов возвращает `access_denied`. Правка кода модуля невозможна без снятия игнора, поэтому:
+>
+> - `tsconfig.json` НЕ изменён (убрать исключение без починки кода = сломать `tsc --noEmit`/CI);
+> - задача требует снятия правила игнора в `.codeassistantignore` (или явного разрешения на доступ к папке), после чего повторно выполнить шаги 1–4.
+
+### 1.5 Чистка `as any` (P2) ✅
+
+Было ~19 вхождений в 4 файлах (по проекту больше) — **все устранены, остаток по поиску — 0**.
+
+- [x] [`dashboard.ts`](src/js/modules/dashboard/dashboard.ts:1) (8) — Chart.js (глобальный `<script>`, npm-типы недоступны): минимальный контракт конструктора + доступ через `as unknown as`;
+- [x] [`browser-gateway.ts`](src/js/modules/pipeline/browser-gateway/browser-gateway.ts:1) (7) — Playwright (опциональный динамический импорт): локальные интерфейсы `PlaywrightBrowser/Context/Page`, поля класса типизированы;
+- [x] [`browser-director.ts`](src/js/modules/pipeline/director/browser-director.ts:1) (3 + сопутствующий `Promise<any[]>`): `plan` — реальный `DirectorPlan` через helper `buildDirectorPlan()`, чтение `summary` консилиума типизировано, `getFullChatHistory()` → `StoredChatMessage[]`;
+- [x] [`dashboard-init.ts`](src/js/modules/pipeline/director/dashboard-init.ts:1) (1): честный пустой `DirectorPlan` вместо `as any`.
+- Проверки: `tsc --noEmit` ✅, `eslint` по изменённым файлам ✅, vitest (смежные + полный регресс) ✅.
+- Остаток: 0 документированных исключений; точечные `unknown`-приведения задокументированы комментариями в коде.
+- Вне основной ветки: 2 вхождения `as any` остаются только в изолированном worktree `.gigacode_vsc/worktrees/quixotic-literature/` (ветка `quixotic-literature`, старые версии `dashboard.ts`/`browser-gateway.ts`) — не относится к основной ветке и не затрагивается.
+
+---
+
+## 🎯 Этап 2: ИИ-агенты управления компьютером (2–4 недели)
+
+### 2.1 TerminalAgent
+
+**Файл:** `src/js/modules/pipeline/agents/terminal-agent.ts`
+
+- [x] Выполнение безопасных команд (ls, cat, grep)
+- [x] npm-команды (install, run, build)
+- [x] git-команды (commit, push, branch)
+- [x] Чёрный список опасных команд (rm -rf, sudo)
+- [x] Таймауты и логирование всех команд
+
+### 2.2 SecurityAgent ✅
+
+**Файл:** `src/js/modules/pipeline/agents/security-agent.ts`
+
+- [x] Валидация команд перед выполнением (вердикты allow / deny / require-confirmation)
+- [x] Проверка путей (только внутри разрешённых корней, через `isInside` из [`file-agent.ts`](src/js/modules/pipeline/agents/file-agent.ts:364))
+- [x] Чёрный список опасных операций (единый источник — публичные константы [`terminal-agent.ts`](src/js/modules/pipeline/agents/terminal-agent.ts:184))
+- [x] Возможность отмены действий (подтверждение опасных действий реализовано; /undo — этап 2.4 ✅)
+- ⚠️ Надстройка над существующими слоями: `isInside` FileAgent + whitelist/blacklist TerminalAgent; whitelist HTTP-хостов соответствует источникам [`gatekeeper`](src/js/modules/pipeline/gatekeeper/gatekeeper.ts:1) (MOEX/CBR/Finam); финансовые правила [`guardrails`](src/js/modules/pipeline/guardrails/guardrails.ts:99) остаются на уровне решений директора.
+
+**Реализовано:** [`security-agent.ts`](src/js/modules/pipeline/agents/security-agent.ts:1) — валидация операций file/terminal/http/process до выполнения; изоляция путей (корни, системные пути, `.env`/`.git`/`node_modules` → require-confirmation); deny для команд вне whitelist, blacklist-паттернов (rm -rf, sudo, del, format, редиректы в системные пути) и инъекций `;|&\`$()`; http: только https + белый список хостов; процессы — всегда require-confirmation (high); аудит всех вердиктов через `getDecisions()`и`AuditLog`(новое событие`security.decision`). Роль `security`в`AgentRole` НЕ добавлена (вспомогательный контролёр, не участник консилиума). Тесты: [`security-agent.test.ts`](src/js/modules/pipeline/agents/security-agent.test.ts:1) — 38 проверок.
+
+### 2.3 Расширить delegation-planner (этап 1.3, завершение) ✅
+
+- [x] Роль `terminal` в `AgentRole` (после создания TerminalAgent)
+- [x] Логика выбора агентов для файловых/терминальных операций в [`nl-parser.ts`](src/js/modules/pipeline/director/nl-parser.ts:807)
+- [x] Приоритеты и метки новых ролей
+
+**Реализовано:** в [`nl-parser.ts`](src/js/modules/pipeline/director/nl-parser.ts:1) добавлены хелперы `looksLikeFileRequest` / `looksLikeTerminalRequest` (паттерны фраз «создай файл», «прочитай файл», «удали файл», «запиши в файл», «сделай отчёт», npm/git/python и т.д. + пути `src/...` и расширения `*.ts`, `*.json`, `*.yaml`); `determineRequiredAgents` принимает текст вопроса и дополняет `requiredAgents` ролями `file`/`terminal` ПОСЛЕ существующих категорий — портфель/новости/стратегия не меняются; чистая файловая/терминальная операция даёт только `['file']`/`['terminal']` без analysis/ai (non-empty `requiredAgents` используется планировщиком как есть). Тесты: [`nl-parser.test.ts`](src/js/modules/pipeline/director/nl-parser.test.ts:1) — +13 проверок (файловые/терминальные запросы + регресс «Как дела с портфелем?» и «Что с акциями Сбера?» без file/terminal).
+
+### 2.4 Расширить Director-чат (этап 2.1) ✅
+
+**Файлы:** [`director-chat-widget.ts`](src/js/modules/pipeline/director/director-chat-widget.ts:21), [`director-chat-commands.ts`](src/js/modules/pipeline/director/director-chat-commands.ts:1)
+
+- [x] `/status` — статус Director (состояние, число задач, стратегическая память, агенты последней задачи; честно на доступных данных)
+- [x] `/log [N]` — последние N действий из [`director-audit.ts`](src/js/modules/pipeline/director/director-audit.ts:16) (DirectorAuditLog)
+- [x] `/undo` — отмена последнего действия (честно: фиксирует последнее действие в аудит-логе, откат НЕ имитируется; при предоставленной механике `undoAction` вызывается реальный откат)
+- [x] Подтверждение опасных действий — детекция паттернов (`detectDangerousIntent`) + вердикт SecurityAgent (`assessDanger`, require-confirmation) → кнопка «Подтвердить» в чате перед отправкой Director
+- [x] Прогресс-бар для долгих операций (`.dc-progress` + индикатор «Director думает…»)
+
+**Реализовано:** парсинг команд и форматтеры — чистые функции [`director-chat-commands.ts`](src/js/modules/pipeline/director/director-chat-commands.ts:58) (`parseChatInput` / `executeChatCommand` / `assessDanger`, тестируемы без браузера); обработка в цикле чата — [`director.ts`](src/js/modules/pipeline/director/director.ts:150) (`handleChatCommand` + `collectCommandSources`, команды не проходят цикл делегирования и попадают в историю как system); виджет [`director-chat-widget.ts`](src/js/modules/pipeline/director/director-chat-widget.ts:198) — диалог подтверждения с кнопками «Подтвердить»/«Отмена», прогресс-бар и подсказка команд; подключение в [`dashboard-init.ts`](src/js/modules/pipeline/director/dashboard-init.ts:231) (браузерная детекция без Node-зависимостей; SecurityAgent импортирует `node:path` и работает на серверной стороне). Упрощённый режим report.html [`director-chat-simple.ts`](src/js/modules/pipeline/director/director-chat-simple.ts:11) честно сообщает о недоступности полных данных. Тесты: [`director-chat-commands.test.ts`](src/js/modules/pipeline/director/director-chat-commands.test.ts:1) — 36 проверок (парсинг, /status, /log, /undo, неизвестная команда, подтверждение опасного действия, интеграция с DirectorAgent и SecurityAgent).
+
+### 2.5 HistoryAgent (этап 2.2) ✅
+
+**Файл:** `src/js/modules/pipeline/agents/history-agent.ts`
+
+- [x] Хранение истории действий агентов (`record`/`append`/`recordFromResult`, событие совместимо с `AgentResult`)
+- [x] Поиск по истории (`find`: агент, статус, диапазон времени, подстрока в detail; лимит и сортировка — новые сверху)
+- [x] Визуализация цепочки выполнения (`trace()`/`chain()` по runId/taskId; свой runId при `startRun()`)
+- [x] Экспорт истории в файл (`exportToJson` с защитой пути, `exportSummary` — markdown-сводка)
+- [x] Интеграция: экспорт из [`agents/index.ts`](src/js/modules/pipeline/agents/index.ts:81), фабрика `createHistoryAgent()`, обёртка `wrapAgentExecution(agent, history)` фиксирует success/failed без изменения AgentBase
+
+**Реализовано:** [`history-agent.ts`](src/js/modules/pipeline/agents/history-agent.ts:1) — in-memory история с ограничением размера (maxEntries=1000), фильтрацией и группировкой; защита пути экспорта переиспользует `isInside` из [`file-agent.ts`](src/js/modules/pipeline/agents/file-agent.ts:364) (корни по умолчанию — `process.cwd()`, выход за корень блокируется); `trace(taskId?)` агрегирует события задачи, при отсутствии сквозного taskId — `startRun()` генерирует собственный runId. Тесты: [`history-agent.test.ts`](src/js/modules/pipeline/agents/history-agent.test.ts:1) — 29 проверок (запись/чтение, фильтры, сортировка/лимит, цепочка runId, экспорт JSON в temp-файл, безопасность пути, markdown-сводка, wrapAgentExecution).
+
+- [x] **Десктоп-приложение (Electron) — чат с Директором, агентами и диспетчером** — настольное Windows-приложение (папка `desktop/`, запуск из `.exe` через electron-builder): одно окно (1280×800, min 960×600) с вкладками **«Чат»** (вопрос → план делегирования → мнения агентов → раунды Консилиума → синтез Director; быстрые вопросы «Сравни Сбер и Газпром», «Оцени стратегию портфеля», «Создай файл src/test.txt»), **«Агенты»** (карточки FileAgent/TerminalAgent: имя/статус/счётчики/последняя ошибка + цепочки выполнения + таблица истории через `buildPanelState` из [`agent-panel-model.ts`](src/js/modules/pipeline/visualization/agent-panel-model.ts:1)), **«Консоль»** (сырые события аудита: scroll-back, автоскролл, поиск по строке) и **«Диспетчер»** (статус «Гибридного диспетчера»: режим планировщика, CPU/RAM, последний запуск, аномалии цен, новости QUIK, кнопка ручного запуска анализа). Переиспользует готовые блоки: сборку Директора как в [`director-chat.ts`](scripts/director-chat.ts:1) (фасад + `createDefaultActionAgents()` + SecurityAgent-адаптер + aiExecutor Ollama/детерминированный fallback), стриминг [`DirectorAuditLog.onEvent()`](src/js/modules/pipeline/director/director-audit.ts:22) (канал `director:event` → renderer немедленно), форматирование [`director-chat-render.ts`](scripts/director-chat-render.ts:1), данные XlsxParserModule по `EXCEL_FILE_PATH`, оркестратор [`createHarness()`](src/js/modules/harness-integration/harness-bootstrap.ts:76) (тот же SecurityAgent и фабрика action-агентов, что у Директора). Архитектура: [`main.ts`](desktop/main.ts:1) (Electron: contextIsolation:true, nodeIntegration:false, один DirectorAgent на lifecycle, graceful shutdown `director.stop()` + `harness.scheduler.stop()`, одиночный экземпляр приложения), [`preload.ts`](desktop/preload.ts:1) (contextBridge: `ask/getStatus/getLog/getPanel/loadPortfolio/getHarnessPayload/runHarnessAnalysis/onDirectorEvent/onDirectorReply`), чистое тестируемое IPC-ядро [`ipc-core.ts`](desktop/ipc-core.ts:1) БЕЗ electron-импортов (`buildDirectorState`, `buildHarnessState`, `handleAsk`, `handleStatus`, `handleLog`, `handlePanel`, `subscribeEvents`, `shutdownAppState`), renderer без UI-фреймворков (SCSS на базе [`_vars.scss`](src/scss/base/_vars.scss:1) + `_zero`/Montserrat из `src/fonts`). Сборка: esbuild → `desktop/dist/main.cjs` (CJS — `require('electron')` надёжен во всех средах; единственный `import.meta.url` в бандле подменяется define из [`build.mjs`](desktop/build.mjs:1), чтобы `createRequire` в xlsx-парсере не падал; native `better-sqlite3` остаётся внешним) + `preload.cjs` (sandboxed preload — CJS) + renderer IIFE; sass → `styles.css`; иконка генерируется из `src/images/favicons/icon-512.png` в `icon.ico` (sharp, PNG-compressed ICO); упаковка [`electron-builder.yml`](desktop/electron-builder.yml:1) (win x64: NSIS-инсталлятор + portable `.exe`, `asarUnpack` better-sqlite3, `npmRebuild: false` — пересборка только через `app:rebuild`). Лаунчеры: [`run-dev.mjs`](desktop/run-dev.mjs:1) и [`run-rebuild.mjs`](desktop/run-rebuild.mjs:1) вычищают `ELECTRON_RUN_AS_NODE` перед запуском/пересборкой (переменная может быть выставлена окружением VS Code/терминала — из-за неё electron.exe ведёт себя как обычный Node: `--version` печатает версию Node, `require('electron')` возвращает путь к бинарю, `app === undefined`). Скрипты: `app:dev` / `app:dev:offline` (`DIRECTOR_CHAT_AI=off`) / `app:rebuild` (`electron-rebuild -f -w better-sqlite3`) / `app:typecheck` (`tsc -p desktop/tsconfig.json` — отдельный от корневого, чтобы electron-импорты main/preload не ломали `tsc --noEmit` и `test:run`) / `app:build` / `app:build:dir`. Тесты: [`ipc-core.test.ts`](desktop/ipc-core.test.ts:1) — 8 проверок (детерминированный директор без данных, «Сравни Сбер и Газпром» → ответ + минимум 1 событие плана, status/log/panel, доставка событий и отписка, file-запрос без `EXCEL_FILE_PATH` даёт человечный ответ, graceful сборка диспетчера). Проверки: `npx vitest run desktop/ipc-core.test.ts` ✅ (8) · регрессия director/audit/visualization/harness ✅ (117) · `npx tsc --noEmit` ✅ · `npx tsc -p desktop/tsconfig.json --noEmit` ✅ · `npx eslint desktop` ✅ · полный `npm run test:run` ✅ · ручной `npm run app:dev` ✅ (окно открывается, чат-ядро отвечает, graceful shutdown при закрытии) · `npx electron-builder --win dir` ✅ (`release/win-unpacked/Finance Analyzer.exe` собирается и запускается). **Ограничения:** (1) `better-sqlite3` — пересборка под ABI Electron компилирует из исходников через node-gyp и требует **Visual Studio Build Tools** (на машине без тулчейна `app:rebuild` падает с «Could not find any Visual Studio installation»); пребилтов под Electron-ABI у better-sqlite3 нет (404 на GitHub); поэтому `electron-builder.yml` использует `npmRebuild: false`, а `buildHarnessState()` — динамический import + try/catch → при несовпадении ABI вкладка «Диспетчер» честно показывает «не активирован», чат с Директором работает; после пересборки под Electron обычные Node-тесты требуют обратной пересборки (`npm rebuild better-sqlite3`); (2) main и preload — CJS (надёжнее для `require('electron')`; sandboxed preload и так CJS-only); (3) роль «ai» в десктопе та же, что в CLI: Ollama при доступности (таймаут 1,5 с), иначе детерминированный fallback — Консилиум работает офлайн; (4) при отсутствии `icon-512.png` — стандартная иконка Electron; (5) файловые/терминальные операции — реальные, под вердиктами SecurityAgent (allow/deny/require-confirmation), интерактивное подтверждение опасных действий в десктоп-чате НЕ реализовано (как в CLI `--once`); (6) визуальная проверка вкладок и быстрых вопросов — на пользователе (автоматически покрыты ядро, стриминг и сборка).
+
+---
+
+## 🎯 Этап 3: Инженерное качество — зрелость (4–6 недель)
+
+### 3.1 Performance-бенчмарки (P3) ✅
+
+- [x] Утилита [`benchmark-runner.ts`](src/js/modules/pipeline/benchmarks/benchmark-runner.ts:1) — `measure()` → `{ opsPerSec, avgMs, p95Ms, minMs, maxMs }`, прогрев, вывод ASCII-таблицей; `measureMemoryUsage()` — прирост `heapUsed`; опциональный CI-порог `--fail-on <ms>` (exit 1 при превышении avg).
+- [x] Тайминги полного цикла pipeline — [`pipeline-timing.bench.ts`](src/js/modules/pipeline/benchmarks/pipeline-timing.bench.ts:1): 8 стадий + consilium + watchdog, все агенты — mock'и без I/O (чистый CPU), среднее/p95 по 10 прогонам.
+- [x] Расчёт PortfolioMath на синтетическом портфеле — [`portfolio-math.bench.ts`](src/js/modules/pipeline/benchmarks/portfolio-math.bench.ts:1): 10 / 100 / 1000 позиций.
+- [x] Memory usage при парсинге Excel — [`xlsx-memory.bench.ts`](src/js/modules/pipeline/benchmarks/xlsx-memory.bench.ts:1): генератор листа «Отчет по сделкам» N=100/1000/5000 строк в памяти, `heapUsed` до/после парсинга.
+- [x] Точка входа [`run.ts`](src/js/modules/pipeline/benchmarks/run.ts:1) + npm-скрипт `bench` (`node --import tsx src/js/modules/pipeline/benchmarks/run.ts`); бенчмарки информационные (код 0), `.bench.ts` исключены из vitest-прогона ([`vitest.config.ts`](vitest.config.ts:16)); тест [`benchmark-runner.test.ts`](src/js/modules/pipeline/benchmarks/benchmark-runner.test.ts:1).
+
+### 3.2 Документация (P3) ✅
+
+- [x] `ARCHITECTURE.md` — схема модулей и зависимостей, текущее состояние (а не планы)
+- [x] `CONTRIBUTING.md` — как добавить модуль/агента/тест
+- [x] README для каждого агента — единый каталог [`pipeline/agents/README.md`](src/js/modules/pipeline/agents/README.md:1): таблица всех 18 агентов (роль/вход/выход/безопасность), секции по группам (аналитические и управления компьютером) с действиями, примерами и ограничениями, инструкция «как добавить агента»;
+- [x] Руководство по безопасности — [`SECURITY.md`](SECURITY.md:1): модель угроз, слои защиты (SecurityAgent/TerminalAgent/FileAgent/guardrails/gatekeeper/env-validation/аудит), работа с секретами, чек-лист разработчика.
+
+> Отдельной задачей остаются **FAQ и troubleshooting** — вне объёма P3 (см. «Ближайший шаг»).
+
+### 3.3 Gulp → TypeScript (P4) ✅
+
+Выбран **прагматичный объём: JSDoc-типизация + `checkJs`** (без перевода файлов на `.ts` — см. «Почему не полный перевод» ниже).
+
+- [x] [`gulp/tsconfig.json`](gulp/tsconfig.json:1) — `checkJs: true` + `allowJs: true` + `strict: true`, `module: NodeNext`; в scope проверки «ядро сборки»: [`utils.js`](gulp/utils.js:1), [`scripts.js`](gulp/scripts.js:1), [`lint.js`](gulp/lint.js:1), [`styles.js`](gulp/styles.js:1), [`server.js`](gulp/server.js:1), [`gulp.config.js`](gulp.config.js:1) (+ транзитивно [`html.js`](gulp/html.js:1) и [`system/gulp.cache.js`](gulp/system/gulp.cache.js:1));
+- [x] [`gulp/globals.d.ts`](gulp/globals.d.ts:1) — `GulpProjectConfig` (полная структура конфига), `GulpDone`, `SharpCompressorOptions`, `VinylFile`;
+- [x] [`gulp/vendor.d.ts`](gulp/vendor.d.ts:1) — ambient-декларации плагинов без типов (gulp-plumber, gulp-zip, webpack-stream, gulp-clean-css, gulp-rename, gulp-sass, gulp-postcss, webp-in-css/plugin.js, node-notifier, gulp-file-include, gulp-htmlhint, gulp-html-beautify); CJS-плагины объявлены через `export =` (загружаются `require()`);
+- [x] JSDoc-сигнатуры экспортов: таски `cleandist/zipFiles/sharpCompressor/sharpToWebp/deployLocal/scripts/styles/lintCss/lintJs/browsersync/startwatch/copyDashboard`, хелперы `onError/safeReload/dynamicRun/sanitizePath/cliPath`, колбэки Transform-потоков и `webpackConfig` как `Configuration`;
+- [x] npm-скрипт [`lint:gulp`](package.json:24) — `npx tsc -p gulp/tsconfig.json`;
+- [x] Legacy-ветка обновления блог-контента в [`server.js`](gulp/server.js:190) почищена: удалена типизационная заглушка [`content-processor.d.ts`](gulp/utils/content-processor.d.ts:1) (модуль `gulp/utils/content-processor.js` отсутствует в репо) и её динамический импорт вместе с недостижимым вызовом `blogIndex`; watcher оставлен в упрощённом виде (копирование файла в dist + reload).
+
+**Почему не полный перевод на `.ts`:** gulp CLI загружает файлы напрямую (`node node_modules/gulp/bin/gulp.js`, `gulp --gulpfile gulp/system/*.js`, dynamic `import('./gulp/<name>.js')` в [`gulpfile.js`](gulpfile.js:78)) без tsx-регистрации; `webpack-stream` и большинство `gulp-*` плагинов не поставляют деклараций; перевод потребовал бы правки всех npm-скриптов, загрузчика и eslint-профиля при нулевом выигрыше в рантайме. JSDoc+checkJs даёт те же гарантии сигнатур через `tsc` при нулевом риске для сборки.
+
+**Проверки:** `npx tsc -p gulp/tsconfig.json` ✅ · `npm run lint:gulp` ✅ · `npx eslint` по изменённым файлам ✅ · `npm run lint` (gulp lintJs/lintCss + корневой `tsc --noEmit`) ✅ · `npx gulp help` ✅ · `npx vitest run` ✅ (регресс не затронут).
+
+---
+
+## 🎯 Этап 4: Продвинутые агенты (6–10 недель)
+
+### 4.1 PackageAgent (этап 3.1) ✅
+
+Установка/обновление/удаление npm и pip пакетов, проверка и авто-решение конфликтов версий.
+
+**Реализовано:** [`package-agent.ts`](src/js/modules/pipeline/agents/package-agent.ts:1) — действия `install/update/uninstall/check-conflicts/resolve-conflicts`; все команды выполняются через TerminalAgent (npm-whitelist расширен подкомандой `update`, для pip добавлен бинарь `pip`); проверка конфликтов — статический анализ манифеста без сети (package.json: разные диапазоны deps/devDeps → error, одинаковые → warning-дублирование, peer-несоответствие → warning с зафиксированным ограничением; requirements.txt: дубликаты → error/warning); resolve-conflicts — детерминированное слияние «одна секция + новейший диапазон» (сравнение максимальных версий, эвристика), `npm install` только предлагается, не запускается; dryRun = true по умолчанию; запись package.json — только в корне через валидацию путей как в FileAgent; мутации npm install/update при error-конфликтах блокируются до resolve-conflicts. Тесты: [`package-agent.test.ts`](src/js/modules/pipeline/agents/package-agent.test.ts:1) — 28 проверок.
+
+### 4.2 BrowserAgent (этап 3.2) ✅
+
+**Файл:** `src/js/modules/pipeline/agents/browser-agent.ts`
+
+- [x] Поиск в интернете (через API) — поиск по новостным источникам: research/NewsFetcher (Google News RSS) + RSS-ленты gatekeeper/RssNewsSource; прямого поискового API нет — зафиксировано дизайн-решение в шапке файла
+- [x] Парсинг веб-страниц — через DI `browserGateway.navigate()` → content/text; лимит контента (по умолчанию 200 КБ), таймаут (15 с), whitelist доменов (свой `DEFAULT_ALLOWED_DOMAINS` — SecurityAgent не экспортирует свой список), только https, посторонний домен → deny
+- [x] Мониторинг цен — MOEX ISS через [`moex-api/history-provider.ts`](src/js/modules/moex-api/history-provider.ts:266) (последняя закрытая свеча), НЕ браузер; браузер — только fallback через `withFallback` (circuit-breaker) с парсингом MOEX ISS JSON (`marketdata.LAST`)
+- [x] Сбор новостей — newsProvider → браузерный RSS fallback → опциональный кэш (DI `newsCache`) → честный «нет данных»; дедупликация по url, лимит
+- [x] Автоматическое обновление — `refresh(sources)`: последовательный опрос источников с интервалами, дедупликация, кэширование по fingerprint (+TTL по умолчанию 60 с; повторный вызов не дублирует)
+- [x] Безопасность и DI — whitelist доменов, лимиты, таймауты, `{ action; items: WebResult[]; source; warning?; timestamp }`; все внешние зависимости инжектируются (browserGateway/newsProvider/priceProvider/newsCache)
+
+**Реализовано:** [`browser-agent.ts`](src/js/modules/pipeline/agents/browser-agent.ts:1) — действия `search/fetch-page/prices/news/refresh`; провайдеры по умолчанию `DefaultNewsProvider` (Google News RSS + RssNewsSource) и `DefaultPriceProvider` (MOEX ISS); `isUrlAllowed()` — проверка https + whitelist (экспортируется); источник результата фиксируется в `output.source` (`api:moex` / `browser:gateway` / `news:api` / `news:browser` / `news:cache` / `deny` / `no-data`); падение всех слоёв → `warning` с честным «нет данных» (не выдумываем). **Ограничения (зафиксированы):** реальный [`browser-gateway`](src/js/modules/pipeline/browser-gateway/browser-gateway.ts:1) не имеет метода `navigate()` — агент определяет контракт `BrowserGatewayLike`, продакшен-адаптер поверх Playwright-сессии — отдельная задача; `DefaultPriceProvider` отдаёт последнюю закрытую свечу из истории (не real-time лента); `search` — поиск по новостям, а не полноценный веб-поиск. Экспорт из [`agents/index.ts`](src/js/modules/pipeline/agents/index.ts:100). Тесты: [`browser-agent.test.ts`](src/js/modules/pipeline/agents/browser-agent.test.ts:1) — 25 проверок (моки, без сети: search, fetch-page allow/deny/https/timeout, prices API→fallback→no-data, news dedup/limit/cache/fallback, refresh кэш и дедупликация, isUrlAllowed).
+
+### 4.3 ConfigAgent (этап 3.3) ✅
+
+Чтение/запись JSON-конфигов, настройка VS Code, экспорт/импорт настроек.
+
+**Реализовано:** [`config-agent.ts`](src/js/modules/pipeline/agents/config-agent.ts:1) — действия `read/write/export/import/add-extension/remove-extension`; чтение/запись JSON-конфигов (атомарно: temp-файл + rename), `write` с `merge: true` — глубокое слияние 2 уровней (ключи 1–2 уровней объединяются, глубже — замена целиком, приоритет новых ключей); `export` — копия нескольких конфигов в один файл (deep-merge источников); `import` — применение данных с резервной копией `.bak` ДО изменения (при ошибке применения бэкап восстанавливается); VS Code (файловая часть): `.vscode/settings.json` — те же read/write/merge, `.vscode/extensions.json` — рекомендации расширений (`add-extension`/`remove-extension`); **ограничение (зафиксировано):** профили VS Code НЕ реализуемы честно через файлы проекта — они хранятся в пользовательском хранилище приложения (~/.vscode, state.vscdb), а не в `.vscode/` рабочей области; dryRun возвращает план без записи; безопасность: пути только внутри корней (переиспользуется `isInside` из [`file-agent.ts`](src/js/modules/pipeline/agents/file-agent.ts:364)), запись запрещена в `.git`/`node_modules` (deny-список) и в сам корень, значения валидируются как JSON (функции/undefined/циклические ссылки → ошибка). Экспорт из [`agents/index.ts`](src/js/modules/pipeline/agents/index.ts:59). Тесты: [`config-agent.test.ts`](src/js/modules/pipeline/agents/config-agent.test.ts:1) — 35 проверок.
+
+### 4.4 ProcessAgent (этап 3.4) ✅
+
+Запуск/остановка процессов (node, python, gulp), перезапуск при ошибках.
+
+**Реализовано:** [`process-agent.ts`](src/js/modules/pipeline/agents/process-agent.ts:1) — действия `start/stop/status/restart`; запуск долгоживущих процессов через `child_process.spawn` БЕЗ shell; команда проходит whitelist терминала (`TERMINAL_ALLOWED_COMMANDS` из TerminalAgent + расширения `python/python3/gulp`), чёрный список опасных паттернов и символы инъекций — те же, что у TerminalAgent; `cwd` и путь бинаря строго внутри корней (`isInside` из FileAgent); остановка graceful: SIGTERM → по таймауту (5 с) → SIGKILL, `stop(name|pid)`; авто-перезапуск при ненулевом exitCode с экспоненциальным backoff (1с→2с→4с…), лимит попыток (по умолчанию 3) → статус `crashed`; для процессов собираются uptime, статус, exitCode, число рестартов и хвост вывода `outputTail` (последние N строк); DI: инжектируемые `spawn` и часы `setNow`; внутренний класс `ManagedProcess`. **Ограничение мониторинга на Windows (зафиксировано):** RSS/CPU внешнего процесса недоступны через стандартный API Node (`process.memoryUsage` — только для текущего процесса, `/proc` отсутствует); модуль `resource-monitor` измеряет нагрузку СИСТЕМЫ (`os.cpus()`/`os.totalmem()`), а не per-process → memoryMb/cpu не собираются. Экспорт из [`agents/index.ts`](src/js/modules/pipeline/agents/index.ts:93). Тесты: [`process-agent.test.ts`](src/js/modules/pipeline/agents/process-agent.test.ts:1) — 20 проверок (мок spawn, fake timers).
+
+### 4.5 SchedulerAgent (этап 4.1) ✅
+
+Планирование задач по расписанию, автоматический запуск pipeline, реакция на события, уведомления в Telegram. Использовать [`adaptive-scheduler`](src/js/modules/adaptive-scheduler/adaptive-scheduler.ts:1) и [`pipeline-scheduler`](src/js/modules/pipeline/pipeline-scheduler.ts:1).
+
+**Реализовано:** [`scheduler-agent.ts`](src/js/modules/pipeline/agents/scheduler-agent.ts:1) — действия `schedule/unschedule/list/trigger/pause/resume`; регистрация job'ов по cron (5 полей: минуты/часы/день месяца/месяц/день недели, списки и диапазоны — cron-утилиты переиспользуются из нового лёгкого модуля [`cron-utils.ts`](src/js/modules/pipeline/cron-utils.ts:1), вынесенного из [`pipeline-scheduler.ts`](src/js/modules/pipeline/pipeline-scheduler.ts:1), чтобы не тянуть граф PipelineCoordinator → ai-memory/SQLite) или по интервалу (`intervalMs`, setInterval-подобно); автоматический запуск pipeline через DI-колбэк `runPipeline` (как в AdaptiveScheduler — без жёсткой связи с PipelineCoordinator); именованные callback-задачи через DI `callbacks`; реакция на события `onEvent({ type: 'news'|'price-change'|'file-change'; payload })` — подписка через `eventFilter` (типы + фильтр по символам из payload), запуск не сдвигает расписание; уведомления в Telegram через DI `sendNotification` (`notify: { enabled, onSuccess?, onFailure?, channel: 'telegram' }`); пауза/возобновление без «догоняния» просроченных запусков; `trigger` — немедленный запуск вне расписания; один интервальный тик (`tickMs`, по умолчанию 1 с) проверяет due-задачи (проще тестировать на fake timers); состояние in-memory + `exportState()`; `execute()` совместим с контрактом `AgentResult`/IAgent. **Честные ограничения cron:** ровно 5 полей (без секунд/шагов/имён месяцев), AND-семантика полей (без OR «день месяца ИЛИ день недели» стандартного cron), горизонт поиска `nextCronRun` — 1 год. **Отдельная задача (не входит):** реальное подключение Telegram-клиента — сейчас только DI-точка `sendNotification`, интеграция с существующим telegram-notifier остаётся за рамками. Экспорт из [`agents/index.ts`](src/js/modules/pipeline/agents/index.ts:157). Тесты: [`scheduler-agent.test.ts`](src/js/modules/pipeline/agents/scheduler-agent.test.ts:1) — 26 проверок (fake timers, мок runPipeline/sendNotification, без сети и БД).
+
+### 4.6 LearningAgent (этап 4.2) ✅
+
+Анализ успешности действий, обучение на обратной связи, предсказание потребностей. Использовать [`ai-memory`](src/js/modules/pipeline/ai-memory/core.ts:1).
+
+**Реализовано:** [`learning-agent.ts`](src/js/modules/pipeline/agents/learning-agent.ts:1) — действия `analyze/learn/predict/report`; analyze — метрики по истории (successRate по агенту/типу действия, среднее время, частые ошибки — топ-5 failed events по action) и уроки из памяти как источник фактов; learn/feedback — `{ outcome: 'good'|'bad'; action; agent?; note? }` → урок `{ id; pattern; action; outcome; weight; createdAt; source }` сохраняется в память через DI `memorySource` (по умолчанию — ai-memory API `saveDecision`/`getByType('decision')` с keyword `lesson`, ленивый динамический импорт, чтобы не тянуть SQLite-граф при импорте модуля); веса уроков устаревают по экспоненциальному полураспаду (`computeDecayedWeight`, `halfLifeDays=30` по умолчанию) — адаптация к стилю пользователя: частые «good» → «повторять чаще», «bad» → «избегать»; predict — эвристика топ-1 по частоте в том же окне + пик времени суток/день недели, честно помечена (`heuristic: true`), пустая история → `null` + причина; report — сводка рекомендаций («Повторять X чаще», «Избегать Y», «Проверить Z по метрикам»); execute() совместим с контрактом `AgentResult`. **DI:** `historySource`/`memorySource`/`now` инжектируются — тесты на mock-источниках и fake now без БД; падение источника → warning + пустые данные (не выдумываем), падение записи урока → `LearningAgentError`. **Ограничения (зафиксированы):** предсказание — эвристика без ML (топ-1 по частоте, без учёта сезонности/трендов); историю по умолчанию нужно подключать (дефолтный `historySource` — пустой массив, в проде — обёртка над HistoryAgent); агрегация предпочтений — только взвешенная сумма уроков без кросс-действий. Экспорт из [`agents/index.ts`](src/js/modules/pipeline/agents/index.ts:172). Тесты: [`learning-agent.test.ts`](src/js/modules/pipeline/agents/learning-agent.test.ts:1) — 26 проверок.
+
+### 4.7 AutoRepairAgent (этап 4.3) ✅
+
+Диагностика ошибок, авто-ремонт, проверка целостности проекта, обновление зависимостей.
+
+**Реализовано:** [`auto-repair-agent.ts`](src/js/modules/pipeline/agents/auto-repair-agent.ts:1) — действия `diagnose/repair/health` с областями `project/deps/configs/integrity`; чекеры возвращают `{ id; severity: info|warning|error; title; detail?; fixable; fix? }`: deps (`node_modules` отсутствует/пуст → warning+fixable npm install; package-lock.json отсутствует/невалиден → warning+fixable; актуальность lock без сети не проверяется — наличие и валидный JSON), configs (package.json невалиден → error с `fixable:false` — авто-пересоздание опасно, только рекомендация восстановления из git/вручную; `.env` отсутствует при наличии `.env.template` → warning+fixable; невалидные `data/*.json` → error+fixable рекреация), integrity (обязательные пути `src/js/app.ts`, `src/index.html`, `gulpfile.js`; удалённый файл под контролем git → error+fixable git-checkout, без git — только диагностика; `report.html`/`report.md` — необязательны, инфо), history (большие `*.log` по размеру — инфо). Ремонт ТОЛЬКО при `autoFix: true` через DI: `.env` восстанавливается копированием из шаблона, битые `data/*.json` пересоздаются как `{}` с бэкапом `.bak` ДО записи (стиль ConfigAgent), удалённые файлы — `git checkout -- <path>`, `npm install` — формируется/выполняется через инжектируемый терминал. Health-агрегация: error → `critical`, warning → `warnings`, иначе `ok`. **Ограничения (зафиксированы):** авто-обновление зависимостей (`npm update`) НЕ выполняется автоматически — только предложение команды, без auto-execute; каждый чекер изолирован try/catch (падение одного не роняет остальные); все проверки БЕЗ сети (только ФС); дефолтный TerminalAgent не разрешает подкоманду git `checkout` — для git-восстановления в проде нужен терминал, разрешающий её, либо DI-мок (в тестах). **DI:** `fileOps` (реализация по умолчанию на fs, экспортируется `createFsFileOps`), `terminal` (`TerminalLike` из PackageAgent), `gitAvailable` (по умолчанию — наличие `.git` в корне; в тестах задаётся явно), кастомные `checkers`. Экспорт из [`agents/index.ts`](src/js/modules/pipeline/agents/index.ts:199). Тесты: [`auto-repair-agent.test.ts`](src/js/modules/pipeline/agents/auto-repair-agent.test.ts:1) — 23 проверки (temp-директории, DI-моки, без реального npm/git).
+
+### 4.8 Унификация API агентов (этап 5.1) ✅
+
+Единый стандарт контрактов action-агентов + тестовый фреймворк для агентов.
+
+**Реализовано:**
+
+- [`agent-contract.ts`](src/js/modules/pipeline/agent/agent-contract.ts:1) — лёгкий модуль БЕЗ импортов агентов: единая форма входа `AgentActionInput<A, P>` = `{ action: A } & P`, единая форма результата `AgentActionResult<A, D>` = `{ action; success; message; data? }`, хелперы `createActionResult` / `failActionResult`, type guard `isActionInput`;
+- Адаптация action-агентов **аддитивно** (входы расширяют `AgentActionInput<XAction>` без изменения сигнатур `execute()`): File, Config, Package, Browser, Process, Scheduler, Learning, AutoRepair;
+- Выходы: `FileAgentOutput` расширяет `AgentActionResult` (уже содержал action+success+message); `BrowserAgentOutput` дополнен стандартным `message` (легаси `source`/`warning` сохранены); у остальных action-агентов `success` вынесен в обёртку `AgentResult` — перевод выходов на «success-in-data» отложен (требовал бы правок всех точек конструирования — зафиксированная аддитивная совместимость);
+- [`agent-testing.ts`](src/js/modules/pipeline/agent/agent-testing.ts:1) — тестовый фреймворк БЕЗ импортов vitest: `createAgentHarness(agent, { timeoutMs?, reporter? })` → `{ run, expectOk(input, check?), expectError(input, messagePart?) }`, `collectExamples(agent, examples)` → отчёт `{ total, passed, failed }`, `mockAgentLike(output, opts?)`; ошибки — `AgentHarnessAssertionError` / `AgentHarnessTimeoutError`;
+- Экспорт из [`agent/index.ts`](src/js/modules/pipeline/agent/index.ts:1);
+- Тесты: [`agent-contract.test.ts`](src/js/modules/pipeline/agent/agent-contract.test.ts:1) (8), [`agent-testing.test.ts`](src/js/modules/pipeline/agent/agent-testing.test.ts:1) (11) и примеры harness на реальных агентах [`agent-harness-examples.test.ts`](src/js/modules/pipeline/agent/agent-harness-examples.test.ts:1) (FileAgent + ConfigAgent, 3).
+
+**Таблица статусов контрактов агентов:**
+
+| Агент           | Тип входа                                                            | Тип выхода (data)                                                        | Действия                                                   | Статус адаптации                                                                  |
+| --------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| FileAgent       | `FileAgentInput extends AgentActionInput<FileAgentAction>`           | `FileAgentOutput extends AgentActionResult` (action/success/message)     | read/readJson/readYaml/write/delete/rename/list/search     | ✅ полностью                                                                      |
+| ConfigAgent     | `ConfigAgentInput extends AgentActionInput<ConfigAgentAction>`       | `ConfigAgentOutput` (action/changed/message; success — в `AgentResult`)  | read/write/export/import/add-extension/remove-extension    | ✅ вход; выход аддитивен                                                          |
+| PackageAgent    | `PackageAgentInput extends AgentActionInput<PackageAction>`          | `PackageAgentOutput` (action/message; success — в `AgentResult`)         | install/update/uninstall/check-conflicts/resolve-conflicts | ✅ вход; выход аддитивен                                                          |
+| BrowserAgent    | `BrowserAgentInput extends AgentActionInput<BrowserAgentAction>`     | `BrowserAgentOutput` (+ стандартный `message`)                           | search/fetch-page/prices/news/refresh                      | ✅ вход; выход +message                                                           |
+| ProcessAgent    | `ProcessAgentInput extends AgentActionInput<ProcessAgentAction>`     | `ProcessAgentOutput` (action/message)                                    | start/stop/status/restart                                  | ✅ вход; выход аддитивен                                                          |
+| SchedulerAgent  | `SchedulerAgentInput extends AgentActionInput<SchedulerAgentAction>` | `SchedulerAgentOutput` (action/message)                                  | schedule/unschedule/list/trigger/pause/resume              | ✅ вход; выход аддитивен                                                          |
+| LearningAgent   | `LearningAgentInput extends AgentActionInput<LearningAction>`        | `LearningAgentOutput` (дискриминированный союз по `kind` — особая форма) | analyze/learn/predict/report                               | ✅ вход; выход не трогаем                                                         |
+| AutoRepairAgent | `AutoRepairInput extends AgentActionInput<AutoRepairAction>`         | `AutoRepairOutput` (action/message)                                      | diagnose/repair/health                                     | ✅ вход; выход аддитивен                                                          |
+| TerminalAgent   | `TerminalAgentInput { command, args?, timeoutMs? }` — БЕЗ `action`   | `TerminalAgentOutput` (command/stdout/stderr/exitCode)                   | команды (не action-модель)                                 | ⚠️ не адаптирован (вход — команда, не `{action}`); зафиксировано                  |
+| SecurityAgent   | `SecurityActionRequest { kind, ... }` — дискриминатор `kind`         | `SecurityDecision` (вердикт allow/deny/require-confirmation)             | validate file/terminal/http/process                        | ⚠️ не адаптирован (вердиктная модель, не ActionResult); зафиксировано             |
+| HistoryAgent    | методы record/find/trace/export (не через `execute()`)               | `HistoryEvent`                                                           | record/append/find/trace/chain/export                      | ⚠️ не адаптирован (самостоятельный класс, без execute()-контракта); зафиксировано |
+
+**Проверки:** `npx vitest run src/js/modules/pipeline/agent/` ✅ (32 теста) · `npx tsc --noEmit` ✅ · `npx eslint` по изменённым файлам ✅ · регресс `npx vitest run src/js/modules/pipeline/agents/` ✅ (325 тестов).
+
+### 4.9 Визуализация (этап 5.2) ✅ (частично)
+
+Панель управления агентами, граф зависимостей, история выполнения с фильтрами, мониторинг ресурсов в реальном времени.
+
+**Реализовано (панель управления агентами):**
+
+- [`agent-panel-model.ts`](src/js/modules/pipeline/visualization/agent-panel-model.ts:1) — чистая модель данных БЕЗ DOM (тестируемая): `buildPanelState({ agents?, history?, watchdog?, controller? })` → `AgentPanelState { agents: AgentCard[]; chains: ChainView[]; history: HistoryEntryView[]; overall: ok|warnings|critical; available }`; карточки строятся из `getSummary()` агентов (статусы idle/running/error/stopped/unknown, `paused` → `stopped`), цепочки — группировка по runId через `HistoryAgent.chain()`, история — последние 10 событий (новые сверху); `computeOverall`: critical — агент в error / критический инцидент Watchdog / ошибки контроллера / проваленная цепочка, warnings — сбои в статистике, некритические инциденты, unhealthy-агенты, blocked-шаги;
+- [`agent-panel.ts`](src/js/modules/pipeline/visualization/agent-panel.ts:1) — `renderAgentPanel(state, { container? })` возвращает HTML-строку (работает и в Node, и в браузере, монтирование через innerHTML опционально): карточки агентов с цветными бейджами и счётчиками, вертикальные цепочки шагов со стрелками/индексами и подсветкой последнего шага, таблица истории (время/агент/действие/статус), сводка overall; XSS-safe `escapeHtml`; минимальные стили одной строкой `agentPanelStyles()` (по образцу `directorChatStyles`);
+- Интеграция: команда `/panel` в [`director-chat-commands.ts`](src/js/modules/pipeline/director/director-chat-commands.ts:1) — собирает состояние из доступных DI-источников (`agentPanelSources`) и возвращает HTML; при отсутствии источников честно показывает «данные недоступны»; экспорт из [`visualization/index.ts`](src/js/modules/pipeline/visualization/index.ts:1).
+
+**Ограничения (зафиксированы):** граф зависимостей, фильтры истории и мониторинг ресурсов в реальном времени — отдельные задачи; `/panel` возвращает HTML, который текстовый чат-виджет экранирует как обычный текст (rich-рендер — вне чата).
+
+**Проверки:** `npx vitest run src/js/modules/pipeline/visualization/` ✅ (35 тестов) · смежные `npx vitest run src/js/modules/pipeline/director/` ✅ (79 тестов) · `npx tsc --noEmit` ✅ · `npx eslint` по изменённым файлам ✅.
+
+---
+
+## 🔒 Безопасность (сквозная)
+
+- [ ] Подтверждение для опасных действий (FileAgent уже блокирует корень/.git; расширить на TerminalAgent)
+- [ ] Журнал всех операций (аудит — основа есть в [`director-audit.ts`](src/js/modules/pipeline/director/director-audit.ts:1))
+- [ ] Возможность отмены (/undo)
+- [ ] Изоляция от системных файлов
+- [x] Валидация .env (этап 1.3) — [`env-validation.ts`](src/js/config/env-validation.ts:1)
+
+---
+
+## 📊 Согласованная приоритизация (порядок работ)
+
+| #     | Задача                                                       | Приоритет            | Impact           | Оценка     |
+| ----- | ------------------------------------------------------------ | -------------------- | ---------------- | ---------- |
+| 1     | Тесты модулей-должников + интеграционные smoke               | P1                   | Надёжность       | 3–5 дней   |
+| 2     | **[x] Circuit breaker + fallback chain**                     | P1                   | Устойчивость     | 2–3 дня    |
+| 3     | **[x] Валидация .env**                                       | P2                   | Безопасность     | 1 день     |
+| 4     | 🔒 telegram-bot в strict (ждёт снятия ignore)                | P2                   | Type-safety      | 1–2 дня    |
+| 5     | **[x] Чистка `as any`**                                      | P2                   | Type-safety      | 1–2 дня    |
+| 6     | **[x] TerminalAgent**                                        | Критический (агенты) | Автономность ИИ  | 2–3 дня    |
+| 7     | **[x] SecurityAgent**                                        | Критический (агенты) | Безопасность ИИ  | 1–2 дня    |
+| 8     | **[x] Director-чат: /status /log /undo**                     | Важный (агенты)      | UX               | 2–3 дня    |
+| 9     | **[x] HistoryAgent**                                         | Важный (агенты)      | Аудит            | 2 дня      |
+| 10    | **[x] Performance-бенчмарки**                                | P3                   | Мониторинг       | 2–3 дня    |
+| 11    | **[x] Документация (ARCHITECTURE/CONTRIBUTING)**             | P3                   | Поддерживаемость | 2–3 дня    |
+| 12    | **[x] Gulp → TypeScript (JSDoc+checkJs)**                    | P4                   | Build-надёжность | 1–2 дня    |
+| 13    | **[x] PackageAgent**                                         | Важный (агенты)      | Автономность ИИ  | 2–3 дня    |
+| 14–16 | **[x] BrowserAgent** / **[x] Config** / **[x] ProcessAgent** | Желательные          | Автономность     | 2–3 недели |
+| 17–19 | **[x] Scheduler** / **[x] Learning** / **[x] AutoRepair**    | Желательные          | Автономность     | 2–3 недели |
+| 20    | **[x] Унификация API** (визуализация — отдельно)             | Полировка            | Зрелость         | 2–3 недели |
+
+**Логика порядка:** сначала закрываем инженерные долги (тесты → устойчивость → безопасность → type-safety), затем даём ИИ «руки» (Terminal → Security → чат/история), затем зрелость (бенчмарки → документация → gulp) и продвинутые агенты.
+
+---
+
+## 🚀 Ближайший шаг
+
+1. ✅ **Исправлен краш десктопа** (`Cannot open database because the directory does not exist` → EPERM в Program Files): [`database.ts`](src/js/modules/pipeline/ai-memory/database.ts:38) сам создаёт каталог БД, а путь выбирает через [`isPackagedApp()`](src/js/modules/pipeline/ai-memory/database.ts:38)/[`resolveDefaultDbPath()`](src/js/modules/pipeline/ai-memory/database.ts:61): в упакованном Electron (детект по `resources/app.asar`) — `%APPDATA%\finance-analyzer\ai-memory.db`, в dev/CLI — `./data/ai-memory.db`. env в `main.ts` бесполезен (module-level инициализация `core.ts` выполняется раньше тела модуля), поэтому он убран. Покрыто тестами [`database.test.ts`](src/js/modules/pipeline/ai-memory/database.test.ts:1) (6 тестов: mkdir, env, packaged, in-memory, дефолтный путь). Пересобран полный комплект в `release-new/`: setup + portable + win-unpacked. Старая `release/win-unpacked` временно заблокирована Windows Defender — восстановить путь: `rmdir /s /q release\win-unpacked && xcopy /e /i /y release-new\win-unpacked release\win-unpacked`.
+2. **telegram-bot strict (1.4)** — 🔒 заблокирован [`.codeassistantignore`](.codeassistantignore:1): требуется снять игнор директории `src/js/modules/telegram-bot/` вручную.
+3. ✅ **Полный NSIS-комплект собран** (после установки VS Build Tools): `release-new/Finance Analyzer-1.0.0-setup.exe` (инсталлятор) + `release-new/Finance Analyzer-1.0.0-portable.exe` + `release-new/win-unpacked/`. Пересборка better-sqlite3 под ABI Electron — `✔ Rebuild Complete`.
+4. **Добавить `release/` в `.gitignore`** — действие пользователя (файлы gitignore заблокированы для ассистента).
+5. ✅ **Контроль версий приложения**: semver из [`package.json`](package.json:2); скрипты `npm run release:patch|minor|major` (bump версии + полная NSIS-сборка); версия показывается в заголовке окна (`app.getVersion()`) и в бейдже шапки UI (IPC `app:version` → preload → renderer).
+6. ✅ **Чистка мёртвого кода**: автоматический анализ импортов по всему проекту → удалены 4 неиспользуемых модуля (`gulp/system/gulp.post.js`, `pipeline/pipeline-output.ts`, `review/external-ai-judge.ts`, `research/providers/finam-fetcher.ts`) и мусорный файл `{}`; битые ссылки в README/ARCHITECTURE поправлены. Проверено: `tsc` + 220 тестов.

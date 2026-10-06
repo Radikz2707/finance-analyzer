@@ -17,6 +17,7 @@
  */
 
 import type { ChatMessage, DirectorResponse } from './director-types.js';
+import type { DangerAssessment } from './director-chat-commands.js';
 
 /** Публичный API для виджета (подмножество DirectorAgent) */
 export interface DirectorChatWidgetApi {
@@ -24,6 +25,14 @@ export interface DirectorChatWidgetApi {
   getChatHistory(): ChatMessage[];
   /** Проактивные сообщения (опционально) */
   getProactiveMessages?: () => unknown[];
+  /**
+   * Оценка опасности сообщения перед отправкой Director.
+   * Если возвращает dangerous=true, виджет покажет кнопку «Подтвердить»
+   * и не отправит сообщение до подтверждения.
+   */
+  assessDanger?: (message: string) => DangerAssessment | null;
+  /** Выполнить сообщение после подтверждения опасности */
+  confirmDangerousAction?: (message: string) => Promise<DirectorResponse>;
 }
 
 /** Конфигурация виджета */
@@ -41,6 +50,12 @@ function roleClass(role: ChatMessage['role']): string {
   return 'dc-msg-' + role;
 }
 
+/** Упрощённый формат сообщения для виджета */
+export interface SimpleChatMessage {
+  role: string;
+  content: string;
+}
+
 /** Экранирование текста для безопасного встраивания в HTML */
 function escapeHtml(text: string): string {
   return String(text)
@@ -51,11 +66,10 @@ function escapeHtml(text: string): string {
 }
 
 /**
- * Построить HTML одного сообщения.
+ * Построить HTML одного сообщения (упрощённый формат).
  * @param msg — сообщение
- * @param showMeta — показывать метаданные (агенты, консилиум)
  */
-export function buildMessageHtml(msg: ChatMessage, showMeta: boolean): string {
+export function buildSimpleMessageHtml(msg: ChatMessage): string {
   const roleLabel =
     msg.role === 'user'
       ? 'Вы'
@@ -63,24 +77,9 @@ export function buildMessageHtml(msg: ChatMessage, showMeta: boolean): string {
         ? 'Director'
         : 'Система';
 
-  let meta = '';
-  if (showMeta && msg.connectedAgents && msg.connectedAgents.length > 0) {
-    meta +=
-      '<div class="dc-meta dc-agents">Подключены: ' +
-      escapeHtml(msg.connectedAgents.join(', ')) +
-      '</div>';
-  }
-  if (showMeta && msg.taskId) {
-    meta +=
-      '<div class="dc-meta dc-task">task: ' + escapeHtml(msg.taskId) + '</div>';
-  }
-
-  const working = msg.isWorking ? ' dc-working' : '';
-
   return (
     '<div class="dc-msg ' +
     roleClass(msg.role) +
-    working +
     '">' +
     '<div class="dc-role">' +
     escapeHtml(roleLabel) +
@@ -88,9 +87,13 @@ export function buildMessageHtml(msg: ChatMessage, showMeta: boolean): string {
     '<div class="dc-text">' +
     escapeHtml(msg.text) +
     '</div>' +
-    meta +
     '</div>'
   );
+}
+
+/** Подсказка по системным командам */
+export function buildCommandsHint(): string {
+  return 'Команды: /status · /log [N] · /undo · /help';
 }
 
 /**
@@ -99,10 +102,10 @@ export function buildMessageHtml(msg: ChatMessage, showMeta: boolean): string {
  */
 export function buildChatHtml(
   messages: ChatMessage[],
-  opts?: { working?: boolean; placeholder?: string },
+  opts?: { working?: boolean; placeholder?: string; commandsHint?: string },
 ): string {
   const placeholder = escapeHtml(opts?.placeholder ?? DEFAULT_PLACEHOLDER);
-  const messagesHtml = messages.map((m) => buildMessageHtml(m, true)).join('');
+  const messagesHtml = messages.map((m) => buildSimpleMessageHtml(m)).join('');
 
   const body =
     messages.length > 0
@@ -114,6 +117,16 @@ export function buildChatHtml(
       ? '<div class="dc-indicator dc-indicator-on">Director думает…</div>'
       : '<div class="dc-indicator">Готов к диалогу</div>';
 
+  const progress =
+    '<div class="dc-progress' +
+    (opts?.working === true ? ' dc-progress-on' : '') +
+    '" role="progressbar" aria-hidden="true"><div class="dc-progress-bar"></div></div>';
+
+  const commandsHint =
+    '<div class="dc-commands">' +
+    escapeHtml(opts?.commandsHint ?? buildCommandsHint()) +
+    '</div>';
+
   return (
     '<div class="director-chat">' +
     '<div class="dc-header">🎯 Director — инвестиционный координатор</div>' +
@@ -121,6 +134,8 @@ export function buildChatHtml(
     body +
     '</div>' +
     indicator +
+    progress +
+    commandsHint +
     '<div class="dc-input-row">' +
     '<input type="text" class="dc-input" placeholder="' +
     placeholder +
@@ -160,23 +175,91 @@ export function mountDirectorChat(
   const sendBtn = container.querySelector<HTMLButtonElement>('.dc-send');
   const messagesEl = container.querySelector<HTMLElement>('.dc-messages');
   const indicatorEl = container.querySelector<HTMLElement>('.dc-indicator');
+  const progressEl = container.querySelector<HTMLElement>('.dc-progress');
+
+  // Ожидающее подтверждения опасное действие (human-in-the-loop)
+  let pendingDanger: { message: string; assessment: DangerAssessment } | null =
+    null;
 
   const render = (working: boolean): void => {
     if (!messagesEl || !indicatorEl) return;
     messagesEl.innerHTML = api
       .getChatHistory()
-      .map((m) => buildMessageHtml(m, true))
+      .map((m) => buildSimpleMessageHtml(m))
       .join('');
     indicatorEl.className =
       'dc-indicator' + (working ? ' dc-indicator-on' : '');
     indicatorEl.textContent = working ? 'Director думает…' : 'Готов к диалогу';
+    progressEl?.classList.toggle('dc-progress-on', working);
     messagesEl.scrollTop = messagesEl.scrollHeight;
+  };
+
+  /** Показать предупреждение об опасном действии с кнопкой «Подтвердить» */
+  const showConfirmation = (
+    message: string,
+    assessment: DangerAssessment,
+  ): void => {
+    pendingDanger = { message, assessment };
+    if (!messagesEl) return;
+
+    const div = document.createElement('div');
+    div.className = 'dc-msg dc-msg-system dc-confirm';
+    div.innerHTML =
+      '<div class="dc-role">⚠️ Подтверждение действия</div>' +
+      '<div class="dc-text">' +
+      escapeHtml(assessment.description ?? 'Действие требует подтверждения') +
+      '</div>' +
+      '<div class="dc-confirm-actions">' +
+      '<button type="button" class="dc-confirm-yes">Подтвердить</button>' +
+      '<button type="button" class="dc-confirm-no">Отмена</button>' +
+      '</div>';
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    const confirm = (): void => {
+      if (!pendingDanger || !api.confirmDangerousAction || !input) return;
+      const confirmedText = pendingDanger.message;
+      pendingDanger = null;
+      div.remove();
+      input.value = '';
+      render(true);
+      void api
+        .confirmDangerousAction(confirmedText)
+        .catch((err: unknown) => {
+          console.warn('[DirectorChat] Ошибка подтверждённого действия:', err);
+        })
+        .finally(() => {
+          render(false);
+        });
+    };
+
+    const cancel = (): void => {
+      pendingDanger = null;
+      div.remove();
+      if (input) input.focus();
+    };
+
+    div
+      .querySelector<HTMLButtonElement>('.dc-confirm-yes')
+      ?.addEventListener('click', confirm);
+    div
+      .querySelector<HTMLButtonElement>('.dc-confirm-no')
+      ?.addEventListener('click', cancel);
   };
 
   const send = (): void => {
     if (!input) return;
     const text = input.value.trim();
     if (!text) return;
+
+    // Подтверждение опасных действий перед отправкой Director
+    const danger = api.assessDanger?.(text) ?? null;
+    if (danger?.dangerous && api.confirmDangerousAction && !pendingDanger) {
+      showConfirmation(text, danger);
+      return;
+    }
+    if (pendingDanger) return; // ждём решение по текущему предупреждению
+
     input.value = '';
     render(true);
     void api
@@ -250,7 +333,22 @@ export function directorChatStyles(): string {
     '.dc-send{padding:8px 16px;border-radius:8px;border:none;background:#2d5aa0;' +
     'color:#fff;cursor:pointer;}' +
     '.dc-empty{color:#888;font-style:italic;padding:8px;}' +
-    '@keyframes dc-blink{50%{opacity:0}}'
+    '.dc-commands{font-size:11px;opacity:.55;color:#9aa0b4;padding:2px 2px 0;}' +
+    '.dc-progress{display:none;height:4px;border-radius:2px;background:#2a2a3c;' +
+    'overflow:hidden;}' +
+    '.dc-progress-on{display:block;}' +
+    '.dc-progress-bar{height:100%;width:40%;background:#ffd166;border-radius:2px;' +
+    'animation:dc-progress-slide 1.2s ease-in-out infinite;}' +
+    '.dc-confirm{border:1px solid #b45309;background:#3d2b10!important;' +
+    'max-width:100%!important;}' +
+    '.dc-confirm-actions{display:flex;gap:8px;margin-top:8px;}' +
+    '.dc-confirm-yes{padding:6px 14px;border-radius:6px;border:none;' +
+    'background:#b45309;color:#fff;cursor:pointer;}' +
+    '.dc-confirm-no{padding:6px 14px;border-radius:6px;border:1px solid #666;' +
+    'background:transparent;color:#ddd;cursor:pointer;}' +
+    '@keyframes dc-blink{50%{opacity:0}}' +
+    '@keyframes dc-progress-slide{0%{transform:translateX(-120%)}' +
+    '100%{transform:translateX(260%)}}'
   );
 }
 

@@ -16,8 +16,13 @@ const { EsbuildPlugin } = require('esbuild-loader');
 import { onError, isProd, safeReload } from './server.js';
 const { src, dest } = gulp;
 
+/**
+ * Сборка JS/TS через webpack + esbuild-loader (app, director-chat, dashboard).
+ * @returns {NodeJS.ReadWriteStream}
+ */
 export function scripts() {
   // Конфигурация Webpack вынесена в изолированную область
+  /** @type {import('webpack').Configuration} */
   const webpackConfig = {
     mode: isProd ? 'production' : 'development',
     target: ['web', 'browserslist'],
@@ -25,6 +30,22 @@ export function scripts() {
     performance: { hints: false },
     entry: {
       app: path.resolve(config.paths.scripts.src),
+      'director-chat-init': path.resolve(
+        'src',
+        'js',
+        'modules',
+        'pipeline',
+        'director',
+        'director-chat-simple.ts',
+      ),
+      'dashboard-init': path.resolve(
+        'src',
+        'js',
+        'modules',
+        'pipeline',
+        'director',
+        'dashboard-init.ts',
+      ),
     },
     output: {
       filename: '[name].min.js',
@@ -48,6 +69,7 @@ export function scripts() {
         crypto: false,
         stream: false,
         buffer: false,
+        'better-sqlite3': false,
       },
       // TypeScript-импорты используют расширение .js (bundler resolution),
       // поэтому webpack должен резолвить "./x.js" как "./x.ts"
@@ -113,10 +135,18 @@ export function scripts() {
           );
         },
       ),
+      // better-sqlite3 — native Node-модуль, заменяем на пустой модуль
+      new webpack.NormalModuleReplacementPlugin(
+        /better-sqlite3/,
+        (resource) => {
+          resource.request = 'data:text/javascript,export default {}';
+        },
+      ),
     ],
   };
 
   // Локальная копия потока для безопасной трансляции контекста ошибок
+  /** @type {NodeJS.ReadWriteStream | undefined} */
   let gulpStream;
 
   const pipeline = [

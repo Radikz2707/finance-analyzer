@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Finance Analyzer — Директор и агенты</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="app-title">
+        <span class="app-logo">🤖</span>
+        <div>
+          <h1>Finance Analyzer</h1>
+          <p class="app-subtitle">Директор · агенты · Консилиум · диспетчер</p>
+        </div>
+        <span
+          id="app-version"
+          class="app-version"
+          title="Версия приложения"
+        ></span>
+      </div>
+      <div id="status-bar" class="status-bar" title="Источник данных портфеля">
+        Загрузка…
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="Разделы приложения">
+      <button type="button" class="tab-btn active" data-tab="chat">
+        💬 Чат
+      </button>
+      <button type="button" class="tab-btn" data-tab="agents">🕸 Агенты</button>
+      <button type="button" class="tab-btn" data-tab="console">
+        🖥 Консоль
+      </button>
+      <button type="button" class="tab-btn" data-tab="dispatcher">
+        🛰 Диспетчер
+      </button>
+    </nav>
+
+    <main class="app-main">
+      <!-- ── Вкладка «Чат» ─────────────────────────────────────────── -->
+      <section id="tab-chat" class="tab-panel active">
+        <div class="chat-layout">
+          <div class="chat-column">
+            <div id="messages" class="messages" aria-live="polite"></div>
+            <div class="quick-row">
+              <button
+                type="button"
+                class="quick-btn"
+                data-question="Сравни Сбер и Газпром"
+              >
+                Сравни Сбер и Газпром
+              </button>
+              <button
+                type="button"
+                class="quick-btn"
+                data-question="Оцени стратегию портфеля"
+              >
+                Оцени стратегию портфеля
+              </button>
+              <button
+                type="button"
+                class="quick-btn"
+                data-question="Создай файл src/test.txt"
+              >
+                Создай файл src/test.txt
+              </button>
+            </div>
+            <div class="input-row">
+              <input
+                id="question-input"
+                type="text"
+                placeholder="Задайте вопрос Директору… (Enter — отправить)"
+                autocomplete="off"
+              />
+              <button id="send-btn" type="button">➤ Отправить</button>
+            </div>
+          </div>
+          <aside class="activity-column">
+            <div class="activity-header">
+              <span>⚡ Лента активности (стриминг аудита)</span>
+              <button id="activity-clear" type="button" class="mini-btn">
+                очистить
+              </button>
+            </div>
+            <div id="activity" class="activity"></div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- ── Вкладка «Агенты» ─────────────────────────────────────── -->
+      <section id="tab-agents" class="tab-panel">
+        <div class="panel-grid">
+          <div class="card">
+            <h2>Агенты</h2>
+            <div id="agent-cards" class="agent-cards"></div>
+          </div>
+          <div class="card">
+            <h2>Цепочки выполнения</h2>
+            <div id="agent-chains" class="chains"></div>
+          </div>
+          <div class="card wide">
+            <h2>История действий</h2>
+            <table class="history-table">
+              <thead>
+                <tr>
+                  <th>Время</th>
+                  <th>Агент</th>
+                  <th>Действие</th>
+                  <th>Статус</th>
+                </tr>
+              </thead>
+              <tbody id="agent-history"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── Вкладка «Консоль» ────────────────────────────────────── -->
+      <section id="tab-console" class="tab-panel">
+        <div class="console-toolbar">
+          <input
+            id="console-search"
+            type="text"
+            placeholder="Поиск по строке…"
+            autocomplete="off"
+          />
+          <label class="check-label">
+            <input id="console-autoscroll" type="checkbox" checked />
+            автоскролл
+          </label>
+          <button id="console-clear" type="button" class="mini-btn">
+            очистить
+          </button>
+        </div>
+        <div id="console-list" class="console-list"></div>
+      </section>
+
+      <!-- ── Вкладка «Диспетчер» ──────────────────────────────────── -->
+      <section id="tab-dispatcher" class="tab-panel">
+        <div class="dispatcher-toolbar">
+          <h2>🛰 Гибридный диспетчер</h2>
+          <button id="run-analysis-btn" type="button">
+            ▶ Запустить анализ
+          </button>
+        </div>
+        <div id="dispatch-status" class="dispatch-status"></div>
+        <div class="panel-grid">
+          <div class="card">
+            <h2>Аномалии цен</h2>
+            <div id="anomalies-list" class="anomalies"></div>
+          </div>
+          <div class="card">
+            <h2>Новости QUIK</h2>
+            <div id="quik-news" class="quik-news"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

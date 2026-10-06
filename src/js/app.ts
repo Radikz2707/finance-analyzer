@@ -18,9 +18,18 @@ function isWebp(): void {
 // ==========================================
 // 📦 ВНЕШНИЕ БИБЛИОТЕКИ И СИСТЕМНЫЕ МОДУЛИ
 // ==========================================
-import { init as dashboard } from './modules/dashboard/dashboard.js';
 import { dbManager } from './modules/db-manager/db-manager.js';
 import { memoryLayer } from './modules/memory-layer/memory-layer.js';
+import { DirectorAgent } from './modules/pipeline/director/director.js';
+import type {
+  DirectorFactsContext,
+  DirectorResponse,
+  ChatMessage,
+} from './modules/pipeline/director/director-types.js';
+import {
+  mountDirectorChat,
+  directorChatStyles,
+} from './modules/pipeline/director/director-chat-widget.js';
 
 // 🛰 HARNESS INTEGRATION — гибридный фоновый анализ.
 // В браузерный бандл попадают ТОЛЬКО лёгкие классы (type-only импорты
@@ -44,6 +53,9 @@ let harnessBridge: HarnessBridge | null = null;
 
 /** Адаптер Telegram-уведомлений (отправитель регистрируется внешне) */
 let telegramNotifier: TelegramNotifier | null = null;
+
+/** Агент Director для чата */
+let directorAgent: DirectorAgent | null = null;
 
 /** Публичное API для дашборда (window.__FINANCE_HARNESS__) */
 interface HarnessWindowApi {
@@ -108,8 +120,66 @@ function initHarness(): void {
         '[Harness] Диспетчер не активирован (приложение продолжает работу):',
         err,
       );
-    }
-  })();
+  }
+})();
+}
+
+// ──────────────────────────────────────────────
+// 🎯 Director Agent — интеграция чата
+// ──────────────────────────────────────────────
+
+function initDirectorChat(): void {
+  // Проверяем наличие контейнера
+  const container = document.getElementById('directorChat');
+  if (!container) return;
+
+  // Применяем стили чата (если ещё не добавлены)
+  const styleId = 'director-chat-styles';
+  if (!document.getElementById(styleId)) {
+    const styleEl = document.createElement('style');
+    styleEl.id = styleId;
+    styleEl.textContent = directorChatStyles();
+    document.head.appendChild(styleEl);
+  }
+
+  try {
+    // Формируем факты портфеля из localStorage (если есть)
+    const savedFacts = localStorage.getItem('portfolioFacts');
+    const facts: DirectorFactsContext = savedFacts ? JSON.parse(savedFacts) : {
+      assetsAnalysis: [],
+      totalPortfolioValue: 0,
+      freeCashRub: 0,
+    };
+
+    // Создаём DirectorAgent
+    directorAgent = new DirectorAgent(undefined, {
+      userName: 'Радик',
+      includeAgentDetails: true,
+    });
+    directorAgent.setFacts(facts);
+    directorAgent.createSession();
+
+    // API для чат-виджета
+    const api = {
+      processUserMessage: async (message: string): Promise<DirectorResponse> => {
+        return directorAgent!.processUserMessage(message);
+      },
+      getChatHistory: (): ChatMessage[] => {
+        return directorAgent!.getChatHistory();
+      },
+      getProactiveMessages: () => {
+        return directorAgent!.getProactiveMessages();
+      },
+    };
+
+    // Монтируем чат-виджет
+    mountDirectorChat(api);
+    console.log('🎯 Director: чат инициализирован');
+  } catch (err) {
+    console.warn('[Director] Ошибка инициализации:', err);
+    container.innerHTML =
+      '<p style="color:#8b949e;text-align:center;padding:20px;">Не удалось загрузить Director. Проверьте консоль.</p>';
+  }
 }
 
 // Инициализация компонентов
@@ -117,13 +187,15 @@ const initApp = () => {
   document.body.classList.add('_js-ready');
   isWebp();
 
-  dashboard();
   // [ДИНАМИЧЕСКИЕ МОДУЛИ]
   dbManager();
   // Telegram-бот загружается лениво (Node-контур): модуль не должен попадать
   // в браузерный бандл и в строгую tsc-проверку (см. tsconfig exclude).
   void importTelegramBot();
   memoryLayer();
+
+  // 🎯 Director: чат-интерфейс с инвестиционным координатором
+  initDirectorChat();
 
   // 🛰 Harness: фоновый анализ стартует независимо от остальных модулей
   initHarness();

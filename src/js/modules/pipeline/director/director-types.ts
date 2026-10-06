@@ -72,7 +72,9 @@ export type AgentRole =
   | 'strategist' // StrategistAgent — стратегический анализ и риски
   | 'scenario' // ScenarioAgent — «что если»
   | 'review' // ReviewAgent — проверка качества решений
-  | 'analysis'; // AnalysisAgent — детерминированный анализ портфеля
+  | 'analysis' // AnalysisAgent — детерминированный анализ портфеля
+  | 'file' // FileAgent — файловые операции (чтение/запись/поиск)
+  | 'terminal'; // TerminalAgent — безопасное выполнение команд
 
 /** Описание задачи для агента */
 export interface AgentTask {

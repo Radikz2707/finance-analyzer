@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+// ВНИМАНИЕ: используются глобальные API vitest (globals: true),
+// т.к. явный import из 'vitest' ломает runner (vitest 5.0.x + эта конфигурация).
 import { PortfolioMathModule } from './portfolio-math';
 import { MacroGoals, CurrentAsset } from '../xlsx-parser/xlsx-parser';
 
@@ -49,8 +50,12 @@ describe('Инвестиционная математика и жесткие л
     // allocatedStocksPercent = 15 (только Сбербанк, Полюс исключён через holdOnly)
     expect(result.freeStocksPoolPercent).toBe(37);
 
-    const polyusAnalysis = result.assetsAnalysis.find((a) => a.name === 'Полюс');
-    const sberAnalysis = result.assetsAnalysis.find((a) => a.name === 'Сбербанк');
+    const polyusAnalysis = result.assetsAnalysis.find(
+      (a) => a.name === 'Полюс',
+    );
+    const sberAnalysis = result.assetsAnalysis.find(
+      (a) => a.name === 'Сбербанк',
+    );
 
     expect(polyusAnalysis).toBeDefined();
     expect(sberAnalysis).toBeDefined();
@@ -325,7 +330,7 @@ describe('Инвестиционная математика и жесткие л
       activeOrdersListText: '',
     };
 
-    const liquidationBase = 569341.60; // market-value — используется для rebalance
+    const liquidationBase = 569341.6; // market-value — используется для rebalance
 
     const asset: CurrentAsset[] = [
       {
@@ -341,13 +346,17 @@ describe('Инвестиционная математика и жесткие л
     ];
 
     const math = new PortfolioMathModule();
-    const result = math.analyzePortfolio(macroWithDifferentBases, asset, liquidationBase);
+    const result = math.analyzePortfolio(
+      macroWithDifferentBases,
+      asset,
+      liquidationBase,
+    );
 
     expect(result.assetsAnalysis[0]!.status).toBe('BUY');
 
     // deviation = 10 - 15 = -5%
     // deficitRub = 5% * 569341.60 = 28467.08 (liquidation basis)
-    const expectedDeficit = Math.round(0.05 * 569341.60);
+    const expectedDeficit = Math.round(0.05 * 569341.6);
     expect(result.assetsAnalysis[0]!.deficitRub).toBe(expectedDeficit);
 
     // НЕ 33556.96 (cost-basis)
@@ -479,8 +488,12 @@ describe('Инвестиционная математика и жесткие л
 
     // freeStocksPoolPercent = 52 - 20 = 32 (NO_TARGET не учитывается)
     expect(result.freeStocksPoolPercent).toBe(32);
-    expect(result.assetsAnalysis.find((a) => a.ticker === 'NO_TARGET')?.status).toBe('NO_TARGET');
-    expect(result.assetsAnalysis.find((a) => a.ticker === 'TARGET')?.status).toBe('BUY');
+    expect(
+      result.assetsAnalysis.find((a) => a.ticker === 'NO_TARGET')?.status,
+    ).toBe('NO_TARGET');
+    expect(
+      result.assetsAnalysis.find((a) => a.ticker === 'TARGET')?.status,
+    ).toBe('BUY');
   });
 
   // ─── Тесты безопасной обработки облигаций (priceUnit) ──────────────────────
@@ -501,7 +514,11 @@ describe('Инвестиционная математика и жесткие л
       balancePrice: 980,
     };
 
-    const result = math.analyzePortfolio(mockMacro, [bondUnknownNominal], 100000);
+    const result = math.analyzePortfolio(
+      mockMacro,
+      [bondUnknownNominal],
+      100000,
+    );
 
     expect(result.assetsAnalysis.length).toBe(1);
     expect(result.assetsAnalysis[0]!.priceUnit).toBe('UNKNOWN');
@@ -601,12 +618,12 @@ describe('Инвестиционная математика и жесткие л
       nominal: undefined,
       priceUnit: 'UNKNOWN',
       currentPrice: 0,
-      balancePrice: 995.50,
+      balancePrice: 995.5,
     };
 
     const result = math.analyzePortfolio(mockMacro, [bond], 100000);
 
-    expect(result.assetsAnalysis[0]!.balancePrice).toBe(995.50);
+    expect(result.assetsAnalysis[0]!.balancePrice).toBe(995.5);
     expect(result.assetsAnalysis[0]!.currentPrice).toBe(0);
     expect(result.assetsAnalysis[0]!.nominal).toBe(0);
     expect(result.assetsAnalysis[0]!.priceUnit).toBe('UNKNOWN');

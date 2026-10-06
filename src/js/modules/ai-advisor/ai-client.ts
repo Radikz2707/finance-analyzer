@@ -15,10 +15,10 @@ import { UIOrdersData } from './types.js';
 import { PortfolioSnapshot } from '../portfolio-snapshot/portfolio-snapshot.js';
 import {
   CURRENT_AI_MODEL,
-  getNextModel,
   getAvailableModels,
   type AiModelConfig,
 } from './ai-config.js';
+import { AiProviderRouter } from './provider-router.js';
 import { localCache, getCachedResponse } from './ollama-cache.js';
 import {
   streamChat,
@@ -171,6 +171,8 @@ export class AiClient {
   private openRouterKey: string;
   private gigaChatKey: string;
   private yandexGptKey: string;
+  /** Маршрутизатор ИИ-провайдеров: circuit breaker + retry + fallback chain */
+  private readonly aiRouter = new AiProviderRouter();
 
   constructor() {
     this.openRouterKey = process.env.OPENROUTER_API_KEY || '';
@@ -353,21 +355,28 @@ export class AiClient {
     }
 
     ctx += '\n=== \u0410\u041a\u0422\u0418\u0412\u042b ===\n';
-    ctx += '\u0424\u043e\u0440\u043c\u0430\u0442: [\u0422\u0418\u041f] \u0422\u0438\u043a\u0435\u0440 | \u0414\u043e\u043b\u044f% | \u0426\u0435\u043d\u0430 | \u0412\u0445\u043e\u0434 | P&L% | \u041a\u043e\u043b-\u0432\u043e | \u041b\u0438\u043a\u0432 | \u0414\u0435\u0444\u0438\u0446\u0438\u0442 | \u0421\u0442\u0430\u0442\u0443\u0441 | target% | Thesis\n';
+    ctx +=
+      '\u0424\u043e\u0440\u043c\u0430\u0442: [\u0422\u0418\u041f] \u0422\u0438\u043a\u0435\u0440 | \u0414\u043e\u043b\u044f% | \u0426\u0435\u043d\u0430 | \u0412\u0445\u043e\u0434 | P&L% | \u041a\u043e\u043b-\u0432\u043e | \u041b\u0438\u043a\u0432 | \u0414\u0435\u0444\u0438\u0446\u0438\u0442 | \u0421\u0442\u0430\u0442\u0443\u0441 | target% | Thesis\n';
 
     for (const a of assetsAnalysis) {
       if (a.currentPercent === 0 && a.targetPercent === 0) continue;
 
       const type =
-        a.assetType === '\u0410' || a.assetType === '\u0410\u043a\u0446\u0438\u044f'
+        a.assetType === '\u0410' ||
+        a.assetType === '\u0410\u043a\u0446\u0438\u044f'
           ? '\u0410\u041a\u0426\u0418\u042f'
-          : a.assetType === '\u041e' || a.assetType === '\u041e\u0431\u043b\u0438\u0433\u0430\u0446\u0438\u044f'
+          : a.assetType === '\u041e' ||
+              a.assetType ===
+                '\u041e\u0431\u043b\u0438\u0433\u0430\u0446\u0438\u044f'
             ? '\u041e\u0411\u041b'
             : '\u0424\u041e\u041d\u0414';
 
       const pnlFromEntry =
         a.balancePrice > 0 && a.currentPrice > 0
-          ? (((a.currentPrice - a.balancePrice) / a.balancePrice) * 100).toFixed(1) + '%'
+          ? (
+              ((a.currentPrice - a.balancePrice) / a.balancePrice) *
+              100
+            ).toFixed(1) + '%'
           : '—';
 
       const liquidation = (a.currentPrice * a.quantity).toLocaleString('ru-RU');
@@ -466,12 +475,14 @@ export class AiClient {
     prompt += '=== ЗАДАЧА ===\n';
     prompt += 'Проанализируй портфель:\n';
     prompt += '- Ставка ЦБ: ' + cbrRate + '%\n';
-    prompt += '- Структура: Акции ' + stocksPct + '%, Облигации ' + bondsPct + '%\n';
+    prompt +=
+      '- Структура: Акции ' + stocksPct + '%, Облигации ' + bondsPct + '%\n';
     prompt += '- Дата: ' + currentMonth + '\n\n';
 
     prompt += '=== ОТВЕТ ===\n';
     prompt += '1. Макро: соответствие структуры ставке ' + cbrRate + '%\n';
-    prompt += '2. Каждый актив: статус (BUY/STABLE/REDUCE/EXIT/NO_TARGET) + аргументация\n';
+    prompt +=
+      '2. Каждый актив: статус (BUY/STABLE/REDUCE/EXIT/NO_TARGET) + аргументация\n';
     prompt += '   - targetPercent = 0% → EXIT\n';
     prompt += '   - targetPercent = — → NO_TARGET\n';
     prompt += '3. Ребалансировка: приоритет BUY/REDUCE/EXIT, кэш\n';
@@ -1126,116 +1137,122 @@ export class AiClient {
     );
     console.log(`[AI] Попытка запроса к: ${CURRENT_AI_MODEL.name}...`);
 
-    // Пробуем модели по очереди
-    for (const model of availableModels) {
-      try {
-        let aiText: string;
-
+    // Пробуем модели по очереди: circuit breaker + retry + fallback chain.
+    // Каждый провайдер защищён собственным CircuitBreaker; после N ошибок
+    // подряд цепь размыкается — провайдер пропускается без лишних вызовов.
+    const providers = availableModels.map((model) => ({
+      id: model.id,
+      name: model.name,
+      query: async (system: string, user: string): Promise<string> => {
         if (model.envKey === 'OPENROUTER_API_KEY') {
-          aiText = await this.queryOpenRouter(model, systemPrompt, userPrompt);
-        } else if (model.id === 'ollama') {
-          aiText = await this.queryOllama(
+          return this.queryOpenRouter(model, system, user);
+        }
+        if (model.id === 'ollama') {
+          return this.queryOllama(
             model,
-            systemPrompt,
-            userPrompt,
+            system,
+            user,
             assetTickers,
             analysis.assetsAnalysis,
           );
-        } else if (model.id === 'gigachat') {
-          aiText = await this.queryGigaChat(model, systemPrompt, userPrompt);
-        } else if (model.id === 'yandexgpt') {
-          aiText = await this.queryYandexGpt(model, systemPrompt, userPrompt);
-        } else {
-          console.warn(`[AI] Модель ${model.name} пока не поддерживается`);
-          continue;
         }
-
-        console.log(
-          `[AI] ✅ Ответ получен от ${model.name} (${aiText.length} символов)`,
-        );
-
-        // Извлекаем структурированный JSON из AI-ответа
-        let structuredJson: RawAIJson | null = null;
-        let structuredValidation: StructuredValidationResult | null = null;
-
-        try {
-          structuredJson = extractJsonFromAiResponse(aiText);
-          if (structuredJson) {
-            structuredValidation = validateStructuredAIJson(
-              structuredJson,
-              assetTickers,
-            );
-            console.log(
-              `[AI] JSON извлечён: ticker=${structuredJson.ticker}, ` +
-                `action=${structuredJson.recommendedAction}, ` +
-                `valid=${structuredValidation?.valid ?? 'N/A'}`,
-            );
-            if (structuredValidation && !structuredValidation.valid) {
-              console.warn(
-                '[AI] ⚠️ JSON валидация не пройдена:',
-                structuredValidation.errors,
-              );
-            }
-        } else {
-          console.warn('[AI] JSON-блок не найден в ответе');
-          // Логгируем начало ответа для отладки
-          console.log('[AI] Начало ответа AI:', aiText.slice(0, 500));
+        if (model.id === 'gigachat') {
+          return this.queryGigaChat(model, system, user);
         }
-        } catch (err) {
-          console.error('[AI] Ошибка парсинга JSON:', err);
+        if (model.id === 'yandexgpt') {
+          return this.queryYandexGpt(model, system, user);
         }
+        throw new Error(`Модель ${model.name} пока не поддерживается`);
+      },
+    }));
 
-        return {
-          text: aiText.replace(/\n/g, '<br>'),
-          modelUsed: model.name,
-          success: true,
-          structuredJson,
-          structuredValidation,
+    let aiText: string;
+    let usedProviderName: string;
+    try {
+      const routeResult = await this.aiRouter.execute(
+        providers,
+        systemPrompt,
+        userPrompt,
+      );
+      aiText = routeResult.text;
+      usedProviderName = routeResult.providerName;
+      console.log(
+        `[AI] ✅ Ответ получен от ${usedProviderName} (${aiText.length} символов)`,
+      );
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('[AI] Ошибка всех моделей: ' + msg);
+      // Детальная отладка: выводим полный ответ ошибки
+      if (error instanceof Error && 'response' in error) {
+        const axiosError = error as Error & {
+          response?: { data?: unknown; status?: number };
         };
-      } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
-        console.error('[AI] Ошибка модели ' + model.name + ': ' + msg);
-        // Детальная отладка: выводим полный ответ ошибки
-        if (error instanceof Error && 'response' in error) {
-          const axiosError = error as Error & {
-            response?: { data?: unknown; status?: number };
-          };
-          if (axiosError.response?.data) {
-            console.error(
-              '[AI] Response data:',
-              JSON.stringify(axiosError.response.data, null, 2).substring(
-                0,
-                500,
-              ),
-            );
-          }
-          console.error('[AI] Response status:', axiosError.response?.status);
+        if (axiosError.response?.data) {
+          console.error(
+            '[AI] Response data:',
+            JSON.stringify(axiosError.response.data, null, 2).substring(0, 500),
+          );
         }
-
-        const nextModel = getNextModel(model.id);
-        if (nextModel) {
-          console.log(`[AI] → Переключение на ${nextModel.name}...`);
-        }
+        console.error('[AI] Response status:', axiosError.response?.status);
       }
+
+      // Если все модели не сработали — локальный fallback
+      console.warn(
+        '[AI] ⚠️ Все модели недоступны. Используется локальный fallback.',
+      );
+      return {
+        text: buildFallbackReport(
+          analysis,
+          inc,
+          validation,
+          orders,
+          macroData.keyRate,
+        ),
+        modelUsed: 'local-fallback',
+        success: false,
+        error: 'Все API недоступны',
+        structuredJson: null,
+        structuredValidation: null,
+      };
     }
 
-    // Если все модели не сработали — локальный fallback
-    console.warn(
-      '[AI] ⚠️ Все модели недоступны. Используется локальный fallback.',
-    );
+    // Извлекаем структурированный JSON из AI-ответа
+    let structuredJson: RawAIJson | null = null;
+    let structuredValidation: StructuredValidationResult | null = null;
+
+    try {
+      structuredJson = extractJsonFromAiResponse(aiText);
+      if (structuredJson) {
+        structuredValidation = validateStructuredAIJson(
+          structuredJson,
+          assetTickers,
+        );
+        console.log(
+          `[AI] JSON извлечён: ticker=${structuredJson.ticker}, ` +
+            `action=${structuredJson.recommendedAction}, ` +
+            `valid=${structuredValidation?.valid ?? 'N/A'}`,
+        );
+        if (structuredValidation && !structuredValidation.valid) {
+          console.warn(
+            '[AI] ⚠️ JSON валидация не пройдена:',
+            structuredValidation.errors,
+          );
+        }
+      } else {
+        console.warn('[AI] JSON-блок не найден в ответе');
+        // Логгируем начало ответа для отладки
+        console.log('[AI] Начало ответа AI:', aiText.slice(0, 500));
+      }
+    } catch (err) {
+      console.error('[AI] Ошибка парсинга JSON:', err);
+    }
+
     return {
-      text: buildFallbackReport(
-        analysis,
-        inc,
-        validation,
-        orders,
-        macroData.keyRate,
-      ),
-      modelUsed: 'local-fallback',
-      success: false,
-      error: 'Все API недоступны',
-      structuredJson: null,
-      structuredValidation: null,
+      text: aiText.replace(/\n/g, '<br>'),
+      modelUsed: usedProviderName,
+      success: true,
+      structuredJson,
+      structuredValidation,
     };
   }
 }

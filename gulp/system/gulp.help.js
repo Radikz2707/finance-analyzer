@@ -43,6 +43,24 @@ ${c.green}${c.bold}npm run blueprint${c.reset}    — схема структу�
 ${c.green}${c.bold}npm run watch${c.reset}        — слежение за изменениями (TS)
 ${c.green}${c.bold}npm run pipeline${c.reset}     — запуск пайплайна анализа
 ${c.green}${c.bold}npm run harness${c.reset}      — запуск harness-моста
+${c.green}${c.bold}npm run chat${c.reset}         — чат с Финансовым Директором (CLI)
+${c.green}${c.bold}npm run bench${c.reset}        — бенчмарки производительности
+${c.green}${c.bold}npm run test:integration${c.reset} — интеграционные тесты
+${c.green}${c.bold}npm run lint:gulp${c.reset}    — проверка типов Gulp-задач
+${c.green}${c.bold}npm run update-modules${c.reset}  — обновление зависимостей
+${c.green}${c.bold}npm run cache:clear-ai${c.reset}  — очистка кэша ИИ
+
+${c.green}${c.bold}ДЕСКТОП (ELECTRON):${c.reset}
+${c.green}${c.bold}npm run app:dev${c.reset}      — запуск десктопа (dev-режим)
+${c.green}${c.bold}npm run app:build${c.reset}    — полная сборка (NSIS + portable)
+${c.green}${c.bold}npm run app:build:dir${c.reset}— сборка без инсталлятора (win-unpacked)
+${c.green}${c.bold}npm run app:rebuild${c.reset}  — rebuild better-sqlite3 под ABI Electron
+${c.green}${c.bold}npm run app:typecheck${c.reset}— проверка типов desktop
+
+${c.green}${c.bold}РЕЛИЗЫ (semver):${c.reset}
+${c.green}${c.bold}npm run release:patch${c.reset}  — bump patch (1.0.0 → 1.0.1) + сборка
+${c.green}${c.bold}npm run release:minor${c.reset}  — bump minor (→ 1.1.0) + сборка
+${c.green}${c.bold}npm run release:major${c.reset}  — bump major (→ 2.0.0) + сборка
 
 ${c.green}${c.bold}GIT:${c.reset}
 ${c.green}${c.bold}npm run push${c.reset}         — commit + push в текущую ветку

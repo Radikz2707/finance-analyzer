@@ -8,6 +8,10 @@
  * - Утилиты (generateId, countBytes, parseJsonColumn, compressContent)
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
 import Database from 'better-sqlite3';
 import type {
   MemoryEntryType,
@@ -25,15 +29,70 @@ import {
 // 1. Создание базы данных
 // ──────────────────────────────────────────────
 
+export interface DatabasePathContext {
+  /** Исполняемый файл приложения (по умолчанию process.execPath). */
+  execPath?: string;
+  /** Версия Electron (по умолчанию process.versions.electron). */
+  electronVersion?: string;
+}
+
+/**
+ * Определяет, запущено ли приложение в упакованном Electron
+ * (в resources лежит app.asar): тогда cwd защищён системой
+ * (Program Files) и писать рядом нельзя.
+ */
+export function isPackagedApp(
+  execPath: string = process.execPath,
+  electronVersion: string | undefined = process.versions?.electron,
+): boolean {
+  if (typeof electronVersion !== 'string') return false;
+  // Упакованное приложение: рядом с исполняемым файлом лежит resources/app.asar.
+  // В dev-режиме (electron.exe из node_modules) app.asar отсутствует,
+  // в обычном Node process.versions.electron не определён.
+  const resourcesDir = path.join(path.dirname(execPath), 'resources');
+  return fs.existsSync(path.join(resourcesDir, 'app.asar'));
+}
+
+/**
+ * Путь БД по умолчанию.
+ * - Упакованное Electron-приложение: %APPDATA%/finance-analyzer/ai-memory.db —
+ *   гарантированно записываемое место (совпадает с app.getPath('userData')
+ *   при name=finance-analyzer).
+ * - Dev/CLI (Node без electron): ./data/ai-memory.db относительно cwd.
+ */
+export function resolveDefaultDbPath(
+  context: DatabasePathContext = {},
+): string {
+  if (!isPackagedApp(context.execPath, context.electronVersion)) {
+    return './data/ai-memory.db';
+  }
+  const base =
+    process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  return path.join(base, 'finance-analyzer', 'ai-memory.db');
+}
+
 /**
  * Создаёт инстанс SQLite базы данных.
  * В тестовом режиме (NODE_ENV=test) использует in-memory базу для полной изоляции данных.
- * В production — сохраняет данные в ./data/ai-memory.db с WAL-режимом для конкурентного доступа.
+ * В production — сохраняет данные в ./data/ai-memory.db (dev) или
+ * %APPDATA%/finance-analyzer/ai-memory.db (упакованный Electron).
  * @returns инстанс SQLite базы данных с настроенными pragma
  */
-export function createDatabase(): Database.Database {
-  const isTest = typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
-  const dbPath = isTest ? ':memory:' : './data/ai-memory.db';
+export function createDatabase(
+  context: DatabasePathContext = {},
+): Database.Database {
+  const isTest =
+    typeof process !== 'undefined' && process.env.NODE_ENV === 'test';
+  const dbPath = isTest
+    ? ':memory:'
+    : process.env.AI_MEMORY_DB_PATH || resolveDefaultDbPath(context);
+
+  // better-sqlite3 не создаёт директорию сам: у упакованного Electron
+  // приложения cwd ≠ корню проекта (release/win-unpacked, Program Files),
+  // поэтому каталог гарантируем явно перед открытием базы.
+  if (dbPath !== ':memory:') {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  }
 
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
@@ -184,7 +243,9 @@ export function compressContent(content: string): string {
  * @param row — сырая строка из SQLite
  * @returns распарсенная запись оперативной памяти
  */
-export function parseOperationalRow(row: Record<string, unknown>): OperationalMemoryEntry {
+export function parseOperationalRow(
+  row: Record<string, unknown>,
+): OperationalMemoryEntry {
   return {
     id: row.id as string,
     type: row.entry_type as MemoryEntryType,
@@ -203,7 +264,9 @@ export function parseOperationalRow(row: Record<string, unknown>): OperationalMe
  * @param row — сырая строка из SQLite
  * @returns распарсенная запись стратегической памяти
  */
-export function parseStrategicRow(row: Record<string, unknown>): StrategicMemoryEntry {
+export function parseStrategicRow(
+  row: Record<string, unknown>,
+): StrategicMemoryEntry {
   const anomalies = parseJsonColumn<
     Array<{ type: string; severity: number; description: string }>
   >(row.anomalies as string);
@@ -214,7 +277,8 @@ export function parseStrategicRow(row: Record<string, unknown>): StrategicMemory
     date: row.date as string,
     compressedData: row.compressed_data as string,
     raw: row.raw_data
-      ? parseJsonColumn<PortfolioKpiSnapshot>(row.raw_data as string) || undefined
+      ? parseJsonColumn<PortfolioKpiSnapshot>(row.raw_data as string) ||
+        undefined
       : undefined,
     trend: row.trend_direction
       ? {

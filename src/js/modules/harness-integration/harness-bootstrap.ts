@@ -26,6 +26,12 @@ import { TelegramNotifier } from './telegram-notifier.js';
 import { TelegramHttpSender } from './telegram-http-sender.js';
 import { PriceAlertNotifier } from './price-alert-notifier.js';
 import type { HarnessDashboardPayload } from './types.js';
+import { validateEnv } from '../../config/index.js';
+import { createActionAgentFactory } from '../pipeline/agents/agent-factory.js';
+import { SecurityAgent } from '../pipeline/agents/security-agent.js';
+import { DirectorAgent } from '../pipeline/director/director.js';
+import { DirectorAgentFacade } from '../pipeline/director/agent-facade.js';
+import type { DirectorConfig } from '../pipeline/director/director-types.js';
 
 /** Логгер подсистемы Harness */
 const log = getLogger('harness');
@@ -70,6 +76,20 @@ export interface HarnessBootstrapConfig {
 export function createHarness(
   config: HarnessBootstrapConfig = {},
 ): HarnessHandle {
+  // Мягкая валидация окружения: в SSR/браузер-под-Node отсутствие ключей не
+  // фатально (везде fallback-режимы). Жёсткую проверку с понятной ошибкой
+  // делает assertEnvValid() в CLI-входах (scripts/harness-start.ts).
+  if (typeof process !== 'undefined' && process.env.NODE_ENV !== 'test') {
+    const validation = validateEnv();
+    if (!validation.ok) {
+      log.warn(
+        `Конфигурация окружения неполная (${validation.errors.length} ошиб.): ${validation.errors
+          .map((issue) => issue.key)
+          .join(', ')} — работа в fallback-режиме.`,
+      );
+    }
+  }
+
   // Опциональная файловая запись логов (Node-only): LOG_TO_FILE=1 → data/logs/app.log
   if (
     typeof process !== 'undefined' &&
@@ -147,6 +167,24 @@ export function createHarness(
   }
 
   return { bridge, scheduler, notifier, priceAlertNotifier };
+}
+
+/**
+ * Собрать DirectorAgent для Node-контура (CLI/SSR/harness).
+ *
+ * Подключает action-агентов (File/Terminal) через фабрику и прогоняет их
+ * через SecurityAgent. В браузерной сборке эти операции недоступны:
+ * фасад без actionAgents честно отвечает «доступно в десктопном режиме».
+ */
+export function createNodeDirector(config?: DirectorConfig): DirectorAgent {
+  const registry = createActionAgentFactory();
+  const security = new SecurityAgent();
+  const facade = new DirectorAgentFacade({
+    actionAgents: registry.createDefaultActionAgents(),
+    // Адаптер к единому контракту `check` фасада (validate — синхронный)
+    security: { check: (request) => security.validate(request) },
+  });
+  return new DirectorAgent({ facade }, config);
 }
 
 /**

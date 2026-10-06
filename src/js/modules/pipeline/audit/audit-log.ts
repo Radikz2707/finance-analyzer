@@ -35,6 +35,7 @@ export type AuditEventType =
   | 'command.approve'
   | 'command.reject'
   | 'command.modify'
+  | 'security.decision'
   | 'iteration.complete';
 
 // ──────────────────────────────────────────────
@@ -131,7 +132,10 @@ export class AuditLog {
   }
 
   /** Получить записи с пагинацией */
-  getPage(page: number, pageSize: number): {
+  getPage(
+    page: number,
+    pageSize: number,
+  ): {
     entries: AuditEntry[];
     total: number;
     page: number;
@@ -192,7 +196,9 @@ export class AuditLog {
     const agentErrors = recent.filter((e) => e.type === 'agent.error').length;
     const reviews = recent.filter((e) => e.type.startsWith('review.')).length;
     const commands = recent.filter((e) => e.type === 'command.director').length;
-    const iterations = recent.filter((e) => e.type === 'iteration.complete').length;
+    const iterations = recent.filter(
+      (e) => e.type === 'iteration.complete',
+    ).length;
 
     let text = '<b>📊 Сводка за 60 мин:</b>\n\n';
     text += `🚀 Запусков агентов: ${agentStarts}\n`;
@@ -247,6 +253,8 @@ export class AuditLog {
         return '❌';
       case 'command.modify':
         return '✏️';
+      case 'security.decision':
+        return '🔐';
       case 'iteration.complete':
         return '🔄';
       default:

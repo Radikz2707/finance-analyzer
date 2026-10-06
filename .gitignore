@@ -8,6 +8,7 @@ src/js/env-config.js
 
 # 📦 СКОМПИЛИРОВАННЫЙ КОД (Скрываем от main целиком!)
 dist/
+release/
 
 # Временные файлы сквозного аудита системы и бэкапы
 .audit/
@@ -54,7 +55,7 @@ create-modules.js
 pipeline.ts
 
 # 🌐 HTML-дашборды (если генерируются)
-src/dashboard.html
+src/components/dashboard/dashboard.html
 
 # 📱 Telegram-бот (локальные файлы)
 src/js/modules/telegram-bot/
@@ -72,3 +73,15 @@ src/scss/dashboard.scss
 # 🔧 Интеграционные файлы (не для репозитория)
 src/js/app-integration.ts
 nul
+
+# 🖥 Electron-сборки и артефакты десктопа
+release-new/
+desktop/dist/
+desktop/build/
+
+# 📄 Сгенерированные отчёты (дополнительно)
+report.pdf
+
+# 🧰 Локальные инструменты и кэши
+.gigacode_vsc/
+gulp/system/gulp.cache.js

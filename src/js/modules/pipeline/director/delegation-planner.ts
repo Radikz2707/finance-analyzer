@@ -39,6 +39,12 @@ const AGENT_RATIONALE: Record<AgentRole, string> = {
     'Не исключает сценарии заранее из-за возможного убытка.',
   review:
     'Контроль качества: поиск ошибок, противоречий и пропущенных рисков в собранных результатах.',
+  file:
+    'Файловые операции: чтение, создание, редактирование, удаление и поиск ' +
+    'файлов в пределах разрешённого корня проекта.',
+  terminal:
+    'Терминальные операции: безопасное выполнение команд (чтение, npm, git) ' +
+    'в пределах корня проекта с whitelist/blacklist и таймаутами.',
 };
 
 /** Приоритет задачи по роли */
@@ -49,6 +55,8 @@ const ROLE_PRIORITY: Record<AgentRole, AgentTask['priority']> = {
   strategist: 'normal',
   scenario: 'normal',
   review: 'low',
+  file: 'normal',
+  terminal: 'normal',
 };
 
 /** Участвует ли результат роли в Consilium */
@@ -59,6 +67,8 @@ const ROLE_FOR_CONSILIUM: Record<AgentRole, boolean> = {
   strategist: true,
   scenario: true,
   review: false,
+  file: false,
+  terminal: false,
 };
 
 // ──────────────────────────────────────────────
@@ -230,6 +240,10 @@ export class DirectorDelegationPlanner {
         return `Построить сценарии «что если» по ${subject}: удержание, предложение AI, альтернативы. Не отбрасывать убыточные варианты заранее.`;
       case 'review':
         return `Проверить качество и непротиворечивость результатов по ${subject}: найти ошибки, противоречия, пропущенные риски.`;
+      case 'file':
+        return `Выполнить файловую операцию в рамках вопроса: ${question.text}. Операции ограничены корнем проекта и не затрагивают служебные пути.`;
+      case 'terminal':
+        return `Выполнить команду терминала в рамках вопроса: ${question.text}. Команды проходят whitelist/blacklist и не выходят за пределы корня проекта.`;
       default:
         return `Проанализировать вопрос по ${subject}.`;
     }
@@ -268,6 +282,10 @@ export class DirectorDelegationPlanner {
         return ['scenarios', 'bestScenarioId'];
       case 'review':
         return ['warnings', 'agreementPercent', 'finalRecommendation'];
+      case 'file':
+        return ['action', 'path', 'message'];
+      case 'terminal':
+        return ['command', 'stdout', 'stderr', 'exitCode', 'truncated'];
       default:
         return ['result'];
     }
@@ -310,4 +328,6 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   strategist: 'StrategistAgent (стратегия и риски)',
   scenario: 'ScenarioAgent (сценарии «что если»)',
   review: 'ReviewAgent (контроль качества)',
+  file: 'FileAgent (файловые операции)',
+  terminal: 'TerminalAgent (безопасный терминал)',
 };

@@ -1,4 +1,5 @@
-﻿import { describe, it, expect } from 'vitest';
+// ВНИМАНИЕ: используются глобальные API vitest (globals: true),
+// т.к. явный import из 'vitest' ломает runner (vitest 5.0.x + эта конфигурация).
 import { MacroResearchProvider } from './macro-provider.js';
 import type {
   ResearchAsset,

@@ -1,0 +1,31 @@
+{
+  // Отдельный tsconfig десктоп-приложения: корневой tsc (src/**) его не видит,
+  // поэтому electron-импорты main/preload не ломают `npm run test:run`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "api-types.ts",
+    "ipc-core.ts",
+    "ipc-core.test.ts",
+    "main.ts",
+    "preload.ts",
+    "renderer/**/*.ts"
+  ],
+  "exclude": ["dist", "node_modules"]
+}

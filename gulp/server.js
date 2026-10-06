@@ -17,6 +17,13 @@ let isServerInitialized = false;
 // =========================================================================
 // 🎛️ 1. БЕЗОПАСНЫЙ ОБРАБОТЧИК ОШИБОК ДЛЯ ПОТОКОВ GULP 5 (STREAMX)
 // =========================================================================
+/**
+ * Единый обработчик ошибок потоков gulp (используется в plumber по всему проекту).
+ * При прямом вызове (catch) this отсутствует — optional-chaining ниже это покрывает.
+ * @this {any}
+ * @param {*} err - ошибка потока ({ plugin, message })
+ * @returns {void}
+ */
 export const onError = function (err) {
   console.error(
     '\x1b[31m%s\x1b[0m',
@@ -30,6 +37,7 @@ export const onError = function (err) {
 /**
  * ИЗОЛИРОВАННЫЙ И БЕЗОПАСНЫЙ ТРИГГЕР ПЕРЕЗАГРУЗКИ СТРАНИЦ
  * (Полная замена global.safeReload)
+ * @returns {void}
  */
 export const safeReload = () => {
   if (isServerInitialized && allowReload && typeof bs.reload === 'function') {
@@ -40,6 +48,10 @@ export const safeReload = () => {
 // =========================================================================
 // 🌐 2. ИНИЦИАЛИЗАЦИЯ ЛОКАЛЬНОГО СЕРВЕРА BROWSER-SYNC
 // =========================================================================
+/**
+ * Старт browser-sync на http://127.0.0.1:8080.
+ * @returns {Promise<void>}
+ */
 export function browsersync() {
   return new Promise((resolve) => {
     allowReload = true;
@@ -62,6 +74,22 @@ export function browsersync() {
         watchOptions: {
           awaitWriteFinish: true,
         },
+        snippetOptions: {
+          whitelist: ['/components/dashboard/dashboard.html'],
+        },
+        middleware: [
+          function (req, res, next) {
+            if (req.url && req.url.match(/\.(css|js|html)$/)) {
+              res.setHeader(
+                'Cache-Control',
+                'no-cache, no-store, must-revalidate',
+              );
+              res.setHeader('Pragma', 'no-cache');
+              res.setHeader('Expires', '0');
+            }
+            next();
+          },
+        ],
       });
 
       isServerInitialized = true;
@@ -70,7 +98,12 @@ export function browsersync() {
   });
 }
 
-// Вспомогательный хелпер для ленивого запуска тасок внутри вотчера
+/**
+ * Вспомогательный хелпер для ленивого запуска тасок внутри вотчера.
+ * @param {string} moduleName
+ * @param {string} functionName
+ * @returns {(done: GulpDone) => Promise<void>}
+ */
 const dynamicRun = (moduleName, functionName) => {
   return async (done) => {
     try {
@@ -82,9 +115,9 @@ const dynamicRun = (moduleName, functionName) => {
       done();
     } catch (err) {
       console.error(
-        `\x1b[31m[Watcher Error] Не удалось запустить ${functionName}: ${err.message}\x1b[0m`,
+        `\x1b[31m[Watcher Error] Не удалось запустить ${functionName}: ${err instanceof Error ? err.message : String(err)}\x1b[0m`,
       );
-      done(err);
+      done(err instanceof Error ? err : new Error(String(err)));
     }
   };
 };
@@ -92,10 +125,17 @@ const dynamicRun = (moduleName, functionName) => {
 // =========================================================================
 // 👁️ 3. СЛЕДИТЕЛЬ ЗА ИЗМЕНЕНИЯМИ (WATCHER ENGINE ДЛЯ GULP 5)
 // =========================================================================
+/**
+ * Вотчеры стилей/скриптов/html/контента/графики с автодеплоем и reload.
+ * @param {GulpDone} done
+ */
 export function startwatch(done) {
   const watchOptions = { delay: 500, queue: true, ignoreInitial: true };
 
   // Универсальный и безопасный асинхронный мост для нативного деплоя
+  /**
+   * @param {(() => void) | null | undefined} [actionCallback]
+   */
   const runWithDeploy = (actionCallback) => {
     return () => {
       if (typeof actionCallback === 'function') actionCallback();
@@ -129,13 +169,22 @@ export function startwatch(done) {
   watch(
     [
       `${config.srcFolder}/*.html`,
-      `${config.srcFolder}/components/**/*.html`,
+      `!${config.srcFolder}/components/**/*.html`,
       `${config.srcFolder}/parts/**/*.html`,
     ],
     watchOptions,
   ).on('change', (filePath) => {
     console.log(`✨ [HTML Change] Изменен: ${path.basename(filePath)}`);
     dynamicRun('html', 'html')(runWithDeploy());
+  });
+
+  // 3.1. Отслеживание dashboard.html
+  watch(
+    [`${config.srcFolder}/components/dashboard/dashboard.html`],
+    watchOptions,
+  ).on('change', (filePath) => {
+    console.log(`✨ [Dashboard Change] Изменен: ${path.basename(filePath)}`);
+    dynamicRun('server', 'copyDashboard')(runWithDeploy());
   });
 
   // 4. Отслеживание Markdown-контента блога и Word-документов
@@ -161,12 +210,7 @@ export function startwatch(done) {
 
       const updateContent = async () => {
         try {
-          const { wrapInMasterLayout } =
-            await import('./utils/content-processor.js');
-          const { blogIndex } = await import('./html.js');
-
-          // 🔥 ИСПРАВЛЕНИЕ РЕЙС-КОНДИШЕНА ПУТЕЙ:
-          // Вычисляем корректную целевую вложенность для сохранения структуры категорий блога
+          // 🔥 Вычисляем корректную целевую вложенность для сохранения структуры категорий блога
           const isMainBlog = currentCategory === 'blog';
           const destFolder = isMainBlog
             ? path.join(config.buildFolder, currentCategory)
@@ -182,16 +226,11 @@ export function startwatch(done) {
             path.join(destFolder, path.basename(filePath)),
           );
 
-          // Запускаем пересборку структуры стилей и метаданных конкретной папки
-          await wrapInMasterLayout(destFolder, currentCategory);
-
-          blogIndex(() => {
-            console.log(
-              `✅ Контент категории ${currentCategory} успешно обновлен в dist`,
-            );
-            deployLocal(() => {
-              safeReload(); // <-- Используем безопасный экспортируемый метод
-            });
+          console.log(
+            `✅ Контент категории ${currentCategory} скопирован в dist`,
+          );
+          deployLocal(() => {
+            safeReload(); // <-- Используем безопасный экспортируемый метод
           });
         } catch (err) {
           console.error('❌ Ошибка при асинхронном обновлении контента:', err);
@@ -226,4 +265,17 @@ export function startwatch(done) {
   }
 
   done();
+}
+
+// Копирование dashboard.html
+/**
+ * Копирует src/components/dashboard/dashboard.html в dist/components/dashboard.
+ * @param {GulpDone} done
+ */
+export function copyDashboard(done) {
+  gulp
+    .src(`${config.srcFolder}/components/dashboard/dashboard.html`)
+    .pipe(gulp.dest(`${config.buildFolder}/components/dashboard`))
+    .on('end', done)
+    .on('error', done);
 }

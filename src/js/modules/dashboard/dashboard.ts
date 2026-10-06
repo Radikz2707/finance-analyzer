@@ -18,6 +18,16 @@ import {
   exportMemory,
 } from '../pipeline/ai-memory/index.js';
 import type { AIMemoryStats } from '../pipeline/ai-memory/types.js';
+import { DirectorAgent } from '../pipeline/director/director.js';
+import type {
+  DirectorFactsContext,
+  DirectorResponse,
+  ChatMessage,
+} from '../pipeline/director/director-types.js';
+import {
+  mountDirectorChat,
+  directorChatStyles,
+} from '../pipeline/director/director-chat-widget.js';
 
 // ──────────────────────────────────────────────
 // Типы данных для dashboard
@@ -307,6 +317,22 @@ function renderKPI(data: DashboardData): void {
 
 let charts: Record<string, unknown> = {};
 
+// Chart.js подключается глобально через <script> в index.html; npm-пакет (и его типы)
+// не установлен, поэтому объявляем минимальный контракт конструктора и получаем доступ
+// к глобальной переменной через unknown-приведение (легитимная интеграция).
+interface ChartJsInstance {
+  destroy(): void;
+}
+
+type ChartJsConstructor = new (
+  canvas: HTMLCanvasElement,
+  config: Record<string, unknown>,
+) => ChartJsInstance;
+
+function getChartConstructor(): ChartJsConstructor {
+  return (window as unknown as { Chart: ChartJsConstructor }).Chart;
+}
+
 function renderCharts(data: DashboardData): void {
   // Уничтожаем старые графики
   Object.values(charts).forEach((chart) => {
@@ -321,8 +347,7 @@ function renderCharts(data: DashboardData): void {
     'chartPortfolio',
   ) as HTMLCanvasElement | null;
   if (portfolioCanvas && data.portfolioDistribution.values.length > 0) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    charts.portfolio = new (window as any).Chart(portfolioCanvas, {
+    charts.portfolio = new (getChartConstructor())(portfolioCanvas, {
       type: 'doughnut',
       data: {
         labels: data.portfolioDistribution.labels,
@@ -349,8 +374,7 @@ function renderCharts(data: DashboardData): void {
     'chartReturns',
   ) as HTMLCanvasElement | null;
   if (returnsCanvas && data.returnsHistory.dates.length > 0) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    charts.returns = new (window as any).Chart(returnsCanvas, {
+    charts.returns = new (getChartConstructor())(returnsCanvas, {
       type: 'line',
       data: {
         labels: data.returnsHistory.dates,
@@ -382,8 +406,7 @@ function renderCharts(data: DashboardData): void {
     'chartAccuracy',
   ) as HTMLCanvasElement | null;
   if (accuracyCanvas) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    charts.accuracy = new (window as any).Chart(accuracyCanvas, {
+    charts.accuracy = new (getChartConstructor())(accuracyCanvas, {
       type: 'bar',
       data: {
         labels: ['Точность', 'Sharpe', 'Win Rate'],
@@ -413,8 +436,7 @@ function renderCharts(data: DashboardData): void {
     'chartROI',
   ) as HTMLCanvasElement | null;
   if (roiCanvas && data.portfolioDistribution.labels.length > 0) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    charts.roi = new (window as any).Chart(roiCanvas, {
+    charts.roi = new (getChartConstructor())(roiCanvas, {
       type: 'bar',
       data: {
         labels: data.portfolioDistribution.labels.slice(0, 10),
@@ -443,8 +465,7 @@ function renderCharts(data: DashboardData): void {
     'chartFrontier',
   ) as HTMLCanvasElement | null;
   if (frontierCanvas) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    charts.frontier = new (window as any).Chart(frontierCanvas, {
+    charts.frontier = new (getChartConstructor())(frontierCanvas, {
       type: 'scatter',
       data: {
         datasets: [
@@ -476,8 +497,7 @@ function renderCharts(data: DashboardData): void {
     'chartWeights',
   ) as HTMLCanvasElement | null;
   if (weightsCanvas && data.optimization.weights.values.length > 0) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    charts.weights = new (window as any).Chart(weightsCanvas, {
+    charts.weights = new (getChartConstructor())(weightsCanvas, {
       type: 'pie',
       data: {
         labels: data.optimization.weights.labels,
@@ -792,12 +812,10 @@ function renderMemory(data: DashboardMemoryData): void {
     'chartKpiTrend',
   ) as HTMLCanvasElement | null;
   if (kpiTrendCanvas && data.kpiTrend.values.length > 0) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    if ((window as any).Chart && charts.kpiTrend) {
+    if ('Chart' in window && charts.kpiTrend) {
       (charts.kpiTrend as { destroy: () => void }).destroy();
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    charts.kpiTrend = new (window as any).Chart(kpiTrendCanvas, {
+    charts.kpiTrend = new (getChartConstructor())(kpiTrendCanvas, {
       type: 'line',
       data: {
         labels: data.kpiTrend.dates,
@@ -1032,6 +1050,81 @@ function initActions(): void {
 }
 
 // ──────────────────────────────────────────────
+// Director Agent — интеграция чата
+// ──────────────────────────────────────────────
+
+let directorAgent: DirectorAgent | null = null;
+
+function initDirectorChat(dashboardData: DashboardData): void {
+  // Проверяем наличие контейнера
+  const container = document.getElementById('directorChat');
+  if (!container) return;
+
+  // Применяем стили чата (если ещё не добавлены)
+  const styleId = 'director-chat-styles';
+  if (!document.getElementById(styleId)) {
+    const styleEl = document.createElement('style');
+    styleEl.id = styleId;
+    styleEl.textContent = directorChatStyles();
+    document.head.appendChild(styleEl);
+  }
+
+  try {
+    // Формируем факты портфеля из загруженных данных
+    const facts: DirectorFactsContext = {
+      assetsAnalysis: dashboardData.portfolioPositions.map((p) => {
+        const total = dashboardData.kpi.totalBalance || 1;
+        return {
+          ticker: p.ticker,
+          name: p.name,
+          currentPercent: ((p.currentMarketValue || 0) / total) * 100,
+          targetPercent: 0,
+          deficitRub: 0,
+          status: 'active',
+          quantity: p.quantity,
+          balancePrice: p.avgPrice,
+          currentPrice: p.currentPrice || 0,
+          unrealizedProfitRub: (p.currentMarketValue ?? 0) - p.totalCost,
+        };
+      }),
+      totalPortfolioValue: dashboardData.kpi.totalBalance,
+      freeCashRub: 0,
+    };
+
+    // Создаём DirectorAgent
+    directorAgent = new DirectorAgent(undefined, {
+      userName: 'Радик',
+      includeAgentDetails: true,
+    });
+    directorAgent.setFacts(facts);
+    directorAgent.createSession();
+
+    // API для чат-виджета
+    const api = {
+      processUserMessage: async (
+        message: string,
+      ): Promise<DirectorResponse> => {
+        return directorAgent!.processUserMessage(message);
+      },
+      getChatHistory: (): ChatMessage[] => {
+        return directorAgent!.getChatHistory();
+      },
+      getProactiveMessages: () => {
+        return directorAgent!.getProactiveMessages();
+      },
+    };
+
+    // Монтируем чат-виджет
+    mountDirectorChat(api);
+    console.log('🎯 Director: чат инициализирован');
+  } catch (err) {
+    console.warn('[Dashboard] Ошибка инициализации Director:', err);
+    container.innerHTML =
+      '<p class="alerts-list__empty">Не удалось загрузить Director. Проверьте консоль.</p>';
+  }
+}
+
+// ──────────────────────────────────────────────
 // Главная функция инициализации
 // ──────────────────────────────────────────────
 
@@ -1059,6 +1152,9 @@ export function init(): void {
   // Рендерим AI Memory
   const memoryData = loadMemoryData();
   renderMemory(memoryData);
+
+  // Инициализируем Director чат
+  initDirectorChat(data);
 
   console.log('📊 Dashboard: успешно инициализирован');
 }

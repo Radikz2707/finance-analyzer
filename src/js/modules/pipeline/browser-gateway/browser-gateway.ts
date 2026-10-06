@@ -32,6 +32,40 @@ import {
 } from './types.js';
 
 // ──────────────────────────────────────────────
+// Минимальные Playwright-контракты
+// ──────────────────────────────────────────────
+// npm-пакет playwright устанавливается опционально (типы недоступны статически),
+// поэтому объявляем только используемые методы и приводим их через unknown.
+
+interface PlaywrightLaunchOptions {
+  headless?: boolean;
+  args?: string[];
+}
+
+interface PlaywrightContextOptions {
+  userAgent?: string;
+  viewport?: { width: number; height: number };
+}
+
+interface PlaywrightPage {
+  addInitScript(
+    script: (storage: Record<string, string>) => void,
+    arg?: Record<string, string>,
+  ): Promise<void>;
+  close(): Promise<void>;
+}
+
+interface PlaywrightContext {
+  addCookies(cookies: unknown[]): Promise<void>;
+  newPage(): Promise<PlaywrightPage>;
+}
+
+interface PlaywrightBrowser {
+  newContext(options?: PlaywrightContextOptions): Promise<PlaywrightContext>;
+  close(): Promise<void>;
+}
+
+// ──────────────────────────────────────────────
 // BrowserGateway
 // ──────────────────────────────────────────────
 
@@ -41,8 +75,8 @@ import {
 export class BrowserGateway {
   private _state: GatewayState = 'idle';
   private happProcess: ReturnType<typeof spawn> | null = null;
-  private browser: Record<string, unknown> | null = null;
-  private page: Record<string, unknown> | null = null;
+  private browser: PlaywrightBrowser | null = null;
+  private page: PlaywrightPage | null = null;
   private happConfig: HappConfig;
   private browserConfig: BrowserConfig;
   private aiConfig: ExternalAiConfig | null = null;
@@ -192,10 +226,13 @@ export class BrowserGateway {
           'Playwright not installed. Run: npm install playwright && npx playwright install',
         );
       }
-      const { chromium } = playwrightModule;
+      // Playwright импортируется динамически и типы npm-пакета недоступны,
+      // поэтому объект chromium приводится к минимальному локальному контракту через unknown.
+      const chromium = playwrightModule.chromium as unknown as {
+        launch(options?: PlaywrightLaunchOptions): Promise<PlaywrightBrowser>;
+      };
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const browserInstance = await (chromium as any).launch({
+      const browserInstance = await chromium.launch({
         headless: this.browserConfig.headless,
         args: [
           '--no-sandbox',
@@ -206,25 +243,21 @@ export class BrowserGateway {
 
       this.browser = browserInstance;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const context = await (browserInstance as any).newContext({
+      const context = await browserInstance.newContext({
         userAgent: this.browserConfig.userAgent,
         viewport: { width: 1920, height: 1080 },
       });
 
       // Добавляем cookies если есть
       if (this.browserConfig.cookies && this.browserConfig.cookies.length > 0) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (context as any).addCookies(this.browserConfig.cookies);
+        await context.addCookies(this.browserConfig.cookies);
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.page = await (context as any).newPage();
+      this.page = await context.newPage();
 
       // Устанавливаем localStorage если есть
       if (this.browserConfig.localStorage) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (this.page as any).addInitScript(
+        await this.page.addInitScript(
           (storage: Record<string, string>) => {
             for (const [key, value] of Object.entries(storage)) {
               localStorage.setItem(key, value);
@@ -254,14 +287,12 @@ export class BrowserGateway {
 
     try {
       if (this.page) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (this.page as any).close().catch(() => {});
+        await this.page.close().catch(() => {});
         this.page = null;
       }
 
       if (this.browser) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (this.browser as any).close().catch(() => {});
+        await this.browser.close().catch(() => {});
         this.browser = null;
       }
     } catch (err) {

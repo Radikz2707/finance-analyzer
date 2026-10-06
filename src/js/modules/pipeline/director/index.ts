@@ -24,5 +24,6 @@ export * from './director-memory.js';
 export * from './director-audit.js';
 export * from './chat-session.js';
 export * from './proactive-suggester.js';
+export * from './director-chat-commands.js';
 export * from './director.js';
 export * from './director-chat-widget.js';

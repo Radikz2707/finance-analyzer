@@ -89,6 +89,8 @@ function makeDataOutput(
         anomalies: [],
       },
     ],
+    keyRate: 21,
+    keyRateDate: '29.10.2024',
     ...overrides,
   };
 }

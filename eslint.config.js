@@ -20,6 +20,9 @@ export default tseslint.config(
       '.idea/**',
       '*.log',
       'src/js/env-config.js',
+      // Сгенерированные артефакты десктоп-приложения (esbuild/sass)
+      'desktop/dist/**',
+      'desktop/build/**',
     ],
   },
 
@@ -71,6 +74,28 @@ export default tseslint.config(
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
       ],
       'no-console': 'off', // В скриптах автоматизации логи консоли разрешены всегда
+      quotes: ['error', 'single', { avoidEscape: true }],
+      semi: ['error', 'always'],
+    },
+  },
+
+  // 🖥️ ПРОФИЛЬ 3: Десктоп-приложение (Electron main/preload/renderer + сборка)
+  {
+    files: ['desktop/**/*.{ts,mjs}'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: {
+        ...globals.node, // main/preload/build: process, Buffer, __dirname
+        ...globals.browser, // renderer: window, document
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
+      'no-console': 'off', // В десктоп-логировании консоль разрешена
       quotes: ['error', 'single', { avoidEscape: true }],
       semi: ['error', 'always'],
     },

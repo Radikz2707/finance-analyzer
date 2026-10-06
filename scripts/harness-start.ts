@@ -17,7 +17,10 @@
  * скрипт продолжает работать; любые ошибки логируются, а не роняют процесс.
  */
 
+// dotenv загружается здесь, чтобы валидация ниже видела реальные значения из .env.
+import 'dotenv/config';
 import { initHarness } from '../src/js/modules/harness-integration/harness-bootstrap.js';
+import { assertEnvValid } from '../src/js/config/index.js';
 import type { AdaptiveScheduler } from '../src/js/modules/adaptive-scheduler/adaptive-scheduler.js';
 import type { AdaptiveSchedulerEvent } from '../src/js/modules/adaptive-scheduler/types.js';
 import type { SchedulerStatusInfo } from '../src/js/modules/harness-integration/types.js';
@@ -49,6 +52,18 @@ function isNotifiableMode(mode: AdaptiveSchedulerEvent['to']): boolean {
 }
 
 function main(): void {
+  // Ранняя валидация .env: понятная ошибка со списком ключей до первого
+  // обращения к API (подсказка: скопируйте .env.template → .env).
+  try {
+    assertEnvValid();
+  } catch (err) {
+    console.error(
+      `[harness-start] ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const handle = initHarness({ autoStart: true });
 
   if (!handle) {

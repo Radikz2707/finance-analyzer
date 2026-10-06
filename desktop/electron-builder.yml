@@ -1,0 +1,52 @@
+# electron-builder конфигурация десктоп-приложения Finance Analyzer.
+#
+# Запуск (app dir = корень репозитория):
+#   npm run app:build:js   → desktop/dist (esbuild + sass)
+#   npm run app:rebuild    → better-sqlite3 под ABI Electron
+#   npx electron-builder --win --config desktop/electron-builder.yml
+# Быстрая проверка без инсталлятора: npx electron-builder --win dir
+
+appId: com.financeanalyzer.desktop
+productName: Finance Analyzer
+copyright: Copyright © 2026 Finance Analyzer
+
+directories:
+  output: release
+  buildResources: desktop/build
+
+# Только собранные артефакты + native-модуль better-sqlite3 (asarUnpack).
+# Остальные зависимости (xlsx, axios, dotenv, open) уже вшиты в main.cjs
+# сборщиком esbuild — их копировать не нужно.
+files:
+  - desktop/dist/**/*
+  - node_modules/better-sqlite3/**/*
+  - package.json
+
+# Пересборка native-модулей отключена: на машине без Visual Studio Build Tools
+# @electron/rebuild падает. Правильный порядок — `npm run app:rebuild` перед
+# упаковкой (компилирует better-sqlite3 под ABI Electron).
+npmRebuild: false
+
+asarUnpack:
+  - node_modules/better-sqlite3/**
+
+win:
+  icon: icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  artifactName: ${productName}-${version}-setup.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}

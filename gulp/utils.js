@@ -12,6 +12,10 @@ import { Transform } from 'stream';
 const { src, dest } = gulp;
 
 // 🧹 1. ПОЛНАЯ АСИНХРОННАЯ ОЧИСТКА ПЕРЕД СБОРКОЙ
+/**
+ * Полная очистка dist/, кэша node_modules/.cache и временных файлов блога.
+ * @param {GulpDone} done - колбэк завершения gulp-задачи
+ */
 export async function cleandist(done) {
   try {
     if (fs.existsSync(config.buildFolder)) {
@@ -34,11 +38,15 @@ export async function cleandist(done) {
     done();
   } catch (err) {
     onError(err);
-    done(err);
+    done(err instanceof Error ? err : new Error(String(err)));
   }
 }
 
 // 📦 3. АРХИВИРОВАНИЕ СБОРКИ (ZIP)
+/**
+ * Упаковка собранного dist/ в архивы/*.zip.
+ * @returns {Promise<void>}
+ */
 export function zipFiles() {
   return new Promise((resolve, reject) => {
     const now = new Date();
@@ -61,7 +69,10 @@ export function zipFiles() {
     ];
 
     // nodir: true предотвращает баг пустых директорий в Gulp 5
-    src(srcPath, { allowEmpty: true, nodir: true })
+    // (флаг отсутствует в SrcOptions из @types/gulp — расширяем тип локально)
+    /** @type {NonNullable<Parameters<typeof src>[1]> & { nodir?: boolean }} */
+    const zipSrcOptions = { allowEmpty: true, nodir: true };
+    src(srcPath, zipSrcOptions)
       // Переопределяем поведение plumber, чтобы он не спамил ошибку свойства 'path' в консоль
       .pipe(plumber({ errorHandler: () => {} }))
       .pipe(zip(fileName))
@@ -84,6 +95,11 @@ export function zipFiles() {
 }
 
 // 🛠️ 4. ПЛАГИН НА БАЗЕ SHARP ДЛЯ СЖАТИЯ И ОПТИМИЗАЦИИ
+/**
+ * Нативный Transform-плагин сжатия изображений через sharp.
+ * @param {SharpCompressorOptions} [options]
+ * @returns {Transform}
+ */
 export const sharpCompressor = (options = {}) => {
   sharp.cache(false);
   const webpQuality = options.webpQuality || 70;
@@ -91,6 +107,11 @@ export const sharpCompressor = (options = {}) => {
 
   return new Transform({
     objectMode: true,
+    /**
+     * @param {VinylFile} file
+     * @param {BufferEncoding} enc
+     * @param {import('stream').TransformCallback} callback
+     */
     async transform(file, enc, callback) {
       if (file.isNull()) return callback(null, file);
       if (file.isStream())
@@ -100,7 +121,8 @@ export const sharpCompressor = (options = {}) => {
       if (ext === '.svg' || ext === '.gif') return callback(null, file);
 
       try {
-        let pipeline = sharp(file.contents);
+        // file.contents уже прошёл guards isNull/isStream → гарантирован Buffer
+        let pipeline = sharp(/** @type {Buffer} */ (file.contents));
         if (ext === '.jpg' || ext === '.jpeg') {
           pipeline = pipeline.jpeg({
             quality: jpegQuality,
@@ -122,7 +144,7 @@ export const sharpCompressor = (options = {}) => {
 
         console.error(
           `\x1b[31m[Sharp Critical Error] Ошибка файла ${file.relative}:\x1b[0m`,
-          err.message,
+          err instanceof Error ? err.message : String(err),
         );
 
         if (isProd) {
@@ -140,12 +162,22 @@ export const sharpCompressor = (options = {}) => {
 };
 
 // 🛠️ 5. ПЛАГИН ДЛЯ КОНВЕРТАЦИИ В WEBP (БЕЗУПРЕЧНЫЙ NATIVE TRANSFORM)
+/**
+ * Нативный Transform-плагин конвертации PNG/JPG/JPEG в WebP.
+ * @param {{ quality?: number }} [options]
+ * @returns {Transform}
+ */
 export const sharpToWebp = (options = {}) => {
   sharp.cache(false);
   const quality = options.quality || 70;
 
   return new Transform({
     objectMode: true,
+    /**
+     * @param {VinylFile} file
+     * @param {BufferEncoding} enc
+     * @param {import('stream').TransformCallback} callback
+     */
     async transform(file, enc, callback) {
       if (file.isNull()) return callback(null, file);
       if (file.isStream())
@@ -156,14 +188,16 @@ export const sharpToWebp = (options = {}) => {
       if (!['.png', '.jpg', '.jpeg'].includes(ext)) return callback(null, file);
 
       try {
-        file.contents = await sharp(file.contents).webp({ quality }).toBuffer();
+        file.contents = await sharp(/** @type {Buffer} */ (file.contents))
+          .webp({ quality })
+          .toBuffer();
 
         file.path = file.path.replace(/\.(png|jpg|jpeg)$/i, '.webp');
         callback(null, file);
       } catch (err) {
         console.error(
           `[Sharp WebP Error] Ошибка файла ${file.relative}:`,
-          err.message,
+          err instanceof Error ? err.message : String(err),
         );
         callback(null, file);
       }
@@ -173,6 +207,7 @@ export const sharpToWebp = (options = {}) => {
 
 /**
  * Автоматический деплой скомпилированного проекта в локальный сервер IIS wwwroot
+ * @param {GulpDone} [done]
  */
 export function deployLocal(done) {
   if (!config.localServerFolder) {

@@ -57,6 +57,8 @@ const ROLE_LABELS: Record<AgentRole, string> = {
   scenario: 'Scenario',
   research: 'Research',
   review: 'Review',
+  file: 'File',
+  terminal: 'Terminal',
 };
 
 // ──────────────────────────────────────────────

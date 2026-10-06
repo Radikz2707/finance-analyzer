@@ -12,13 +12,30 @@ import type {
   DirectorTask,
 } from './director-types.js';
 
+/** Подписчик потока событий аудита */
+export type DirectorAuditEventListener = (event: DirectorAuditEvent) => void;
+
 /** Аудит-лог Director (in-memory, с ограничением размера) */
 export class DirectorAuditLog {
   private entries: DirectorAuditEvent[] = [];
   private readonly maxEntries: number;
+  private readonly listeners = new Set<DirectorAuditEventListener>();
 
   constructor(maxEntries = 500) {
     this.maxEntries = maxEntries;
+  }
+
+  /**
+   * Подписаться на поток событий аудита.
+   * Вызов `record()` уведомляет подписчиков в порядке записи.
+   *
+   * @returns функция отписки (повторная отписка — безопасный no-op).
+   */
+  onEvent(listener: DirectorAuditEventListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   /** Записать событие */
@@ -43,6 +60,15 @@ export class DirectorAuditLog {
     this.entries.push(entry);
     if (this.entries.length > this.maxEntries) {
       this.entries = this.entries.slice(-this.maxEntries);
+    }
+    // Уведомляем подписчиков ПОСЛЕ сохранения записи: порядок вызова record()
+    // совпадает с порядком доставки. Ошибка слушателя не роняет запись.
+    for (const listener of this.listeners) {
+      try {
+        listener(entry);
+      } catch {
+        // Слушатель — наблюдатель: его сбой не должен ломать аудит-трейл.
+      }
     }
     return entry;
   }

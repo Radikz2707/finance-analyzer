@@ -111,6 +111,38 @@ function initializeMemoryTables(): void {
 // 3. Оперативная память — запись и чтение
 // ──────────────────────────────────────────────
 
+/** Сырая строка таблицы operational_memory (snake_case колонки БД) */
+interface OperationalMemoryRow {
+  id: number;
+  timestamp: string;
+  event_type: MemoryEventType;
+  ticker: string | null;
+  severity: MemorySeverity;
+  summary: string;
+  details: string | null;
+  is_read: number;
+  created_at: string;
+}
+
+/**
+ * Привести строку БД к публичному API (camelCase).
+ * Без маппинга потребители получали сырые snake_case-колонки,
+ * и поля eventType/isRead/createdAt были undefined.
+ */
+function mapOperationalRow(raw: OperationalMemoryRow): OperationalMemoryEntry {
+  return {
+    id: raw.id,
+    timestamp: raw.timestamp,
+    eventType: raw.event_type,
+    ticker: raw.ticker ?? undefined,
+    severity: raw.severity,
+    summary: raw.summary,
+    details: raw.details ?? '',
+    isRead: raw.is_read === 1,
+    createdAt: raw.created_at,
+  };
+}
+
 const operationalMemory = {
   /** Добавить запись в оперативную память */
   add(params: {
@@ -147,7 +179,7 @@ const operationalMemory = {
       ORDER BY timestamp DESC
       LIMIT ?
     `);
-    return stmt.all(limit) as OperationalMemoryEntry[];
+    return (stmt.all(limit) as OperationalMemoryRow[]).map(mapOperationalRow);
   },
 
   /** Получить записи по типу события */
@@ -159,7 +191,9 @@ const operationalMemory = {
       ORDER BY timestamp DESC
       LIMIT ?
     `);
-    return stmt.all(eventType, limit) as OperationalMemoryEntry[];
+    return (stmt.all(eventType, limit) as OperationalMemoryRow[]).map(
+      mapOperationalRow,
+    );
   },
 
   /** Получить записи по тикеру */
@@ -171,7 +205,9 @@ const operationalMemory = {
       ORDER BY timestamp DESC
       LIMIT ?
     `);
-    return stmt.all(ticker, limit) as OperationalMemoryEntry[];
+    return (stmt.all(ticker, limit) as OperationalMemoryRow[]).map(
+      mapOperationalRow,
+    );
   },
 
   /** Получить непрочитанные записи */
@@ -183,7 +219,7 @@ const operationalMemory = {
       ORDER BY timestamp DESC
       LIMIT ?
     `);
-    return stmt.all(limit) as OperationalMemoryEntry[];
+    return (stmt.all(limit) as OperationalMemoryRow[]).map(mapOperationalRow);
   },
 
   /** Отметить как прочитанную */
@@ -213,18 +249,22 @@ const operationalMemory = {
   } {
     initializeMemoryTables();
 
+    // SQLite-модификатор даты обязан быть строкой ('-7 days'); числовой
+    // параметр даёт нераспознанный модификатор → NULL и пустой результат.
+    const periodModifier = `-${daysAgo} days`;
+
     const totalStmt = db.prepare(`
       SELECT COUNT(*) as total FROM operational_memory
       WHERE timestamp >= datetime('now', ?)
     `);
-    const total = totalStmt.get(daysAgo) as { total: number };
+    const total = totalStmt.get(periodModifier) as { total: number };
 
     const typeStmt = db.prepare(`
       SELECT event_type, COUNT(*) as count FROM operational_memory
       WHERE timestamp >= datetime('now', ?)
       GROUP BY event_type
     `);
-    const types = typeStmt.all(daysAgo) as {
+    const types = typeStmt.all(periodModifier) as {
       event_type: string;
       count: number;
     }[];
@@ -234,7 +274,7 @@ const operationalMemory = {
       WHERE timestamp >= datetime('now', ?)
       GROUP BY severity
     `);
-    const severities = severityStmt.all(daysAgo) as {
+    const severities = severityStmt.all(periodModifier) as {
       severity: string;
       count: number;
     }[];
@@ -244,7 +284,8 @@ const operationalMemory = {
       WHERE timestamp >= datetime('now', ?)
       ORDER BY timestamp DESC LIMIT 1
     `);
-    const last = lastStmt.get(daysAgo) as { timestamp: string } | undefined;
+    const last = lastStmt.get(periodModifier) as
+      { timestamp: string } | undefined;
 
     return {
       totalEntries: total.total,
@@ -260,6 +301,60 @@ const operationalMemory = {
 // ──────────────────────────────────────────────
 // 4. Стратегическая память — агрегация
 // ──────────────────────────────────────────────
+
+/** Сырая строка таблицы strategic_memory (snake_case колонки БД) */
+interface StrategicMemoryRow {
+  id: number;
+  period_start: string;
+  period_end: string;
+  period_type: 'WEEKLY' | 'MONTHLY' | 'QUARTERLY';
+  total_return: number;
+  total_return_rub: number;
+  total_dividends: number;
+  total_coupons: number;
+  total_commissions: number;
+  active_positions: number;
+  closed_positions: number;
+  total_trades: number;
+  buy_trades: number;
+  sell_trades: number;
+  avg_win_rate: number;
+  avg_holding_period: number;
+  max_drawdown: number;
+  sharpe_ratio: number | null;
+  key_decisions: string;
+  risk_events: number;
+  ai_recommendations: number;
+  created_at: string;
+}
+
+/** Привести строку БД к публичному API (camelCase) */
+function mapStrategicRow(raw: StrategicMemoryRow): StrategicMemoryEntry {
+  return {
+    id: raw.id,
+    periodStart: raw.period_start,
+    periodEnd: raw.period_end,
+    periodType: raw.period_type,
+    totalReturn: raw.total_return,
+    totalReturnRub: raw.total_return_rub,
+    totalDividends: raw.total_dividends,
+    totalCoupons: raw.total_coupons,
+    totalCommissions: raw.total_commissions,
+    activePositions: raw.active_positions,
+    closedPositions: raw.closed_positions,
+    totalTrades: raw.total_trades,
+    buyTrades: raw.buy_trades,
+    sellTrades: raw.sell_trades,
+    avgWinRate: raw.avg_win_rate,
+    avgHoldingPeriod: raw.avg_holding_period,
+    maxDrawdown: raw.max_drawdown,
+    sharpeRatio: raw.sharpe_ratio ?? undefined,
+    keyDecisions: raw.key_decisions,
+    riskEvents: raw.risk_events,
+    aiRecommendations: raw.ai_recommendations,
+    createdAt: raw.created_at,
+  };
+}
 
 const strategicMemory = {
   /** Агрегировать данные за период и записать в БД */
@@ -322,7 +417,9 @@ const strategicMemory = {
       SELECT COALESCE(SUM(total_amount), 0) as total FROM trades
       WHERE type = 'SELL' AND date >= ? AND date <= ?
     `);
-    const dividends = dividendsStmt.get(periodStart) as { total: number };
+    const dividends = dividendsStmt.get(periodStart, periodEnd) as {
+      total: number;
+    };
 
     // Максимальная просадка (упрощённо — по P&L)
     const maxDrawdownStmt = db.prepare(`
@@ -380,8 +477,10 @@ const strategicMemory = {
       activePositions: positionsSummary.active,
       closedPositions: positionsSummary.closed,
       totalTrades,
-      buyTrades: tradesSummary.buys,
-      sellTrades: tradesSummary.sells,
+      // SUM() по пустой таблице возвращает NULL — приводим к 0,
+      // иначе INSERT в NOT NULL-колонки buy_trades/sell_trades падает.
+      buyTrades: tradesSummary.buys || 0,
+      sellTrades: tradesSummary.sells || 0,
       avgWinRate: winRate,
       avgHoldingPeriod: 0,
       maxDrawdown: maxDrawdown.max_dd,
@@ -439,7 +538,7 @@ const strategicMemory = {
       SELECT * FROM strategic_memory
       ORDER BY period_start DESC
     `);
-    return stmt.all() as StrategicMemoryEntry[];
+    return (stmt.all() as StrategicMemoryRow[]).map(mapStrategicRow);
   },
 
   /** Получить последнюю запись */
@@ -450,7 +549,8 @@ const strategicMemory = {
       ORDER BY period_start DESC
       LIMIT 1
     `);
-    return stmt.get() as StrategicMemoryEntry | undefined;
+    const raw = stmt.get() as StrategicMemoryRow | undefined;
+    return raw ? mapStrategicRow(raw) : undefined;
   },
 
   /** Получить тренд доходности за N периодов */
@@ -582,6 +682,16 @@ const sessionManager = {
     const session = sessionManager.getById(sessionId);
     if (!session?.conversationHistory) return [];
 
+    // getById() уже парсит conversation_history в объект — двойной
+    // JSON.parse() бросал SyntaxError, и история терялась при чтении.
+    if (Array.isArray(session.conversationHistory)) {
+      return session.conversationHistory as Array<{
+        role: string;
+        content: string;
+        timestamp: string;
+      }>;
+    }
+
     try {
       return JSON.parse(session.conversationHistory);
     } catch {
@@ -609,6 +719,12 @@ const sessionManager = {
     initializeMemoryTables();
     const session = this.getById(sessionId);
     if (!session?.context) return {};
+
+    // getById() уже парсит context в объект — повторный JSON.parse()
+    // бросал SyntaxError, и контекст терялся при чтении.
+    if (typeof session.context === 'object') {
+      return session.context as Record<string, unknown>;
+    }
 
     try {
       return JSON.parse(session.context);

@@ -12,7 +12,14 @@ export default defineConfig({
     include: [
       'src/**/*.{test,spec}.{js,ts}',
       'gulp/tests/**/*.{test,spec}.{js,ts}',
+      // CLI-скрипты и их тесты (npm run chat и сопутствующие проверки)
+      'scripts/**/*.{test,spec}.{js,ts}',
+      // Десктоп-приложение: только чистое IPC-ядро (без electron-импортов)
+      'desktop/**/*.{test,spec}.{js,ts}',
     ],
+    // Бенчмарки (.bench.ts) — не тесты: исключаем явно, чтобы они не попали
+    // в основной прогон даже при расширении include.
+    exclude: ['**/*.bench.ts'],
   },
   resolve: {
     alias: {

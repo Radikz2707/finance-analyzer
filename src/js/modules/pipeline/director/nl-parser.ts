@@ -47,12 +47,220 @@ const KNOWN_TICKERS: string[] = [
   'SENER',
   'MAGN',
   'SKNG',
-  'SBER',
   'VKCO',
   'AFKON',
   'BSPB',
   'FEES',
 ];
+
+/**
+ * Маппинг русских названий компаний и их тикеров.
+ * Включает полные названия, сокращения, популярные варианты.
+ */
+const RUSSIAN_NAME_TO_TICKER: Record<string, string> = {
+  // Сбербанк
+  сбер: 'SBER',
+  сбербанк: 'SBER',
+  сбера: 'SBER',
+  сбербанку: 'SBER',
+  сбербанке: 'SBER',
+  сберп: 'SBERP',
+  'сбербанк п': 'SBERP',
+  сберпф: 'SBERP',
+
+  // Полюс
+  полюс: 'PLZL',
+  полюсзолото: 'PLZL',
+  поллюсзолото: 'PLZL',
+  полюса: 'PLZL',
+  полюсу: 'PLZL',
+  полюсе: 'PLZL',
+  plzl: 'PLZL',
+
+  // Лукойл
+  лукойл: 'LKOH',
+  лукойла: 'LKOH',
+  лукойлу: 'LKOH',
+  лукойле: 'LKOH',
+  lkoh: 'LKOH',
+
+  // Газпром
+  газпром: 'GAZP',
+  газпрома: 'GAZP',
+  газпрому: 'GAZP',
+  газпроме: 'GAZP',
+  gazp: 'GAZP',
+
+  // Роснефть
+  роснефть: 'ROSN',
+  роснефти: 'ROSN',
+  rosn: 'ROSN',
+
+  // ВТБ
+  втб: 'VTBR',
+  vtbr: 'VTBR',
+
+  // Аэрофлот
+  аэрофлот: 'AFLT',
+  аэрофлота: 'AFLT',
+  аэрофлоту: 'AFLT',
+  аэрофлоте: 'AFLT',
+  aflt: 'AFLT',
+
+  // Алроса
+  алроса: 'ALRS',
+  алросы: 'ALRS',
+  алросе: 'ALRS',
+  alrs: 'ALRS',
+
+  // Яндекс
+  яндекс: 'YNDX',
+  яндексa: 'YNDX',
+  яндексу: 'YNDX',
+  яндексе: 'YNDX',
+  yndx: 'YNDX',
+
+  // Магнит
+  магнит: 'MGNT',
+  магнитa: 'MGNT',
+  магнитy: 'MGNT',
+  магнитe: 'MGNT',
+  mgnt: 'MGNT',
+
+  // МТЛР
+  мтлр: 'MTLR',
+  мтлра: 'MTLR',
+  мтлру: 'MTLR',
+  мтлре: 'MTLR',
+  mtlr: 'MTLR',
+
+  // Татнефть
+  татнефть: 'TATN',
+  татнефти: 'TATN',
+  tatn: 'TATN',
+
+  // Сургутнефтегаз
+  сургутнефтегаз: 'SNGS',
+  сургутнефтегаза: 'SNGS',
+  sngs: 'SNGS',
+
+  // Роснефть др
+  'роснефть др': 'ROSNDR',
+  rosndr: 'ROSNDR',
+
+  // МТС
+  мтс: 'MTSS',
+  мтса: 'MTSS',
+  мтсу: 'MTSS',
+  мтсе: 'MTSS',
+  mtss: 'MTSS',
+
+  // Флот
+  флот: 'FLOT',
+  флота: 'FLOT',
+  flot: 'FLOT',
+
+  // Алрос
+  алрос: 'ALRS',
+
+  // Северный никель
+  'северный никель': 'SKNG',
+  скнг: 'SKNG',
+
+  // Монеточка
+  монеточка: 'SBERP',
+
+  // ВК
+  вк: 'VKCO',
+  вкo: 'VKCO',
+  vkco: 'VKCO',
+
+  // БСПБ
+  бспб: 'BSPB',
+  bspb: 'BSPB',
+
+  // ГМК
+  гмк: 'GMKN',
+  'гмк норникель': 'GMKN',
+  норникель: 'GMKN',
+  норникеля: 'GMKN',
+  норникелю: 'GMKN',
+  норникеле: 'GMKN',
+  норникелем: 'GMKN',
+  норникелях: 'GMKN',
+  gmkn: 'GMKN',
+
+  // Норильская никель
+  norilnickel: 'GMKN',
+
+  // Новолipецкая сталь
+  'новолipецкая сталь': 'NLMK',
+  nlmk: 'NLMK',
+
+  // Полимерный
+  полимерный: 'PHOR',
+  phor: 'PHOR',
+
+  // Сегер
+  сегер: 'SENER',
+  sener: 'SENER',
+
+  // Магнитогорский
+  магнитогорский: 'MAGN',
+  magn: 'MAGN',
+
+  // Кондратьев
+  кондратьев: 'AFKON',
+  afkon: 'AFKON',
+
+  // Фэес
+  фэес: 'FEES',
+  fees: 'FEES',
+
+  // Норникель (альтернативные)
+  noril: 'GMKN',
+  nickel: 'GMKN',
+};
+
+/**
+ * Fuzzy matching для поиска тикеров по частичному совпадению.
+ * Используется для обработки опечаток и разговорных форм.
+ */
+function fuzzyMatchTicker(text: string): string | null {
+  const lower = text.toLowerCase().trim();
+
+  // Точное совпадение
+  if (RUSSIAN_NAME_TO_TICKER[lower]) {
+    return RUSSIAN_NAME_TO_TICKER[lower];
+  }
+
+  // Проверка по частям слова (для "полюс золот" → PLZL)
+  for (const [name, ticker] of Object.entries(RUSSIAN_NAME_TO_TICKER)) {
+    if (name.includes(lower) || lower.includes(name)) {
+      return ticker;
+    }
+  }
+
+  // Проверка первых символов (для "сбер" → SBER)
+  const prefixMatches: Array<{
+    name: string;
+    ticker: string;
+    matchLen: number;
+  }> = [];
+  for (const [name, ticker] of Object.entries(RUSSIAN_NAME_TO_TICKER)) {
+    if (name.startsWith(lower) && lower.length >= 3) {
+      prefixMatches.push({ name, ticker, matchLen: lower.length });
+    }
+  }
+
+  if (prefixMatches.length > 0) {
+    // Возвращаем самое длинное совпадение
+    prefixMatches.sort((a, b) => b.matchLen - a.matchLen);
+    return prefixMatches[0]?.ticker ?? '';
+  }
+
+  return null;
+}
 
 // ──────────────────────────────────────────────
 // 2. Словари ключевых слов
@@ -343,6 +551,111 @@ const INTENT_KEYWORDS: Record<UserIntent, string[]> = {
 };
 
 // ──────────────────────────────────────────────
+// 2.5. Операции: файлы и терминал
+// ──────────────────────────────────────────────
+
+/**
+ * Паттерны, указывающие на файловую операцию (роль `file`).
+ *
+ * Покрывают:
+ * - глагольные конструкции: «создай файл», «прочитай файл», «удали файл»,
+ *   «переименуй», «найди файл», «что в файле», «покажи содержимое»,
+ *   «запиши в файл», «сохрани в файл», «сделай отчёт» и т.д.;
+ * - пути проекта вида `src/...`, `data/...`, относительные пути `./...`,
+ *   файлы по расширению (`package.json`, `*.ts`, `*.yaml`).
+ */
+const FILE_REQUEST_PATTERNS: RegExp[] = [
+  // ── Глагольные конструкции ──
+  /создай файл/i,
+  /создать файл/i,
+  /создай модуль/i,
+  /создать модуль/i,
+  /прочитай файл/i,
+  /прочитать файл/i,
+  /открой файл/i,
+  /открыть файл/i,
+  /удали файл/i,
+  /удалить файл/i,
+  /переименуй/i,
+  /переименовать/i,
+  /найди файл/i,
+  /найти файл/i,
+  /что в файле/i,
+  /что в файлах/i,
+  /покажи содержимое/i,
+  /показать содержимое/i,
+  /запиши в файл/i,
+  /записать в файл/i,
+  /сохрани в файл/i,
+  /сохранить в файл/i,
+  /сделай отчёт/i,
+  /сделай отчет/i,
+  /создай отчёт/i,
+  /создай отчет/i,
+  /сформируй отчёт/i,
+  /сформируй отчет/i,
+  // ── Пути проекта (корни src/, data/, ...) ──
+  /(?:^|\s)(?:src|data|docs|config|public|test|tests|scripts|gulp|quik|dist|archives)[\\/][a-zA-Z0-9_./\\-]+/i,
+  // ── Относительные пути (./file.ts, ../file.json) ──
+  /(?:^|\s)\.{1,2}[\\/][a-zA-Z0-9_./\\-]+/i,
+  // ── Файлы по расширению (package.json, src/test.ts, *.yaml) ──
+  /(?:^|\s)[a-zA-Z0-9_.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|json|jsonc|yaml|yml|md|markdown|txt|html|htm|css|scss|py|xml|csv|sql|env|sh|log)\b/i,
+  /\*\.(?:ts|tsx|js|jsx|json|yaml|yml|md|txt|html|css|scss|py)\b/i,
+];
+
+/**
+ * Паттерны, указывающие на терминальную операцию (роль `terminal`).
+ *
+ * Покрывают: «выполни команду», «запусти тесты/скрипт», «установи пакет»,
+ * npm/pnpm/yarn/npx/pip, git-операции (commit/push/pull/add/status/clone),
+ * «сделай коммит», «собери проект», python.
+ */
+const TERMINAL_REQUEST_PATTERNS: RegExp[] = [
+  /выполни команду/i,
+  /выполнить команду/i,
+  /запусти/i,
+  /установи пакет/i,
+  /установить пакет/i,
+  /npm install/i,
+  /npm run/i,
+  /npm ci/i,
+  /npx /i,
+  /pnpm/i,
+  /yarn /i,
+  /pip install/i,
+  /git commit/i,
+  /git push/i,
+  /git pull/i,
+  /git add/i,
+  /git status/i,
+  /git clone/i,
+  /сделай коммит/i,
+  /сделать коммит/i,
+  /закоммит/i,
+  /собери проект/i,
+  /собрать проект/i,
+  /запусти скрипт/i,
+  /python/i,
+  /терминал/i,
+];
+
+/**
+ * Определить, запрашивает ли пользователь файловую операцию.
+ */
+export function looksLikeFileRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+  return FILE_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
+}
+
+/**
+ * Определить, запрашивает ли пользователь терминальную операцию.
+ */
+export function looksLikeTerminalRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+  return TERMINAL_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
+}
+
+// ──────────────────────────────────────────────
 // 3. Парсер
 // ──────────────────────────────────────────────
 
@@ -417,18 +730,49 @@ function detectIntent(text: string): UserIntent {
 
 /**
  * Извлечь тикеры из текста.
+ * Ищет как прямые упоминания тикеров (SBER, PLZL),
+ * так и русские названия компаний (сбер, полюс, гапзпром и т.д.).
  */
 function extractTickers(text: string): string[] {
   const lower = text.toLowerCase();
-  const found: string[] = [];
+  const found: Set<string> = new Set();
 
+  // 1. Ищем прямые упоминания тикеров (SBER, PLZL, GMKN)
   for (const ticker of KNOWN_TICKERS) {
     if (lower.includes(ticker.toLowerCase())) {
-      found.push(ticker.toUpperCase());
+      found.add(ticker.toUpperCase());
     }
   }
 
-  return found;
+  // 2. Ищем русские названия компаний
+  for (const [name, ticker] of Object.entries(RUSSIAN_NAME_TO_TICKER)) {
+    if (lower.includes(name.toLowerCase())) {
+      found.add(ticker);
+    }
+  }
+
+  // 3. Fuzzy matching для коротких упоминаний
+  const words = lower.split(/\s+/);
+  for (const word of words) {
+    if (word.length >= 3 && word.length <= 15) {
+      const matched = fuzzyMatchTicker(word);
+      if (matched) {
+        found.add(matched);
+      }
+    }
+  }
+
+  // 4. Ищем составные слова (например, "полюс золото")
+  const phrases = lower.match(/[а-яёa-z]{4,}/g) || [];
+  for (let i = 0; i < phrases.length - 1; i++) {
+    const phrase = phrases[i] + ' ' + phrases[i + 1];
+    const matched = fuzzyMatchTicker(phrase);
+    if (matched) {
+      found.add(matched);
+    }
+  }
+
+  return [...found];
 }
 
 /**
@@ -464,6 +808,7 @@ function determineRequiredAgents(
   category: UserQuestionCategory,
   tickers: string[],
   complexity: number,
+  text: string,
 ): AgentRole[] {
   const agents: AgentRole[] = [];
 
@@ -520,6 +865,18 @@ function determineRequiredAgents(
   if (category === 'system-quality') {
     agents.push('review');
     agents.push('analysis');
+  }
+
+  // ── Файловые операции (FileAgent) ──
+  // Отдельный проход: файловая операция должна попасть в requiredAgents
+  // даже если категория не тянет analysis/ai (чистая операция = ['file']).
+  if (looksLikeFileRequest(text)) {
+    agents.push('file');
+  }
+
+  // ── Терминальные операции (TerminalAgent) ──
+  if (looksLikeTerminalRequest(text)) {
+    agents.push('terminal');
   }
 
   // Уникальность
@@ -603,7 +960,12 @@ export function parseUserMessage(text: string): InterpretedQuestion {
   const intent = detectIntent(text);
   const tickers = extractTickers(text);
   const complexity = estimateComplexity(text, category);
-  const requiredAgents = determineRequiredAgents(category, tickers, complexity);
+  const requiredAgents = determineRequiredAgents(
+    category,
+    tickers,
+    complexity,
+    text,
+  );
   const needsConsiliumFlag = needsConsilium(category, complexity, tickers);
   const topic = formulateTopic(text, category);
 

@@ -25,6 +25,17 @@ import {
   type ScenarioAgentOutput,
   type ScenarioChange,
 } from '../agents/scenario-agent.js';
+import type { IAgent } from '../agent/types.js';
+import type { FileAgentInput } from '../agents/file-agent.js';
+import type { TerminalAgentInput } from '../agents/terminal-agent.js';
+import type {
+  SecurityActionRequest,
+  SecurityDecision,
+} from '../agents/security-agent.js';
+import {
+  buildFileAgentInput,
+  buildTerminalAgentInput,
+} from './action-input-builder.js';
 import type {
   AgentOpinion,
   AgentResultEntry,
@@ -60,12 +71,37 @@ export type ReviewExecutor = (
   req: AiDecisionRequest,
 ) => Promise<ReviewExecutorResult>;
 
+/**
+ * Карта подключённых action-агентов (file/terminal).
+ * Заполняется ТОЛЬКО в Node-контуре (см. agents/agent-factory.ts);
+ * в браузерной сборке отсутствует → фасад честно отвечает
+ * «доступно в десктопном режиме».
+ */
+export interface DirectorActionAgents {
+  file?: IAgent<FileAgentInput>;
+  terminal?: IAgent<TerminalAgentInput>;
+}
+
+/**
+ * Шлюз безопасности action-операций (обёртка над SecurityAgent).
+ * Метод `check` возвращает вердикт ДО выполнения операции.
+ */
+export interface ActionSecurityGate {
+  check(
+    request: SecurityActionRequest,
+  ): SecurityDecision | Promise<SecurityDecision>;
+}
+
 /** Опции фасада (DI) */
 export interface DirectorFacadeOptions {
   strategist?: StrategistAgent;
   scenario?: ScenarioAgent;
   aiExecutor?: AiDecisionExecutor;
   reviewExecutor?: ReviewExecutor;
+  /** Action-агенты (file/terminal) — только для Node-контура */
+  actionAgents?: DirectorActionAgents;
+  /** Шлюз безопасности action-операций (SecurityAgent) */
+  security?: ActionSecurityGate;
 }
 
 /** Содержимое результата агента (данные внутри AgentResultEntry.data) */
@@ -92,12 +128,16 @@ export class DirectorAgentFacade {
   private readonly scenario: ScenarioAgent;
   private readonly aiExecutor: AiDecisionExecutor;
   private readonly reviewExecutor: ReviewExecutor;
+  private readonly actionAgents: DirectorActionAgents;
+  private readonly security: ActionSecurityGate | null;
 
   constructor(opts?: DirectorFacadeOptions) {
     this.strategist = opts?.strategist ?? new StrategistAgent();
     this.scenario = opts?.scenario ?? new ScenarioAgent();
     this.aiExecutor = opts?.aiExecutor ?? defaultAiExecutor;
     this.reviewExecutor = opts?.reviewExecutor ?? defaultReviewExecutor;
+    this.actionAgents = opts?.actionAgents ?? {};
+    this.security = opts?.security ?? null;
   }
 
   /**
@@ -191,9 +231,142 @@ export class DirectorAgentFacade {
           detail: { warnings: review.warnings },
         };
       }
+      case 'file':
+      case 'terminal':
+        return this.runActionAgent(role, question);
       default:
         throw new Error(`Неизвестная роль агента: ${role}`);
     }
+  }
+
+  /**
+   * Выполнить action-агента (file/terminal) с прогоном через шлюз
+   * безопасности. При отсутствии агента (браузерная сборка) — честный
+   * ответ, а не ошибка.
+   */
+  private async runActionAgent(
+    role: 'file' | 'terminal',
+    question: InterpretedQuestion,
+  ): Promise<DirectorAgentPayload> {
+    const agent: IAgent | null =
+      role === 'file'
+        ? (this.actionAgents.file ?? null)
+        : (this.actionAgents.terminal ?? null);
+
+    // Браузерная сборка: action-агентов нет — честный ответ, а не throw
+    if (!agent) {
+      return {
+        summary:
+          role === 'file'
+            ? 'Файловые операции доступны в десктопном режиме'
+            : 'Терминальные операции доступны в десктопном режиме',
+        sources: [],
+      };
+    }
+
+    const input: unknown =
+      role === 'file'
+        ? buildFileAgentInput(question)
+        : buildTerminalAgentInput(question);
+    if (!input) {
+      return {
+        summary:
+          role === 'file'
+            ? 'Не удалось определить файловую операцию из запроса — укажите путь к файлу.'
+            : 'Не удалось определить команду из запроса — уточните, что выполнить.',
+        sources: [],
+      };
+    }
+
+    // Прогон через SecurityAgent (если подключён в Node-контуре)
+    if (this.security) {
+      const decision = await this.security.check(
+        this.buildSecurityRequest(
+          role,
+          input as FileAgentInput | TerminalAgentInput,
+          question,
+        ),
+      );
+      if (decision.verdict === 'deny') {
+        return {
+          summary: `Операция отклонена: ${decision.reason ?? 'запрещено правилами безопасности'}`,
+          sources: [],
+          detail: this.securityDetail(decision),
+        };
+      }
+      if (decision.verdict === 'require-confirmation') {
+        return {
+          summary: `Требуется подтверждение: ${decision.description ?? decision.reason ?? 'действие требует ручного подтверждения'}`,
+          sources: [],
+          detail: this.securityDetail(decision),
+        };
+      }
+    }
+
+    const result = await agent.execute(input);
+    if (!result.success) {
+      throw new Error(result.error?.message ?? `Агент «${role}» не выполнен`);
+    }
+    const output = (result.data ?? {}) as Record<string, unknown>;
+
+    return {
+      summary:
+        typeof output.message === 'string' && output.message !== ''
+          ? output.message
+          : role === 'file'
+            ? 'Файловая операция выполнена'
+            : this.describeTerminalOutput(output),
+      sources: [],
+      detail: output,
+    };
+  }
+
+  /** Заявка на проверку безопасности по входу action-агента */
+  private buildSecurityRequest(
+    role: 'file' | 'terminal',
+    input: FileAgentInput | TerminalAgentInput,
+    question: InterpretedQuestion,
+  ): SecurityActionRequest {
+    if (role === 'file') {
+      const fileInput = input as FileAgentInput;
+      return {
+        kind: 'file',
+        action: fileInput.action,
+        path: fileInput.path ?? '',
+        description: question.text,
+      };
+    }
+    const termInput = input as TerminalAgentInput;
+    return {
+      kind: 'terminal',
+      command: termInput.command,
+      args: termInput.args,
+      description: question.text,
+    };
+  }
+
+  /** Детали вердикта безопасности для payload */
+  private securityDetail(decision: SecurityDecision): Record<string, unknown> {
+    return {
+      verdict: decision.verdict,
+      dangerLevel: decision.dangerLevel,
+      reason: decision.reason,
+      description: decision.description,
+      matchedRules: decision.matchedRules,
+    };
+  }
+
+  /** Человекочитаемое описание вывода терминала (нет поля message) */
+  private describeTerminalOutput(output: Record<string, unknown>): string {
+    const exitCode = output.exitCode;
+    const stdout = typeof output.stdout === 'string' ? output.stdout : '';
+    const snippet = stdout.slice(0, 200).trim();
+    if (exitCode === 0) {
+      return snippet !== ''
+        ? `Команда выполнена: ${snippet}`
+        : 'Команда выполнена';
+    }
+    return `Команда завершилась с кодом ${String(exitCode)}`;
   }
 
   /** StrategistAgent: независимая оценка рисков (реальный агент, синхронно) */

@@ -3,9 +3,11 @@ import path from 'path';
 const srcFolder = 'src';
 const buildFolder = 'dist';
 
+/** Полная конфигурация сборки. Тип описан в gulp/globals.d.ts (GulpProjectConfig). */
+/** @type {GulpProjectConfig} */
 export const config = {
   // Имя вашего нового репозитория на GitHub (поменяйте на свое при деплое)
-   repoPath: 'Radikz2707/finance-analyzer',
+  repoPath: 'Radikz2707/finance-analyzer',
   siteName: 'finance-ai-platform',
   siteUrl: '',
   scssExtension: 'scss',

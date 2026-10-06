@@ -23,6 +23,11 @@ import { onError, bs, isProd } from './server.js';
 const { src, dest } = gulp;
 const sass = gulpSass(dartSass);
 
+/**
+ * Сборка SCSS → CSS: sass → postcss (сортировка медиа, автопрефиксер,
+ * webp-in-css) → cleancss (prod) → rename → dest.
+ * @returns {NodeJS.ReadWriteStream}
+ */
 export function styles() {
   const srcOptions = !isProd ? { sourcemaps: true } : {};
 

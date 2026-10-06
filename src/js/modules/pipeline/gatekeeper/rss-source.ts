@@ -2,6 +2,14 @@
  * RssNewsSource — источник новостей из RSS-лент.
  *
  * Поддерживаемые источники:
+ * === Российские (Московская биржа) ===
+ * - РБК Финансы — rbc.ru/finance
+ * - Интерфакс — interfax.ru/news
+ * - Финам — finam.ru/news
+ * - Коммерсантъ —kommersant.ru
+ * - Ведомости — vedomosti.ru
+ *
+ * === Международные ===
  * - Investing.com (финансовые новости на русском)
  * - Habr (финансовый тег)
  * - Yahoo Finance (англоязычные)
@@ -17,10 +25,49 @@ export interface RssSourceConfig {
   url: string;
   enabled?: boolean;
   maxItems?: number;
+  /** Флаг: российские новости Мосбиржи */
+  isMoscowExchange?: boolean;
 }
 
 /** Дефолтные RSS-ленты (проверенные рабочие) */
 const DEFAULT_RSS_SOURCES: RssSourceConfig[] = [
+  // === РОССИЙСКИЕ НОВОСТИ (Московская биржа) ===
+  {
+    name: 'РБК Финансы',
+    url: 'https://www.rbc.ru/rss/rbc_news_main.xml',
+    enabled: true,
+    maxItems: 100,
+    isMoscowExchange: true,
+  },
+  {
+    name: 'Интерфакс',
+    url: 'https://www.interfax.ru/rss/rss.rdf',
+    enabled: true,
+    maxItems: 80,
+    isMoscowExchange: true,
+  },
+  {
+    name: 'Финансы Финам',
+    url: 'https://www.finam.ru/infoblock/newsfeed/rss.aspx',
+    enabled: true,
+    maxItems: 100,
+    isMoscowExchange: true,
+  },
+  {
+    name: 'Коммерсантъ Финансы',
+    url: 'https://www.kommersant.ru/rss/finance.xml',
+    enabled: true,
+    maxItems: 60,
+    isMoscowExchange: true,
+  },
+  {
+    name: 'Ведомости Финансы',
+    url: 'https://www.vedomosti.ru/rss.xml',
+    enabled: true,
+    maxItems: 60,
+    isMoscowExchange: true,
+  },
+  // === МЕЖДУНАРОДНЫЕ ===
   {
     name: 'Investing.com',
     url: 'https://ru.investing.com/rss/news.rss',
@@ -62,6 +109,11 @@ function parseRssXml(xml: string, maxItems: number = 50): RawNewsItem[] {
     const link = extractTag(itemXml, 'link')?.trim() ?? '';
     const pubDate = extractTag(itemXml, 'pubDate')?.trim() ?? '';
     const description = extractTag(itemXml, 'description')?.trim() ?? '';
+    const category = extractTag(itemXml, 'category')?.trim() ?? '';
+    const source = extractTag(itemXml, 'source')?.trim() ?? '';
+
+    // Извлекаем тикеры из категории или заголовка
+    const tickers = extractTickersFromNews(title + ' ' + category);
 
     if (title && link) {
       items.push({
@@ -70,13 +122,37 @@ function parseRssXml(xml: string, maxItems: number = 50): RawNewsItem[] {
         url: link,
         date: pubDate || new Date().toISOString(),
         metadata: {
-          sourceName: extractTag(itemXml, 'source')?.trim(),
+          sourceName: source || '',
+          category: category || '',
+          tickers: tickers.length > 0 ? tickers.join(',') : '',
         },
       });
     }
   }
 
   return items;
+}
+
+/**
+ * Извлечь тикеры из текста новости.
+ */
+function extractTickersFromNews(text: string): string[] {
+  const found: string[] = [];
+  const knownTickers = [
+    'SBER', 'GMKN', 'LKOH', 'PLZL', 'ROSN', 'VTBR', 'SBERP',
+    'GAZP', 'MGNT', 'YNDX', 'AFLT', 'MTLR', 'TATN', 'SNGS',
+    'ROSNDR', 'MTSS', 'FLOT', 'ALRS', 'CHMF', 'NLMK', 'PHOR',
+    'SENER', 'MAGN', 'SKNG', 'VKCO', 'AFKON', 'BSPB', 'FEES',
+  ];
+  
+  const lower = text.toLowerCase();
+  for (const ticker of knownTickers) {
+    if (lower.includes(ticker.toLowerCase())) {
+      found.push(ticker);
+    }
+  }
+  
+  return found;
 }
 
 /** Извлечение содержимого XML тега */
@@ -155,6 +231,63 @@ export class RssNewsSource implements INewsSource {
     }
 
     return allItems;
+  }
+
+  /** Запросить ТОЛЬКО российские новости по Московской бирже */
+  async fetchMoscowExchange(): Promise<RawNewsItem[]> {
+    if (!this.enabled) {
+      return [];
+    }
+
+    const moscowSources = this.sources.filter((s) => s.isMoscowExchange);
+    
+    if (moscowSources.length === 0) {
+      return [];
+    }
+
+    const allItems: RawNewsItem[] = [];
+
+    const promises = moscowSources.map(async (source) => {
+      try {
+        const response = await axios.get(source.url, {
+          timeout: 20000,
+          headers: {
+            'User-Agent': this.userAgent,
+            Accept: 'application/rss+xml, application/xml, text/xml, */*',
+          },
+          responseType: 'text',
+          transformResponse: [(data) => data],
+        });
+
+        const maxItems = source.maxItems ?? 50;
+        const items = parseRssXml(response.data, maxItems);
+
+        return items;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          `[RssNewsSource] Ошибка загрузки ${source.name}: ${message}`,
+        );
+        return [];
+      }
+    });
+
+    const results = await Promise.allSettled(promises);
+
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value.length > 0) {
+        allItems.push(...result.value);
+      }
+    }
+
+    return allItems;
+  }
+
+  /** Получить список российских источников */
+  getMoscowExchangeSources(): string[] {
+    return this.sources
+      .filter((s) => s.isMoscowExchange && s.enabled !== false)
+      .map((s) => s.name);
   }
 
   /** Проверить доступность */
