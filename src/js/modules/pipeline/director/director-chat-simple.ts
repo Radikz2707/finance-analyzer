@@ -1,19 +1,60 @@
 /**
- * Director Chat — полностью изолированный чат для report.html
- * НЕ импортирует Node-модули, работает в браузере через file://
+ * Director Chat — лёгкий чат для report.html (собирается в director-chat-init.min.js).
+ * Работает в браузере через file:// без Node-модулей.
+ *
+ * Что делает:
+ * - отвечает по РЕАЛЬНЫМ фактам портфеля (через buildBrowserChatResponse)
+ *   вместо фиксированных заглушек на любой вопрос;
+ * - выставляет window.processDirectorMessage для inline-скрипта report.html;
+ * - вешает обработчики чата ТОЛЬКО если их ещё не повесил inline-скрипт
+ *   (защита от дублирования через window.__directorChatBound);
+ * - во время обработки показывает статус «Director анализирует…» и
+ *   прогресс-бар — видно, что ответ придёт в этот чат.
+ *
+ * Полный DirectorAgent (агенты, Consilium, LLM) доступен на dashboard
+ * (npm run dev) и в CLI (npm run chat); здесь — только разговор по фактам.
  */
+
+import type { DirectorFactsContext } from './director-types.js';
+import { buildBrowserChatResponse } from './browser-chat-responder.js';
 
 (function () {
   'use strict';
 
-  // Обработка системных команд (/status, /log, /undo, /help) в простом режиме.
-  // Честный ответ: полные данные доступны только на dashboard (npm run dev).
+  const container = document.getElementById('directorChat');
+  if (!container) {
+    console.warn('[Director] Контейнер #directorChat не найден');
+    return;
+  }
+
+  /** Факты портфеля из глобальных данных или localStorage */
+  function loadFacts(): DirectorFactsContext {
+    const win = window as unknown as {
+      __DIRECTOR_FACTS__?: DirectorFactsContext;
+    };
+    if (win.__DIRECTOR_FACTS__) return win.__DIRECTOR_FACTS__;
+    try {
+      const saved = localStorage.getItem('portfolioFacts');
+      if (saved) {
+        const parsed = JSON.parse(saved) as DirectorFactsContext;
+        if (Array.isArray(parsed.assetsAnalysis)) return parsed;
+      }
+    } catch {
+      // localStorage недоступен или данные повреждены — пустые факты
+    }
+    return { assetsAnalysis: [], totalPortfolioValue: 0, freeCashRub: 0 };
+  }
+
+  const facts = loadFacts();
+  const history: Array<{ role: string; text: string }> = [];
+
+  /** Системные команды (/status, /log, /undo, /help) — локально */
   function handleSystemCommand(message: string): string | null {
     const lower = message.toLowerCase().trim();
     if (lower === '/help' || lower === 'помощь') {
       return (
         '⌨️ Команды чата:\n' +
-        '• /status — статус Director\n' +
+        '• /status — статус Director и данные портфеля\n' +
         '• /log — последние действия\n' +
         '• /undo — отмена последнего действия\n' +
         '• /help — справка'
@@ -22,20 +63,35 @@
     if (lower === '/status') {
       return (
         '📡 Статус Director:\n' +
-        'Режим: упрощённый (report.html), агенты недоступны.\n' +
-        'Полный статус всех агентов смотрите на dashboard:\n' +
-        'npm run dev → http://localhost:8080/components/dashboard/dashboard.html'
+        'Режим: отчёт (report.html), агенты и LLM недоступны.\n' +
+        'Активов в данных: ' +
+        facts.assetsAnalysis.length +
+        ', стоимость: ' +
+        (facts.totalPortfolioValue > 0
+          ? Math.round(facts.totalPortfolioValue).toLocaleString('ru-RU') + ' ₽'
+          : '—') +
+        '.\n' +
+        'Полный Director с агентами — на dashboard (npm run dev).'
       );
     }
     if (lower === '/log') {
       return (
-        '📋 В упрощённом режиме аудит-лог недоступен.\n' +
-        'История действий Director ведётся на dashboard (npm run dev).'
+        '📋 Последние действия:\n' +
+        (history.length > 0
+          ? history
+              .slice(-5)
+              .map(
+                (m) =>
+                  (m.role === 'user' ? 'Вы: ' : 'Director: ') +
+                  m.text.slice(0, 80),
+              )
+              .join('\n')
+          : 'Диалог ещё не начат.')
       );
     }
     if (lower === '/undo') {
       return (
-        '↩️ В упрощённом режиме отмена действий недоступна.\n' +
+        '↩️ В режиме отчёта отмена действий недоступна.\n' +
         'Director с журналом действий работает на dashboard (npm run dev).'
       );
     }
@@ -50,52 +106,46 @@
     return null;
   }
 
-  // Простая заглушка Director — отвечает без подключения агентов
-  // (агенты требуют Node.js и не работают в браузере)
-  function simpleDirectorResponse(message: string): string {
+  /** Обработать сообщение пользователя → текст ответа */
+  function buildReply(message: string): string {
     const commandReply = handleSystemCommand(message);
     if (commandReply) return commandReply;
 
-    const responses: string[] = [
-      '🎯 Я — Director, инвестиционный координатор.\n\n' +
-        'К сожалению, в браузере я не могу подключать подчинённых агентов\n' +
-        '(AnalysisAgent, ResearchAgent, AI Agent и др.), так как они требуют Node.js.\n\n' +
-        '💡 Чтобы использовать Director с полным функционалом:\n' +
-        '1. Запустите npm run dev (gulp)\n' +
-        '2. Откройте http://localhost:8080/components/dashboard/dashboard.html\n' +
-        '3. Там Director работает со всеми агентами!\n\n' +
-        'Или запустите npm run pipeline — Director будет встроен в report.html.',
-
-      '📊 Ваш портфель:\n' +
-        'В report.html выше вы видите:\n' +
-        '- AI-рекомендации по каждому активу\n' +
-        '- Конфликты рекомендаций (PortfolioMath vs AI)\n' +
-        '- Сценарии "что если"\n' +
-        '- Приоритеты rebalance\n\n' +
-        'Для интерактивного общения с Director откройте dashboard через npm run dev',
-
-      '🤔 Для анализа вашего портфеля я могу:\n' +
-        '- Объяснить конфликты рекомендаций\n' +
-        '- Показать статистику по активам\n' +
-        '- Рассчитать риски концентрации\n\n' +
-        'Но для полноценного анализа с AI-агентами используйте dashboard',
-    ];
-
-    // Простой ответ на основе ключевых слов
-    const lower = message.toLowerCase();
-    if (lower.indexOf('portfel') !== -1 || lower.indexOf('портфел') !== -1) {
-      return responses[1] as string;
-    }
-    if (lower.indexOf('почему') !== -1 || lower.indexOf('почем') !== -1) {
-      return responses[2] as string;
-    }
-    return responses[0] as string;
+    const reply = buildBrowserChatResponse({
+      question: message,
+      facts,
+      history: history.map((m) => m.role + ': ' + m.text).join('\n'),
+    });
+    return (
+      reply ??
+      'Пока я не смог распознать этот вопрос как запрос по портфелю.\n\n' +
+        'Попробуйте спросить иначе: «Что с SBER?», «Как выглядит портфель?», ' +
+        '«Есть ли риски?», «Новости» или «Стратегия».'
+    );
   }
 
-  // Инициализация чата
-  const container = document.getElementById('directorChat');
-  if (!container) {
-    console.warn('[Director] Контейнер #directorChat не найден');
+  // Глобальный API для inline-скрипта report.html
+  (window as unknown as Record<string, unknown>).processDirectorMessage = (
+    message: string,
+  ): Promise<{
+    text: string;
+    connectedAgents: never[];
+    needsConsilium: boolean;
+  }> => {
+    return Promise.resolve({
+      text: buildReply(message),
+      connectedAgents: [],
+      needsConsilium: false,
+    });
+  };
+
+  console.log('🎯 Director: чат инициализирован (отчёт report.html)');
+
+  // Inline-скрипт report.html уже повесил обработчики — не дублируем их.
+  const alreadyBound = Boolean(
+    (window as unknown as Record<string, boolean>).__directorChatBound,
+  );
+  if (alreadyBound) {
     return;
   }
 
@@ -104,8 +154,6 @@
     container.querySelector<HTMLInputElement>('#directorChatInput');
   const sendBtn =
     container.querySelector<HTMLButtonElement>('#directorChatSend');
-
-  const history: Array<{ role: string; text: string }> = [];
 
   function addMsg(role: string, text: string): void {
     if (!messagesEl) return;
@@ -124,6 +172,35 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
+  /** Видимый статус обработки: понятно, что Director работает и куда придёт ответ */
+  function setWorking(on: boolean): void {
+    if (!messagesEl) return;
+    let statusEl = messagesEl.querySelector<HTMLElement>('.dc-status');
+    let progressEl = messagesEl.querySelector<HTMLElement>('.dc-progress-line');
+    if (on) {
+      if (!statusEl) {
+        statusEl = document.createElement('div');
+        statusEl.className = 'dc-status';
+        statusEl.textContent = '🧠 Director анализирует ваш вопрос…';
+        messagesEl.appendChild(statusEl);
+      }
+      statusEl.style.display = 'block';
+      if (!progressEl) {
+        progressEl = document.createElement('div');
+        progressEl.className = 'dc-progress-line';
+        const bar = document.createElement('span');
+        bar.className = 'dc-progress-bar';
+        progressEl.appendChild(bar);
+        messagesEl.appendChild(progressEl);
+      }
+      progressEl.style.display = 'block';
+    } else {
+      if (statusEl) statusEl.style.display = 'none';
+      if (progressEl) progressEl.style.display = 'none';
+    }
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
   function sendMessage(): void {
     if (!inputEl || !sendBtn) return;
     const text = inputEl.value.trim();
@@ -133,14 +210,29 @@
     inputEl.value = '';
     sendBtn.disabled = true;
     sendBtn.textContent = 'Думаю...';
+    setWorking(true);
 
-    // Имитация задержки "мышления"
-    setTimeout(function () {
-      const response = simpleDirectorResponse(text);
-      addMsg('director', response);
-      sendBtn.disabled = false;
-      sendBtn.textContent = 'Отправить';
-    }, 500);
+    const process = (window as unknown as Record<string, unknown>)
+      .processDirectorMessage;
+    Promise.resolve(
+      typeof process === 'function'
+        ? (process as (m: string) => Promise<{ text: string }>)(text)
+        : { text: buildReply(text) },
+    )
+      .then(function (response: { text: string }) {
+        addMsg('director', response.text || 'Готово.');
+      })
+      .catch(function (err: unknown) {
+        addMsg(
+          'director',
+          'Ошибка: ' + (err instanceof Error ? err.message : String(err)),
+        );
+      })
+      .finally(function () {
+        setWorking(false);
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Отправить';
+      });
   }
 
   if (sendBtn) sendBtn.addEventListener('click', sendMessage);
@@ -149,5 +241,8 @@
       if (e.key === 'Enter') sendMessage();
     });
 
-  console.log('🎯 Director: чат инициализирован (простой режим)');
+  // Помечаем, что обработчики повешены — inline-скрипт не продублирует их
+  (window as unknown as Record<string, boolean>).__directorChatBound = true;
+
+  console.log('🎯 Director: обработчики чата подключены (простой режим)');
 })();

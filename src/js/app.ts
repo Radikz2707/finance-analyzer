@@ -30,6 +30,7 @@ import {
   mountDirectorChat,
   directorChatStyles,
 } from './modules/pipeline/director/director-chat-widget.js';
+import { createBrowserChatResponder } from './modules/pipeline/director/browser-chat-responder.js';
 
 // 🛰 HARNESS INTEGRATION — гибридный фоновый анализ.
 // В браузерный бандл попадают ТОЛЬКО лёгкие классы (type-only импорты
@@ -120,8 +121,8 @@ function initHarness(): void {
         '[Harness] Диспетчер не активирован (приложение продолжает работу):',
         err,
       );
-  }
-})();
+    }
+  })();
 }
 
 // ──────────────────────────────────────────────
@@ -145,23 +146,29 @@ function initDirectorChat(): void {
   try {
     // Формируем факты портфеля из localStorage (если есть)
     const savedFacts = localStorage.getItem('portfolioFacts');
-    const facts: DirectorFactsContext = savedFacts ? JSON.parse(savedFacts) : {
-      assetsAnalysis: [],
-      totalPortfolioValue: 0,
-      freeCashRub: 0,
-    };
+    const facts: DirectorFactsContext = savedFacts
+      ? JSON.parse(savedFacts)
+      : {
+          assetsAnalysis: [],
+          totalPortfolioValue: 0,
+          freeCashRub: 0,
+        };
 
-    // Создаём DirectorAgent
+    // Создаём DirectorAgent. chatResponder даёт осмысленные ответы по фактам
+    // портфеля даже без локального LLM (вместо фиксированной отмазки).
     directorAgent = new DirectorAgent(undefined, {
       userName: 'Радик',
       includeAgentDetails: true,
+      chatResponder: createBrowserChatResponder(),
     });
     directorAgent.setFacts(facts);
     directorAgent.createSession();
 
     // API для чат-виджета
     const api = {
-      processUserMessage: async (message: string): Promise<DirectorResponse> => {
+      processUserMessage: async (
+        message: string,
+      ): Promise<DirectorResponse> => {
         return directorAgent!.processUserMessage(message);
       },
       getChatHistory: (): ChatMessage[] => {

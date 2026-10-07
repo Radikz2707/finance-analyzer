@@ -32,7 +32,11 @@ import type {
   SaveDialogOptions,
 } from 'electron';
 import { resolveReportsDir } from '../src/js/modules/app-paths.js';
-import { loadDesktopSettings, saveDesktopSettings } from './load-settings.js';
+import {
+  loadDesktopSettings,
+  resolveOllamaModel,
+  saveDesktopSettings,
+} from './load-settings.js';
 
 import {
   buildDashboardHtml,
@@ -73,7 +77,11 @@ async function initAppState(): Promise<void> {
   // (см. isPackagedApp/resolveDefaultDbPath). Здесь env задавать нельзя:
   // module-level инициализация core.ts выполняется при загрузке бандла
   // раньше тела main.ts, а static imports hoist-ятся в начало модуля.
-  const director = await buildDirectorState({});
+  // getOllamaModel — живой источник модели: выбор в настройках приложения
+  // подхватывается директором БЕЗ перезапуска (модель читается на запрос).
+  const director = await buildDirectorState({
+    getOllamaModel: resolveOllamaModel,
+  });
   // Диспетчер опционален: сбой сборки не мешает чату с Директором.
   const harness = await buildHarnessState({});
   appState = { director, harness };
@@ -155,7 +163,8 @@ function registerIpc(): void {
 
   ipcMain.handle('settings:get', () => ({
     excelFilePath: process.env.EXCEL_FILE_PATH ?? '',
-    ollamaModel: process.env.OLLAMA_MODEL ?? '',
+    // Актуальная модель: приоритет у выбора пользователя в settings.json
+    ollamaModel: resolveOllamaModel() ?? '',
   }));
 
   ipcMain.handle('settings:pick-excel', async () => {
@@ -198,7 +207,9 @@ function registerIpc(): void {
     }
   });
 
-  // Сохранить выбранную модель Ollama (применяется после перезапуска)
+  // Сохранить выбранную модель Ollama. Модель читается на каждый запрос
+  // (getOllamaModel → resolveOllamaModel), поэтому применяется сразу,
+  // без перезапуска приложения.
   ipcMain.handle('settings:set-ollama-model', (_event, model: string) => {
     const next = typeof model === 'string' ? model.trim() : '';
     if (!next) return false;

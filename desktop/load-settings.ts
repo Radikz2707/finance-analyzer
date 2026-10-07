@@ -30,6 +30,9 @@ export interface DesktopSettings {
   ollamaModel?: string;
 }
 
+/** Кэш настроек: единый источник для живого чтения в рантайме */
+let cachedSettings: DesktopSettings | null = null;
+
 /** Прочитать настройки (пустые при отсутствии/повреждении файла) */
 export function loadDesktopSettings(): DesktopSettings {
   try {
@@ -41,10 +44,38 @@ export function loadDesktopSettings(): DesktopSettings {
   }
 }
 
+/** Актуальные настройки (с кэшем; обновляется через refreshDesktopSettings) */
+export function getDesktopSettings(): DesktopSettings {
+  if (cachedSettings === null) {
+    cachedSettings = loadDesktopSettings();
+  }
+  return cachedSettings;
+}
+
+/** Перечитать settings.json и обновить кэш (после сохранения из UI) */
+export function refreshDesktopSettings(): DesktopSettings {
+  cachedSettings = loadDesktopSettings();
+  return cachedSettings;
+}
+
 /** Сохранить настройки (создаёт каталог при необходимости) */
 export function saveDesktopSettings(settings: DesktopSettings): void {
   fs.mkdirSync(SETTINGS_DIR, { recursive: true });
   fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf8');
+  // Немедленно актуализируем кэш — выбор Ollama-модели применяется без перезапуска
+  cachedSettings = settings;
+}
+
+/**
+ * Актуальная модель Ollama для общения с Director.
+ * Приоритет у выбора пользователя в приложении (settings.json);
+ * env (dotenv/системный OLLAMA_MODEL) — только как значение по умолчанию.
+ */
+export function resolveOllamaModel(): string | undefined {
+  const saved = getDesktopSettings().ollamaModel;
+  if (saved && saved.trim() !== '') return saved.trim();
+  const env = process.env.OLLAMA_MODEL;
+  return env && env.trim() !== '' ? env.trim() : undefined;
 }
 
 // ── Применение настроек при старте (до загрузки остальных модулей) ──
@@ -55,11 +86,14 @@ if (app.isPackaged && fs.existsSync(LEGACY_ENV_FILE)) {
   loadEnv({ path: LEGACY_ENV_FILE });
 }
 
-// Основной источник: settings.json.
+// Основной источник: settings.json. Модель Ollama применяется ВСЕГДА,
+// если выбрана в приложении (выбор пользователя важнее env по умолчанию),
+// и подхватывается «живо» через resolveOllamaModel() — без перезапуска.
 const savedSettings = loadDesktopSettings();
 if (savedSettings.excelFilePath && !process.env.EXCEL_FILE_PATH) {
   process.env.EXCEL_FILE_PATH = savedSettings.excelFilePath;
 }
-if (savedSettings.ollamaModel && !process.env.OLLAMA_MODEL) {
-  process.env.OLLAMA_MODEL = savedSettings.ollamaModel;
+if (savedSettings.ollamaModel && savedSettings.ollamaModel.trim() !== '') {
+  process.env.OLLAMA_MODEL = savedSettings.ollamaModel.trim();
 }
+cachedSettings = savedSettings;

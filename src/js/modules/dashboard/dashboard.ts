@@ -28,6 +28,7 @@ import {
   mountDirectorChat,
   directorChatStyles,
 } from '../pipeline/director/director-chat-widget.js';
+import { createBrowserChatResponder } from '../pipeline/director/browser-chat-responder.js';
 
 // ──────────────────────────────────────────────
 // Типы данных для dashboard
@@ -1091,10 +1092,12 @@ function initDirectorChat(dashboardData: DashboardData): void {
       freeCashRub: 0,
     };
 
-    // Создаём DirectorAgent
+    // Создаём DirectorAgent. chatResponder даёт осмысленные ответы по фактам
+    // портфеля даже без локального LLM (вместо фиксированной отмазки).
     directorAgent = new DirectorAgent(undefined, {
       userName: 'Радик',
       includeAgentDetails: true,
+      chatResponder: createBrowserChatResponder(),
     });
     directorAgent.setFacts(facts);
     directorAgent.createSession();

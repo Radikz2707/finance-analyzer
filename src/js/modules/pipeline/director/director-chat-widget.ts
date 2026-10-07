@@ -181,12 +181,33 @@ export function mountDirectorChat(
   let pendingDanger: { message: string; assessment: DangerAssessment } | null =
     null;
 
+  /** Последняя ошибка обработки — показывается в ленте, а не только в консоли */
+  let pendingError: string | null = null;
+
   const render = (working: boolean): void => {
     if (!messagesEl || !indicatorEl) return;
     messagesEl.innerHTML = api
       .getChatHistory()
       .map((m) => buildSimpleMessageHtml(m))
       .join('');
+    if (working) {
+      // Наглядный «печатающий» пузырь: видно, что ответ придёт в эту ленту
+      const typing = document.createElement('div');
+      typing.className = 'dc-msg dc-msg-director dc-typing';
+      typing.innerHTML =
+        '<div class="dc-role">Director</div>' +
+        '<div class="dc-text">анализирует вопрос…</div>';
+      messagesEl.appendChild(typing);
+    } else if (pendingError) {
+      const div = document.createElement('div');
+      div.className = 'dc-msg dc-msg-system dc-error';
+      div.innerHTML =
+        '<div class="dc-role">⚠️ Ошибка</div>' +
+        '<div class="dc-text">' +
+        escapeHtml(pendingError) +
+        '</div>';
+      messagesEl.appendChild(div);
+    }
     indicatorEl.className =
       'dc-indicator' + (working ? ' dc-indicator-on' : '');
     indicatorEl.textContent = working ? 'Director думает…' : 'Готов к диалогу';
@@ -222,11 +243,13 @@ export function mountDirectorChat(
       pendingDanger = null;
       div.remove();
       input.value = '';
+      pendingError = null;
       render(true);
       void api
         .confirmDangerousAction(confirmedText)
         .catch((err: unknown) => {
           console.warn('[DirectorChat] Ошибка подтверждённого действия:', err);
+          pendingError = err instanceof Error ? err.message : String(err);
         })
         .finally(() => {
           render(false);
@@ -261,11 +284,13 @@ export function mountDirectorChat(
     if (pendingDanger) return; // ждём решение по текущему предупреждению
 
     input.value = '';
+    pendingError = null;
     render(true);
     void api
       .processUserMessage(text)
       .catch((err: unknown) => {
         console.warn('[DirectorChat] Ошибка обработки сообщения:', err);
+        pendingError = err instanceof Error ? err.message : String(err);
       })
       .finally(() => {
         render(false);
@@ -339,6 +364,9 @@ export function directorChatStyles(): string {
     '.dc-progress-on{display:block;}' +
     '.dc-progress-bar{height:100%;width:40%;background:#ffd166;border-radius:2px;' +
     'animation:dc-progress-slide 1.2s ease-in-out infinite;}' +
+    '.dc-typing{opacity:.7;font-style:italic;animation:dc-blink 1.4s infinite;}' +
+    '.dc-error{border:1px solid #b91c1c;background:#3a1116!important;' +
+    'max-width:100%!important;}' +
     '.dc-confirm{border:1px solid #b45309;background:#3d2b10!important;' +
     'max-width:100%!important;}' +
     '.dc-confirm-actions{display:flex;gap:8px;margin-top:8px;}' +

@@ -422,7 +422,7 @@ describe('Director: приветствия (smalltalk)', () => {
 });
 
 describe('Director: свободный диалог (нефинансовые темы)', () => {
-  it('общий вопрос без LLM → честный fallback без запуска агентов', async () => {
+  it('общий вопрос без LLM → ответ по фактам портфеля без запуска агентов', async () => {
     const { director } = buildDirector();
     const response = await ask(director, 'Расскажи что-нибудь интересное');
 
@@ -430,7 +430,9 @@ describe('Director: свободный диалог (нефинансовые т
     expect(response.needsConsilium).toBe(false);
     expect(response.recommendation).toBeUndefined();
     expect(response.task).toBeUndefined();
-    expect(response.text).toContain('финансовый директор');
+    // Вместо фиксированной отмазки Director отвечает по фактам портфеля
+    expect(response.text).toContain('портфеля');
+    expect(response.text).toContain('PLZL');
   });
 
   it('с chatResponder → используется ответ LLM с контекстом портфеля', async () => {

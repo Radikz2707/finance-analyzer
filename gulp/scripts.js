@@ -69,6 +69,16 @@ export function scripts() {
         crypto: false,
         stream: false,
         buffer: false,
+        // node:*-префиксные варианты тех же модулей (webpack 5)
+        'node:path': false,
+        'node:fs': false,
+        'node:os': false,
+        'node:util': false,
+        'node:child_process': false,
+        'node:crypto': false,
+        'node:stream': false,
+        'node:buffer': false,
+        'node:events': false,
         'better-sqlite3': false,
       },
       // TypeScript-импорты используют расширение .js (bundler resolution),
@@ -140,6 +150,17 @@ export function scripts() {
         /better-sqlite3/,
         (resource) => {
           resource.request = 'data:text/javascript,export default {}';
+        },
+      ),
+      // AI-Memory (SQLite + node:fs/node:path) недоступна в браузере —
+      // подменяем на браузерную no-op заглушку (страница не падает).
+      new webpack.NormalModuleReplacementPlugin(
+        /ai-memory\/index(\.js)?$/,
+        (resource) => {
+          resource.request = resource.request.replace(
+            /ai-memory\/index(\.js)?$/,
+            'ai-memory/index.browser.js',
+          );
         },
       ),
     ],

@@ -16,7 +16,12 @@
  */
 
 import type { AgentState } from '../agent/types.js';
-import { looksLikeGreeting, parseUserMessage } from './nl-parser.js';
+import {
+  looksLikeFileRequest,
+  looksLikeGreeting,
+  looksLikeTerminalRequest,
+  parseUserMessage,
+} from './nl-parser.js';
 import {
   DirectorDelegationPlanner,
   AGENT_ROLE_LABELS,
@@ -34,6 +39,7 @@ import {
   type DirectorAgentPayload,
 } from './agent-facade.js';
 import { DirectorMemoryStore } from './director-memory.js';
+import { buildBrowserChatResponse } from './browser-chat-responder.js';
 import { DirectorAuditLog } from './director-audit.js';
 import { DirectorChatStore } from './chat-session.js';
 import { ProactiveSuggester } from './proactive-suggester.js';
@@ -185,9 +191,13 @@ export class DirectorAgent implements IDirectorAgent {
 
     // 1.1 Свободный диалог: нефинансовый вопрос → LLM (с фактами портфеля)
     // или честный fallback-ответ без запуска агентов анализа.
+    // Файловые/терминальные запросы («создай файл», «запусти тесты») в эту
+    // ветку НЕ попадают — они идут через делегирование action-агентам.
     if (
       interpreted.category === 'general' &&
-      interpreted.tickers.length === 0
+      interpreted.tickers.length === 0 &&
+      !looksLikeFileRequest(message) &&
+      !looksLikeTerminalRequest(message)
     ) {
       this.chat.appendMessage(this.currentSessionId, 'user', message);
       this.memory.saveConversation('user', message, []);
@@ -203,17 +213,16 @@ export class DirectorAgent implements IDirectorAgent {
             history: historyText,
           })
         : null;
+      // Без LLM отвечаем по фактам портфеля, а не фиксированной фразой
       const replyText =
-        answer ??
-        'Я — ваш финансовый директор и сосредоточен на вопросах портфеля. ' +
-          'Спросите про актив (например, «Что с SBER?»), стратегию, рынок или новости.';
+        answer ?? this.buildGeneralFallback(message, historyText);
       this.chat.appendMessage(this.currentSessionId, 'director', replyText);
       this.memory.saveConversation('director', replyText, []);
       this.audit.record(
         'director.chat_message_sent',
         answer
           ? 'Свободный ответ сгенерирован через LLM'
-          : 'Fallback-ответ на общий вопрос',
+          : 'Ответ построен по фактам портфеля (без LLM)',
       );
       this._state = 'idle';
       return {
@@ -665,6 +674,26 @@ export class DirectorAgent implements IDirectorAgent {
     if (interpreted.category === 'scenario') return true;
     const lower = interpreted.text.toLowerCase();
     return FOLLOW_UP_PREFIXES.some((p) => lower.startsWith(p));
+  }
+
+  /**
+   * Честный ответ на свободный (общий) вопрос без LLM.
+   * Строится по фактам портфеля (доли, цель, P&L, концентрация), а не
+   * фиксированной фразой «спросите про актив».
+   */
+  private buildGeneralFallback(question: string, historyText: string): string {
+    const response = buildBrowserChatResponse({
+      question,
+      facts: this.facts,
+      history: historyText,
+    });
+    if (response) return response;
+    // Крайний случай: responder не распознал вопрос — короткая честная реплика
+    return (
+      'Пока я не смог распознать этот вопрос как запрос по портфелю.\n\n' +
+      'Попробуйте спросить иначе: «Что с SBER?», «Как выглядит портфель?», ' +
+      '«Есть ли риски?», «Новости» или «Стратегия».'
+    );
   }
 
   /** Синтез: короткое резюме пути решения */

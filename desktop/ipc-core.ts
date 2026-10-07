@@ -293,15 +293,29 @@ function parseAiOpinion(raw: string | null): AgentOpinion | null {
   return { role: 'ai', position, action, confidence, arguments: args };
 }
 
+/** Актуальная модель Ollama: выбор пользователя → env по умолчанию */
+function resolveActiveModel(
+  getOllamaModel?: () => string | undefined,
+): string | undefined {
+  const fromProvider = getOllamaModel?.();
+  if (fromProvider && fromProvider.trim() !== '') return fromProvider.trim();
+  const env = process.env.OLLAMA_MODEL;
+  return env && env.trim() !== '' ? env.trim() : undefined;
+}
+
 /**
  * Собрать исполнителя роли «ai»: Ollama, если доступна локально,
  * иначе детерминированный fallback (Консилиум работает офлайн).
  * aiMode='off' — проверка сети пропускается полностью (CI/тесты).
+ *
+ * Модель читается на КАЖДЫЙ запрос (getOllamaModel): смена модели в
+ * настройках приложения применяется без перезапуска.
  */
 async function createAiExecutor(
   aiMode: 'auto' | 'off',
   ollamaCheckTimeoutMs: number,
   log: CoreLogger,
+  getOllamaModel?: () => string | undefined,
 ): Promise<{ executor: AiDecisionExecutor; label: string }> {
   if (aiMode === 'off') {
     log('info', 'роль «ai» работает в детерминированном режиме (aiMode=off)');
@@ -311,11 +325,11 @@ async function createAiExecutor(
     };
   }
 
-  const client = new OllamaClient({
-    model: process.env.OLLAMA_MODEL || undefined,
+  const probeClient = new OllamaClient({
+    model: resolveActiveModel(getOllamaModel),
   });
   const available = await withTimeout(
-    client.isAvailable(),
+    probeClient.isAvailable(),
     ollamaCheckTimeoutMs,
   );
 
@@ -336,6 +350,9 @@ async function createAiExecutor(
       // Безопасное значение по умолчанию: детерминированное мнение.
       const fallback = await defaultAiExecutor(req);
       try {
+        const client = new OllamaClient({
+          model: resolveActiveModel(getOllamaModel),
+        });
         const raw = await withTimeout(
           client.generateResponse(
             AI_SYSTEM_PROMPT,
@@ -372,17 +389,19 @@ async function createChatResponder(
   aiMode: 'auto' | 'off',
   ollamaCheckTimeoutMs: number,
   log: CoreLogger,
+  getOllamaModel?: () => string | undefined,
 ): Promise<ChatResponder | undefined> {
   if (aiMode === 'off') {
     log('info', 'свободный диалог отключён (aiMode=off)');
     return undefined;
   }
 
-  const client = new OllamaClient({
-    model: process.env.OLLAMA_MODEL || undefined,
+  // Стартовая проверка: предупреждаем сразу, если Ollama не запущена.
+  const probeClient = new OllamaClient({
+    model: resolveActiveModel(getOllamaModel),
   });
   const available = await withTimeout(
-    client.isAvailable(),
+    probeClient.isAvailable(),
     ollamaCheckTimeoutMs,
   );
 
@@ -396,6 +415,11 @@ async function createChatResponder(
 
   log('info', 'Ollama подключён — свободный диалог использует LLM');
   return async ({ question, facts, history }) => {
+    // Клиент с АКТУАЛЬНОЙ моделью на каждый вопрос: выбранная в настройках
+    // модель подхватывается без перезапуска приложения.
+    const client = new OllamaClient({
+      model: resolveActiveModel(getOllamaModel),
+    });
     const historyMessages: OllamaMessage[] = history
       .split('\n')
       .filter((line) => line.includes(': '))
@@ -460,6 +484,11 @@ export interface BuildDirectorStateOptions {
   aiMode?: 'auto' | 'off';
   /** Таймаут проверки Ollama, мс (по умолчанию 1500) */
   ollamaCheckTimeoutMs?: number;
+  /**
+   * Живой источник актуальной модели Ollama (например, resolveOllamaModel из
+   * load-settings). Если не задан — берётся process.env.OLLAMA_MODEL.
+   */
+  getOllamaModel?: () => string | undefined;
   /** Логгер (по умолчанию console) */
   logger?: CoreLogger;
 }
@@ -490,6 +519,7 @@ export async function buildDirectorState(
     aiMode,
     ollamaCheckTimeoutMs,
     log,
+    options.getOllamaModel,
   );
 
   const actionAgents = createDefaultActionAgents();
@@ -505,6 +535,7 @@ export async function buildDirectorState(
     aiMode,
     ollamaCheckTimeoutMs,
     log,
+    options.getOllamaModel,
   );
   const director = new DirectorAgent(
     { facade, audit, initialFacts: facts },

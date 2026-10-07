@@ -11,6 +11,7 @@ import type {
   DirectorResponse,
 } from './director-types.js';
 import { directorChatStyles } from './director-chat-widget.js';
+import { createBrowserChatResponder } from './browser-chat-responder.js';
 
 /** Факты портфеля по умолчанию (пустые) */
 function emptyFacts(): DirectorFactsContext {
@@ -19,6 +20,26 @@ function emptyFacts(): DirectorFactsContext {
     totalPortfolioValue: 0,
     freeCashRub: 0,
   };
+}
+
+/** Загрузить факты портфеля из глобальных данных или localStorage (если есть) */
+function loadFactsFromWindow(): DirectorFactsContext {
+  const win = window as unknown as {
+    __DIRECTOR_FACTS__?: DirectorFactsContext;
+  };
+  if (win.__DIRECTOR_FACTS__) {
+    return win.__DIRECTOR_FACTS__;
+  }
+  try {
+    const saved = localStorage.getItem('portfolioFacts');
+    if (saved) {
+      const parsed = JSON.parse(saved) as DirectorFactsContext;
+      if (Array.isArray(parsed.assetsAnalysis)) return parsed;
+    }
+  } catch {
+    // localStorage недоступен или данные повреждены — используем пустые факты
+  }
+  return emptyFacts();
 }
 
 /** Инициализация Director-чата */
@@ -40,18 +61,21 @@ function initDirectorChat(): void {
   }
 
   try {
-    // Создаём DirectorAgent
+    // Создаём DirectorAgent. chatResponder даёт осмысленные ответы по фактам
+    // портфеля даже без локального LLM (вместо фиксированной отмазки).
     const directorAgent = new DirectorAgent(undefined, {
       userName: 'Радик',
       includeAgentDetails: true,
+      chatResponder: createBrowserChatResponder(),
     });
-    directorAgent.setFacts(emptyFacts());
+    directorAgent.setFacts(loadFactsFromWindow());
     directorAgent.createSession();
 
     // Делаем processDirectorMessage доступным глобально для inline-скрипта в report.html
-    (window as unknown as Record<string, unknown>).processDirectorMessage = async (message: string): Promise<DirectorResponse> => {
-      return directorAgent.processUserMessage(message);
-    };
+    (window as unknown as Record<string, unknown>).processDirectorMessage =
+      async (message: string): Promise<DirectorResponse> => {
+        return directorAgent.processUserMessage(message);
+      };
 
     console.log('🎯 Director: чат инициализирован');
   } catch (err) {

@@ -55,6 +55,7 @@ const ollamaModelSelect = $('#ollama-model-select') as HTMLSelectElement;
 const applyOllamaBtn = $('#apply-ollama-btn') as HTMLButtonElement;
 const exportReportBtn = $('#export-report-btn') as HTMLButtonElement;
 const exportPdfBtn = $('#export-report-pdf-btn') as HTMLButtonElement;
+const harnessRunNote = $('#harness-run-note');
 
 const MAX_ACTIVITY_LINES = 400;
 const MAX_CONSOLE_LINES = 1500;
@@ -66,6 +67,24 @@ function nowTime(): string {
   const d = new Date();
   const pad = (n: number): string => String(n).padStart(2, '0');
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/** Локальное время из ISO-метки (для «Последнего запуска» диспетчера) */
+function formatLocalTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/** Длительность прогона в формате MM:SS */
+function formatElapsed(startedAtMs: number): string {
+  const total = Math.max(
+    0,
+    Math.round((performance.now() - startedAtMs) / 1000),
+  );
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
 }
 
 function makeEl<K extends keyof HTMLElementTagNameMap>(
@@ -316,7 +335,7 @@ function renderHarness(payload: HarnessDashboardPayload | null): void {
     dispatchStatusEl.appendChild(
       statCell(
         'Последний запуск',
-        sched.lastRunAt ? sched.lastRunAt.slice(11, 19) : '—',
+        sched.lastRunAt ? formatLocalTime(sched.lastRunAt) : '—',
       ),
     );
     dispatchStatusEl.appendChild(
@@ -567,9 +586,14 @@ async function init(): Promise<void> {
         );
         return;
       }
-      appendActivityLine(`🔄 Модель Ollama сохранена: ${model}`, 'type-agent');
+      appendActivityLine(
+        `🔄 Модель Ollama сохранена: ${model} — применится со следующего вопроса`,
+        'type-agent',
+      );
+      // Перезапуск не обязателен (модель читается на каждый запрос),
+      // но предлагаем пересоздать подсистемы для полной перезагрузки.
       const restart = window.confirm(
-        'Модель Ollama сохранена. Перезапустить приложение, чтобы она применилась?',
+        `Модель Ollama «${model}» сохранена и будет использоваться со следующего вопроса. Перезапустить приложение сейчас?`,
       );
       if (restart) {
         await window.financeApp.restartApp();
@@ -608,15 +632,33 @@ async function init(): Promise<void> {
   consoleSearch.addEventListener('input', applyConsoleFilter);
   runAnalysisBtn.addEventListener('click', async () => {
     runAnalysisBtn.disabled = true;
+    const originalText = runAnalysisBtn.textContent || '▶ Запустить анализ';
+    runAnalysisBtn.textContent = '⏳ Анализ выполняется…';
+    harnessRunNote.textContent = '⏳ Анализ выполняется…';
+    harnessRunNote.className = 'harness-run-note progress';
+    const startedAtMs = performance.now();
     try {
       const result = await window.financeApp.runHarnessAnalysis();
+      const elapsed = formatElapsed(startedAtMs);
       appendActivityLine(
-        `🛰 ${result.ok ? '✓' : '✗'} ${result.message}`,
+        `🛰 ${result.ok ? '✓' : '✗'} ${result.message} (${elapsed})`,
         result.ok ? 'type-agent' : 'type-error',
       );
+      harnessRunNote.textContent = result.ok
+        ? `✓ Анализ завершён за ${elapsed}`
+        : `✗ Анализ завершён с ошибками за ${elapsed}`;
+      harnessRunNote.className = result.ok
+        ? 'harness-run-note ok'
+        : 'harness-run-note error';
       await refreshHarness();
+    } catch (err) {
+      harnessRunNote.textContent = `✗ Ошибка анализа: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+      harnessRunNote.className = 'harness-run-note error';
     } finally {
       runAnalysisBtn.disabled = false;
+      runAnalysisBtn.textContent = originalText;
     }
   });
 

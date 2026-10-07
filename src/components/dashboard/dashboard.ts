@@ -2,7 +2,12 @@ import fs from 'fs';
 import path from 'path';
 import { QuikOrder } from '../../js/modules/xlsx-parser/quik-orders-parser';
 import { AssetAnalysis } from '../../js/modules/portfolio-math/portfolio-math.js';
-import { buildOrdersHtmlAndMd, buildAssetsTablesAndBars, buildQuotesBlock, StockQuote } from '../../js/modules/ai-advisor/report-builders.js';
+import {
+  buildOrdersHtmlAndMd,
+  buildAssetsTablesAndBars,
+  buildQuotesBlock,
+  StockQuote,
+} from '../../js/modules/ai-advisor/report-builders.js';
 
 /**
  * Опциональные KPI-данные, передаваемые в fromOrdersAndAssets.
@@ -29,7 +34,10 @@ export interface DashboardKpiData {
  *   'А' / 'Акция' → акции
  *   'О' / 'Облигация' → облигации
  */
-function computeAssetPercents(assetsAnalysis: AssetAnalysis[]): { stocksPct: number; bondsPct: number } {
+function computeAssetPercents(assetsAnalysis: AssetAnalysis[]): {
+  stocksPct: number;
+  bondsPct: number;
+} {
   let stocksPct = 0;
   let bondsPct = 0;
 
@@ -243,7 +251,7 @@ export class DashboardReportBuilder {
       '.ai-recommendations-table td:first-child { font-weight: 600; color: #58a6ff; }' +
       // === income-widget ===
       '.income-widget { background: linear-gradient(135deg, rgba(56, 211, 100, 0.06) 0%, rgba(35, 134, 54, 0.1) 100%); border: 1px solid rgba(56, 211, 100, 0.25); border-radius: 12px; padding: 20px 24px; margin-bottom: 20px; color: #e6edf2; position: relative; overflow: hidden; }' +
-      '.income-widget::before { content: \'\'; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, #38d364, transparent); opacity: 0.6; }' +
+      ".income-widget::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, #38d364, transparent); opacity: 0.6; }" +
       '.income-widget .income-header { margin: 0 0 16px; font-size: 16px; font-weight: 700; color: #38d364; display: flex; align-items: center; gap: 10px; }' +
       '.income-widget .income-icon { font-size: 20px; line-height: 1; }' +
       '.income-widget .income-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 18px; }' +
@@ -359,17 +367,16 @@ export class DashboardReportBuilder {
       '<div>' +
       "<div class='block-box'>" +
       '<h2>Котировки акций (Мосбиржа)</h2>' +
-      (quotesTableRows ?
-        "<div class='quotes-table-container'>" +
-        '<table class="quotes-table">' +
-        '<thead><tr><th>Инструмент</th><th>Цена</th><th>Изменение</th></tr></thead>' +
-        '<tbody>' +
-        quotesTableRows +
-        '</tbody>' +
-        '</table>' +
-        '</div>' :
-        "<div style='color: #8b949e; text-align: center; padding: 20px;'>Данные о котировках недоступны</div>"
-      ) +
+      (quotesTableRows
+        ? "<div class='quotes-table-container'>" +
+          '<table class="quotes-table">' +
+          '<thead><tr><th>Инструмент</th><th>Цена</th><th>Изменение</th></tr></thead>' +
+          '<tbody>' +
+          quotesTableRows +
+          '</tbody>' +
+          '</table>' +
+          '</div>'
+        : "<div style='color: #8b949e; text-align: center; padding: 20px;'>Данные о котировках недоступны</div>") +
       topGainers +
       topLosers +
       '</div>' +
@@ -411,23 +418,57 @@ export class DashboardReportBuilder {
       '<button class="director-chat-send" id="directorChatSend">Отправить</button>' +
       '</div>' +
       '</div>' +
+      '<style>' +
+      '.dc-status{display:block;color:#ffd166;font-size:12px;padding:4px 2px;' +
+      'animation:dcBlink 1s infinite;}' +
+      '.dc-progress-line{display:block;height:3px;border-radius:2px;' +
+      'background:#333;overflow:hidden;margin-top:6px;}' +
+      '.dc-progress-bar{display:block;height:100%;width:40%;background:#ffd166;' +
+      'animation:dcSlide 1.1s ease-in-out infinite;}' +
+      '@keyframes dcBlink{50%{opacity:.35}}' +
+      '@keyframes dcSlide{0%{transform:translateX(-120%)}100%{transform:translateX(280%)}}' +
+      '</style>' +
       '<script>' +
-      // Director Chat JS — inline (works with file:// protocol)
+      // Director Chat JS — inline (works with file:// protocol).
+      // Показывает статус «анализирует…» во время обработки вопроса,
+      // ответ берётся из response.text (у DirectorResponse нет поля summary).
       '(function(){' +
-      'var container=document.getElementById(\'directorChat\');' +
+      "var container=document.getElementById('directorChat');" +
       'if(!container)return;' +
-      'var messagesEl=container.querySelector(\'#directorChatMessages\');' +
+      "var messagesEl=container.querySelector('#directorChatMessages');" +
       'var inputEl=container.querySelector("#directorChatInput");' +
       'var sendBtn=container.querySelector("#directorChatSend");' +
-      'var history=[];' +
+      'var statusEl=null;' +
+      'var progressEl=null;' +
       'function addMsg(role,text){' +
-      'history.push({role:role,text:text});' +
       'var cls=role==="user"?"dc-msg-user":"dc-msg-director";' +
       'var label=role==="user"?"Вы":"Director";' +
       'var div=document.createElement("div");' +
       'div.className="dc-msg "+cls;' +
       'div.innerHTML="<div class=\\"dc-role\\">"+label+"</div><div class=\\"dc-text\\">"+text+"</div>";' +
       'messagesEl.appendChild(div);' +
+      'messagesEl.scrollTop=messagesEl.scrollHeight;' +
+      '}' +
+      'function setWorking(on){' +
+      'if(on){' +
+      'if(!statusEl){' +
+      'statusEl=document.createElement("div");' +
+      'statusEl.className="dc-status";' +
+      'statusEl.textContent="🧠 Director анализирует ваш вопрос…";' +
+      'messagesEl.appendChild(statusEl);' +
+      '}' +
+      'statusEl.style.display="block";' +
+      'if(!progressEl){' +
+      'progressEl=document.createElement("div");' +
+      'progressEl.className="dc-progress-line";' +
+      'progressEl.innerHTML="<span class=\\"dc-progress-bar\\"></span>";' +
+      'messagesEl.appendChild(progressEl);' +
+      '}' +
+      'progressEl.style.display="block";' +
+      '}else{' +
+      'if(statusEl)statusEl.style.display="none";' +
+      'if(progressEl)progressEl.style.display="none";' +
+      '}' +
       'messagesEl.scrollTop=messagesEl.scrollHeight;' +
       '}' +
       'function sendMessage(){' +
@@ -438,23 +479,30 @@ export class DashboardReportBuilder {
       'inputEl.value="";' +
       'sendBtn.disabled=true;' +
       'sendBtn.textContent="Думаю...";' +
+      'setWorking(true);' +
       'if(typeof processDirectorMessage==="function"){' +
       'processDirectorMessage(text).then(function(response){' +
-      'addMsg("director",response.summary||response);' +
+      'var reply=(response&&typeof response==="object"&&response.text)?response.text:String(response||"");' +
+      'addMsg("director",reply||"Готово.");' +
       '}).catch(function(err){' +
-      'addMsg("director","Ошибка: "+(err.message||err));' +
+      'addMsg("director","Ошибка: "+(err&&err.message?err.message:err));' +
       '}).finally(function(){' +
+      'setWorking(false);' +
       'sendBtn.disabled=false;' +
       'sendBtn.textContent="Отправить";' +
       '});' +
       '}else{' +
+      'setWorking(false);' +
       'addMsg("director","Director ещё не инициализирован. Проверьте консоль (F12).");' +
       'sendBtn.disabled=false;' +
       'sendBtn.textContent="Отправить";' +
       '}' +
       '}' +
+      'if(!window.__directorChatBound){' +
       'if(sendBtn)sendBtn.addEventListener("click",sendMessage);' +
       'if(inputEl)inputEl.addEventListener("keydown",function(e){if(e.key==="Enter")sendMessage();});' +
+      'window.__directorChatBound=true;' +
+      '}' +
       '})()' +
       '</script>' +
       '</body>' +
@@ -484,9 +532,11 @@ export class DashboardReportBuilder {
       '<script>' +
       // Embed Director Chat widget inline (works with file:// protocol)
       '(function(){' +
-      'var scriptContent=' + JSON.stringify(directorScript) + ';' +
+      'var scriptContent=' +
+      JSON.stringify(directorScript) +
+      ';' +
       'if(scriptContent){' +
-      'var scriptEl=document.createElement(\'script\');' +
+      "var scriptEl=document.createElement('script');" +
       'scriptEl.textContent=scriptContent;' +
       'document.head.appendChild(scriptEl);' +
       '}' +
@@ -504,7 +554,9 @@ export class DashboardReportBuilder {
   ): DashboardReportBuilder {
     const ordersResult = buildOrdersHtmlAndMd(orders);
     const uiTables = buildAssetsTablesAndBars(assetsAnalysis);
-    const quotesBlock = quotes ? buildQuotesBlock(quotes) : { quotesTableRows: '', topGainers: '', topLosers: '' };
+    const quotesBlock = quotes
+      ? buildQuotesBlock(quotes)
+      : { quotesTableRows: '', topGainers: '', topLosers: '' };
 
     // Вычисляем фактические доли акций/облигаций из математического ядра
     const { stocksPct, bondsPct } = computeAssetPercents(assetsAnalysis);
@@ -512,17 +564,25 @@ export class DashboardReportBuilder {
     // Форматируем KPI-значения с разделителями тысяч, если данные переданы
     const totalValStr = kpiData ? kpiData.totalVal.toLocaleString('ru-RU') : '';
     const freeCashStr = kpiData ? kpiData.freeCash.toLocaleString('ru-RU') : '';
-    const totalInvestedStr = kpiData ? kpiData.totalInvested.toLocaleString('ru-RU') : '';
-    const resultC10Str = kpiData ? kpiData.resultC10.toLocaleString('ru-RU') : '';
+    const totalInvestedStr = kpiData
+      ? kpiData.totalInvested.toLocaleString('ru-RU')
+      : '';
+    const resultC10Str = kpiData
+      ? kpiData.resultC10.toLocaleString('ru-RU')
+      : '';
     const profitC11Str = kpiData
-      ? kpiData.profitC11.toLocaleString('ru-RU') + ' ₽' +
+      ? kpiData.profitC11.toLocaleString('ru-RU') +
+        ' ₽' +
         (kpiData.investedNet > 0
-          ? ' (' + ((kpiData.profitC11 / kpiData.investedNet) * 100).toFixed(2) + '%)'
+          ? ' (' +
+            ((kpiData.profitC11 / kpiData.investedNet) * 100).toFixed(2) +
+            '%)'
           : '')
       : '';
     const c10Color = kpiData?.c10Color ?? '';
     const c11Color = kpiData?.c11Color ?? '';
-    const cbrRate = (kpiData?.cbrRate && kpiData.cbrRate > 0) ? kpiData.cbrRate : 14.0;
+    const cbrRate =
+      kpiData?.cbrRate && kpiData.cbrRate > 0 ? kpiData.cbrRate : 14.0;
     const dateStr = kpiData?.dateStr ?? '';
     const timeStr = kpiData?.timeStr ?? '';
     const aiBoxHtml = kpiData?.aiBoxHtml ?? '';
@@ -560,7 +620,12 @@ export class DashboardReportBuilder {
  */
 function loadDirectorChatScript(): string {
   try {
-    const scriptPath = path.join(process.cwd(), 'dist', 'js', 'director-chat-init.min.js');
+    const scriptPath = path.join(
+      process.cwd(),
+      'dist',
+      'js',
+      'director-chat-init.min.js',
+    );
     if (fs.existsSync(scriptPath)) {
       return fs.readFileSync(scriptPath, 'utf-8');
     }
