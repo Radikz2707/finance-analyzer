@@ -42,10 +42,12 @@ export interface HarnessHandle {
   bridge: HarnessBridge;
   /** Гибридный диспетчер (уже запущен) */
   scheduler: AdaptiveScheduler;
-  /** Адаптер Telegram-уведомлений */
+  /** Адаптер уведомлений (для регистрации отправителя извне) */
   notifier: TelegramNotifier;
   /** Уведомитель ценовых алертов (провайдер можно задать через setProvider) */
   priceAlertNotifier: PriceAlertNotifier;
+  /** Подписаться на прогресс стадий анализа */
+  onStageProgress: (callback: (stage: string, durationMs: number) => void) => () => void;
 }
 
 /** Публичное API для дашборда (window.__FINANCE_HARNESS__) */
@@ -56,6 +58,8 @@ export interface HarnessWindowApi {
   manualRun(): Promise<void>;
   /** Адаптер уведомлений (для регистрации отправителя извне) */
   notifier: TelegramNotifier;
+  /** Подписаться на прогресс стадий анализа */
+  onStageProgress: (callback: (stage: string, durationMs: number) => void) => void;
 }
 
 /** Конфигурация сборки */
@@ -175,6 +179,23 @@ export function createHarness(
     scheduler.start();
   }
 
+  // Функция подписки на прогресс стадий
+  const subscribeStageProgress = (
+    callback: (stage: string, durationMs: number) => void,
+  ): (() => void) => {
+    // Создаём временный coordinator для подписки
+    // (реальный coordinator создаётся в runPipelineTask)
+    const tempCoordinator = new PipelineCoordinator(undefined, {
+      memorySink: async (result) => {
+        await savePortfolioKpi(aiMemoryImpl, result);
+      },
+    });
+    const unsubscribe = tempCoordinator.onStageComplete((stage, durationMs) => {
+      callback(stage, durationMs);
+    });
+    return unsubscribe;
+  };
+
   // Ценовые алерты → Telegram: отдельный интервал (Node-only, по умолчанию 60с).
   // Провайдер алертов регистрируется извне через priceAlertNotifier.setProvider();
   // без провайдера checkAndNotify() возвращает 0 (безопасный no-op).
@@ -189,7 +210,13 @@ export function createHarness(
     alertTimer.unref?.();
   }
 
-  return { bridge, scheduler, notifier, priceAlertNotifier };
+  return {
+    bridge,
+    scheduler,
+    notifier,
+    priceAlertNotifier,
+    onStageProgress: subscribeStageProgress,
+  };
 }
 
 /**
@@ -232,6 +259,9 @@ export function initHarness(
           await handle.scheduler.manualRun();
         },
         notifier: handle.notifier,
+        onStageProgress: (callback) => {
+          return handle.onStageProgress(callback);
+        },
       };
       (
         window as unknown as {

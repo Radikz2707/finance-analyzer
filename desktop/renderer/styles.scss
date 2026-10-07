@@ -162,6 +162,33 @@ body {
   white-space: nowrap;
 }
 
+.ai-status {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 12px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+
+  &.ok {
+    color: var(--success);
+    background: rgba(52, 211, 153, 0.1);
+    border-color: rgba(52, 211, 153, 0.3);
+  }
+
+  &.fallback {
+    color: var(--warning);
+    background: rgba(251, 191, 36, 0.1);
+    border-color: rgba(251, 191, 36, 0.3);
+  }
+
+  &.warning {
+    color: var(--danger);
+    background: rgba(248, 113, 113, 0.1);
+    border-color: rgba(248, 113, 113, 0.3);
+  }
+}
+
 .pick-excel-btn {
   font-size: 12px;
   font-family: inherit;

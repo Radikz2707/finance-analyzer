@@ -50,9 +50,13 @@ const dispatchStatusEl = $('#dispatch-status');
 const anomaliesListEl = $('#anomalies-list');
 const quikNewsEl = $('#quik-news');
 const versionEl = $('#app-version');
+const aiStatusEl = $('#ai-status') as HTMLSpanElement | null;
 const pickExcelBtn = $('#pick-excel-btn') as HTMLButtonElement;
 const ollamaModelSelect = $('#ollama-model-select') as HTMLSelectElement;
 const applyOllamaBtn = $('#apply-ollama-btn') as HTMLButtonElement;
+const reconnectOllamaBtn = $(
+  '#reconnect-ollama-btn',
+) as HTMLButtonElement | null;
 const exportReportBtn = $('#export-report-btn') as HTMLButtonElement;
 const exportPdfBtn = $('#export-report-pdf-btn') as HTMLButtonElement;
 const harnessRunNote = $('#harness-run-note');
@@ -390,12 +394,82 @@ function renderHarness(payload: HarnessDashboardPayload | null): void {
   }
 }
 
+// ── Toast-уведомления ────────────────────────────────────────
+
+function showToast(message: string, type: 'ok' | 'error'): void {
+  // Создаём toast-элемент
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = message;
+  toast.style.cssText = `
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
+    z-index: 10000;
+    background: ${type === 'ok' ? 'var(--success)' : 'var(--danger)'};
+    color: ${type === 'ok' ? '#000' : '#fff'};
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    animation: slideIn 0.3s ease;
+    max-width: 400px;
+  `;
+
+  // Добавляем CSS-анимацию если ещё нет
+  if (!document.getElementById('toast-styles')) {
+    const style = document.createElement('style');
+    style.id = 'toast-styles';
+    style.textContent = `
+      @keyframes slideIn {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes slideOut {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(100%); opacity: 0; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  document.body.appendChild(toast);
+
+  // Авто-скрытие через 8 секунд
+  setTimeout(() => {
+    toast.style.animation = 'slideOut 0.3s ease';
+    setTimeout(() => toast.remove(), 300);
+  }, 8000);
+}
+
 // ── Статус-бар ───────────────────────────────────────────────
 
 function renderStatusBar(sourceLabel: string, hasData: boolean): void {
   statusBar.textContent = sourceLabel;
   statusBar.classList.toggle('has-data', hasData);
   statusBar.classList.toggle('no-data', !hasData);
+}
+
+// ── Индикатор статуса AI ──────────────────────────────────────
+
+function renderAiStatus(aiLabel: string): void {
+  if (!aiStatusEl) return;
+
+  const isOllama = aiLabel.includes('Ollama');
+  const isOff = aiLabel.includes('aiMode=off');
+
+  aiStatusEl.textContent = isOff
+    ? '⚠ AI отключён'
+    : isOllama
+      ? '● Ollama ✓'
+      : '● Детермин. режим';
+
+  aiStatusEl.className = isOff
+    ? 'ai-status warning'
+    : isOllama
+      ? 'ai-status ok'
+      : 'ai-status fallback';
 }
 
 // ── Запрос к Директору ───────────────────────────────────────
@@ -432,6 +506,7 @@ function onDirectorReply(result: AskResult): void {
     `⏱ Ответ Director за ${result.elapsedMs} мс (событий: ${result.events.length})`,
     'type-plan',
   );
+  // Обновляем индикатор статуса AI после каждого ответа
   void refreshAux();
 }
 
@@ -449,6 +524,8 @@ async function refreshAux(): Promise<void> {
         status.sourceLabel,
         !status.sourceLabel.includes('нет данных'),
       );
+      // Обновляем индикатор статуса AI
+      renderAiStatus(status.aiLabel);
     }
     renderPanel(panel);
     fillConsole(log.entries);
@@ -512,15 +589,22 @@ async function init(): Promise<void> {
     try {
       const result = await window.financeApp.pickExcelFile();
       if (!result.canceled && result.excelFilePath) {
-        appendActivityLine(
-          `📁 Путь к Excel сохранён: ${result.excelFilePath}`,
-          'type-agent',
+        // Перезагружаем данные портфеля без перезапуска
+        const reload = await window.financeApp.reloadPortfolio(
+          result.excelFilePath,
         );
-        const restart = window.confirm(
-          'Путь к Excel сохранён. Перезапустить приложение, чтобы данные портфеля загрузились?',
-        );
-        if (restart) {
-          await window.financeApp.restartApp();
+        if (reload.success) {
+          appendActivityLine(
+            `📁 ${reload.message}: ${result.excelFilePath}`,
+            'type-agent',
+          );
+          // Обновляем статус-бар
+          renderStatusBar(reload.sourceLabel, reload.assetsCount > 0);
+        } else {
+          appendActivityLine(
+            `✗ Не удалось загрузить портфель: ${reload.message}`,
+            'type-error',
+          );
         }
       }
     } catch {
@@ -590,18 +674,31 @@ async function init(): Promise<void> {
         `🔄 Модель Ollama сохранена: ${model} — применится со следующего вопроса`,
         'type-agent',
       );
-      // Перезапуск не обязателен (модель читается на каждый запрос),
-      // но предлагаем пересоздать подсистемы для полной перезагрузки.
-      const restart = window.confirm(
-        `Модель Ollama «${model}» сохранена и будет использоваться со следующего вопроса. Перезапустить приложение сейчас?`,
-      );
-      if (restart) {
-        await window.financeApp.restartApp();
-      }
     } catch {
       appendActivityLine('✗ Ошибка сохранения модели Ollama', 'type-error');
     } finally {
       applyOllamaBtn.disabled = false;
+    }
+  });
+
+  // Переподключение Ollama из UI
+  reconnectOllamaBtn?.addEventListener('click', async () => {
+    reconnectOllamaBtn.disabled = true;
+    try {
+      const result = await window.financeApp.reconnectOllama();
+      appendActivityLine(
+        result.success ? `✅ ${result.message}` : `⚠ ${result.message}`,
+        result.success ? 'type-agent' : 'type-error',
+      );
+      // Обновляем индикатор статуса AI
+      const status = await window.financeApp.getStatus();
+      if (status) {
+        renderAiStatus(status.aiLabel);
+      }
+    } catch {
+      appendActivityLine('✗ Ошибка переподключения Ollama', 'type-error');
+    } finally {
+      reconnectOllamaBtn.disabled = false;
     }
   });
 
@@ -651,11 +748,23 @@ async function init(): Promise<void> {
         ? 'harness-run-note ok'
         : 'harness-run-note error';
       await refreshHarness();
+
+      // Toast-уведомление о завершении
+      showToast(
+        result.ok
+          ? `✅ Анализ завершён за ${elapsed}`
+          : `❌ Анализ завершён с ошибками за ${elapsed}`,
+        result.ok ? 'ok' : 'error',
+      );
     } catch (err) {
       harnessRunNote.textContent = `✗ Ошибка анализа: ${
         err instanceof Error ? err.message : String(err)
       }`;
       harnessRunNote.className = 'harness-run-note error';
+      showToast(
+        `❌ Ошибка анализа: ${err instanceof Error ? err.message : String(err)}`,
+        'error',
+      );
     } finally {
       runAnalysisBtn.disabled = false;
       runAnalysisBtn.textContent = originalText;

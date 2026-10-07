@@ -17,6 +17,8 @@ import type {
   HarnessExportResult,
   HarnessRunResult,
   LogResult,
+  OllamaReconnectResult,
+  PortfolioReloadResult,
 } from './ipc-core.js';
 
 export type {
@@ -29,6 +31,8 @@ export type {
   HarnessExportResult,
   HarnessRunResult,
   LogResult,
+  OllamaReconnectResult,
+  PortfolioReloadResult,
 };
 
 /** Статус данных портфеля (вкладка «Чат» / статус-бар) */
@@ -81,10 +85,14 @@ export interface FinanceDesktopApi {
   pickExcelFile(): Promise<PickExcelResult>;
   /** Перезапуск приложения (после смены пути к Excel) */
   restartApp(): Promise<boolean>;
+  /** Перезагрузить данные портфеля из Excel (без перезапуска) */
+  reloadPortfolio(excelPath: string): Promise<PortfolioReloadResult>;
   /** Список моделей, загруженных в локальную Ollama ([] — Ollama недоступна) */
   getOllamaModels(): Promise<string[]>;
   /** Сохранить выбранную модель Ollama (применяется после перезапуска) */
   setOllamaModel(model: string): Promise<boolean>;
+  /** Переподключить Ollama (если был fallback-режим) */
+  reconnectOllama(): Promise<OllamaReconnectResult>;
   /** Подписка на живой поток событий аудита (стриминг) */
   onDirectorEvent(callback: (event: DirectorAuditEvent) => void): () => void;
   /** Подписка на завершение ответа Директора */

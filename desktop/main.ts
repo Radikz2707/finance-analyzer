@@ -49,6 +49,8 @@ import {
   handleLog,
   handlePanel,
   handleStatus,
+  reloadPortfolio,
+  reconnectOllama,
   shutdownAppState,
   subscribeEvents,
   type AppState,
@@ -153,6 +155,25 @@ function registerIpc(): void {
   ipcMain.handle('director:panel', () =>
     appState ? handlePanel(appState.director) : null,
   );
+
+  // Переподключение Ollama из UI
+  ipcMain.handle('director:reconnect-ollama', async () => {
+    if (!appState) {
+      return { success: false, label: '', message: 'Приложение не инициализировано' };
+    }
+    const result = await reconnectOllama(appState.director, {
+      getOllamaModel: resolveOllamaModel,
+    });
+    return result;
+  });
+
+  // Перезагрузка портфеля из Excel
+  ipcMain.handle('portfolio:reload', async (_event, excelPath: string) => {
+    if (!appState) {
+      return { success: false, sourceLabel: '', assetsCount: 0, message: 'Приложение не инициализировано' };
+    }
+    return await reloadPortfolio(appState.director, excelPath);
+  });
 
   ipcMain.handle('portfolio:status', () => ({
     excelPath: process.env.EXCEL_FILE_PATH ?? '',

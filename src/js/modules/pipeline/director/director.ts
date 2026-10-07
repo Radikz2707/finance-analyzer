@@ -689,11 +689,18 @@ export class DirectorAgent implements IDirectorAgent {
     });
     if (response) return response;
     // Крайний случай: responder не распознал вопрос — короткая честная реплика
-    return (
+    const templates = [
       'Пока я не смог распознать этот вопрос как запрос по портфелю.\n\n' +
-      'Попробуйте спросить иначе: «Что с SBER?», «Как выглядит портфель?», ' +
-      '«Есть ли риски?», «Новости» или «Стратегия».'
-    );
+        'Попробуйте спросить иначе: «Что с SBER?», «Как выглядит портфель?», ' +
+        '«Есть ли риски?», «Новости» или «Стратегия».',
+      'Этот вопрос не совсем про мой портфель. Но я могу обсудить:\n\n' +
+        '«Что с SBER?», «Как выглядит портфель?», ' +
+        '«Есть ли риски?», «Новости» или «Стратегия».',
+      'Я не уверен, что правильно понял ваш запрос.\n\n' +
+        'Мои сильные темы: «Что с SBER?», «Как выглядит портфель?», ' +
+        '«Есть ли риски?», «Новости» или «Стратегия».',
+    ];
+    return this.randomFrom(templates);
   }
 
   /** Синтез: короткое резюме пути решения */
@@ -705,31 +712,48 @@ export class DirectorAgent implements IDirectorAgent {
     recommendation: DirectorTask['recommendation'],
   ): string {
     const okCount = agentResults.filter((r) => r.success).length;
+    const totalAgents = plan.agentAssignments.length;
+    const actionText = actionLabel(recommendation.action);
+    const confPct = Math.round(recommendation.confidence * 100);
+
+    // Пулы шаблонов синтеза
+    const agentTemplates = [
+      `Подключено агентов: ${okCount}/${totalAgents}.`,
+      `Задействованы агенты: ${okCount} из ${totalAgents} успешно.`,
+      `Работали ${okCount} из ${totalAgents} агентов.`,
+      `Агентов успешно: ${okCount}/${totalAgents}.`,
+    ];
+
+    const questionTemplates = [
+      `Вопрос: ${question.text}. Цель: ${plan.goal}.`,
+      `Запрос: ${question.text}. Задача: ${plan.goal}.`,
+      `Тема: ${question.text}. Фокус: ${plan.goal}.`,
+    ];
+
+    const consiliumTemplates = consilium
+      ? [
+          `Consilium: ${consilium.rounds.length} раунд(а), итог «${consilium.finalRecommendation.action}».`,
+          `Консилиум провёл ${consilium.rounds.length} раунд(а) — решение: «${consilium.finalRecommendation.action}».`,
+          `После ${consilium.rounds.length} раунда(ов) Consilium: «${consilium.finalRecommendation.action}».`,
+        ]
+      : [];
+
+    const recTemplates = [
+      `Рекомендация: ${actionText} (${confPct}%).`,
+      `Итог: ${actionText} с уверенностью ${confPct}%.`,
+      `Решение: ${actionText} (${confPct}%).`,
+    ];
+
     const parts: string[] = [];
-    parts.push('Вопрос: ' + question.text + '. Цель: ' + plan.goal + '.');
-    parts.push(
-      'Подключено агентов: ' +
-        okCount +
-        '/' +
-        plan.agentAssignments.length +
-        '.',
-    );
-    if (consilium) {
-      parts.push(
-        'Consilium: ' +
-          consilium.rounds.length +
-          ' раунд(а), итог «' +
-          consilium.finalRecommendation.action +
-          '».',
-      );
+    parts.push(this.randomFrom(questionTemplates));
+    parts.push(this.randomFrom(agentTemplates));
+
+    if (consilium && consiliumTemplates.length > 0) {
+      parts.push(this.randomFrom(consiliumTemplates));
     }
-    parts.push(
-      'Рекомендация: ' +
-        actionLabel(recommendation.action) +
-        ' (' +
-        Math.round(recommendation.confidence * 100) +
-        '%).',
-    );
+
+    parts.push(this.randomFrom(recTemplates));
+
     return parts.join(' ');
   }
 
@@ -744,14 +768,9 @@ export class DirectorAgent implements IDirectorAgent {
   ): string {
     const lines: string[] = [];
 
-    lines.push(
-      'Я понял ваш вопрос: «' +
-        question.text +
-        '».' +
-        (question.contextReference
-          ? ' Продолжаем обсуждение: ' + question.contextReference + '.'
-          : ''),
-    );
+    // Случайное вступление из пула
+    const intro = this.randomFrom(this.getIntroductions(question));
+    lines.push(intro);
 
     if (this.config.includeAgentDetails ?? true) {
       lines.push('');
@@ -821,11 +840,10 @@ export class DirectorAgent implements IDirectorAgent {
     );
     lines.push(recommendation.reasoning.slice(0, 400));
 
+    // Случайное заключение из пула
+    const outro = this.randomFrom(this.getOutros());
     lines.push('');
-    lines.push(
-      'Это рекомендация, а не совершённая операция: исполнение остаётся ' +
-        'отдельным этапом и произойдёт только после вашего подтверждения.',
-    );
+    lines.push(outro);
     lines.push('Факты портфеля (цены, доли, P&L) при этом не изменяются.');
 
     if (followUps.length > 0) {
@@ -839,6 +857,44 @@ export class DirectorAgent implements IDirectorAgent {
     return lines.join('\n');
   }
 
+  /** Случайный элемент из массива */
+  private randomFrom<T>(arr: readonly T[]): T {
+    if (arr.length === 0) {
+      throw new Error('randomFrom: массив пуст');
+    }
+    return arr[Math.floor(Math.random() * arr.length)]!;
+  }
+
+  /** Пул вступлений к ответу */
+  private getIntroductions(question: InterpretedQuestion): string[] {
+    const base = 'Я понял ваш вопрос: «' + question.text + '».';
+    const context = question.contextReference
+      ? ' Продолжаем обсуждение: ' + question.contextReference + '.'
+      : '';
+
+    return [
+      base + context,
+      'Разбираю ваш запрос: «' + question.text + '».' + context,
+      'Анализирую вопрос: «' + question.text + '».' + context,
+      'Принял ваш вопрос: «' + question.text + '».' + context,
+      'Ваш вопрос: «' + question.text + '». Давайте разберём.' + context,
+    ];
+  }
+
+  /** Пул заключений (про рекомендацию ≠ операция) */
+  private getOutros(): string[] {
+    return [
+      'Это рекомендация, а не совершённая операция: исполнение остаётся ' +
+        'отдельным этапом и произойдёт только после вашего подтверждения.',
+      'Важно: это совет, а не торговая команда. Решение за вами — ' +
+        'я только помогаю проанализировать.',
+      'Помните: это аналитическая рекомендация, а не готовый ордер. ' +
+        'Финальное решение принимаете вы.',
+      'Я даю рекомендацию на основе доступных данных, но окончательное ' +
+        'решение — за вами.',
+    ];
+  }
+
   /** Предложить follow-up задачи по итогам обсуждения */
   private buildFollowUps(
     question: InterpretedQuestion,
@@ -847,25 +903,54 @@ export class DirectorAgent implements IDirectorAgent {
     const result: string[] = [];
     const tickers = question.tickers;
 
-    if (tickers.length > 0 && recommendation.action !== null) {
-      if (
-        recommendation.action === 'REDUCE' ||
-        recommendation.action === 'SELL'
-      ) {
-        result.push('Спланировать поэтапное сокращение ' + tickers.join(', '));
-      } else if (recommendation.action === 'BUY') {
-        result.push(
-          'Определить точную сумму покупки ' +
-            tickers.join(', ') +
-            ' в пределах свободных средств',
-        );
-      } else {
-        result.push(
-          'Проверить фундаментал и рынок по ' +
-            tickers.join(', ') +
-            ' в следующем цикле исследования',
-        );
-      }
+    // Пулы follow-up для каждого action
+    const followUpPools: Record<string, string[]> = {
+      SELL: [
+        'Спланировать поэтапное сокращение ' + tickers.join(', '),
+        'Определить оптимальный объём продажи ' + tickers.join(', '),
+        'Рассчитать налоговые последствия продажи ' + tickers.join(', '),
+        'Подготовить план выхода из ' + tickers.join(', '),
+      ],
+      REDUCE: [
+        'Спланировать поэтапное сокращение ' + tickers.join(', '),
+        'Определить целевую долю для ' + tickers.join(', '),
+        'Рассчитать оптимальный объём сокращения ' + tickers.join(', '),
+      ],
+      BUY: [
+        'Определить точную сумму покупки ' + tickers.join(', ') + ' в пределах свободных средств',
+        'Составить план накопления ' + tickers.join(', '),
+        'Рассчитать оптимальную дату и объём покупки ' + tickers.join(', '),
+        'Проверить исторические точки входа по ' + tickers.join(', '),
+      ],
+      HOLD: [
+        'Проверить фундаментал и рынок по ' + tickers.join(', ') + ' в следующем цикле исследования',
+        'Определить триггеры для пересмотра позиции по ' + tickers.join(', '),
+        'Сравнить текущую стратегию удержания с альтернативами',
+      ],
+      EXIT: [
+        'Подготовить полный план выхода из ' + tickers.join(', '),
+        'Оценить последствия полного выхода из ' + tickers.join(', '),
+      ],
+      AVOID: [
+        'Сформировать критерии для повторного рассмотрения ' + tickers.join(', '),
+        'Определить условия, при которых ' + tickers.join(', ') + ' станет привлекательным',
+      ],
+      AVERAGE: [
+        'Спланировать стратегию усреднения по ' + tickers.join(', '),
+        'Рассчитать точку усреднения для ' + tickers.join(', '),
+      ],
+    };
+
+    const actionKey = recommendation.action ?? 'HOLD';
+    const pool = followUpPools[actionKey] ?? followUpPools.HOLD;
+    const shown = this.getRecentlyShownFollowUps();
+    const available = pool!.filter((f) => !shown.includes(f));
+    const shuffled = available.sort(() => Math.random() - 0.5);
+    const selected = shuffled.slice(0, 2);
+
+    if (selected.length > 0) {
+      result.push(...selected);
+      this.recordShownFollowUps(selected);
     }
 
     if (question.category === 'strategy' || question.category === 'plan') {
@@ -877,6 +962,20 @@ export class DirectorAgent implements IDirectorAgent {
     }
 
     return result.slice(0, 3);
+  }
+
+  /** Недавно показанные follow-up (для исключения повторов) */
+  private recentlyShownFollowUps: string[] = [];
+
+  private getRecentlyShownFollowUps(): string[] {
+    return [...this.recentlyShownFollowUps];
+  }
+
+  private recordShownFollowUps(followUps: string[]): void {
+    this.recentlyShownFollowUps = [
+      ...this.recentlyShownFollowUps.slice(-5),
+      ...followUps,
+    ].slice(-10); // Храним последние 10
   }
 }
 

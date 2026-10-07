@@ -28,9 +28,12 @@ const api: FinanceDesktopApi = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   pickExcelFile: () => ipcRenderer.invoke('settings:pick-excel'),
   restartApp: () => ipcRenderer.invoke('settings:restart'),
+  reloadPortfolio: (excelPath) =>
+    ipcRenderer.invoke('portfolio:reload', excelPath),
   getOllamaModels: () => ipcRenderer.invoke('settings:get-models'),
   setOllamaModel: (model) =>
     ipcRenderer.invoke('settings:set-ollama-model', model),
+  reconnectOllama: () => ipcRenderer.invoke('director:reconnect-ollama'),
 
   onDirectorEvent: (callback) => {
     const listener = (

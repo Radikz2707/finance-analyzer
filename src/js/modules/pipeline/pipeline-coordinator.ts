@@ -167,6 +167,9 @@ export class PipelineCoordinator {
     notification: null,
   };
 
+  /** Event-система для стриминга прогресса */
+  private stageListeners: Array<(stage: PipelineStage, durationMs: number) => void> = [];
+
   private agentSummaries: Record<string, AgentSummary> = {};
   private reviewResultData: ReviewResult | null = null;
   private scenarioResultData: ScenarioAgentOutput | null = null;
@@ -177,6 +180,14 @@ export class PipelineCoordinator {
     action: string;
     id: string;
   }> = [];
+
+  /** Подписаться на завершение стадии конвейера */
+  onStageComplete(callback: (stage: PipelineStage, durationMs: number) => void): () => void {
+    this.stageListeners.push(callback);
+    return () => {
+      this.stageListeners = this.stageListeners.filter((cb) => cb !== callback);
+    };
+  }
 
   /**
    * Сохранить результат этапа в оперативную память ИИ.
@@ -667,6 +678,15 @@ export class PipelineCoordinator {
       this.stageResults[stage] = result;
       console.log(`[Pipeline] ✅ Stage ${stage} completed in ${durationMs}ms`);
 
+      // Уведомляем слушателей о завершении стадии
+      for (const listener of this.stageListeners) {
+        try {
+          listener(stage, durationMs);
+        } catch {
+          // Слушатели могут падать — не роняем конвейер
+        }
+      }
+
       return result;
     } catch (err) {
       const durationMs = Date.now() - stageStart;
@@ -674,6 +694,15 @@ export class PipelineCoordinator {
 
       // Агент упал — тоже фиксируем проверку здоровья
       await this.watchdog.checkAgent(agentName);
+
+      // Уведомляем слушателей даже при ошибке
+      for (const listener of this.stageListeners) {
+        try {
+          listener(stage, durationMs);
+        } catch {
+          // no-op
+        }
+      }
 
       const result: PipelineStageResult<TData> = {
         stage,

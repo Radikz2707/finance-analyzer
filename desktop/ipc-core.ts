@@ -74,8 +74,8 @@ import type {
 // 1. Константы и утилиты
 // ──────────────────────────────────────────────
 
-const OLLAMA_CHECK_TIMEOUT_MS = 1500;
-const OLLAMA_RESPONSE_TIMEOUT_MS = 30_000;
+const OLLAMA_CHECK_TIMEOUT_MS = 3000;
+const OLLAMA_RESPONSE_TIMEOUT_MS = 45_000;
 const DEFAULT_LOG_LINES = 50;
 const MAX_LOG_LINES = 200;
 
@@ -257,17 +257,28 @@ function factsDigest(facts: DirectorFactsContext): string {
 /** Извлечь AgentOpinion из ответа LLM (ленивый парсинг JSON-блока) */
 function parseAiOpinion(raw: string | null): AgentOpinion | null {
   if (!raw) return null;
+
+  // 1. Пытаемся найти JSON-блок: от первого '{' до последнего '}'
   const start = raw.indexOf('{');
   const end = raw.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-
-  let data: Record<string, unknown>;
-  try {
-    data = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
-  } catch {
-    return null;
+  if (start >= 0 && end > start) {
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
+      return buildOpinionFromData(data);
+    } catch {
+      // JSON невалидный — пробуем fallback
+    }
   }
 
+  // 2. Fallback: пытаемся извлечь action/confidence из текста через regex
+  return parseOpinionFromText(raw);
+}
+
+/** Построить AgentOpinion из распарсенных данных */
+function buildOpinionFromData(
+  data: Record<string, unknown>,
+): AgentOpinion | null {
   const actionRaw =
     typeof data.action === 'string' ? data.action.trim().toUpperCase() : null;
   const action =
@@ -291,6 +302,54 @@ function parseAiOpinion(raw: string | null): AgentOpinion | null {
     : [];
 
   return { role: 'ai', position, action, confidence, arguments: args };
+}
+
+/** Извлечь мнение из свободного текста (fallback если JSON не распарсился) */
+function parseOpinionFromText(raw: string): AgentOpinion | null {
+  const lower = raw.toLowerCase();
+
+  // Определяем action по ключевым словам
+  let action: AgentOpinion['action'] = null;
+  if (/\b(doкупить|buy|покупк|увелич)\b/i.test(raw)) action = 'BUY';
+  else if (/\b(продать|sell|сократ|распрод)\b/i.test(raw)) action = 'SELL';
+  else if (/\b(выйти|exit|полност|полностью)\b/i.test(raw)) action = 'EXIT';
+  else if (/\b(сократ|reduce|уменьш)\b/i.test(raw)) action = 'REDUCE';
+  else if (/\b(удержив|hold|держать|не меня)\b/i.test(raw)) action = 'HOLD';
+  else if (/\b(избег|avoid|не бр)\b/i.test(raw)) action = 'AVOID';
+  else if (/\b(усредн|average|докуп|докупай)\b/i.test(raw)) action = 'AVERAGE';
+
+  // Извлекаем confidence из текста (ищем числа 0.XX или XX%)
+  let confidence = 0.5;
+  const confMatch = raw.match(/(\d+)\s*%/);
+  if (confMatch) {
+    const pct = parseInt(confMatch[1], 10);
+    confidence = Math.min(1, Math.max(0, pct / 100));
+  } else {
+    const confFloat = raw.match(/(?:confidence|уверенност|conf)\s*[:=]?\s*(\d+\.?\d*)/i);
+    if (confFloat) {
+      confidence = Math.min(1, Math.max(0, parseFloat(confFloat[1])));
+    }
+  }
+
+  // Если нашли action — формируем мнение
+  if (action) {
+    return {
+      role: 'ai',
+      position: raw.slice(0, 200),
+      action,
+      confidence,
+      arguments: [raw.slice(0, 400)],
+    };
+  }
+
+  // Если action не найден — HOLD с низкой уверенностью
+  return {
+    role: 'ai',
+    position: raw.slice(0, 200),
+    action: 'HOLD',
+    confidence: 0.4,
+    arguments: ['Действие не распознано из текста'],
+  };
 }
 
 /** Актуальная модель Ollama: выбор пользователя → env по умолчанию */
@@ -548,6 +607,147 @@ export async function buildDirectorState(
   director.createSession();
 
   return { director, audit, actionAgents, sourceLabel, aiLabel };
+}
+
+/** Результат переподключения Ollama */
+export interface OllamaReconnectResult {
+  success: boolean;
+  label: string;
+  message: string;
+}
+
+/** Результат перезагрузки портфеля */
+export interface PortfolioReloadResult {
+  success: boolean;
+  sourceLabel: string;
+  assetsCount: number;
+  message: string;
+}
+
+/**
+ * Переподключить Ollama: проверить доступность и обновить executor в фасадe.
+ * Вызывается при старте (fallback-режим), при явном запросе из UI,
+ * или когда предыдущий вызов Ollama упал с ошибкой.
+ */
+export async function reconnectOllama(
+  state: DirectorState,
+  options: BuildDirectorStateOptions,
+): Promise<OllamaReconnectResult> {
+  const log = options.logger ?? consoleLogger;
+  const aiMode =
+    options.aiMode ??
+    (process.env.DIRECTOR_CHAT_AI === 'off' ||
+    process.env.DIRECTOR_CHAT_AI === '0'
+      ? 'off'
+      : 'auto');
+
+  if (aiMode === 'off') {
+    return {
+      success: false,
+      label: 'детерминированный исполнитель (aiMode=off)',
+      message: 'AI-режим отключён (DIRECTOR_CHAT_AI=off)',
+    };
+  }
+
+  const ollamaCheckTimeoutMs =
+    options.ollamaCheckTimeoutMs ?? OLLAMA_CHECK_TIMEOUT_MS;
+
+  // Проверка доступности Ollama
+  const probeClient = new OllamaClient({
+    model: resolveActiveModel(options.getOllamaModel),
+  });
+  const available = await withTimeout(
+    probeClient.isAvailable(),
+    ollamaCheckTimeoutMs,
+  );
+
+  if (!available) {
+    log(
+      'warn',
+      'Ollama недоступна при переподключении — остаётся детерминированный режим',
+    );
+    return {
+      success: false,
+      label: 'детерминированный исполнитель (без Ollama)',
+      message: 'Ollama недоступна — используется детерминированный режим',
+    };
+  }
+
+  // Пересоздаём executor с Ollama
+  const { executor: aiExecutor, label: aiLabel } = await createAiExecutor(
+    aiMode,
+    ollamaCheckTimeoutMs,
+    log,
+    options.getOllamaModel,
+  );
+
+  // Обновляем executor в существующем фасаде
+  (state.director as unknown as Record<string, unknown>).facade =
+    state.director.facade ??
+    new DirectorAgentFacade({
+      actionAgents: state.actionAgents,
+      security: { check: (request: unknown) => {
+        const security = new SecurityAgent();
+        return (security as unknown as Record<string, unknown>).validate
+          ? (security as unknown as Record<string, unknown>).validate(request)
+          : { verdict: 'allow' as const };
+      }},
+      aiExecutor,
+    });
+
+  // Пересоздаём chatResponder
+  const chatResponder = await createChatResponder(
+    aiMode,
+    ollamaCheckTimeoutMs,
+    log,
+    options.getOllamaModel,
+  );
+
+  // Обновляем config director
+  (state.director as unknown as Record<string, unknown>).config = {
+    ...((state.director as unknown as Record<string, unknown>).config ?? {}),
+    chatResponder,
+  };
+
+  state.aiLabel = aiLabel;
+
+  log('info', `Ollama переподключена — ${aiLabel}`);
+  return {
+    success: true,
+    label: aiLabel,
+    message: `Ollama подключена: ${aiLabel}`,
+  };
+}
+
+/**
+ * Перезагрузить данные портфеля из Excel и обновить Director.
+ * Вызывается после выбора нового файла Excel — без перезапуска.
+ */
+export async function reloadPortfolio(
+  state: DirectorState,
+  excelPath: string,
+): Promise<PortfolioReloadResult> {
+  const log = consoleLogger;
+
+  const { facts, sourceLabel } = await loadFacts(excelPath, log);
+  state.sourceLabel = sourceLabel;
+
+  // Обновляем факты в Director
+  state.director.setFacts(facts);
+
+  const assetsCount = facts.assetsAnalysis.length;
+
+  log(
+    'info',
+    `Портфель перезагружен: ${assetsCount} активов, файл ${excelPath}`,
+  );
+
+  return {
+    success: true,
+    sourceLabel,
+    assetsCount,
+    message: `Данные портфеля обновлены: ${assetsCount} активов`,
+  };
 }
 
 /** Опции сборки «Гибридного диспетчера» */
