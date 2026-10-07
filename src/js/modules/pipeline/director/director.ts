@@ -16,7 +16,7 @@
  */
 
 import type { AgentState } from '../agent/types.js';
-import { parseUserMessage } from './nl-parser.js';
+import { looksLikeGreeting, parseUserMessage } from './nl-parser.js';
 import {
   DirectorDelegationPlanner,
   AGENT_ROLE_LABELS,
@@ -161,9 +161,67 @@ export class DirectorAgent implements IDirectorAgent {
       return this.handleChatCommand(parsed.command, message);
     }
 
+    // 0.5 Приветствие/smalltalk: дружелюбный ответ без делегирования агентам
+    if (looksLikeGreeting(message)) {
+      this.chat.appendMessage(this.currentSessionId, 'user', message);
+      this.memory.saveConversation('user', message, []);
+      const replyText =
+        'Здравствуйте! Я — ваш финансовый директор. Готов обсудить портфель: ' +
+        'спросите про актив (например, «Что с SBER?»), стратегию, рынок или новости.';
+      this.chat.appendMessage(this.currentSessionId, 'director', replyText);
+      this.memory.saveConversation('director', replyText, []);
+      this.audit.record('director.greeting_answered', replyText.slice(0, 80));
+      this._state = 'idle';
+      return {
+        text: replyText,
+        connectedAgents: [],
+        needsConsilium: false,
+      };
+    }
+
     // 1. Интерпретация вопроса
     let interpreted = parseUserMessage(message);
     this.audit.record('director.question_received', message);
+
+    // 1.1 Свободный диалог: нефинансовый вопрос → LLM (с фактами портфеля)
+    // или честный fallback-ответ без запуска агентов анализа.
+    if (
+      interpreted.category === 'general' &&
+      interpreted.tickers.length === 0
+    ) {
+      this.chat.appendMessage(this.currentSessionId, 'user', message);
+      this.memory.saveConversation('user', message, []);
+      const historyText = this.chat
+        .getHistory(this.currentSessionId ?? '')
+        .slice(-6)
+        .map((m) => `${m.role}: ${m.text}`)
+        .join('\n');
+      const answer = this.config.chatResponder
+        ? await this.config.chatResponder({
+            question: message,
+            facts: this.facts,
+            history: historyText,
+          })
+        : null;
+      const replyText =
+        answer ??
+        'Я — ваш финансовый директор и сосредоточен на вопросах портфеля. ' +
+          'Спросите про актив (например, «Что с SBER?»), стратегию, рынок или новости.';
+      this.chat.appendMessage(this.currentSessionId, 'director', replyText);
+      this.memory.saveConversation('director', replyText, []);
+      this.audit.record(
+        'director.chat_message_sent',
+        answer
+          ? 'Свободный ответ сгенерирован через LLM'
+          : 'Fallback-ответ на общий вопрос',
+      );
+      this._state = 'idle';
+      return {
+        text: replyText,
+        connectedAgents: [],
+        needsConsilium: false,
+      };
+    }
 
     // 2. Контекст предыдущего разговора (follow-up без повторения тикеров)
     if (

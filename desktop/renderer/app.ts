@@ -50,6 +50,11 @@ const dispatchStatusEl = $('#dispatch-status');
 const anomaliesListEl = $('#anomalies-list');
 const quikNewsEl = $('#quik-news');
 const versionEl = $('#app-version');
+const pickExcelBtn = $('#pick-excel-btn') as HTMLButtonElement;
+const ollamaModelSelect = $('#ollama-model-select') as HTMLSelectElement;
+const applyOllamaBtn = $('#apply-ollama-btn') as HTMLButtonElement;
+const exportReportBtn = $('#export-report-btn') as HTMLButtonElement;
+const exportPdfBtn = $('#export-report-pdf-btn') as HTMLButtonElement;
 
 const MAX_ACTIVITY_LINES = 400;
 const MAX_CONSOLE_LINES = 1500;
@@ -57,7 +62,10 @@ const MAX_CONSOLE_LINES = 1500;
 // ── Утилиты ──────────────────────────────────────────────────
 
 function nowTime(): string {
-  return new Date().toISOString().slice(11, 19);
+  // Локальное время пользователя (не UTC)
+  const d = new Date();
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function makeEl<K extends keyof HTMLElementTagNameMap>(
@@ -479,6 +487,100 @@ async function init(): Promise<void> {
       // Версия не критична — молча пропускаем
     });
 
+  // Настройки: выбор Excel-файла портфеля через нативный диалог
+  pickExcelBtn.addEventListener('click', async () => {
+    pickExcelBtn.disabled = true;
+    try {
+      const result = await window.financeApp.pickExcelFile();
+      if (!result.canceled && result.excelFilePath) {
+        appendActivityLine(
+          `📁 Путь к Excel сохранён: ${result.excelFilePath}`,
+          'type-agent',
+        );
+        const restart = window.confirm(
+          'Путь к Excel сохранён. Перезапустить приложение, чтобы данные портфеля загрузились?',
+        );
+        if (restart) {
+          await window.financeApp.restartApp();
+        }
+      }
+    } catch {
+      appendActivityLine('✗ Не удалось выбрать файл Excel', 'type-error');
+    } finally {
+      pickExcelBtn.disabled = false;
+    }
+  });
+
+  // Настройки: выбор модели Ollama для общения (dropdown в шапке)
+  const loadOllamaModels = async (): Promise<void> => {
+    let current = '';
+    try {
+      const settings = await window.financeApp.getSettings();
+      current = settings.ollamaModel ?? '';
+    } catch {
+      // Настройки не критичны — продолжим с пустым значением
+    }
+    let models: string[];
+    try {
+      models = await window.financeApp.getOllamaModels();
+    } catch {
+      models = [];
+    }
+    ollamaModelSelect.innerHTML = '';
+    if (models.length === 0) {
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = 'Ollama недоступна';
+      ollamaModelSelect.appendChild(placeholder);
+      ollamaModelSelect.disabled = true;
+      applyOllamaBtn.disabled = true;
+      return;
+    }
+    ollamaModelSelect.disabled = false;
+    applyOllamaBtn.disabled = false;
+    for (const model of models) {
+      const option = document.createElement('option');
+      option.value = model;
+      option.textContent = model;
+      ollamaModelSelect.appendChild(option);
+    }
+    if (current && models.includes(current)) {
+      ollamaModelSelect.value = current;
+    }
+  };
+
+  void loadOllamaModels();
+
+  applyOllamaBtn.addEventListener('click', async () => {
+    applyOllamaBtn.disabled = true;
+    try {
+      const model = ollamaModelSelect.value;
+      if (!model) {
+        appendActivityLine('✗ Модель Ollama не выбрана', 'type-error');
+        return;
+      }
+      const saved = await window.financeApp.setOllamaModel(model);
+      if (!saved) {
+        appendActivityLine(
+          '✗ Не удалось сохранить модель Ollama',
+          'type-error',
+        );
+        return;
+      }
+      appendActivityLine(`🔄 Модель Ollama сохранена: ${model}`, 'type-agent');
+      const restart = window.confirm(
+        'Модель Ollama сохранена. Перезапустить приложение, чтобы она применилась?',
+      );
+      if (restart) {
+        await window.financeApp.restartApp();
+      }
+    } catch {
+      appendActivityLine('✗ Ошибка сохранения модели Ollama', 'type-error');
+    } finally {
+      applyOllamaBtn.disabled = false;
+    }
+  });
+
   sendBtn.addEventListener('click', () => {
     void ask(questionInput.value);
   });
@@ -515,6 +617,38 @@ async function init(): Promise<void> {
       await refreshHarness();
     } finally {
       runAnalysisBtn.disabled = false;
+    }
+  });
+
+  // Экспорт HTML-дашборда диспетчера в файл
+  exportReportBtn.addEventListener('click', async () => {
+    exportReportBtn.disabled = true;
+    try {
+      const result = await window.financeApp.exportDashboard();
+      appendActivityLine(
+        `💾 ${result.ok ? '✓' : '✗'} ${result.message}`,
+        result.ok ? 'type-agent' : 'type-error',
+      );
+    } catch {
+      appendActivityLine('✗ Ошибка экспорта дашборда', 'type-error');
+    } finally {
+      exportReportBtn.disabled = false;
+    }
+  });
+
+  // Экспорт дашборда в PDF (диалог выбора места сохранения)
+  exportPdfBtn.addEventListener('click', async () => {
+    exportPdfBtn.disabled = true;
+    try {
+      const result = await window.financeApp.exportDashboardPdf();
+      appendActivityLine(
+        `📄 ${result.ok ? '✓' : '✗'} ${result.message}`,
+        result.ok ? 'type-agent' : 'type-error',
+      );
+    } catch {
+      appendActivityLine('✗ Ошибка экспорта PDF', 'type-error');
+    } finally {
+      exportPdfBtn.disabled = false;
     }
   });
 

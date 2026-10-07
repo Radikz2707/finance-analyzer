@@ -18,11 +18,37 @@
           <h1>Finance Analyzer</h1>
           <p class="app-subtitle">Директор · агенты · Консилиум · диспетчер</p>
         </div>
-        <span
-          id="app-version"
-          class="app-version"
-          title="Версия приложения"
-        ></span>
+        <div class="header-actions">
+          <span
+            id="app-version"
+            class="app-version"
+            title="Версия приложения"
+          ></span>
+          <label class="ollama-model-label" for="ollama-model-select">
+            Модель:
+          </label>
+          <select
+            id="ollama-model-select"
+            class="ollama-model-select"
+            title="Модель Ollama для общения с директором"
+          ></select>
+          <button
+            id="apply-ollama-btn"
+            type="button"
+            class="pick-excel-btn"
+            title="Сохранить модель Ollama и перезапустить приложение"
+          >
+            🔄 Применить
+          </button>
+          <button
+            id="pick-excel-btn"
+            type="button"
+            class="pick-excel-btn"
+            title="Выбрать Excel-файл портфеля QUIK"
+          >
+            📁 Excel…
+          </button>
+        </div>
       </div>
       <div id="status-bar" class="status-bar" title="Источник данных портфеля">
         Загрузка…
@@ -147,6 +173,12 @@
           <h2>🛰 Гибридный диспетчер</h2>
           <button id="run-analysis-btn" type="button">
             ▶ Запустить анализ
+          </button>
+          <button id="export-report-btn" type="button" class="mini-btn">
+            💾 Экспорт отчёта
+          </button>
+          <button id="export-report-pdf-btn" type="button" class="mini-btn">
+            📄 PDF…
           </button>
         </div>
         <div id="dispatch-status" class="dispatch-status"></div>

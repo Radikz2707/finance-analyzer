@@ -11,10 +11,13 @@
  */
 
 import {
+  buildAgentCatalogCards,
   buildPanelState,
   computeOverall,
   HISTORY_VIEW_LIMIT,
   mapAgentStatus,
+  SYSTEM_AGENT_CATALOG,
+  type AgentCard,
   type AgentControllerSource,
   type AgentWatchdogSource,
 } from './agent-panel-model.js';
@@ -445,5 +448,48 @@ describe('buildPanelState — AgentController', () => {
       controller: fakeController([controllerStatus('A', 'idle')]),
     });
     expect(state.overall).toBe('ok');
+  });
+});
+
+describe('buildAgentCatalogCards — каталог всех агентов системы', () => {
+  it('дополняет реальные карточки каталогом, известные не дублируются', () => {
+    const known: AgentCard[] = [
+      {
+        name: 'FileAgent',
+        status: 'running',
+        totalExecutions: 3,
+        successes: 2,
+        failures: 1,
+      },
+    ];
+    const cards = buildAgentCatalogCards(known);
+
+    expect(cards.length).toBeGreaterThanOrEqual(SYSTEM_AGENT_CATALOG.length);
+    const names = cards.map((c) => c.name);
+    expect(new Set(names).size).toBe(names.length);
+
+    const fileCards = cards.filter((c) => c.name === 'FileAgent');
+    expect(fileCards).toHaveLength(1);
+    expect(fileCards[0]).toMatchObject({
+      status: 'running',
+      totalExecutions: 3,
+      successes: 2,
+      failures: 1,
+    });
+
+    const idleCard = cards.find((c) => c.name === 'DataAgent');
+    expect(idleCard).toMatchObject({
+      status: 'idle',
+      totalExecutions: 0,
+      successes: 0,
+      failures: 0,
+    });
+  });
+
+  it('без известных карточек возвращает только каталог в статусе idle', () => {
+    const cards = buildAgentCatalogCards([]);
+
+    expect(cards).toHaveLength(SYSTEM_AGENT_CATALOG.length);
+    expect(cards.every((c) => c.status === 'idle')).toBe(true);
   });
 });

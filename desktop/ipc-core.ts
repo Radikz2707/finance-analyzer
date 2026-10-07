@@ -16,7 +16,12 @@
  */
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 
+import {
+  isPackagedApp,
+  resolveAppDataDir,
+} from '../src/js/modules/app-paths.js';
 import { DirectorAgent } from '../src/js/modules/pipeline/director/director.js';
 import {
   defaultAiExecutor,
@@ -25,7 +30,10 @@ import {
   type AiDecisionRequest,
 } from '../src/js/modules/pipeline/director/agent-facade.js';
 import { DirectorAuditLog } from '../src/js/modules/pipeline/director/director-audit.js';
-import { OllamaClient } from '../src/js/modules/pipeline/director/ollama-client.js';
+import {
+  OllamaClient,
+  type OllamaMessage,
+} from '../src/js/modules/pipeline/director/ollama-client.js';
 import { SecurityAgent } from '../src/js/modules/pipeline/agents/security-agent.js';
 import {
   createDefaultActionAgents,
@@ -37,12 +45,14 @@ import {
   type MacroGoals,
 } from '../src/js/modules/xlsx-parser/xlsx-parser.js';
 import {
+  buildAgentCatalogCards,
   buildPanelState,
   type AgentPanelState,
   type AgentSourceItem,
 } from '../src/js/modules/pipeline/visualization/agent-panel-model.js';
 import type {
   AgentOpinion,
+  ChatResponder,
   DirectorAuditEvent,
   DirectorFactsContext,
   DirectorResponse,
@@ -54,7 +64,11 @@ import {
 } from '../scripts/director-chat-render.js';
 // type-only: стираются при транспиляции, better-sqlite3 не грузится.
 import type { HarnessHandle } from '../src/js/modules/harness-integration/harness-bootstrap.js';
-import type { HarnessDashboardPayload } from '../src/js/modules/harness-integration/types.js';
+import { formatDashboardHtml } from '../src/js/modules/harness-integration/format-dashboard-html.js';
+import type {
+  HarnessDashboardPayload,
+  HarnessRunOutcome,
+} from '../src/js/modules/harness-integration/types.js';
 
 // ──────────────────────────────────────────────
 // 1. Константы и утилиты
@@ -194,6 +208,12 @@ const AI_SYSTEM_PROMPT = `Ты — AI-агент инвестиционного 
 Ответь СТРОГО одним JSON-объектом без markdown-разметки и пояснений:
 {"action":"BUY|SELL|EXIT|REDUCE|HOLD|AVOID|AVERAGE|null","confidence":0.0-1.0,"position":"краткая позиция","arguments":["аргумент1","аргумент2"]}`;
 
+/** Системный промпт свободного диалога (нефинансовые реплики пользователя) */
+const CHAT_SYSTEM_PROMPT = `Ты — дружелюбный финансовый ассистент Finance Analyzer.
+Отвечай на русском языке кратко и по делу.
+Ты знаком с портфелем пользователя и можешь обсуждать его, но умеешь и просто поддержать разговор.
+Никогда не выдумывай данные о портфеле: используй только факты из контекста.`;
+
 const VALID_AI_ACTIONS: ReadonlySet<string> = new Set([
   'BUY',
   'SELL',
@@ -214,9 +234,14 @@ function buildAiQuestion(req: AiDecisionRequest): string {
   ].join('\n');
 }
 
-/** Компактная сводка фактов портфеля для LLM */
+/** Компактная сводка фактов портфеля для LLM (из запроса роли «ai») */
 function buildFactsText(req: AiDecisionRequest): string {
-  const lines = req.facts.assetsAnalysis.map(
+  return factsDigest(req.facts);
+}
+
+/** Сводка фактов портфеля напрямую (для свободного диалога чата) */
+function factsDigest(facts: DirectorFactsContext): string {
+  const lines = facts.assetsAnalysis.map(
     (asset) =>
       `${asset.ticker}: доля ${asset.currentPercent}%, ` +
       `цель ${asset.targetPercent}%, P&L ${asset.unrealizedProfitRub ?? 0} ₽`,
@@ -224,8 +249,8 @@ function buildFactsText(req: AiDecisionRequest): string {
   return [
     'Портфель:',
     ...lines,
-    `Стоимость портфеля: ${req.facts.totalPortfolioValue} ₽, ` +
-      `свободные средства: ${req.facts.freeCashRub} ₽`,
+    `Стоимость портфеля: ${facts.totalPortfolioValue} ₽, ` +
+      `свободные средства: ${facts.freeCashRub} ₽`,
   ].join('\n');
 }
 
@@ -337,6 +362,76 @@ async function createAiExecutor(
   };
 }
 
+/**
+ * Собрать исполнителя свободного диалога чата: Ollama отвечает на
+ * нефинансовые реплики с контекстом портфеля (factsDigest) и короткой
+ * историей. Без Ollama возвращает undefined — Director даёт честный
+ * fallback-ответ без запуска агентов.
+ */
+async function createChatResponder(
+  aiMode: 'auto' | 'off',
+  ollamaCheckTimeoutMs: number,
+  log: CoreLogger,
+): Promise<ChatResponder | undefined> {
+  if (aiMode === 'off') {
+    log('info', 'свободный диалог отключён (aiMode=off)');
+    return undefined;
+  }
+
+  const client = new OllamaClient({
+    model: process.env.OLLAMA_MODEL || undefined,
+  });
+  const available = await withTimeout(
+    client.isAvailable(),
+    ollamaCheckTimeoutMs,
+  );
+
+  if (!available) {
+    log(
+      'warn',
+      'Ollama недоступен — свободный диалог использует fallback-ответы',
+    );
+    return undefined;
+  }
+
+  log('info', 'Ollama подключён — свободный диалог использует LLM');
+  return async ({ question, facts, history }) => {
+    const historyMessages: OllamaMessage[] = history
+      .split('\n')
+      .filter((line) => line.includes(': '))
+      .map((line) => {
+        const idx = line.indexOf(': ');
+        const roleRaw = line.slice(0, idx);
+        const role = roleRaw === 'director' ? 'assistant' : 'user';
+        return { role, content: line.slice(idx + 2) };
+      });
+    const messages: OllamaMessage[] = [
+      { role: 'system', content: CHAT_SYSTEM_PROMPT },
+      ...historyMessages,
+      {
+        role: 'user',
+        content: `${question}\n\nФакты портфеля:\n${factsDigest(facts)}`,
+      },
+    ];
+    try {
+      const raw = await withTimeout(
+        client.chat(messages),
+        OLLAMA_RESPONSE_TIMEOUT_MS,
+      );
+      const text = raw?.trim();
+      return text && text !== '' ? text : null;
+    } catch (err) {
+      log(
+        'warn',
+        `Ошибка Ollama в свободном диалоге: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
+  };
+}
+
 // ──────────────────────────────────────────────
 // 4. Состояние приложения (Director + Harness)
 // ──────────────────────────────────────────────
@@ -406,9 +501,18 @@ export async function buildDirectorState(
     aiExecutor,
   });
   const audit = new DirectorAuditLog();
+  const chatResponder = await createChatResponder(
+    aiMode,
+    ollamaCheckTimeoutMs,
+    log,
+  );
   const director = new DirectorAgent(
     { facade, audit, initialFacts: facts },
-    { maxConsiliumRounds: 3, includeAgentDetails: true },
+    {
+      maxConsiliumRounds: 3,
+      includeAgentDetails: true,
+      chatResponder,
+    },
   );
   director.createSession();
 
@@ -561,7 +665,9 @@ export function handlePanel(state: DirectorState): AgentPanelState {
   if (state.actionAgents.terminal) {
     sources.push(state.actionAgents.terminal as unknown as AgentSourceItem);
   }
-  return buildPanelState({ agents: sources });
+  // Каталог всех агентов системы: не выполнявшиеся показываются как idle.
+  const panel = buildPanelState({ agents: sources });
+  return { ...panel, agents: buildAgentCatalogCards(panel.agents) };
 }
 
 /**
@@ -604,7 +710,11 @@ export async function handleHarnessRun(
     return { ok: false, message: 'Гибридный диспетчер не активирован' };
   }
   try {
-    await harness.scheduler.manualRun();
+    const outcome = (await harness.scheduler.manualRun()) as
+      HarnessRunOutcome | null | undefined;
+    if (outcome && typeof outcome.ok === 'boolean') {
+      return { ok: outcome.ok, message: outcome.summary };
+    }
     return { ok: true, message: 'Фоновый анализ запущен и завершён' };
   } catch (err) {
     return {
@@ -614,6 +724,76 @@ export async function handleHarnessRun(
       }`,
     };
   }
+}
+
+/** Результат экспорта дашборда диспетчера в HTML-файл */
+export interface HarnessExportResult {
+  ok: boolean;
+  message: string;
+  filePath?: string;
+}
+
+/**
+ * Экспорт полного HTML-дашборда диспетчера в файл.
+ * - Упакованное приложение: %APPDATA%/finance-analyzer/reports;
+ * - dev/тесты: <cwd>/exports (или переопределённый outputDir).
+ */
+export async function handleHarnessExport(
+  harness: HarnessHandle | null,
+  now: Date = new Date(),
+  outputDir?: string,
+): Promise<HarnessExportResult> {
+  if (!harness) {
+    return { ok: false, message: 'Гибридный диспетчер не активирован' };
+  }
+  try {
+    const payload = await harness.bridge.getDashboardPayload();
+    if (!payload) {
+      return { ok: false, message: 'Данные диспетчера ещё не сформированы' };
+    }
+    const dir =
+      outputDir ??
+      (isPackagedApp()
+        ? path.join(resolveAppDataDir(), 'reports')
+        : path.join(process.cwd(), 'exports'));
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const filePath = path.join(dir, `dashboard_${stamp}.html`);
+    fs.writeFileSync(filePath, buildDashboardHtml(payload, now), 'utf-8');
+    return { ok: true, message: `Дашборд сохранён: ${filePath}`, filePath };
+  } catch (err) {
+    return {
+      ok: false,
+      message: `Ошибка экспорта дашборда: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+}
+
+/** Полный HTML-документ дашборда (обёртка над formatDashboardHtml) */
+export function buildDashboardHtml(
+  payload: HarnessDashboardPayload,
+  now: Date,
+): string {
+  return `<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<title>Finance Analyzer — дашборд диспетчера</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; margin: 24px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .meta { color: #94a3b8; font-size: 12px; margin-bottom: 16px; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+<h1>🛰 Finance Analyzer — дашборд диспетчера</h1>
+<div class="meta">Сформирован: ${now.toLocaleString('ru-RU')}</div>
+${formatDashboardHtml(payload)}
+</body>
+</html>`;
 }
 
 // ──────────────────────────────────────────────

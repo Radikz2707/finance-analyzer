@@ -16,14 +16,30 @@
 
 import 'dotenv/config';
 
+import * as fs from 'node:fs';
+
+// Должен идти ДО импортов ipc-core: модули уровня бандла (xlsx-parser-config
+// и др.) читают process.env при загрузке, а .env упакованного приложения
+// лежит в %APPDATA%\finance-analyzer\.env (в Program Files его нет).
+import './load-settings.js';
+
 import path from 'node:path';
 
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import type {
+  OpenDialogOptions,
+  PrintToPDFOptions,
+  SaveDialogOptions,
+} from 'electron';
+import { resolveReportsDir } from '../src/js/modules/app-paths.js';
+import { loadDesktopSettings, saveDesktopSettings } from './load-settings.js';
 
 import {
+  buildDashboardHtml,
   buildDirectorState,
   buildHarnessState,
   handleAsk,
+  handleHarnessExport,
   handleHarnessPayload,
   handleHarnessRun,
   handleLog,
@@ -33,6 +49,7 @@ import {
   subscribeEvents,
   type AppState,
 } from './ipc-core.js';
+import { OllamaClient } from '../src/js/modules/pipeline/director/ollama-client.js';
 
 // Пути к собранным артефактам (esbuild: desktop/dist/*)
 const PRELOAD_PATH = path.join(__dirname, 'preload.cjs');
@@ -65,6 +82,41 @@ async function initAppState(): Promise<void> {
   unsubscribeDirector = subscribeEvents(director, (event) => {
     sendToRenderer('director:event', event);
   });
+}
+
+/** Отформатировать метку времени для имён файлов (YYYY-MM-DDTHH-MM-SS) */
+function timestampLabel(date: Date): string {
+  return date.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+}
+
+/**
+ * Сформировать PDF из HTML-строки: скрытое окно + webContents.printToPDF.
+ * Возвращает Buffer для записи в выбранный пользователем файл.
+ */
+async function renderDashboardPdf(html: string): Promise<Buffer> {
+  const win = new BrowserWindow({
+    show: false,
+    width: 1024,
+    height: 768,
+    webPreferences: {
+      sandbox: true,
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+  try {
+    await win.loadURL(
+      'data:text/html;charset=utf-8,' + encodeURIComponent(html),
+    );
+    const options: PrintToPDFOptions = {
+      pageSize: 'A4',
+      printBackground: true,
+      margins: { marginType: 'default' },
+    };
+    return await win.webContents.printToPDF(options);
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
 }
 
 /** Регистрация IPC-хендлеров (вызывается после готовности состояния) */
@@ -101,6 +153,69 @@ function registerIpc(): void {
 
   ipcMain.handle('app:version', () => app.getVersion());
 
+  ipcMain.handle('settings:get', () => ({
+    excelFilePath: process.env.EXCEL_FILE_PATH ?? '',
+    ollamaModel: process.env.OLLAMA_MODEL ?? '',
+  }));
+
+  ipcMain.handle('settings:pick-excel', async () => {
+    const options: OpenDialogOptions = {
+      title: 'Выберите Excel-файл портфеля QUIK',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Excel-файлы', extensions: ['xlsx', 'xlsm', 'xls'] },
+        { name: 'Все файлы', extensions: ['*'] },
+      ],
+    };
+    const result =
+      mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showOpenDialog(mainWindow, options)
+        : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) {
+      return {
+        canceled: true,
+        excelFilePath: process.env.EXCEL_FILE_PATH ?? '',
+      };
+    }
+    const filePath = result.filePaths[0];
+    process.env.EXCEL_FILE_PATH = filePath;
+    saveDesktopSettings({
+      ...loadDesktopSettings(),
+      excelFilePath: filePath,
+    });
+    return { canceled: false, excelFilePath: filePath };
+  });
+
+  // Список моделей, загруженных в локальную Ollama ([] — сервер недоступен)
+  ipcMain.handle('settings:get-models', async () => {
+    try {
+      const client = new OllamaClient({
+        model: process.env.OLLAMA_MODEL || undefined,
+      });
+      return await client.getModels();
+    } catch {
+      return [] as string[];
+    }
+  });
+
+  // Сохранить выбранную модель Ollama (применяется после перезапуска)
+  ipcMain.handle('settings:set-ollama-model', (_event, model: string) => {
+    const next = typeof model === 'string' ? model.trim() : '';
+    if (!next) return false;
+    saveDesktopSettings({
+      ...loadDesktopSettings(),
+      ollamaModel: next,
+    });
+    process.env.OLLAMA_MODEL = next;
+    return true;
+  });
+
+  ipcMain.handle('settings:restart', () => {
+    app.relaunch();
+    app.exit(0);
+    return true;
+  });
+
   ipcMain.handle('harness:payload', () =>
     handleHarnessPayload(appState?.harness ?? null),
   );
@@ -108,6 +223,66 @@ function registerIpc(): void {
   ipcMain.handle('harness:run', () =>
     handleHarnessRun(appState?.harness ?? null),
   );
+
+  // Экспорт HTML-дашборда диспетчера в файл (+ открытие в браузере)
+  ipcMain.handle('harness:export-report', async () => {
+    const result = await handleHarnessExport(appState?.harness ?? null);
+    if (result.ok && result.filePath) {
+      void shell.openPath(result.filePath);
+    }
+    return result;
+  });
+
+  // Экспорт дашборда в PDF: диалог выбора места сохранения
+  ipcMain.handle('harness:export-pdf', async () => {
+    if (!appState) {
+      return {
+        ok: false,
+        message: 'Состояние приложения не инициализировано',
+      };
+    }
+    try {
+      const payload =
+        appState.harness === null
+          ? null
+          : await appState.harness.bridge.getDashboardPayload();
+      if (!payload) {
+        return { ok: false, message: 'Данные диспетчера ещё не сформированы' };
+      }
+      const now = new Date();
+      const html = buildDashboardHtml(payload, now);
+      const saveOptions: SaveDialogOptions = {
+        title: 'Сохранить дашборд диспетчера в PDF',
+        defaultPath: path.join(
+          resolveReportsDir(),
+          `dashboard_${timestampLabel(now)}.pdf`,
+        ),
+        filters: [{ name: 'PDF-файлы', extensions: ['pdf'] }],
+      };
+      const picked =
+        mainWindow && !mainWindow.isDestroyed()
+          ? await dialog.showSaveDialog(mainWindow, saveOptions)
+          : await dialog.showSaveDialog(saveOptions);
+      if (picked.canceled || !picked.filePath) {
+        return { ok: false, message: 'Сохранение отменено' };
+      }
+      const pdf = await renderDashboardPdf(html);
+      fs.writeFileSync(picked.filePath, pdf);
+      void shell.openPath(picked.filePath);
+      return {
+        ok: true,
+        message: `Дашборд сохранён в PDF: ${picked.filePath}`,
+        filePath: picked.filePath,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        message: `Ошибка экспорта PDF: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      };
+    }
+  });
 }
 
 /** Создать главное окно */

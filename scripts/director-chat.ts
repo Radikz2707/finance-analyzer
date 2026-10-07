@@ -447,7 +447,9 @@ async function askAndStream(
 function formatLogEntry(
   event: Parameters<typeof formatAuditEventLine>[0],
 ): string {
-  const time = event.timestamp.slice(11, 19);
+  const time = new Date(event.timestamp).toLocaleTimeString('ru-RU', {
+    hour12: false,
+  });
   return `${time} ${formatAuditEventLine(event)}`;
 }
 

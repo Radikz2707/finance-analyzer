@@ -1,4 +1,9 @@
-import { parseUserMessage, quickCategory, hasTicker } from './nl-parser.js';
+import {
+  looksLikeGreeting,
+  parseUserMessage,
+  quickCategory,
+  hasTicker,
+} from './nl-parser.js';
 
 describe('NL Parser (Director)', () => {
   it('определяет вопрос по активу и извлекает тикер', () => {
@@ -149,5 +154,29 @@ describe('NL Parser (Director): регресс — операции не лом�
     expect(parsed.requiredAgents).toContain('analysis');
     expect(parsed.requiredAgents).not.toContain('file');
     expect(parsed.requiredAgents).not.toContain('terminal');
+  });
+});
+
+describe('NL Parser (Director): приветствия', () => {
+  it('«Привет» распознаётся как приветствие', () => {
+    expect(looksLikeGreeting('Привет')).toBe(true);
+  });
+
+  it('«Здравствуйте! Как дела?» распознаётся', () => {
+    expect(looksLikeGreeting('Здравствуйте! Как дела?')).toBe(true);
+  });
+
+  it('пустое сообщение — не приветствие', () => {
+    expect(looksLikeGreeting('')).toBe(false);
+  });
+
+  it('длинный вопрос с «привет» в начале — не приветствие', () => {
+    const long =
+      'Привет! Расскажи подробно про мою стратегию, риски и что стоит сократить';
+    expect(looksLikeGreeting(long)).toBe(false);
+  });
+
+  it('содержательный финансовый вопрос не считается приветствием', () => {
+    expect(looksLikeGreeting('Что делать с SBER?')).toBe(false);
   });
 });

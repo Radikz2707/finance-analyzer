@@ -8,7 +8,8 @@
 
 appId: com.financeanalyzer.desktop
 productName: Finance Analyzer
-copyright: Copyright © 2026 Finance Analyzer
+# Автор берётся из package.json ("author") и попадает в метаданные exe.
+copyright: Copyright © 2026 Радик Залалов. Все права защищены.
 
 directories:
   output: release

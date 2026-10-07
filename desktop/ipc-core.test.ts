@@ -8,18 +8,23 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
+  buildDashboardHtml,
   buildDirectorState,
   buildHarnessState,
   handleAsk,
+  handleHarnessExport,
   handleLog,
   handlePanel,
   handleStatus,
   subscribeEvents,
   type DirectorState,
 } from './ipc-core.js';
+import type { HarnessHandle } from '../src/js/modules/harness-integration/harness-bootstrap.js';
+import type { HarnessDashboardPayload } from '../src/js/modules/harness-integration/types.js';
 
 /** Умеренный таймаут: директор гоняет реальных агентов (детерминированных) */
 const ASK_TIMEOUT_MS = 30_000;
@@ -166,4 +171,71 @@ describe('desktop/ipc-core · Гибридный диспетчер', () => {
       expect(handle).toBeNull();
     }
   }, 60_000);
+});
+
+describe('desktop/ipc-core · Экспорт дашборда', () => {
+  it('handleHarnessExport сохраняет полный HTML-дашборд в файл', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ipc-export-'));
+    try {
+      const payload: HarnessDashboardPayload = {
+        scheduler: {
+          mode: 'active',
+          lastRunAt: new Date().toISOString(),
+          skippedCycles: 0,
+          cpuUsagePct: 12,
+          memoryUsagePct: 40,
+        },
+        anomalies: [],
+        quikNews: [],
+        activeOrdersCount: 0,
+        generatedAt: new Date().toISOString(),
+      };
+      const harness = {
+        bridge: { getDashboardPayload: async () => payload },
+      } as unknown as HarnessHandle;
+      const result = await handleHarnessExport(
+        harness,
+        new Date('2026-01-02T03:04:05.000Z'),
+        tmp,
+      );
+
+      expect(result.ok).toBe(true);
+      expect(result.filePath).toBeTruthy();
+      expect(fs.existsSync(result.filePath!)).toBe(true);
+      const html = fs.readFileSync(result.filePath!, 'utf-8');
+      expect(html).toContain('<!doctype html>');
+      expect(html).toContain('дашборд диспетчера');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('handleHarnessExport без диспетчера → честная ошибка', async () => {
+    const result = await handleHarnessExport(null);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('не активирован');
+  });
+
+  it('buildDashboardHtml формирует полный HTML-документ (для HTML/PDF-экспорта)', () => {
+    const html = buildDashboardHtml(
+      {
+        scheduler: {
+          mode: 'active',
+          lastRunAt: new Date().toISOString(),
+          skippedCycles: 0,
+          cpuUsagePct: 8,
+          memoryUsagePct: 35,
+        },
+        anomalies: [],
+        quikNews: [],
+        activeOrdersCount: 0,
+        generatedAt: new Date().toISOString(),
+      },
+      new Date('2026-01-02T03:04:05.000Z'),
+    );
+
+    expect(html).toContain('<!doctype html>');
+    expect(html).toContain('дашборд диспетчера');
+    expect(html).toContain('Сформирован:');
+  });
 });

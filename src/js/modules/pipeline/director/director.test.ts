@@ -11,6 +11,7 @@ import { DirectorChatStore } from './chat-session.js';
 import { DirectorAuditLog } from './director-audit.js';
 import type {
   AgentOpinion,
+  ChatResponder,
   DirectorFactsContext,
   DirectorResponse,
 } from './director-types.js';
@@ -69,6 +70,7 @@ interface BuildOpts {
   adapter?: ReturnType<typeof createInMemoryMemoryAdapter>;
   initialFacts?: DirectorFactsContext;
   maxRounds?: number;
+  chatResponder?: ChatResponder;
 }
 
 function buildDirector(opts?: BuildOpts): {
@@ -91,7 +93,10 @@ function buildDirector(opts?: BuildOpts): {
       audit,
       initialFacts: opts?.initialFacts ?? makeFacts(),
     },
-    { maxConsiliumRounds: opts?.maxRounds ?? 3 },
+    {
+      maxConsiliumRounds: opts?.maxRounds ?? 3,
+      chatResponder: opts?.chatResponder,
+    },
   );
   director.createSession();
   return { director, adapter, audit };
@@ -391,5 +396,53 @@ describe('Director Agent (integration)', () => {
     // но итог — SELL, а не принудительный HOLD
     expect(response.task!.consilium).toBeDefined();
     expect(response.recommendation!.action).toBe('SELL');
+  });
+});
+
+describe('Director: приветствия (smalltalk)', () => {
+  it('на «Привет» отвечает без делегирования агентам', async () => {
+    const { director } = buildDirector();
+    const response = await ask(director, 'Привет');
+
+    expect(response.connectedAgents).toEqual([]);
+    expect(response.text).toContain('Здравствуйте');
+    expect(response.recommendation).toBeUndefined();
+    expect(response.task).toBeUndefined();
+  });
+
+  it('короткое «привет!» не запускает анализ портфеля', async () => {
+    const { director } = buildDirector({
+      aiExecutor: stubAiExecutor('HOLD', 0.6, 'позиция в пределах'),
+    });
+    const response = await ask(director, 'привет!');
+
+    expect(response.connectedAgents).toEqual([]);
+    expect(response.recommendation).toBeUndefined();
+  });
+});
+
+describe('Director: свободный диалог (нефинансовые темы)', () => {
+  it('общий вопрос без LLM → честный fallback без запуска агентов', async () => {
+    const { director } = buildDirector();
+    const response = await ask(director, 'Расскажи что-нибудь интересное');
+
+    expect(response.connectedAgents).toEqual([]);
+    expect(response.needsConsilium).toBe(false);
+    expect(response.recommendation).toBeUndefined();
+    expect(response.task).toBeUndefined();
+    expect(response.text).toContain('финансовый директор');
+  });
+
+  it('с chatResponder → используется ответ LLM с контекстом портфеля', async () => {
+    const chatResponder: ChatResponder = async ({ question, facts }) => {
+      return `ОТВЕТ_LLM[${question}] активов: ${facts.assetsAnalysis.length}`;
+    };
+    const { director } = buildDirector({ chatResponder });
+    const response = await ask(director, 'Просто поговори со мной');
+
+    expect(response.connectedAgents).toEqual([]);
+    expect(response.needsConsilium).toBe(false);
+    expect(response.recommendation).toBeUndefined();
+    expect(response.text).toBe('ОТВЕТ_LLM[Просто поговори со мной] активов: 2');
   });
 });

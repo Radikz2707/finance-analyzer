@@ -214,6 +214,52 @@ export function buildPanelState(
 }
 
 // ──────────────────────────────────────────────
+// 3.5 Каталог всех агентов системы
+// ──────────────────────────────────────────────
+
+/** Имена всех агентов конвейера (для панели «Агенты») */
+export const SYSTEM_AGENT_CATALOG: ReadonlyArray<{ name: string }> = [
+  { name: 'DataAgent' },
+  { name: 'ResearchAgent' },
+  { name: 'AnalysisAgent' },
+  { name: 'AiAgent' },
+  { name: 'ReviewAgent' },
+  { name: 'NotificationAgent' },
+  { name: 'StrategistAgent' },
+  { name: 'ScenarioAgent' },
+  { name: 'Consilium' },
+  { name: 'SecurityAgent' },
+  { name: 'HistoryAgent' },
+  { name: 'FileAgent' },
+  { name: 'TerminalAgent' },
+  { name: 'BrowserAgent' },
+  { name: 'ConfigAgent' },
+  { name: 'ProcessAgent' },
+  { name: 'SchedulerAgent' },
+  { name: 'LearningAgent' },
+  { name: 'AutoRepairAgent' },
+  { name: 'PackageAgent' },
+];
+
+/**
+ * Дополнить карточки реальных агентов полным каталогом системы:
+ * агенты, ещё не выполнявшиеся в текущей сессии, показываются как idle.
+ */
+export function buildAgentCatalogCards(known: AgentCard[]): AgentCard[] {
+  const knownNames = new Set(known.map((card) => card.name));
+  const rest: AgentCard[] = SYSTEM_AGENT_CATALOG.filter(
+    (item) => !knownNames.has(item.name),
+  ).map((item) => ({
+    name: item.name,
+    status: 'idle',
+    totalExecutions: 0,
+    successes: 0,
+    failures: 0,
+  }));
+  return [...known, ...rest];
+}
+
+// ──────────────────────────────────────────────
 // 4. Мапперы
 // ──────────────────────────────────────────────
 

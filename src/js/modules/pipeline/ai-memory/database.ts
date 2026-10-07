@@ -9,10 +9,13 @@
  */
 
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
 import Database from 'better-sqlite3';
+import {
+  isPackagedApp as detectPackagedApp,
+  resolveAppDataDir,
+} from '../../app-paths.js';
 import type {
   MemoryEntryType,
   MemoryPriority,
@@ -40,17 +43,13 @@ export interface DatabasePathContext {
  * Определяет, запущено ли приложение в упакованном Electron
  * (в resources лежит app.asar): тогда cwd защищён системой
  * (Program Files) и писать рядом нельзя.
+ * Делегирует общей утилите `src/js/modules/app-paths.ts`.
  */
 export function isPackagedApp(
   execPath: string = process.execPath,
   electronVersion: string | undefined = process.versions?.electron,
 ): boolean {
-  if (typeof electronVersion !== 'string') return false;
-  // Упакованное приложение: рядом с исполняемым файлом лежит resources/app.asar.
-  // В dev-режиме (electron.exe из node_modules) app.asar отсутствует,
-  // в обычном Node process.versions.electron не определён.
-  const resourcesDir = path.join(path.dirname(execPath), 'resources');
-  return fs.existsSync(path.join(resourcesDir, 'app.asar'));
+  return detectPackagedApp(execPath, electronVersion);
 }
 
 /**
@@ -63,12 +62,10 @@ export function isPackagedApp(
 export function resolveDefaultDbPath(
   context: DatabasePathContext = {},
 ): string {
-  if (!isPackagedApp(context.execPath, context.electronVersion)) {
+  if (!detectPackagedApp(context.execPath, context.electronVersion)) {
     return './data/ai-memory.db';
   }
-  const base =
-    process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-  return path.join(base, 'finance-analyzer', 'ai-memory.db');
+  return path.join(resolveAppDataDir(context), 'ai-memory.db');
 }
 
 /**

@@ -22,7 +22,15 @@ const api: FinanceDesktopApi = {
   loadPortfolio: () => ipcRenderer.invoke('portfolio:status'),
   getHarnessPayload: () => ipcRenderer.invoke('harness:payload'),
   runHarnessAnalysis: () => ipcRenderer.invoke('harness:run'),
+  exportDashboard: () => ipcRenderer.invoke('harness:export-report'),
+  exportDashboardPdf: () => ipcRenderer.invoke('harness:export-pdf'),
   getAppVersion: () => ipcRenderer.invoke('app:version'),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  pickExcelFile: () => ipcRenderer.invoke('settings:pick-excel'),
+  restartApp: () => ipcRenderer.invoke('settings:restart'),
+  getOllamaModels: () => ipcRenderer.invoke('settings:get-models'),
+  setOllamaModel: (model) =>
+    ipcRenderer.invoke('settings:set-ollama-model', model),
 
   onDirectorEvent: (callback) => {
     const listener = (

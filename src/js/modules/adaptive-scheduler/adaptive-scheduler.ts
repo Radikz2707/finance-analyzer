@@ -141,8 +141,8 @@ export class AdaptiveScheduler {
    * Обновляет метку последнего запуска, чтобы фоновый цикл не
    * дублировал работу в пределах minRunIntervalMs.
    */
-  async manualRun(): Promise<void> {
-    await this.runTask();
+  async manualRun(): Promise<unknown> {
+    return this.runTask();
   }
 
   /**
@@ -176,17 +176,21 @@ export class AdaptiveScheduler {
     return this.running;
   }
 
-  private async runTask(): Promise<void> {
+  private async runTask(): Promise<unknown> {
     if (this.running) {
-      return;
+      return undefined;
     }
 
     this.running = true;
     this.lastRunAtMs = Date.now();
     try {
-      await this.callback();
+      return await this.callback();
     } catch (err) {
       log.error('Ошибка фоновой задачи:', err);
+      return {
+        ok: false,
+        summary: err instanceof Error ? err.message : String(err),
+      };
     } finally {
       this.running = false;
     }

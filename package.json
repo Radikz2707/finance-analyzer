@@ -1,13 +1,15 @@
 {
   "name": "finance-analyzer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "AI-Platform for financial analysis and portfolio rebalancing",
   "sideEffects": [
-    "src/js/app.ts"
+    "src/js/app.ts",
+    "desktop/load-settings.ts",
+    "desktop/load-settings.js"
   ],
-  "author": "Radik",
+  "author": "Радик Залалов",
   "license": "ISC",
   "main": "desktop/dist/main.cjs",
   "scripts": {

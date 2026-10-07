@@ -67,6 +67,12 @@ export interface HarnessDashboardPayload {
   generatedAt: string;
 }
 
+/** Итог фонового/ручного анализа (для UI-ленты диспетчера) */
+export interface HarnessRunOutcome {
+  ok: boolean;
+  summary: string;
+}
+
 /**
  * Внешний отправитель Telegram-сообщений.
  *

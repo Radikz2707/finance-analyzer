@@ -382,7 +382,8 @@ export type DirectorAuditEventType =
   | 'director.recommendation_formed'
   | 'director.memory_saved'
   | 'director.proactive_message_sent'
-  | 'director.chat_message_sent';
+  | 'director.chat_message_sent'
+  | 'director.greeting_answered';
 
 /** Событие audit Director */
 export interface DirectorAuditEvent {
@@ -575,6 +576,21 @@ export interface PriceAlertLike {
 // 11. Конфигурация Director Agent
 // ──────────────────────────────────────────────
 
+/** Контекст свободного диалога с пользователем */
+export interface ChatDialogueContext {
+  /** Вопрос/реплика пользователя */
+  question: string;
+  /** Факты портфеля (для LLM-контекста) */
+  facts: DirectorFactsContext;
+  /** Короткая история чата (роль: текст) */
+  history: string;
+}
+
+/** Исполнитель свободного диалога: возвращает ответ или null (нет LLM) */
+export type ChatResponder = (
+  input: ChatDialogueContext,
+) => Promise<string | null>;
+
 /** Конфигурация DirectorAgent */
 export interface DirectorConfig {
   /** Имя пользователя (для обращений в проактивных сообщениях) */
@@ -589,4 +605,6 @@ export interface DirectorConfig {
   aiTieBreak?: boolean;
   /** Включать результаты агентов в текст ответа */
   includeAgentDetails?: boolean;
+  /** Свободный диалог (нефинансовые темы) через LLM с контекстом портфеля */
+  chatResponder?: ChatResponder;
 }

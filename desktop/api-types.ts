@@ -14,6 +14,7 @@ import type { HarnessDashboardPayload } from '../src/js/modules/harness-integrat
 import type {
   AskResult,
   DirectorStatusInfo,
+  HarnessExportResult,
   HarnessRunResult,
   LogResult,
 } from './ipc-core.js';
@@ -25,6 +26,7 @@ export type {
   HarnessDashboardPayload,
   AskResult,
   DirectorStatusInfo,
+  HarnessExportResult,
   HarnessRunResult,
   LogResult,
 };
@@ -33,6 +35,19 @@ export type {
 export interface PortfolioStatusInfo {
   excelPath: string;
   sourceLabel: string;
+}
+
+/** Текущие настройки приложения */
+export interface DesktopSettingsInfo {
+  excelFilePath: string;
+  /** Выбранная модель Ollama (пусто — значение по умолчанию) */
+  ollamaModel: string;
+}
+
+/** Результат нативного диалога выбора Excel-файла */
+export interface PickExcelResult {
+  canceled: boolean;
+  excelFilePath: string;
 }
 
 /**
@@ -54,8 +69,22 @@ export interface FinanceDesktopApi {
   getHarnessPayload(): Promise<HarnessDashboardPayload | null>;
   /** Ручной запуск фонового анализа */
   runHarnessAnalysis(): Promise<HarnessRunResult>;
+  /** Экспорт HTML-дашборда диспетчера в файл (открывает в браузере) */
+  exportDashboard(): Promise<HarnessExportResult>;
+  /** Экспорт дашборда в PDF через диалог выбора места сохранения */
+  exportDashboardPdf(): Promise<HarnessExportResult>;
   /** Версия приложения (из package.json) */
   getAppVersion(): Promise<string>;
+  /** Текущие настройки приложения */
+  getSettings(): Promise<DesktopSettingsInfo>;
+  /** Нативный диалог выбора Excel-файла портфеля (сохраняет и применяет путь) */
+  pickExcelFile(): Promise<PickExcelResult>;
+  /** Перезапуск приложения (после смены пути к Excel) */
+  restartApp(): Promise<boolean>;
+  /** Список моделей, загруженных в локальную Ollama ([] — Ollama недоступна) */
+  getOllamaModels(): Promise<string[]>;
+  /** Сохранить выбранную модель Ollama (применяется после перезапуска) */
+  setOllamaModel(model: string): Promise<boolean>;
   /** Подписка на живой поток событий аудита (стриминг) */
   onDirectorEvent(callback: (event: DirectorAuditEvent) => void): () => void;
   /** Подписка на завершение ответа Директора */

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { resolveReportsDir } from '../../app-paths.js';
 import type { DataAgentOutput } from './data-agent.js';
 import type { AnalysisAgentOutput } from './analysis-agent.js';
 import type { AiAgentOutput } from './ai-agent.js';
@@ -63,8 +64,11 @@ export class NotificationAgent extends AgentBase {
 
   constructor(config?: AgentConfig) {
     super(config ?? { name: 'NotificationAgent' });
-    this.htmlPath = path.join(process.cwd(), 'report.html');
-    this.mdPath = path.join(process.cwd(), 'report.md');
+    // Упакованное приложение (Program Files) писать рядом нельзя —
+    // отчёты уходят в %APPDATA%/finance-analyzer/reports.
+    const reportsDir = resolveReportsDir();
+    this.htmlPath = path.join(reportsDir, 'report.html');
+    this.mdPath = path.join(reportsDir, 'report.md');
   }
 
   protected async executeInternal(input: {
@@ -95,15 +99,26 @@ export class NotificationAgent extends AgentBase {
     // ── Шаг 2: Генерация Markdown-отчёта ──
     const mdContent = this.buildMarkdownReport(data, analysis, ai);
 
-    // ── Шаг 3: Запись файлов ──
-    fs.writeFileSync(this.htmlPath, htmlContent, 'utf-8');
-    fs.writeFileSync(this.mdPath, mdContent, 'utf-8');
-
-    console.log(
-      '[NotificationAgent] ✅ Файлы записаны: ' +
-        `report.html (${htmlContent.length} байт), ` +
-        `report.md (${mdContent.length} байт)`,
-    );
+    // ── Шаг 3: Запись файлов (ошибка записи не должна ронять pipeline) ──
+    let htmlWritten = '';
+    let mdWritten = '';
+    try {
+      fs.mkdirSync(path.dirname(this.htmlPath), { recursive: true });
+      fs.writeFileSync(this.htmlPath, htmlContent, 'utf-8');
+      fs.writeFileSync(this.mdPath, mdContent, 'utf-8');
+      htmlWritten = this.htmlPath;
+      mdWritten = this.mdPath;
+      console.log(
+        '[NotificationAgent] ✅ Файлы записаны: ' +
+          `report.html (${htmlContent.length} байт), ` +
+          `report.md (${mdContent.length} байт)`,
+      );
+    } catch (err) {
+      console.warn(
+        '[NotificationAgent] ⚠️ Не удалось записать отчёт: ' +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
 
     // ── Шаг 4: Генерация интерактивных ордеров ──
     const interactiveOrders = buildInteractiveOrders(
@@ -118,12 +133,12 @@ export class NotificationAgent extends AgentBase {
       );
     }
 
-    // ── Шаг 5: Открытие в браузере ──
-    const browserOpened = this.openInBrowser(this.htmlPath);
+    // ── Шаг 5: Открытие в браузере (только если HTML записан) ──
+    const browserOpened = htmlWritten !== '' && this.openInBrowser(htmlWritten);
 
     return {
-      htmlPath: this.htmlPath,
-      mdPath: this.mdPath,
+      htmlPath: htmlWritten,
+      mdPath: mdWritten,
       htmlContent,
       mdContent,
       browserOpened,

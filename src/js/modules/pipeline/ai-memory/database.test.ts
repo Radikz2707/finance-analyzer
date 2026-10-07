@@ -11,6 +11,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { resolveAppDataDir } from '../../app-paths.js';
 import {
   createDatabase,
   isPackagedApp,
@@ -143,6 +144,12 @@ describe('createDatabase — упакованное Electron-приложени�
     // Рядом с exe (в «Program Files») data/ не создаётся
     expect(fs.existsSync(path.join(path.dirname(fakeExe), 'data'))).toBe(false);
   });
+
+  it('resolveAppDataDir указывает в %APPDATA%\\finance-analyzer', () => {
+    expect(
+      resolveAppDataDir({ execPath: fakeExe, electronVersion: '38.8.6' }),
+    ).toBe(path.join(tmpDir, 'roaming', 'finance-analyzer'));
+  });
 });
 
 // ──────────────────────────────────────────────
@@ -156,5 +163,9 @@ describe('resolveDefaultDbPath', () => {
 
   it('в обычном Node (не packaged) возвращает ./data/ai-memory.db', () => {
     expect(resolveDefaultDbPath()).toBe('./data/ai-memory.db');
+  });
+
+  it('в обычном Node resolveAppDataDir возвращает <cwd>/data', () => {
+    expect(resolveAppDataDir()).toBe(path.join(process.cwd(), 'data'));
   });
 });

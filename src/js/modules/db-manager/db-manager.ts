@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { resolveAppDataDir } from '../app-paths.js';
 import {
   PortfolioPosition,
   Trade,
@@ -18,7 +19,9 @@ import {
 // 1. Singleton-инстанс БД
 // ──────────────────────────────────────────────
 
-const dbPath = path.join(process.cwd(), 'data', 'finance.db');
+// Упакованное приложение (Program Files) не даёт писать рядом с exe:
+// каталог данных резолвится в %APPDATA%/finance-analyzer (см. app-paths.ts).
+const dbPath = path.join(resolveAppDataDir(), 'finance.db');
 const dbDir = path.dirname(dbPath);
 
 if (!fs.existsSync(dbDir)) {
@@ -271,19 +274,35 @@ function initializeDatabase(): void {
   `);
 
   initialized = true;
-  log('INFO', 'db-manager', 'База данных инициализирована', JSON.stringify({ path: dbPath, tables: 9 }));
+  log(
+    'INFO',
+    'db-manager',
+    'База данных инициализирована',
+    JSON.stringify({ path: dbPath, tables: 9 }),
+  );
 }
 
 // ──────────────────────────────────────────────
 // 3. Утилиты логирования в БД
 // ──────────────────────────────────────────────
 
-function log(level: LogLevel, module: string, message: string, metadata?: string): void {
+function log(
+  level: LogLevel,
+  module: string,
+  message: string,
+  metadata?: string,
+): void {
   try {
     const stmt = db.prepare(
-      'INSERT INTO system_logs (timestamp, level, module, message, metadata) VALUES (?, ?, ?, ?, ?)'
+      'INSERT INTO system_logs (timestamp, level, module, message, metadata) VALUES (?, ?, ?, ?, ?)',
     );
-    stmt.run(new Date().toISOString(), level, module, message, metadata || null);
+    stmt.run(
+      new Date().toISOString(),
+      level,
+      module,
+      message,
+      metadata || null,
+    );
   } catch (err) {
     console.error('[db-manager] Ошибка записи лога:', err);
   }
@@ -298,7 +317,7 @@ const positionsRepo = {
   getAllActive(): PortfolioPosition[] {
     initializeDatabase();
     const stmt = db.prepare(
-      'SELECT * FROM positions WHERE status = ? ORDER BY ticker'
+      'SELECT * FROM positions WHERE status = ? ORDER BY ticker',
     );
     return stmt.all('ACTIVE') as PortfolioPosition[];
   },
@@ -321,13 +340,15 @@ const positionsRepo = {
   getRecoveryOnly(): PortfolioPosition[] {
     initializeDatabase();
     const stmt = db.prepare(
-      'SELECT * FROM positions WHERE status = ? ORDER BY ticker'
+      'SELECT * FROM positions WHERE status = ? ORDER BY ticker',
     );
     return stmt.all('RECOVERY_ONLY') as PortfolioPosition[];
   },
 
   /** Создать или обновить позицию (upsert) */
-  upsert(position: Omit<PortfolioPosition, 'id' | 'createdAt' | 'updatedAt'>): PortfolioPosition {
+  upsert(
+    position: Omit<PortfolioPosition, 'id' | 'createdAt' | 'updatedAt'>,
+  ): PortfolioPosition {
     initializeDatabase();
     const now = new Date().toISOString();
 
@@ -352,10 +373,20 @@ const positionsRepo = {
         WHERE ticker = ?
       `);
       stmt.run(
-        position.name, position.assetType, position.issuer, position.currency,
-        position.market, position.quantity, position.avgPrice, position.totalCost,
-        position.currentPrice, position.currentMarketValue, position.targetPercent,
-        position.status, now, position.ticker
+        position.name,
+        position.assetType,
+        position.issuer,
+        position.currency,
+        position.market,
+        position.quantity,
+        position.avgPrice,
+        position.totalCost,
+        position.currentPrice,
+        position.currentMarketValue,
+        position.targetPercent,
+        position.status,
+        now,
+        position.ticker,
       );
       log('INFO', 'db-manager', `Позиция обновлена: ${position.ticker}`);
     } else {
@@ -367,10 +398,21 @@ const positionsRepo = {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       stmt.run(
-        position.ticker, position.name, position.assetType, position.issuer,
-        position.currency, position.market, position.quantity, position.avgPrice,
-        position.totalCost, position.currentPrice, position.currentMarketValue,
-        position.targetPercent, position.status, now, now
+        position.ticker,
+        position.name,
+        position.assetType,
+        position.issuer,
+        position.currency,
+        position.market,
+        position.quantity,
+        position.avgPrice,
+        position.totalCost,
+        position.currentPrice,
+        position.currentMarketValue,
+        position.targetPercent,
+        position.status,
+        now,
+        now,
       );
       log('INFO', 'db-manager', `Позиция создана: ${position.ticker}`);
     }
@@ -445,9 +487,8 @@ const positionsRepo = {
       recovery_count: number;
     };
     const totalGain = row.total_market_value - row.total_cost;
-    const totalGainPercent = row.total_cost > 0
-      ? (totalGain / row.total_cost) * 100
-      : 0;
+    const totalGainPercent =
+      row.total_cost > 0 ? (totalGain / row.total_cost) * 100 : 0;
 
     return {
       totalCost: row.total_cost,
@@ -884,7 +925,12 @@ interface ResearchSnapshotRow {
 
 const researchCacheRepo = {
   /** Сохранить research-снимок */
-  set(ticker: string, snapshotData: string, researchTimestamp: string, ttlSeconds: number = 300): void {
+  set(
+    ticker: string,
+    snapshotData: string,
+    researchTimestamp: string,
+    ttlSeconds: number = 300,
+  ): void {
     initializeDatabase();
     const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
     const stmt = db.prepare(`
@@ -900,7 +946,8 @@ const researchCacheRepo = {
     const stmt = db.prepare(
       "SELECT snapshot_data FROM research_snapshots WHERE ticker = ? AND research_timestamp = ? AND expires_at > datetime('now')",
     );
-    const row = stmt.get(ticker, researchTimestamp) as ResearchSnapshotRow | undefined;
+    const row = stmt.get(ticker, researchTimestamp) as
+      ResearchSnapshotRow | undefined;
     return row?.snapshot_data ?? null;
   },
 

@@ -144,8 +144,14 @@ body {
   color: var(--text-dim);
 }
 
-.app-version {
+.header-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-version {
   font-size: 11px;
   color: var(--text-dim);
   font-family: var(--mono);
@@ -154,6 +160,50 @@ body {
   border-radius: 6px;
   padding: 2px 8px;
   white-space: nowrap;
+}
+
+.pick-excel-btn {
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-dim);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    border-color: #a5b4fc;
+    color: #a5b4fc;
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+}
+
+.ollama-model-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.ollama-model-select {
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text-dim);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  max-width: 220px;
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
 }
 
 .status-bar {

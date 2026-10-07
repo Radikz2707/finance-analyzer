@@ -655,6 +655,35 @@ export function looksLikeTerminalRequest(text: string): boolean {
   return TERMINAL_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
 }
 
+/** Ключевые слова приветствия (для smalltalk-ветки Director) */
+const GREETING_KEYWORDS = [
+  'привет',
+  'здравствуйте',
+  'здравствуй',
+  'добрый день',
+  'доброе утро',
+  'добрый вечер',
+  'доброго времени',
+  'hello',
+  'hi',
+  'хай',
+  'салют',
+  'здаров',
+  'прив',
+  'ку',
+];
+
+/**
+ * Определить, является ли сообщение простым приветствием (smalltalk).
+ * Только короткие сообщения: длинный текст с «привет» — уже содержательный вопрос.
+ */
+export function looksLikeGreeting(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0 || trimmed.length > 60) return false;
+  const lower = trimmed.toLowerCase();
+  return GREETING_KEYWORDS.some((word) => lower.includes(word));
+}
+
 // ──────────────────────────────────────────────
 // 3. Парсер
 // ──────────────────────────────────────────────

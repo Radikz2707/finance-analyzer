@@ -25,7 +25,7 @@ import { HarnessBridge } from './harness-bridge.js';
 import { TelegramNotifier } from './telegram-notifier.js';
 import { TelegramHttpSender } from './telegram-http-sender.js';
 import { PriceAlertNotifier } from './price-alert-notifier.js';
-import type { HarnessDashboardPayload } from './types.js';
+import type { HarnessDashboardPayload, HarnessRunOutcome } from './types.js';
 import { validateEnv } from '../../config/index.js';
 import { createActionAgentFactory } from '../pipeline/agents/agent-factory.js';
 import { SecurityAgent } from '../pipeline/agents/security-agent.js';
@@ -126,7 +126,7 @@ export function createHarness(
   // Коллбэк фонового анализа: обёртка над PipelineCoordinator.
   // Данные могут отсутствовать, Ollama может быть выключена —
   // pipeline НЕ должен ронять приложение.
-  const runPipelineTask = async (): Promise<void> => {
+  const runPipelineTask = async (): Promise<HarnessRunOutcome | undefined> => {
     try {
       log.info('Запуск фонового анализа...');
       const coordinator = new PipelineCoordinator(undefined, {
@@ -135,10 +135,33 @@ export function createHarness(
           await savePortfolioKpi(aiMemoryImpl, result);
         },
       });
-      await coordinator.run();
-      log.info('Фоновый анализ завершён');
+      const result = await coordinator.run();
+      const stageEntries = Object.entries(result.stages ?? {}).filter(
+        ([, stage]) => Boolean(stage),
+      );
+      const failedStages = stageEntries
+        .filter(
+          ([, stage]) => (stage as { success?: boolean }).success === false,
+        )
+        .map(([name]) => name);
+      const ok = result.success === true && failedStages.length === 0;
+      log.info(
+        ok
+          ? `Фоновый анализ завершён (стадий: ${stageEntries.length})`
+          : `Фоновый анализ: ошибки на стадиях: ${failedStages.join(', ') || 'конвейер прерван'}`,
+      );
+      return {
+        ok,
+        summary: ok
+          ? `Анализ завершён: обработано стадий ${stageEntries.length}`
+          : `Анализ завершён с ошибками: ${
+              failedStages.join(', ') || 'конвейер прерван (см. консоль)'
+            }`,
+      };
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       log.error('Ошибка фонового анализа:', err);
+      return { ok: false, summary: `Ошибка фонового анализа: ${message}` };
     }
   };
 
