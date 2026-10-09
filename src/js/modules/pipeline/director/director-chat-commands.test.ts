@@ -56,7 +56,7 @@ function makeFacts(): DirectorFactsContext {
   };
 }
 
-function buildDirector(): DirectorAgent {
+function buildDirector(random?: () => number): DirectorAgent {
   const adapter = createInMemoryMemoryAdapter();
   const memory = new DirectorMemoryStore(adapter);
   const chat = new DirectorChatStore({ memoryAdapter: adapter });
@@ -69,6 +69,7 @@ function buildDirector(): DirectorAgent {
       chat,
       audit,
       initialFacts: makeFacts(),
+      random,
     },
     { maxConsiliumRounds: 3 },
   );
@@ -392,7 +393,9 @@ describe('DirectorAgent — системные команды (интеграц�
   });
 
   it('обычный NL-флоу не сломан (команды не перехватывают текст)', async () => {
-    const director = buildDirector();
+    // random=()=>0: интро берётся первым элементом пула («Я понял ваш
+    // вопрос...») — тест детерминирован
+    const director = buildDirector(() => 0);
     const response = await director.processUserMessage('Что делать с PLZL?');
 
     expect(response.task).toBeDefined();

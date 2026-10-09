@@ -13,38 +13,27 @@ import { db } from '../db-manager/db-manager.js';
 // 1. Types
 // ──────────────────────────────────────────────
 
-/** OHLCV-свеча */
-export interface OHLCVBar {
-  date: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+// Контракты OHLCVBar/HistoryResult каноничны и живут в data-fetcher/contracts
+// (единый источник для finam/moex); реэкспорт — для совместимости потребителей.
+import type {
+  OHLCVBar,
+  HistoryResult,
+  HistoryInterval,
+} from '../data-fetcher/contracts.js';
+export type { OHLCVBar, HistoryResult, HistoryInterval };
 
 /** Запрос к Finam API */
 export interface FinamHistoryRequest {
   /** Тикер (SBER, GAZP, etc.) */
   ticker: string;
   /** Интервал (D = daily, W = weekly, M = monthly) */
-  interval: 'D' | 'W' | 'M';
+  interval: HistoryInterval;
   /** Начальная дата (YYYY-MM-DD) */
   from: string;
   /** Конечная дата (YYYY-MM-DD) */
   to: string;
   /** Портфель (для MOEX) */
   portfolio?: string;
-}
-
-/** Результат загрузки исторических данных */
-export interface HistoryResult {
-  ticker: string;
-  bars: OHLCVBar[];
-  from: string;
-  to: string;
-  count: number;
-  fromCache: boolean;
 }
 
 // ──────────────────────────────────────────────

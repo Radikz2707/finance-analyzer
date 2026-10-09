@@ -9,7 +9,7 @@
  * поэтому переключение прозрачно для потребителей.
  */
 
-import type { OHLCVBar } from '../finam-api/history-provider.js';
+import type { HistoryResult, OHLCVBar } from './contracts.js';
 import {
   fetchHistoricalData as fetchFromFinam,
   fetchHistoricalBatch as fetchBatchFromFinam,
@@ -18,7 +18,6 @@ import {
   fetchHistoricalData as fetchFromMoex,
   fetchHistoricalBatch as fetchBatchFromMoex,
 } from '../moex-api/history-provider.js';
-import type { HistoryResult } from '../moex-api/history-provider.js';
 import {
   calculatePriceMetrics,
   formatMetrics,
@@ -50,7 +49,9 @@ export interface DataFetchRequest {
 export async function fetchHistoricalData(
   request: DataFetchRequest,
 ): Promise<DataFetchResult> {
-  const hasFinamKey = !!(process.env.FINAM_API_KEY && process.env.FINAM_API_KEY.trim());
+  const hasFinamKey = !!(
+    process.env.FINAM_API_KEY && process.env.FINAM_API_KEY.trim()
+  );
 
   if (hasFinamKey) {
     const result: HistoryResult = await fetchFromFinam(request);
@@ -77,7 +78,9 @@ export async function fetchHistoricalBatch(
   to: string,
   interval: 'D' | 'W' | 'M' = 'D',
 ): Promise<Map<string, OHLCVBar[]>> {
-  const hasFinamKey = !!(process.env.FINAM_API_KEY && process.env.FINAM_API_KEY.trim());
+  const hasFinamKey = !!(
+    process.env.FINAM_API_KEY && process.env.FINAM_API_KEY.trim()
+  );
 
   let results: Map<string, OHLCVBar[]>;
 
@@ -85,7 +88,9 @@ export async function fetchHistoricalBatch(
     console.log('[DataFetcher] Используем Finam API');
     results = await fetchBatchFromFinam(tickers, from, to, interval);
   } else {
-    console.log('[DataFetcher] FINAM_API_KEY не установлен, используем MOEX ISS');
+    console.log(
+      '[DataFetcher] FINAM_API_KEY не установлен, используем MOEX ISS',
+    );
     results = await fetchBatchFromMoex(tickers, from, to, interval);
   }
 

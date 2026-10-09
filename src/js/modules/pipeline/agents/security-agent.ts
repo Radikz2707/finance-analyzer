@@ -39,6 +39,8 @@ import {
   TERMINAL_ALLOWED_COMMANDS,
   TERMINAL_DENY_PATTERNS,
   TERMINAL_INJECTION_CHARS,
+  looksLikePath,
+  resolveArgPath,
 } from './terminal-agent.js';
 
 // ──────────────────────────────────────────────
@@ -142,6 +144,22 @@ const SENSITIVE_SEGMENTS_MEDIUM: ReadonlySet<string> = new Set([
 /**
  * SecurityAgent — валидация операций ИИ перед выполнением.
  */
+/**
+ * npm/pip-подкоманды, изменяющие окружение или состав проекта: установка,
+ * удаление пакетов, инициализация. Такие команды всегда требуют
+ * подтверждения человека (require-confirmation).
+ */
+const NPM_MUTATION_SUBCOMMANDS = new Set([
+  'install',
+  'uninstall',
+  'ci',
+  'update',
+  'init',
+  'remove',
+  'dedupe',
+  'link',
+]);
+
 export class SecurityAgent extends AgentBase {
   private readonly roots: string[];
   private readonly systemRoots: string[];
@@ -364,6 +382,33 @@ export class SecurityAgent extends AgentBase {
           },
         );
       }
+    }
+
+    // 5. Мутации окружения: установка/удаление пакетов, создание/удаление
+    //    ресурсов проекта — всегда требуют подтверждения человека
+    const mutatingSubcommand = normalized.args.find((arg) => {
+      const lower = arg.toLowerCase();
+      return (
+        NPM_MUTATION_SUBCOMMANDS.has(lower) ||
+        lower.startsWith('update-modules')
+      );
+    });
+    if (
+      (bin === 'npm' || bin === 'npx' || bin === 'pip') &&
+      mutatingSubcommand
+    ) {
+      const destructive = ['remove', 'uninstall'].includes(
+        mutatingSubcommand.toLowerCase(),
+      );
+      return this.decide(
+        request,
+        'require-confirmation',
+        ['command.mutation'],
+        {
+          dangerLevel: destructive ? 'high' : 'medium',
+          description: `Мутация окружения/проекта (npm ${mutatingSubcommand}) — требуется подтверждение: ${commandLine}`,
+        },
+      );
     }
 
     return this.decide(request, 'allow', ['command.allowed']);
@@ -607,24 +652,4 @@ function buildSystemRoots(): string[] {
     `${drive}\\System Volume Information`,
     `${drive}\\$Recycle.Bin`,
   ];
-}
-
-/** Похож ли аргумент на путь (зеркалит логику TerminalAgent) */
-function looksLikePath(value: string): boolean {
-  if (value === '' || value.startsWith('-')) return false;
-  // Глоб-паттерны не резолвим
-  if (/[*?[\]]/.test(value)) return false;
-  if (value.includes('/') || value.includes('\\')) return true;
-  if (value.startsWith('.')) return true;
-  return false;
-}
-
-/** Резолвит аргумент как путь относительно cwd (зеркалит TerminalAgent) */
-function resolveArgPath(cwd: string, value: string): string | null {
-  if (value === '' || value.startsWith('-')) return null;
-  if (/[*?[\]]/.test(value)) return null;
-  // Не считаем путями значения вида key=value / proto://...
-  if (/^[a-z]+:\/\//i.test(value)) return null;
-  const candidate = path.isAbsolute(value) ? value : path.resolve(cwd, value);
-  return path.normalize(candidate);
 }

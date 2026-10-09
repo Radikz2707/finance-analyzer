@@ -254,6 +254,42 @@ function factsDigest(facts: DirectorFactsContext): string {
   ].join('\n');
 }
 
+/** Компактная сводка для чата: только запрашиваемые тикеры + общая статистика */
+function compactFactsDigest(
+  facts: DirectorFactsContext,
+  tickers?: string[],
+): string {
+  const lines: string[] = [];
+  
+  if (tickers && tickers.length > 0) {
+    // Только запрашиваемые тикеры
+    const requested = facts.assetsAnalysis.filter(
+      (a) => tickers.includes(a.ticker),
+    );
+    for (const asset of requested) {
+      lines.push(
+        `${asset.ticker}: доля ${asset.currentPercent}%, ` +
+          `цель ${asset.targetPercent}%, P&L ${asset.unrealizedProfitRub ?? 0} ₽`,
+      );
+    }
+  } else {
+    // Общая статистика без перечисления всех активов
+    const totalValue = facts.totalPortfolioValue;
+    const freeCash = facts.freeCashRub;
+    const assetsCount = facts.assetsAnalysis.length;
+    const concentrated = facts.assetsAnalysis.filter((a) => a.isConcentrated).map((a) => a.ticker);
+    
+    lines.push(`Активов: ${assetsCount}`);
+    lines.push(`Стоимость портфеля: ${totalValue} ₽`);
+    lines.push(`Свободные средства: ${freeCash} ₽`);
+    if (concentrated.length > 0) {
+      lines.push(`Концентрация (>25%): ${concentrated.join(', ')}`);
+    }
+  }
+  
+  return lines.join('\n');
+}
+
 /** Извлечь AgentOpinion из ответа LLM (ленивый парсинг JSON-блока) */
 function parseAiOpinion(raw: string | null): AgentOpinion | null {
   if (!raw) return null;
@@ -449,10 +485,77 @@ async function createChatResponder(
   ollamaCheckTimeoutMs: number,
   log: CoreLogger,
   getOllamaModel?: () => string | undefined,
+  ollamaAvailable?: boolean,
 ): Promise<ChatResponder | undefined> {
   if (aiMode === 'off') {
     log('info', 'свободный диалог отключён (aiMode=off)');
     return undefined;
+  }
+
+  // Если Ollama уже доступна для aiExecutor — пропускаем повторный probe.
+  if (ollamaAvailable) {
+    log('info', 'Ollama подключён — свободный диалог использует LLM (shared probe)');
+    return async ({ question, facts, history }) => {
+      const client = new OllamaClient({
+        model: resolveActiveModel(getOllamaModel),
+      });
+      const historyMessages: OllamaMessage[] = history
+        .split('\n')
+        .filter((line) => line.includes(': '))
+        .map((line) => {
+          const idx = line.indexOf(': ');
+          const roleRaw = line.slice(0, idx);
+          const role = roleRaw === 'director' ? 'assistant' : 'user';
+          return { role, content: line.slice(idx + 2) };
+        });
+      const messages: OllamaMessage[] = [
+        { role: 'system', content: CHAT_SYSTEM_PROMPT },
+        ...historyMessages,
+        {
+          role: 'user',
+          content: `${question}\n\nФакты портфеля:\n${compactFactsDigest(facts)}`,
+        },
+      ];
+      try {
+        // Chat responder может ждать дольше AI Agent — 5 минут вместо 45 сек
+        const CHAT_RESPONDER_TIMEOUT_MS = 300_000;
+        
+        // Сначала пробуем stream через /api/generate
+        let fullResponse = '';
+        const raw = await withTimeout(
+          client.generate(CHAT_SYSTEM_PROMPT, question + '\n\nФакты портфеля:\n' + compactFactsDigest(facts), (chunk) => {
+            fullResponse += chunk;
+          }),
+          CHAT_RESPONDER_TIMEOUT_MS,
+        );
+        const text = (fullResponse || raw)?.trim();
+        if (text && text !== '') {
+          log('info', `Ollama chat responder ответ: ${text.slice(0, 80)}...`);
+          return text;
+        }
+        log('warn', `Ollama chat responder вернул пустой ответ — пробуем non-stream`);
+        // Fallback: non-stream запрос
+        const raw2 = await withTimeout(
+          client.generate(CHAT_SYSTEM_PROMPT, question + '\n\nФакты портфеля:\n' + compactFactsDigest(facts)),
+          CHAT_RESPONDER_TIMEOUT_MS,
+        );
+        const text2 = raw2?.trim();
+        if (text2 && text2 !== '') {
+          log('info', `Ollama chat responder (non-stream) ответ: ${text2.slice(0, 80)}...`);
+          return text2;
+        }
+        log('warn', 'Ollama chat responder вернул пустой ответ (оба метода)');
+        return null;
+      } catch (err) {
+        log(
+          'warn',
+          `Ошибка Ollama в свободном диалоге: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return null;
+      }
+    };
   }
 
   // Стартовая проверка: предупреждаем сразу, если Ollama не запущена.
@@ -493,7 +596,7 @@ async function createChatResponder(
       ...historyMessages,
       {
         role: 'user',
-        content: `${question}\n\nФакты портфеля:\n${factsDigest(facts)}`,
+        content: `${question}\n\nФакты портфеля:\n${compactFactsDigest(facts)}`,
       },
     ];
     try {
@@ -581,6 +684,10 @@ export async function buildDirectorState(
     options.getOllamaModel,
   );
 
+  // Передаём результат probe Ollama в chatResponder — если Ollama доступна
+  // для aiExecutor, она должна быть доступна и для свободного диалога.
+  const ollamaAvailable = aiLabel.includes('Ollama');
+
   const actionAgents = createDefaultActionAgents();
   const security = new SecurityAgent();
   const facade = new DirectorAgentFacade({
@@ -595,6 +702,7 @@ export async function buildDirectorState(
     ollamaCheckTimeoutMs,
     log,
     options.getOllamaModel,
+    ollamaAvailable,
   );
   const director = new DirectorAgent(
     { facade, audit, initialFacts: facts },
@@ -695,12 +803,13 @@ export async function reconnectOllama(
       aiExecutor,
     });
 
-  // Пересоздаём chatResponder
+  // Пересоздаём chatResponder (Ollama уже проверена выше — available=true)
   const chatResponder = await createChatResponder(
     aiMode,
     ollamaCheckTimeoutMs,
     log,
     options.getOllamaModel,
+    true,
   );
 
   // Обновляем config director

@@ -34,6 +34,8 @@ const api: FinanceDesktopApi = {
   setOllamaModel: (model) =>
     ipcRenderer.invoke('settings:set-ollama-model', model),
   reconnectOllama: () => ipcRenderer.invoke('director:reconnect-ollama'),
+  getAnalysisStatus: () => ipcRenderer.invoke('director:analysis-status'),
+  runAnalysis: () => ipcRenderer.invoke('director:run-analysis'),
 
   onDirectorEvent: (callback) => {
     const listener = (

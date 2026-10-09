@@ -59,6 +59,9 @@ const ROLE_LABELS: Record<AgentRole, string> = {
   review: 'Review',
   file: 'File',
   terminal: 'Terminal',
+  process: 'Process',
+  automation: 'Automation',
+  code: 'Code',
 };
 
 // ──────────────────────────────────────────────

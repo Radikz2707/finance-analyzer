@@ -18,36 +18,25 @@ import { db } from '../db-manager/db-manager.js';
 // 1. Types
 // ──────────────────────────────────────────────
 
-/** OHLCV-свеча */
-export interface OHLCVBar {
-  date: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+// Контракты OHLCVBar/HistoryResult каноничны и живут в data-fetcher/contracts
+// (единый источник для finam/moex); реэкспорт — для совместимости потребителей.
+import type {
+  OHLCVBar,
+  HistoryResult,
+  HistoryInterval,
+} from '../data-fetcher/contracts.js';
+export type { OHLCVBar, HistoryResult, HistoryInterval };
 
 /** Запрос к MOEX ISS API */
 export interface MoexHistoryRequest {
   /** Тикер (SBER, GAZP, RU000A10FXF8, etc.) */
   ticker: string;
   /** Интервал (D = daily, W = weekly, M = monthly) */
-  interval: 'D' | 'W' | 'M';
+  interval: HistoryInterval;
   /** Начальная дата (YYYY-MM-DD) */
   from: string;
   /** Конечная дата (YYYY-MM-DD) */
   to: string;
-}
-
-/** Результат загрузки исторических данных */
-export interface HistoryResult {
-  ticker: string;
-  bars: OHLCVBar[];
-  from: string;
-  to: string;
-  count: number;
-  fromCache: boolean;
 }
 
 // ──────────────────────────────────────────────
@@ -60,7 +49,8 @@ const MOEX_ISS_CONFIG = {
   dailyInterval: 24,
   maxLimit: 1000,
   endpoints: {
-    candles: '/engines/stock/markets/shares/boards/{board}/securities/{ticker}/candles.json?interval={interval}',
+    candles:
+      '/engines/stock/markets/shares/boards/{board}/securities/{ticker}/candles.json?interval={interval}',
     history: '/history.json',
   },
 } as const;
@@ -94,7 +84,9 @@ async function fetchFromMoexISS(
   const candlesResult = await fetchCandlesEndpoint(request.ticker, board);
   if (candlesResult.length > 0) {
     // Фильтруем по датам вручную
-    return candlesResult.filter((bar) => bar.date >= request.from && bar.date <= request.to);
+    return candlesResult.filter(
+      (bar) => bar.date >= request.from && bar.date <= request.to,
+    );
   }
 
   // Fallback: history.json с датами
@@ -107,7 +99,8 @@ async function fetchCandlesEndpoint(
   board: Board,
 ): Promise<OHLCVBar[]> {
   try {
-    const url = MOEX_ISS_CONFIG.baseUrl +
+    const url =
+      MOEX_ISS_CONFIG.baseUrl +
       MOEX_ISS_CONFIG.endpoints.candles
         .replace('{board}', board)
         .replace('{ticker}', encodeURIComponent(ticker))
@@ -116,9 +109,11 @@ async function fetchCandlesEndpoint(
     const response = await fetch(url);
     if (!response.ok) return [];
 
-    const data = await response.json() as Record<string, unknown>;
-    const candles = data.candles as { columns: string[]; data: unknown[][] } | undefined;
-    if (!candles || !candles.columns?.length || !candles.data?.length) return [];
+    const data = (await response.json()) as Record<string, unknown>;
+    const candles = data.candles as
+      { columns: string[]; data: unknown[][] } | undefined;
+    if (!candles || !candles.columns?.length || !candles.data?.length)
+      return [];
 
     const col = candles.columns;
     const dateIdx = col.indexOf('begin');
@@ -164,13 +159,20 @@ async function fetchHistoryEndpoint(
       limit: String(MOEX_ISS_CONFIG.maxLimit),
     });
 
-    const url = MOEX_ISS_CONFIG.baseUrl + MOEX_ISS_CONFIG.endpoints.history + '?' + params.toString();
+    const url =
+      MOEX_ISS_CONFIG.baseUrl +
+      MOEX_ISS_CONFIG.endpoints.history +
+      '?' +
+      params.toString();
     const response = await fetch(url);
     if (!response.ok) return [];
 
-    const data = await response.json() as Record<string, unknown>;
-    const history = data.history as { meta: { columns: string[]; after?: number }; data: unknown[][] } | undefined;
-    if (!history || !history.meta?.columns?.length || !history.data?.length) return [];
+    const data = (await response.json()) as Record<string, unknown>;
+    const history = data.history as
+      | { meta: { columns: string[]; after?: number }; data: unknown[][] }
+      | undefined;
+    if (!history || !history.meta?.columns?.length || !history.data?.length)
+      return [];
 
     const col = history.meta.columns;
     const dateIdx = col.indexOf('date');

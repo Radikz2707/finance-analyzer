@@ -51,6 +51,13 @@ const KNOWN_TICKERS: string[] = [
   'AFKON',
   'BSPB',
   'FEES',
+  'КЦ ИКС 5',
+  // Облигации
+  'RU000A10C8F3',
+  'RU000A10DCF7',
+  'RU000A10EC22',
+  'RU000A10ER66',
+  'RU000A10FXF8',
 ];
 
 /**
@@ -217,9 +224,28 @@ const RUSSIAN_NAME_TO_TICKER: Record<string, string> = {
   фэес: 'FEES',
   fees: 'FEES',
 
-  // Норникель (альтернативные)
-  noril: 'GMKN',
-  nickel: 'GMKN',
+  // КЦ ИКС 5 (акция)
+  'кц икс 5': 'КЦ ИКС 5',
+  'икс 5': 'КЦ ИКС 5',
+  икс5: 'КЦ ИКС 5',
+  'икса 5': 'КЦ ИКС 5',
+  'иксу 5': 'КЦ ИКС 5',
+
+  // Облигации
+  'брус 2р04': 'RU000A10C8F3',
+  брус: 'RU000A10C8F3',
+  'ново тр 2р1': 'RU000A10DCF7',
+  'ново тр': 'RU000A10DCF7',
+  'сел иг дар 10': 'RU000A10EC22',
+  селигдар: 'RU000A10EC22',
+  'фосagro 2п6': 'RU000A10ER66',
+  фосagro: 'RU000A10ER66',
+  фосагро: 'RU000A10ER66',
+  'сгтлк2р-14': 'RU000A10FXF8',
+  гтлк: 'RU000A10FXF8',
+  гтлк2р: 'RU000A10FXF8',
+  рукрипт: 'RU000A10FXF8',
+  'ру крипт': 'RU000A10FXF8',
 };
 
 /**
@@ -637,6 +663,97 @@ const TERMINAL_REQUEST_PATTERNS: RegExp[] = [
   /запусти скрипт/i,
   /python/i,
   /терминал/i,
+  // ── Gulp-конструкторы ресурсов (init/create/module/plugin/remove) ──
+  /(?:создай|создать)\s+(?:блок|модуль|плагин|ресурс)/i,
+  /(?:удали|удалить)\s+(?:блок|модуль|плагин|ресурс)\s+\S+/i,
+  /(?:разверни|развернуть|инициализируй)\s+(?:базовую\s+)?структуру/i,
+  // ── Обновление зависимостей (неинтерактивный npm-сценарий) ──
+  /(?:обнови|обновить)\s+(?:модули|зависимости|пакеты|node_modules)/i,
+];
+
+/**
+ * Паттерны gulp-конструкторов ресурсов (init/create/module/plugin/remove).
+ * Такие запросы обрабатываются ТОЛЬКО терминальной ролью: file-роль не
+ * подключается, чтобы «создай модуль header» не превратился в попытку
+ * записи файла.
+ */
+const GULP_RESOURCE_REQUEST_PATTERNS: RegExp[] = [
+  /(?:создай|создать)\s+(?:блок|модуль|плагин|ресурс)\s+[a-zA-Z0-9]/i,
+  /(?:удали|удалить)\s+(?:блок|модуль|плагин|ресурс)\s+\S+/i,
+  /(?:разверни|развернуть|инициализируй)\s+(?:базовую\s+)?структуру/i,
+];
+
+/**
+ * Определить, является ли запрос командой gulp-конструктора ресурсов.
+ */
+export function looksLikeGulpResourceRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+  return GULP_RESOURCE_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
+}
+
+/**
+ * Паттерны, указывающие на операцию с процессами (роль `process`).
+ *
+ * Покрывают: «запусти процесс/сервер», «останови/убей процесс»,
+ * «перезапусти», «статус процессов». Долгоживущие процессы управляются
+ * ProcessAgent (auto-restart при падении), а не TerminalAgent.
+ */
+const PROCESS_REQUEST_PATTERNS: RegExp[] = [
+  /запусти процесс/i,
+  /запустить процесс/i,
+  /запусти сервер/i,
+  /запустить сервер/i,
+  /останови процесс/i,
+  /остановить процесс/i,
+  /убей процесс/i,
+  /перезапусти/i,
+  /перезапустить/i,
+  /статус процесс/i,
+  /список процессов/i,
+];
+
+/**
+ * Паттерны, указывающие на операцию автоматизации (роль `automation`).
+ *
+ * Покрывают: «workflow», «воркфлоу», «шаблон автоматизации», «расписание
+ * задач», «автоматизируй», «статистика workflow».
+ */
+const AUTOMATION_REQUEST_PATTERNS: RegExp[] = [
+  /workflow/i,
+  /воркфлоу/i,
+  /вoркфлоу/i,
+  /шаблон автоматизации/i,
+  /автоматизируй/i,
+  /автоматизировать/i,
+  /расписание задач/i,
+  /запусти workflow/i,
+  /список workflow/i,
+];
+
+/**
+ * Паттерны, указывающие на задачу разработки (роль `code`).
+ *
+ * Покрывают: «реализуй/реализовать функционал», «добавь функцию/модуль»,
+ * «напиши код», «исправь баг», «сделай рефакторинг», «добавь тесты».
+ */
+const CODE_REQUEST_PATTERNS: RegExp[] = [
+  /реализуй функционал/i,
+  /реализовать функционал/i,
+  /реализуй функцию/i,
+  /реализовать функцию/i,
+  /добавь функцию/i,
+  /добавить функцию/i,
+  /добавь модуль/i,
+  /добавить модуль/i,
+  /добавь тест/i,
+  /добавить тест/i,
+  /напиши код/i,
+  /написать код/i,
+  /исправь баг/i,
+  /исправить баг/i,
+  /почини тест/i,
+  /рефакторинг/i,
+  /отрефактори/i,
 ];
 
 /**
@@ -653,6 +770,30 @@ export function looksLikeFileRequest(text: string): boolean {
 export function looksLikeTerminalRequest(text: string): boolean {
   const lower = text.toLowerCase();
   return TERMINAL_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
+}
+
+/**
+ * Определить, запрашивает ли пользователь операцию с процессами.
+ */
+export function looksLikeProcessRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+  return PROCESS_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
+}
+
+/**
+ * Определить, запрашивает ли пользователь операцию автоматизации.
+ */
+export function looksLikeAutomationRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+  return AUTOMATION_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
+}
+
+/**
+ * Определить, запрашивает ли пользователь задачу разработки кода.
+ */
+export function looksLikeCodeRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+  return CODE_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
 }
 
 /** Ключевые слова приветствия (для smalltalk-ветки Director) */
@@ -682,6 +823,36 @@ export function looksLikeGreeting(text: string): boolean {
   if (trimmed.length === 0 || trimmed.length > 60) return false;
   const lower = trimmed.toLowerCase();
   return GREETING_KEYWORDS.some((word) => lower.includes(word));
+}
+
+/**
+ * Определить, является ли сообщение простым бытовым вопросом
+ * (не требует анализа портфеля, только LLM-диалог).
+ */
+const SIMPLE_CHAT_PATTERNS: RegExp[] = [
+  /как дела/i,
+  /как поделк/i,
+  /что новог/i,
+  /как сам/i,
+  /как жизнь/i,
+  /как настроен/i,
+  /как работ/i,
+  /кто ты/i,
+  /что уме/i,
+  /чем помог/i,
+  /расскажи о себ/i,
+  /просто поболтать/i,
+  /есть вопрос/i,
+  /хочу поговор/i,
+];
+
+/**
+ * Быстро проверить, является ли сообщение простым бытовым вопросом.
+ * Такие вопросы идут напрямую в LLM без запуска агентов.
+ */
+export function looksLikeSimpleChat(text: string): boolean {
+  const lower = text.toLowerCase();
+  return SIMPLE_CHAT_PATTERNS.some((pattern) => pattern.test(lower));
 }
 
 // ──────────────────────────────────────────────
@@ -759,21 +930,43 @@ function detectIntent(text: string): UserIntent {
 
 /**
  * Извлечь тикеры из текста.
- * Ищет как прямые упоминания тикеров (SBER, PLZL),
+ * Ищет как прямые упоминания тикеров (SBER, PLZL, GMKN),
  * так и русские названия компаний (сбер, полюс, гапзпром и т.д.).
+ * @param knownAssets - массив активов из портфеля [{ticker, name}]
  */
-function extractTickers(text: string): string[] {
+function extractTickers(
+  text: string,
+  knownAssets?: Array<{ ticker: string; name: string }>,
+): string[] {
   const lower = text.toLowerCase();
   const found: Set<string> = new Set();
 
-  // 1. Ищем прямые упоминания тикеров (SBER, PLZL, GMKN)
-  for (const ticker of KNOWN_TICKERS) {
+  // 1. Ищем прямые упоминания тикеров из активного списка
+  const activeTickers = knownAssets?.map((a) => a.ticker) || KNOWN_TICKERS;
+  for (const ticker of activeTickers) {
     if (lower.includes(ticker.toLowerCase())) {
       found.add(ticker.toUpperCase());
     }
   }
 
-  // 2. Ищем русские названия компаний
+  // 2. Ищем русские названия из Excel (динамически из портфеля)
+  if (knownAssets && knownAssets.length > 0) {
+    for (const asset of knownAssets) {
+      const nameLower = asset.name.toLowerCase().trim();
+      if (nameLower.length >= 2 && lower.includes(nameLower)) {
+        found.add(asset.ticker);
+      }
+      // Fuzzy: проверяем по частям слова
+      const nameWords = nameLower.split(/\s+/);
+      for (const word of nameWords) {
+        if (word.length >= 3 && lower.includes(word)) {
+          found.add(asset.ticker);
+        }
+      }
+    }
+  }
+
+  // 3. Ищем русские названия из жёсткого словаря (fallback)
   for (const [name, ticker] of Object.entries(RUSSIAN_NAME_TO_TICKER)) {
     if (lower.includes(name.toLowerCase())) {
       found.add(ticker);
@@ -896,16 +1089,41 @@ function determineRequiredAgents(
     agents.push('analysis');
   }
 
+  // ── Gulp-конструкторы ресурсов: только терминальная роль ──
+  // Приоритет над file-ролью: «создай модуль header» — это команда
+  // конструктора (npm run module), а не попытка записи файла.
+  const gulpResource = looksLikeGulpResourceRequest(text);
+  if (gulpResource) {
+    agents.push('terminal');
+  }
+
   // ── Файловые операции (FileAgent) ──
   // Отдельный проход: файловая операция должна попасть в requiredAgents
   // даже если категория не тянет analysis/ai (чистая операция = ['file']).
-  if (looksLikeFileRequest(text)) {
+  if (!gulpResource && looksLikeFileRequest(text)) {
     agents.push('file');
   }
 
   // ── Терминальные операции (TerminalAgent) ──
   if (looksLikeTerminalRequest(text)) {
     agents.push('terminal');
+  }
+
+  // ── Операции с процессами (ProcessAgent) ──
+  // Проверяется ПОСЛЕ terminal: «запусти python main.py» остаётся
+  // терминальной командой, «запусти процесс/сервер X» — ProcessAgent.
+  if (looksLikeProcessRequest(text)) {
+    agents.push('process');
+  }
+
+  // ── Операции автоматизации (AutomationAgent) ──
+  if (looksLikeAutomationRequest(text)) {
+    agents.push('automation');
+  }
+
+  // ── Задачи разработки (CodingWorkflow) ──
+  if (looksLikeCodeRequest(text)) {
+    agents.push('code');
   }
 
   // Уникальность
@@ -970,8 +1188,13 @@ function formulateTopic(text: string, category: UserQuestionCategory): string {
 
 /**
  * Парсить естественный язык пользователя в InterpretedQuestion.
+ * @param text - текст вопроса
+ * @param knownAssets - массив активов из портфеля [{ticker, name}]
  */
-export function parseUserMessage(text: string): InterpretedQuestion {
+export function parseUserMessage(
+  text: string,
+  knownAssets?: Array<{ ticker: string; name: string }>,
+): InterpretedQuestion {
   if (!text || text.trim().length === 0) {
     return {
       category: 'general',
@@ -987,7 +1210,7 @@ export function parseUserMessage(text: string): InterpretedQuestion {
 
   const category = detectCategory(text);
   const intent = detectIntent(text);
-  const tickers = extractTickers(text);
+  const tickers = extractTickers(text, knownAssets);
   const complexity = estimateComplexity(text, category);
   const requiredAgents = determineRequiredAgents(
     category,

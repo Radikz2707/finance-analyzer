@@ -17,8 +17,12 @@
 
 import type { AgentState } from '../agent/types.js';
 import {
+  looksLikeAutomationRequest,
+  looksLikeCodeRequest,
   looksLikeFileRequest,
   looksLikeGreeting,
+  looksLikeProcessRequest,
+  looksLikeSimpleChat,
   looksLikeTerminalRequest,
   parseUserMessage,
 } from './nl-parser.js';
@@ -71,6 +75,8 @@ export interface DirectorAgentDeps {
   audit?: DirectorAuditLog;
   proactive?: ProactiveSuggester;
   initialFacts?: DirectorFactsContext;
+  /** Генератор случайных чисел 0..1 (DI для детерминированных тестов) */
+  random?: () => number;
 }
 
 /** Пустые факты по умолчанию */
@@ -112,6 +118,13 @@ export class DirectorAgent implements IDirectorAgent {
   private currentSessionId: string | null = null;
   private lastActiveTask: DirectorTask | null = null;
   private proactiveMessages: ProactiveMessage[] = [];
+  private readonly random: () => number;
+
+  // Ленивый анализ
+  private analysisReady: boolean = false;
+  private analysisInProgress: boolean = false;
+  /** Последний ленивый анализ упал — не перезапускаем бесконечно */
+  private analysisFailed: boolean = false;
 
   constructor(deps?: DirectorAgentDeps, config?: DirectorConfig) {
     this.config = config ?? {};
@@ -127,6 +140,7 @@ export class DirectorAgent implements IDirectorAgent {
     this.audit = deps?.audit ?? new DirectorAuditLog();
     this.proactiveSuggester = deps?.proactive ?? new ProactiveSuggester();
     this.facts = deps?.initialFacts ?? emptyFacts();
+    this.random = deps?.random ?? Math.random;
   }
 
   get state(): AgentState {
@@ -146,6 +160,57 @@ export class DirectorAgent implements IDirectorAgent {
   useSession(sessionId: string): void {
     this.currentSessionId = sessionId;
     this.chat.getOrCreateSession(sessionId);
+  }
+
+  /** Проверить, готов ли анализ портфеля */
+  get isAnalysisReady(): boolean {
+    return this.analysisReady;
+  }
+
+  /** Получить статус анализа (для UI) */
+  get analysisStatus(): 'ready' | 'pending' | 'in_progress' | 'none' {
+    if (this.analysisReady) return 'ready';
+    if (this.analysisInProgress) return 'in_progress';
+    if (this.facts.assetsAnalysis.length > 0) return 'pending';
+    return 'none';
+  }
+
+  /** Запустить ленивый анализ портфеля */
+  async runLazyAnalysis(): Promise<string> {
+    if (this.analysisInProgress) {
+      return 'Анализ уже запущен, подождите...';
+    }
+    if (!this.facts || this.facts.assetsAnalysis.length === 0) {
+      return 'Нет данных для анализа. Сначала загрузите Excel-файл.';
+    }
+
+    this.analysisInProgress = true;
+    this._state = 'running';
+
+    try {
+      // Запускаем анализ через facade (pipeline)
+      const result = await this.facade.runFullAnalysis(this.facts);
+      this.analysisReady = true;
+      return (
+        result || 'Анализ портфеля завершён. Данные готовы к использованию.'
+      );
+    } catch (err) {
+      // Честная фиксация провала: без этого флага рекурсивный повтор
+      // processUserMessage вечно попадает в ветку ленивого анализа.
+      this.analysisFailed = true;
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      return `Ошибка анализа: ${errorMsg}`;
+    } finally {
+      this.analysisInProgress = false;
+      this._state = 'idle';
+    }
+  }
+
+  /** Сбросить кэш анализа (при изменении Excel) */
+  resetAnalysisCache(): void {
+    this.analysisReady = false;
+    this.analysisInProgress = false;
+    this.analysisFailed = false;
   }
 
   /**
@@ -185,8 +250,44 @@ export class DirectorAgent implements IDirectorAgent {
       };
     }
 
+    // 0.6 Простые бытовые вопросы: сразу LLM без агентов
+    if (looksLikeSimpleChat(message)) {
+      this.chat.appendMessage(this.currentSessionId, 'user', message);
+      this.memory.saveConversation('user', message, []);
+      const historyText = this.chat
+        .getHistory(this.currentSessionId ?? '')
+        .slice(-6)
+        .map((m) => `${m.role}: ${m.text}`)
+        .join('\n');
+      const answer = this.config.chatResponder
+        ? await this.config.chatResponder({
+            question: message,
+            facts: this.facts,
+            history: historyText,
+          })
+        : null;
+      const replyText =
+        answer ?? 'Можем обсудить ваш портфель или просто поболтать.';
+      this.chat.appendMessage(this.currentSessionId, 'director', replyText);
+      this.memory.saveConversation('director', replyText, []);
+      this.audit.record(
+        'director.chat_message_sent',
+        answer ? 'Быстрый ответ через LLM' : 'Ответ по фактам',
+      );
+      this._state = 'idle';
+      return {
+        text: replyText,
+        connectedAgents: [],
+        needsConsilium: false,
+      };
+    }
+
     // 1. Интерпретация вопроса
-    let interpreted = parseUserMessage(message);
+    const knownAssets = this.facts.assetsAnalysis.map((a) => ({
+      ticker: a.ticker,
+      name: a.name,
+    }));
+    let interpreted = parseUserMessage(message, knownAssets);
     this.audit.record('director.question_received', message);
 
     // 1.1 Свободный диалог: нефинансовый вопрос → LLM (с фактами портфеля)
@@ -197,7 +298,10 @@ export class DirectorAgent implements IDirectorAgent {
       interpreted.category === 'general' &&
       interpreted.tickers.length === 0 &&
       !looksLikeFileRequest(message) &&
-      !looksLikeTerminalRequest(message)
+      !looksLikeTerminalRequest(message) &&
+      !looksLikeProcessRequest(message) &&
+      !looksLikeAutomationRequest(message) &&
+      !looksLikeCodeRequest(message)
     ) {
       this.chat.appendMessage(this.currentSessionId, 'user', message);
       this.memory.saveConversation('user', message, []);
@@ -279,6 +383,45 @@ export class DirectorAgent implements IDirectorAgent {
         String(plan.needsConsilium),
       { metadata: { agents: plan.connectedAgents } },
     );
+
+    // 4.1 Ленивый анализ: если есть тикеры и анализ ещё не готов — запускаем
+    if (
+      (interpreted.tickers.length > 0 || plan.connectedAgents.length > 0) &&
+      !this.analysisReady &&
+      !this.analysisInProgress &&
+      !this.analysisFailed
+    ) {
+      const analysisResult = await this.runLazyAnalysis();
+
+      if (this.analysisReady) {
+        // Анализ реально выполнен: фиксируем диалог и повторяем вопрос
+        this.chat.appendMessage(this.currentSessionId, 'user', message, {
+          tickers: interpreted.tickers,
+        });
+        this.memory.saveConversation('user', message, interpreted.tickers);
+        this.chat.appendMessage(
+          this.currentSessionId,
+          'director',
+          analysisResult,
+        );
+        this.memory.saveConversation('director', analysisResult, []);
+        console.info(
+          `[director] Ленивый анализ запущен: ${interpreted.tickers.join(', ')}`,
+        );
+        // После завершения анализа повторяем вопрос
+        return this.processUserMessage(rawMessage);
+      }
+
+      // Анализ не выполнен (нет данных / ошибка): предупреждаем и идём
+      // обычным путём. Повтор запроса здесь бессмыслен и зацикливал бы
+      // обработку (bugfix: бесконечный «Ленивый анализ запущен»).
+      this.chat.appendMessage(
+        this.currentSessionId,
+        'director',
+        analysisResult,
+      );
+      this.memory.saveConversation('director', analysisResult, []);
+    }
 
     // 5. Сохраняем сообщение пользователя в чат и память
     this.chat.appendMessage(this.currentSessionId, 'user', message, {
@@ -810,7 +953,12 @@ export class DirectorAgent implements IDirectorAgent {
     const actionSummaries = agentResults
       .filter(
         (entry) =>
-          entry.success && (entry.role === 'file' || entry.role === 'terminal'),
+          entry.success &&
+          (entry.role === 'file' ||
+            entry.role === 'terminal' ||
+            entry.role === 'process' ||
+            entry.role === 'automation' ||
+            entry.role === 'code'),
       )
       .map(
         (entry) =>
@@ -862,7 +1010,7 @@ export class DirectorAgent implements IDirectorAgent {
     if (arr.length === 0) {
       throw new Error('randomFrom: массив пуст');
     }
-    return arr[Math.floor(Math.random() * arr.length)]!;
+    return arr[Math.floor(this.random() * arr.length)]!;
   }
 
   /** Пул вступлений к ответу */
@@ -917,13 +1065,17 @@ export class DirectorAgent implements IDirectorAgent {
         'Рассчитать оптимальный объём сокращения ' + tickers.join(', '),
       ],
       BUY: [
-        'Определить точную сумму покупки ' + tickers.join(', ') + ' в пределах свободных средств',
+        'Определить точную сумму покупки ' +
+          tickers.join(', ') +
+          ' в пределах свободных средств',
         'Составить план накопления ' + tickers.join(', '),
         'Рассчитать оптимальную дату и объём покупки ' + tickers.join(', '),
         'Проверить исторические точки входа по ' + tickers.join(', '),
       ],
       HOLD: [
-        'Проверить фундаментал и рынок по ' + tickers.join(', ') + ' в следующем цикле исследования',
+        'Проверить фундаментал и рынок по ' +
+          tickers.join(', ') +
+          ' в следующем цикле исследования',
         'Определить триггеры для пересмотра позиции по ' + tickers.join(', '),
         'Сравнить текущую стратегию удержания с альтернативами',
       ],
@@ -932,8 +1084,11 @@ export class DirectorAgent implements IDirectorAgent {
         'Оценить последствия полного выхода из ' + tickers.join(', '),
       ],
       AVOID: [
-        'Сформировать критерии для повторного рассмотрения ' + tickers.join(', '),
-        'Определить условия, при которых ' + tickers.join(', ') + ' станет привлекательным',
+        'Сформировать критерии для повторного рассмотрения ' +
+          tickers.join(', '),
+        'Определить условия, при которых ' +
+          tickers.join(', ') +
+          ' станет привлекательным',
       ],
       AVERAGE: [
         'Спланировать стратегию усреднения по ' + tickers.join(', '),
@@ -945,7 +1100,7 @@ export class DirectorAgent implements IDirectorAgent {
     const pool = followUpPools[actionKey] ?? followUpPools.HOLD;
     const shown = this.getRecentlyShownFollowUps();
     const available = pool!.filter((f) => !shown.includes(f));
-    const shuffled = available.sort(() => Math.random() - 0.5);
+    const shuffled = available.sort(() => this.random() - 0.5);
     const selected = shuffled.slice(0, 2);
 
     if (selected.length > 0) {

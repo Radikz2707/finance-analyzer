@@ -779,7 +779,7 @@ export class ReviewAgent extends AgentBase {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: 'qwen3.5:4b',
+            model: 'qwen3.5:9b',
             messages: [{ role: 'user', content: prompt }],
             stream: false,
             options: {

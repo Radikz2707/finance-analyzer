@@ -22,6 +22,10 @@ import type {
   OperationalMemoryEntry,
   PortfolioKpiSnapshot,
   StrategicMemoryEntry,
+  StrategicMemoryEntryType,
+  StrategySnapshot,
+  LessonLearned,
+  MarketCycleData,
 } from './types';
 import {
   DEFAULT_MAX_OPERATIONAL_ENTRIES,
@@ -116,7 +120,9 @@ export function initializeMemoryTables(db: Database.Database): void {
       id TEXT PRIMARY KEY,
       entry_type TEXT NOT NULL CHECK(entry_type IN (
         'conversation', 'pipeline_result', 'decision',
-        'kpi_snapshot', 'trend_data', 'anomaly', 'recommendation'
+        'kpi_snapshot', 'trend_data', 'anomaly', 'recommendation',
+        'portfolio_analysis', 'portfolio_context',
+        'user_preference', 'market_regime'
       )),
       created_at TEXT NOT NULL,
       last_accessed_at TEXT NOT NULL,
@@ -139,10 +145,14 @@ export function initializeMemoryTables(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ai_strategic_memory (
       id TEXT PRIMARY KEY,
-      entry_type TEXT NOT NULL CHECK(entry_type IN ('kpi_snapshot', 'trend_data', 'anomaly')),
+      entry_type TEXT NOT NULL CHECK(entry_type IN (
+        'kpi_snapshot', 'trend_data', 'anomaly',
+        'strategy_snapshot', 'lesson_learned', 'market_cycle'
+      )),
       date TEXT NOT NULL,
       compressed_data TEXT NOT NULL,
       raw_data TEXT, -- JSON-снимок KPI (опционально)
+      extended_data TEXT, -- JSON: strategy_snapshot, lesson_learned, market_cycle
       trend_direction TEXT CHECK(trend_direction IN ('up', 'down', 'stable')),
       trend_strength REAL,
       trend_period_days INTEGER,
@@ -268,15 +278,23 @@ export function parseStrategicRow(
     Array<{ type: string; severity: number; description: string }>
   >(row.anomalies as string);
 
+  // Парсим extended_data для новых типов (strategy_snapshot, lesson_learned, market_cycle)
+  const extendedData = parseJsonColumn<
+    | StrategySnapshot
+    | LessonLearned
+    | MarketCycleData
+  >(row.extended_data as string);
+
   return {
     id: row.id as string,
-    type: row.entry_type as 'kpi_snapshot' | 'trend_data' | 'anomaly',
+    type: row.entry_type as StrategicMemoryEntryType,
     date: row.date as string,
     compressedData: row.compressed_data as string,
     raw: row.raw_data
       ? parseJsonColumn<PortfolioKpiSnapshot>(row.raw_data as string) ||
         undefined
       : undefined,
+    extendedData: extendedData || undefined,
     trend: row.trend_direction
       ? {
           direction: row.trend_direction as 'up' | 'down' | 'stable',

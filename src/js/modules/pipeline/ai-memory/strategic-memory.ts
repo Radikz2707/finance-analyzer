@@ -13,6 +13,9 @@ import Database from 'better-sqlite3';
 import type {
   PortfolioKpiSnapshot,
   StrategicMemoryEntry,
+  StrategySnapshot,
+  LessonLearned,
+  MarketCycleData,
 } from './types';
 import {
   generateId,
@@ -166,9 +169,138 @@ export function saveStrategicAnomaly(
   return id;
 }
 
-// ──────────────────────────────────────────────
-// 2. Получение записей
-// ──────────────────────────────────────────────
+/**
+ * Сохраняет сводку инвестиционной стратегии в стратегическую память.
+ * @param db — инстанс SQLite базы данных
+ * @param snapshot — сводка стратегии с параметрами
+ * @returns ID сохранённой записи
+ */
+export function saveStrategicStrategySnapshot(
+  db: Database.Database,
+  snapshot: StrategySnapshot,
+): string {
+  const id = generateId();
+  const now = new Date().toISOString();
+  const extendedDataJson = JSON.stringify(snapshot);
+  const compressedData = compressContent(
+    JSON.stringify({
+      date: snapshot.date,
+      style: snapshot.style,
+      riskTolerance: snapshot.riskTolerance,
+      targetStocksPercent: snapshot.targetStocksPercent,
+      targetBondsPercent: snapshot.targetBondsPercent,
+      focusSectors: snapshot.focusSectors,
+    }),
+  );
+
+  const stmt = db.prepare(`
+    INSERT INTO ai_strategic_memory (
+      id, entry_type, date, compressed_data, extended_data,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  stmt.run(
+    id,
+    'strategy_snapshot',
+    snapshot.date,
+    compressedData,
+    extendedDataJson,
+    now,
+  );
+
+  return id;
+}
+
+/**
+ * Сохраняет урок из опыта в стратегическую память.
+ * @param db — инстанс SQLite базы данных
+ * @param lesson — урок с контекстом, действием и выводом
+ * @returns ID сохранённой записи
+ */
+export function saveStrategicLesson(
+  db: Database.Database,
+  lesson: LessonLearned,
+): string {
+  const id = generateId();
+  const now = new Date().toISOString();
+  const extendedDataJson = JSON.stringify(lesson);
+  const compressedData = compressContent(
+    JSON.stringify({
+      date: lesson.date,
+      type: lesson.type,
+      outcome: lesson.outcome,
+      lesson: lesson.lesson,
+      weight: lesson.weight,
+      keywords: lesson.keywords,
+    }),
+  );
+
+  const stmt = db.prepare(`
+    INSERT INTO ai_strategic_memory (
+      id, entry_type, date, compressed_data, extended_data,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+
+  stmt.run(
+    id,
+    'lesson_learned',
+    lesson.date,
+    compressedData,
+    extendedDataJson,
+    now,
+  );
+
+  return id;
+}
+
+/**
+ * Сохраняет данные рыночного цикла в стратегическую память.
+ * @param db — инстанс SQLite базы данных
+ * @param data — тренд, фаза цикла, макро-факторы
+ * @returns ID сохранённой записи
+ */
+export function saveStrategicMarketCycle(
+  db: Database.Database,
+  data: MarketCycleData,
+): string {
+  const id = generateId();
+  const now = new Date().toISOString();
+  const extendedDataJson = JSON.stringify(data);
+  const compressedData = compressContent(
+    JSON.stringify({
+      date: data.date,
+      phase: data.phase,
+      trend: data.trend,
+      strength: data.strength,
+      volatility: data.volatility,
+      macroConditions: data.macroConditions,
+    }),
+  );
+
+  const stmt = db.prepare(`
+    INSERT INTO ai_strategic_memory (
+      id, entry_type, date, compressed_data, extended_data,
+      trend_direction, trend_strength, trend_period_days,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  stmt.run(
+    id,
+    'market_cycle',
+    data.date,
+    compressedData,
+    extendedDataJson,
+    data.trend,
+    data.strength,
+    180, // market_cycle по умолчанию анализирует 6 месяцев
+    now,
+  );
+
+  return id;
+}
 
 /**
  * Получает все стратегические записи с разбором JSON-колонок.
@@ -193,13 +325,19 @@ export function getAllStrategic(
 /**
  * Получает стратегические записи заданного типа.
  * @param db — инстанс SQLite базы данных
- * @param type — тип записи: 'kpi_snapshot', 'trend_data' или 'anomaly'
+ * @param type — тип записи (все типы стратегической памяти)
  * @param limit — максимальное количество записей (по умолчанию 100)
  * @returns массив записей указанного типа
  */
 export function getStrategicByType(
   db: Database.Database,
-  type: 'kpi_snapshot' | 'trend_data' | 'anomaly',
+  type:
+    | 'kpi_snapshot'
+    | 'trend_data'
+    | 'anomaly'
+    | 'strategy_snapshot'
+    | 'lesson_learned'
+    | 'market_cycle',
   limit = 100,
 ): StrategicMemoryEntry[] {
   const stmt = db.prepare(`

@@ -21,6 +21,9 @@ import type {
   OperationalMemoryEntry,
   PortfolioKpiSnapshot,
   StrategicMemoryEntry,
+  StrategySnapshot,
+  LessonLearned,
+  MarketCycleData,
   IAIMemory,
 } from './types';
 import {
@@ -50,6 +53,9 @@ import {
   saveStrategicKpi,
   saveStrategicTrend,
   saveStrategicAnomaly,
+  saveStrategicStrategySnapshot,
+  saveStrategicLesson,
+  saveStrategicMarketCycle,
   getAllStrategic,
   getStrategicByType,
   getStrategicKpiTrend,
@@ -176,6 +182,23 @@ export function saveStrategicAnomalyEntry(data: {
   relatedKpiId?: string;
 }): string {
   return saveStrategicAnomaly(db, data);
+}
+
+/** Сохранить сводку стратегии в стратегическую память */
+export function saveStrategicStrategySnapshotEntry(
+  snapshot: StrategySnapshot,
+): string {
+  return saveStrategicStrategySnapshot(db, snapshot);
+}
+
+/** Сохранить урок в стратегическую память */
+export function saveStrategicLessonEntry(lesson: LessonLearned): string {
+  return saveStrategicLesson(db, lesson);
+}
+
+/** Сохранить данные рыночного цикла в стратегическую память */
+export function saveStrategicMarketCycleEntry(data: MarketCycleData): string {
+  return saveStrategicMarketCycle(db, data);
 }
 
 /** Получить все стратегические записи */
@@ -662,6 +685,9 @@ export const strategicMemory = {
   saveKpi: saveStrategicKpiEntry,
   saveTrend: saveStrategicTrendEntry,
   saveAnomaly: saveStrategicAnomalyEntry,
+  saveStrategySnapshot: saveStrategicStrategySnapshotEntry,
+  saveLesson: saveStrategicLessonEntry,
+  saveMarketCycle: saveStrategicMarketCycleEntry,
   getAll: getAllStrategicList,
   getByType: getStrategicByTypeList,
   getKpiTrend: getStrategicKpiTrendList,

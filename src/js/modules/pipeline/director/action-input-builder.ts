@@ -14,9 +14,19 @@
  */
 
 import type { FileAgentAction, FileAgentInput } from '../agents/file-agent.js';
+import type { ProcessAgentInput } from '../agents/process-agent.js';
 import type { TerminalAgentInput } from '../agents/terminal-agent.js';
+import type { AutomationAgentInput } from '../agents/automation-agent/types.js';
+import type { CodingWorkflowInput } from '../coding-workflow/types.js';
 import type { InterpretedQuestion } from './director-types.js';
-import { looksLikeFileRequest, looksLikeTerminalRequest } from './nl-parser.js';
+import { splitCommandTokens } from '../agent/command-tokens.js';
+import {
+  looksLikeAutomationRequest,
+  looksLikeCodeRequest,
+  looksLikeFileRequest,
+  looksLikeProcessRequest,
+  looksLikeTerminalRequest,
+} from './nl-parser.js';
 
 // ──────────────────────────────────────────────
 // 1. Файловые операции
@@ -167,38 +177,12 @@ export function buildFileAgentInput(
 /**
  * Разобрать строку команды на command + args.
  * Поддерживает простые кавычки ('...' и "...").
+ * Токенизатор единый для всего конвейера (см. agent/command-tokens.ts);
+ * имя splitShellTokens сохранено для совместимости с существующими
+ * потребителями/тестами.
  */
 export function splitShellTokens(input: string): string[] {
-  const tokens: string[] = [];
-  let current = '';
-  let quote: string | null = null;
-
-  for (const char of input) {
-    if (quote) {
-      if (char === quote) {
-        quote = null;
-      } else {
-        current += char;
-      }
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      quote = char;
-      continue;
-    }
-    if (/\s/.test(char)) {
-      if (current !== '') {
-        tokens.push(current);
-        current = '';
-      }
-      continue;
-    }
-    current += char;
-  }
-  if (current !== '') {
-    tokens.push(current);
-  }
-  return tokens;
+  return splitCommandTokens(input);
 }
 
 /** Разобрать строку команды: { command, args } | null (пустая строка) */
@@ -216,6 +200,44 @@ const COMMAND_RULES: ReadonlyArray<{
   pattern: RegExp;
   build: (match: RegExpMatchArray) => TerminalAgentInput | null;
 }> = [
+  {
+    // «создай модуль header» / «создай блок main-hero» (gulp-конструктор:
+    // npm run module -- --header / npm run create -- --main-hero).
+    // Lookahead отсекает пути и расширения: «создай модуль data/config.json»
+    // — это файловая операция, а не конструктор ресурсов.
+    pattern:
+      /(?:создай|создать)\s+(блок|модуль|плагин|ресурс)\s+([a-zA-Z0-9][a-zA-Z0-9_-]*)(?=\s*(?:$|[,;!?])|\s|\.(?!\S))/i,
+    build: (match) => {
+      const kind = (match[1] ?? '').toLowerCase();
+      const name = match[2] ?? '';
+      const gulpTask =
+        kind === 'модуль' ? 'module' : kind === 'плагин' ? 'plugin' : 'create';
+      return { command: 'npm', args: ['run', gulpTask, '--', `--${name}`] };
+    },
+  },
+  {
+    // «удали модуль old-header» (gulp-конструктор; разрушительно —
+    // SecurityAgent требует подтверждения)
+    pattern:
+      /(?:удали|удалить)\s+(?:блок|модуль|плагин|ресурс)\s+([a-zA-Z0-9][a-zA-Z0-9_-]*)(?=\s*(?:$|[,;!?])|\s|\.(?!\S))/i,
+    build: (match) => ({
+      command: 'npm',
+      args: ['run', 'remove', '--', `--${match[1] ?? ''}`],
+    }),
+  },
+  {
+    // «разверни базовую структуру» → npm run init
+    pattern:
+      /(?:разверни|развернуть|инициализируй)\s+(?:базовую\s+)?структуру/i,
+    build: () => ({ command: 'npm', args: ['run', 'init'] }),
+  },
+  {
+    // «обнови модули/зависимости» → неинтерактивный npm-сценарий
+    // (npm-check-updates -u + npm install; интерактивный -i недоступен агенту)
+    pattern:
+      /(?:обнови|обновить)\s+(?:модули|зависимости|пакеты|node_modules)/i,
+    build: () => ({ command: 'npm', args: ['run', 'update-modules:auto'] }),
+  },
   {
     // «выполни команду npm run build»
     pattern: /выполни\s+команду\s*[:：]?\s*(.+)/i,
@@ -276,7 +298,9 @@ const COMMAND_RULES: ReadonlyArray<{
       // «запусти тесты» — абстрактно, без команды: честный отказ.
       // Точное совпадение: \b не работает с кириллицей (JS \w — только ASCII).
       if (
-        /^(тесты|тест|проект|сборка|скрипт|приложение|всё|все)$/i.test(rest)
+        /^(тесты|тест|проект|сборка|скрипт|приложение|всё|все|процесс|сервер)$/i.test(
+          rest,
+        )
       ) {
         return null;
       }
@@ -318,7 +342,196 @@ export function buildTerminalAgentInput(
 }
 
 // ──────────────────────────────────────────────
-// 3. Хелперы
+// 3. Операции с процессами (ProcessAgent)
+// ──────────────────────────────────────────────
+
+/** Правила распознавания операций с процессами (в порядке приоритета) */
+const PROCESS_RULES: ReadonlyArray<{
+  pattern: RegExp;
+  build: (match: RegExpMatchArray) => ProcessAgentInput | null;
+}> = [
+  {
+    // «запусти процесс python main.py» (с границей слова: «перезапусти»
+    // не должен совпадать с «запусти»)
+    pattern: /(?:^|\s)(?:запусти|запустить)\s+процесс\s*[:：]?\s*(.+)/i,
+    build: (match) => {
+      const parsed = parseCommandString(match[1] ?? '');
+      if (!parsed) {
+        return null;
+      }
+      return {
+        action: 'start',
+        command: parsed.command,
+        args: parsed.args,
+        restartOnExit: true,
+      };
+    },
+  },
+  {
+    // «запусти сервер node server.js» (с границей слова)
+    pattern: /(?:^|\s)(?:запусти|запустить)\s+сервер\s*[:：]?\s*(.+)/i,
+    build: (match) => {
+      const parsed = parseCommandString(match[1] ?? '');
+      if (!parsed) {
+        return null;
+      }
+      return {
+        action: 'start',
+        command: parsed.command,
+        args: parsed.args,
+        restartOnExit: true,
+      };
+    },
+  },
+  {
+    // «перезапусти процесс build» / «перезапусти build»
+    pattern: /(?:перезапусти|перезапустить)\s+(?:процесс\s*)?([^\s,;]+)\s*$/i,
+    build: (match) => ({ action: 'restart', name: match[1] ?? '' }),
+  },
+  {
+    // «статус процесса build» (до общего «статус процесс»)
+    pattern: /статус\s+процесса\s+([^\s,;]+)\s*$/i,
+    build: (match) => ({ action: 'status', name: match[1] ?? '' }),
+  },
+  {
+    // «останови процесс build» / «убей процесс build»
+    pattern: /(?:останови|остановить|убей)\s+процесс\s+([^\s,;]+)\s*$/i,
+    build: (match) => ({ action: 'stop', name: match[1] ?? '' }),
+  },
+  {
+    // «статус процессов» / «список процессов»
+    pattern: /(?:статус|список)\s+процесс/i,
+    build: () => ({ action: 'status' }),
+  },
+];
+
+/**
+ * Построить вход ProcessAgent из интерпретированного вопроса.
+ * Возвращает null, если операция не распознана (честный отказ).
+ */
+export function buildProcessAgentInput(
+  question: InterpretedQuestion,
+): ProcessAgentInput | null {
+  if (!looksLikeProcessRequest(question.text)) {
+    return null;
+  }
+  for (const rule of PROCESS_RULES) {
+    const match = question.text.match(rule.pattern);
+    if (match) {
+      const parsed = rule.build(match);
+      if (parsed) {
+        return parsed;
+      }
+    }
+  }
+  return null;
+}
+
+// ──────────────────────────────────────────────
+// 4. Операции автоматизации (AutomationAgent)
+// ──────────────────────────────────────────────
+
+/** Правила распознавания операций автоматизации (в порядке приоритета) */
+const AUTOMATION_RULES: ReadonlyArray<{
+  pattern: RegExp;
+  build: (match: RegExpMatchArray) => AutomationAgentInput | null;
+}> = [
+  {
+    // «запусти workflow nightly»
+    pattern:
+      /(?:запусти|запустить)\s+(?:workflow|воркфлоу)\s*[:：]?\s*([^\s,;]+)/i,
+    build: (match) => ({
+      action: 'run-now',
+      params: { templateId: match[1] ?? '' },
+    }),
+  },
+  {
+    // «статус запусков workflow» / «список запусков»
+    pattern: /(?:статус|список)\s+запуск/i,
+    build: () => ({ action: 'get-runs', params: {} }),
+  },
+  {
+    // «статистика workflow»
+    pattern: /статистика\s+(?:workflow|воркфлоу|автоматиза)/i,
+    build: () => ({ action: 'get-stats', params: {} }),
+  },
+  {
+    // «покажи workflow» / «список workflow» / «какие шаблоны»
+    pattern: /(?:покажи|список|какие)\s+(?:workflow|воркфлоу|шаблон)/i,
+    build: () => ({ action: 'get-templates', params: {} }),
+  },
+];
+
+/**
+ * Построить вход AutomationAgent из интерпретированного вопроса.
+ * Возвращает null, если операция не распознана. Создание/редактирование
+ * шаблонов из свободного текста НЕ поддерживается (честный отказ) —
+ * сложные структуры задаются программно или через UI.
+ */
+export function buildAutomationAgentInput(
+  question: InterpretedQuestion,
+): AutomationAgentInput | null {
+  if (!looksLikeAutomationRequest(question.text)) {
+    return null;
+  }
+  for (const rule of AUTOMATION_RULES) {
+    const match = question.text.match(rule.pattern);
+    if (match) {
+      const parsed = rule.build(match);
+      if (parsed) {
+        return parsed;
+      }
+    }
+  }
+  return null;
+}
+
+// ──────────────────────────────────────────────
+// 5. Задачи разработки (CodingWorkflow)
+// ──────────────────────────────────────────────
+
+/**
+ * Извлечь ВСЕ пути проекта из текста (для заготовок файлов).
+ * Возвращает уникальные пути в порядке появления.
+ */
+export function extractAllFilePaths(text: string): string[] {
+  const found = new Set<string>();
+  for (const pattern of PATH_EXTRACTION_PATTERNS) {
+    const global = new RegExp(pattern.source, 'gi');
+    for (const match of text.matchAll(global)) {
+      const candidate = match[1];
+      if (candidate) {
+        found.add(trimTrailingPunctuation(candidate));
+      }
+    }
+  }
+  return [...found];
+}
+
+/**
+ * Построить вход CodingWorkflow из интерпретированного вопроса.
+ *
+ * Честность: из текста чата извлекаются ТОЛЬКО пути файлов — их содержимое
+ * создаётся как заготовка (пустое). Наполнение кодом делает ремонт-исполнитель
+ * (LLM/авто-ремонт) или автономный цикл с полной спецификацией файлов.
+ * Без путей возвращает null (вход с пустым списком CodingWorkflow честно
+ * отклонит).
+ */
+export function buildCodingWorkflowInput(
+  question: InterpretedQuestion,
+): CodingWorkflowInput | null {
+  if (!looksLikeCodeRequest(question.text)) {
+    return null;
+  }
+  const paths = extractAllFilePaths(question.text);
+  return {
+    task: question.text,
+    files: paths.map((filePath) => ({ path: filePath, content: '' })),
+  };
+}
+
+// ──────────────────────────────────────────────
+// 6. Хелперы
 // ──────────────────────────────────────────────
 
 /** Обрезать завершающие знаки препинания из извлечённого пути */

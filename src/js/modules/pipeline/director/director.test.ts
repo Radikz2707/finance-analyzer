@@ -71,6 +71,8 @@ interface BuildOpts {
   initialFacts?: DirectorFactsContext;
   maxRounds?: number;
   chatResponder?: ChatResponder;
+  /** Детерминированный генератор случайных чисел (0..1) */
+  random?: () => number;
 }
 
 function buildDirector(opts?: BuildOpts): {
@@ -92,6 +94,7 @@ function buildDirector(opts?: BuildOpts): {
       chat,
       audit,
       initialFacts: opts?.initialFacts ?? makeFacts(),
+      random: opts?.random,
     },
     {
       maxConsiliumRounds: opts?.maxRounds ?? 3,
@@ -324,7 +327,9 @@ describe('Director Agent (integration)', () => {
   });
 
   it('17. Recommendation != executed order', async () => {
-    const { director } = buildDirector();
+    // random=()=>0: интро/outro берутся первыми элементами пулов —
+    // тест детерминирован (пулы интро/outро расширялись ранее)
+    const { director } = buildDirector({ random: () => 0 });
     const response = await ask(director, 'Какая стратегия по PLZL лучше?');
 
     expect(response.recommendation).toBeDefined();

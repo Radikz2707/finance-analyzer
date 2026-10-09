@@ -21,17 +21,25 @@ export type MemoryState = 'idle' | 'loading' | 'saving' | 'error';
 
 /**
  * Тип записи памяти.
- * Оперативные типы: conversation, pipeline_result, decision, recommendation
- * Стратегические типы: kpi_snapshot, trend_data, anomaly
+ * Оперативные типы: conversation, pipeline_result, decision, recommendation,
+ *                   portfolio_analysis, portfolio_context, user_preference, market_regime
+ * Стратегические типы: kpi_snapshot, trend_data, anomaly,
+ *                      strategy_snapshot, lesson_learned, market_cycle
  */
 export type MemoryEntryType =
-  | 'conversation'    // Переписка с Director
-  | 'pipeline_result' // Результат pipeline
-  | 'decision'        // Решение Director
-  | 'kpi_snapshot'    // Снимок KPI
-  | 'trend_data'      // Трендовые данные
-  | 'anomaly'         // Аномалия
-  | 'recommendation'; // Рекомендация
+  // ── Общие типы (используются в обоих слоях) ──
+  | 'kpi_snapshot'       // Снимок KPI
+  | 'trend_data'         // Трендовые данные
+  | 'anomaly'            // Аномалия
+  // ── Оперативная память (краткосрочная, 7-14 дней) ──
+  | 'conversation'       // Переписка с Director
+  | 'pipeline_result'    // Результат pipeline
+  | 'decision'           // Решение Director
+  | 'recommendation'     // Рекомендация
+  | 'portfolio_analysis' // Полный анализ портфеля с контекстом
+  | 'portfolio_context'  // Snapshot портфеля на момент анализа
+  | 'user_preference'    // Предпочтения директора
+  | 'market_regime';     // Текущий рыночный режим (рост/падение/флэт)
 
 /**
  * Уровень важности записи.
@@ -73,6 +81,140 @@ export interface OperationalMemoryEntry {
 }
 
 // ──────────────────────────────────────────────
+// 2.1. Расширенные типы оперативной памяти
+// ──────────────────────────────────────────────
+
+/**
+ * Полный анализ портфеля с контекстом.
+ * Сохраняет все детали анализа: метрики, рекомендации, источники данных.
+ */
+export interface PortfolioAnalysisEntry {
+  /** Дата анализа */
+  date: string;
+  /** Общая стоимость портфеля */
+  totalValue: number;
+  /** Доходность (%) */
+  returnPercent: number;
+  /** Структура портфеля (доли активов) */
+  allocation: Array<{
+    ticker: string;
+    percent: number;
+    type: 'stock' | 'bond' | 'etf' | 'cash';
+  }>;
+  /** Ключевые метрики (Sharpe, Volatility, MaxDD) */
+  metrics: {
+    sharpeRatio?: number;
+    volatility?: number;
+    maxDrawdown?: number;
+  };
+  /** Рекомендации ИИ */
+  recommendations: Array<{
+    action: 'buy' | 'sell' | 'hold' | 'rebalance';
+    ticker: string;
+    reason: string;
+    priority: 'high' | 'medium' | 'low';
+  }>;
+  /** Источники данных (MOEX, CBR, Finam и т.д.) */
+  dataSources: string[];
+  /** Состояние рынка на момент анализа */
+  marketRegime: 'bull' | 'bear' | 'sideways' | 'volatile';
+}
+
+/**
+ * Snapshot портфеля на момент анализа.
+ * Фиксирует состав портфеля, баланс, историю изменений.
+ */
+export interface PortfolioContextEntry {
+  /** Дата snapshot'а */
+  date: string;
+  /** Список позиций на момент анализа */
+  positions: Array<{
+    ticker: string;
+    quantity: number;
+    avgPrice: number;
+    currentPrice: number;
+    marketValue: number;
+    percent: number;
+  }>;
+  /** Баланс счета */
+  cashBalance: number;
+  /** История изменений за период (последние N сделок) */
+  recentTrades: Array<{
+    date: string;
+    type: 'buy' | 'sell';
+    ticker: string;
+    quantity: number;
+    price: number;
+  }>;
+  /** Целевые доли (из Excel) */
+  targetAllocation: Array<{
+    ticker: string;
+    targetPercent: number;
+    currentPercent: number;
+    deviation: number;
+  }>;
+}
+
+/**
+ * Предпочтения директора.
+ * Сохраняет стиль инвестирования, риск-профиль, любимые сектора.
+ */
+export interface UserPreferenceEntry {
+  /** Дата записи предпочтений */
+  date: string;
+  /** Стиль инвестирования (value, growth, income, aggressive, conservative) */
+  investmentStyle: 'value' | 'growth' | 'income' | 'aggressive' | 'conservative';
+  /** Толерантность к риску (1-10) */
+  riskTolerance: number;
+  /** Инвестиционный горизонт (short, medium, long) */
+  horizon: 'short' | 'medium' | 'long';
+  /** Любимые сектора (technology, energy, finance и т.д.) */
+  favoriteSectors: string[];
+  /** Любимые тикеры */
+  favoriteTickers: string[];
+  /** Избигаемые сектора/тикеры (ESG, taboo) */
+  avoidedAssets: string[];
+  /** Стиль общения (formal, casual, brief, detailed) */
+  communicationStyle: 'formal' | 'casual' | 'brief' | 'detailed';
+  /** Частота отчётов (daily, weekly, monthly, on-demand) */
+  reportFrequency: 'daily' | 'weekly' | 'monthly' | 'on-demand';
+  /** Контекст: откуда извлечены предпочтения (chat, decision, feedback) */
+  source: string;
+}
+
+/**
+ * Текущий рыночный режим.
+ * Определяет фазу рынка для адаптации стратегии.
+ */
+export interface MarketRegimeEntry {
+  /** Дата определения режима */
+  date: string;
+  /** Общий режим рынка (bull, bear, sideways, volatile) */
+  regime: 'bull' | 'bear' | 'sideways' | 'volatile';
+  /** Индекс MOEX (текущее значение) */
+  moexIndex: number;
+  /** Тренд индекса (up, down, flat) */
+  indexTrend: 'up' | 'down' | 'flat';
+  /** Волатильность (VIX или расчётная) */
+  volatility: number;
+  /** Объемы торгов (растут, падают, стабильны) */
+  volumeTrend: 'increasing' | 'decreasing' | 'stable';
+  /** Отраслевые лидеры (топ-3 сектора) */
+  leadingSectors: string[];
+  /** Отраслевие аутсайдеры (топ-3 сектора) */
+  laggingSectors: string[];
+  /** Макро-факторы (ключевая ставка, инфляция, курс USD) */
+  macroFactors: {
+    keyRate?: number;
+    inflation?: number;
+    usdRate?: number;
+    cnyRate?: number;
+  };
+  /** Уверенность в определении режима (0-1) */
+  confidence: number;
+}
+
+// ──────────────────────────────────────────────
 // 3. Запись стратегической памяти
 // ──────────────────────────────────────────────
 
@@ -109,21 +251,128 @@ export interface PortfolioKpiSnapshot {
 }
 
 /**
+ * Тип записи стратегической памяти.
+ * Включает базовые типы (kpi_snapshot, trend_data, anomaly)
+ * и новые типы для расширения знаний (strategy_snapshot, lesson_learned, market_cycle).
+ */
+export type StrategicMemoryEntryType =
+  | 'kpi_snapshot'       // Снимок KPI
+  | 'trend_data'         // Трендовые данные
+  | 'anomaly'            // Аномалия
+  | 'strategy_snapshot'  // Сжатая сводка инвестиционной стратегии
+  | 'lesson_learned'     // Урок из успешного/неудачного решения
+  | 'market_cycle';      // Долгосрочный тренд рынка (3-6 месяцев)
+
+/**
+ * Сводка инвестиционной стратегии (стратегическая память).
+ * Сжатая версия текущей стратегии с ключевыми параметрами.
+ */
+export interface StrategySnapshot {
+  /** Дата снимка стратегии */
+  date: string;
+  /** Общая стратегия (growth, value, income, balanced, aggressive) */
+  style: 'growth' | 'value' | 'income' | 'balanced' | 'aggressive';
+  /** Толерантность к риску (1-10) */
+  riskTolerance: number;
+  /** Доля акций в стратегии (%) */
+  targetStocksPercent: number;
+  /** Доля облигаций в стратегии (%) */
+  targetBondsPercent: number;
+  /** Доля других активов (%) */
+  targetOtherPercent: number;
+  /** Ключевые сектора (technology, energy, finance и т.д.) */
+  focusSectors: string[];
+  /** Любимые тикеры (топ-5) */
+  favoriteTickers: string[];
+  /** Ребалансировка: frequency (monthly, quarterly, annual, threshold) */
+  rebalanceFrequency: 'monthly' | 'quarterly' | 'annual' | 'threshold';
+  /** Порог ребалансировки (%) */
+  rebalanceThreshold: number;
+  /** Цели (массив целей с сроками и суммами) */
+  goals: Array<{
+    name: string;
+    targetAmount: number;
+    deadline: string;
+    priority: number;
+  }>;
+}
+
+/**
+ * Урок, извлечённый из опыта (стратегическая память).
+ * Сохраняет паттерны успешных/неудачных решений.
+ */
+export interface LessonLearned {
+  /** Дата урока */
+  date: string;
+  /** Тип урока (decision, market_timing, sector_rotation, risk_management) */
+  type: 'decision' | 'market_timing' | 'sector_rotation' | 'risk_management';
+  /** Исход (good, bad, neutral) */
+  outcome: 'good' | 'bad' | 'neutral';
+  /** Контекст: какие данные были доступны */
+  context: string;
+  /** Действие: что было сделано */
+  action: string;
+  /** Результат: что произошло */
+  result: string;
+  /** Вывод: главный урок */
+  lesson: string;
+  /** Ключевые слова для поиска */
+  keywords: string[];
+  /** Вес урока (убывает со временем, half-life = 30 дней) */
+  weight: number;
+  /** Связанные тикеры/сектора */
+  relatedAssets: string[];
+}
+
+/**
+ * Тренд рыночного цикла (стратегическая память).
+ * Долгосрочные тренды рынков за 3-6 месяцев.
+ */
+export interface MarketCycleData {
+  /** Дата анализа */
+  date: string;
+  /** Индикатор рынка (MOEX Index или общий) */
+  index: string;
+  /** Текущая фаза цикла (accumulation, markup, distribution, markdown) */
+  phase: 'accumulation' | 'markup' | 'distribution' | 'markdown';
+  /** Тренд (up, down, sideways) */
+  trend: 'up' | 'down' | 'sideways';
+  /** Сила тренда (0-1) */
+  strength: number;
+  /** Волатильность (VIX или расчётная) */
+  volatility: number;
+  /** Объемы (растут/падают/стабильны) */
+  volumeTrend: 'increasing' | 'decreasing' | 'stable';
+  /** Макро-условия (good, neutral, bad, crisis) */
+  macroConditions: 'good' | 'neutral' | 'bad' | 'crisis';
+  /** Ключевые события периода */
+  keyEvents: Array<{
+    date: string;
+    title: string;
+    impact: 'positive' | 'negative' | 'neutral';
+  }>;
+  /** Прогноз на следующий период */
+  forecast: string;
+}
+
+/**
  * Запись стратегической памяти (долгосрочная).
- * Хранит сжатые KPI-снимки, трендовые данные и информацию об аномалиях
- * за период до 3-6 месяцев.
+ * Хранит сжатые KPI-снимки, трендовые данные, аномалии,
+ * сводки стратегии, уроки из опыта и рыночные циклы.
  */
 export interface StrategicMemoryEntry {
   /** Уникальный идентификатор записи (UUID v4) */
   id: string;
-  /** Тип записи: снимок KPI, тренд или аномалия */
-  type: 'kpi_snapshot' | 'trend_data' | 'anomaly';
+  /** Тип записи: снимок KPI, тренд, аномалия, стратегия, урок, цикл */
+  type: StrategicMemoryEntryType;
   /** Дата записи (для KPI — дата снимка, для тренда — дата анализа) */
   date: string;
   /** Сжатое содержимое (без дубликатов и лишних пробелов) */
   compressedData: string;
   /** Развёрнутые данные — полный KPI-снимок (опционально, для kpi_snapshot) */
   raw?: PortfolioKpiSnapshot;
+  /** Расширенные данные (для новых типов: strategy_snapshot, lesson_learned, market_cycle) */
+  extendedData?: StrategySnapshot | LessonLearned | MarketCycleData;
   /**
    * Результат трендового анализа.
    * direction — направление (рост/падение/стабильность)

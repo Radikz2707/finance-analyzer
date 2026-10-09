@@ -64,6 +64,14 @@ const RENDERER_INDEX = path.join(__dirname, 'renderer', 'index.html');
 let mainWindow: BrowserWindow | null = null;
 let appState: AppState | null = null;
 let unsubscribeDirector: (() => void) | null = null;
+let excelFileWatcher: fs.FSWatcher | null = null;
+let lastExcelMtime: number | null = null;
+
+/** Логгер main-процесса */
+function log(level: 'info' | 'warn', message: string): void {
+  const prefix = level === 'warn' ? '⚠️' : 'ℹ️';
+  console[level](`[desktop] ${prefix} ${message}`);
+}
 
 /** Отправить сообщение в renderer, если окно живо */
 function sendToRenderer(channel: string, payload: unknown): void {
@@ -92,6 +100,12 @@ async function initAppState(): Promise<void> {
   unsubscribeDirector = subscribeEvents(director, (event) => {
     sendToRenderer('director:event', event);
   });
+
+  // Запускаем файловый воркер на Excel-файл
+  const excelPath = process.env.EXCEL_FILE_PATH;
+  if (excelPath) {
+    startExcelWatcher(excelPath);
+  }
 }
 
 /** Отформатировать метку времени для имён файлов (YYYY-MM-DDTHH-MM-SS) */
@@ -126,6 +140,75 @@ async function renderDashboardPdf(html: string): Promise<Buffer> {
     return await win.webContents.printToPDF(options);
   } finally {
     if (!win.isDestroyed()) win.destroy();
+  }
+}
+
+/**
+ * Запустить файловый воркер на Excel-файл: при изменении файла —
+ * перезагрузить портфель и уведомить рендерер.
+ */
+function startExcelWatcher(excelPath: string): void {
+  // Остановить старый воркер если есть
+  stopExcelWatcher();
+
+  if (!excelPath || !fs.existsSync(excelPath)) {
+    log('info', 'Excel-файл не указан или не существует — воркер не запущен');
+    return;
+  }
+
+  log('info', `Запущен файловый воркер на Excel: ${excelPath}`);
+
+  try {
+    // Читаем начальное время модификации
+    const stats = fs.statSync(excelPath);
+    lastExcelMtime = stats.mtimeMs;
+
+    // Создаём воркер
+    excelFileWatcher = fs.watch(excelPath, { persistent: true }, (eventType) => {
+      if (eventType !== 'change') return;
+
+      try {
+        const stats = fs.statSync(excelPath);
+        if (stats.mtimeMs === lastExcelMtime) return;
+
+        lastExcelMtime = stats.mtimeMs;
+        log('info', `Excel-файл изменён: ${excelPath} — перезагрузка портфеля`);
+
+        // Перезагружаем портфель
+        if (appState) {
+          // Сбрасываем кэш анализа — нужно провести новый анализ
+          appState.director.director.resetAnalysisCache();
+          log('info', 'Кэш анализа сброшен (Excel изменён)');
+          
+          reloadPortfolio(appState.director, excelPath).then((result) => {
+            if (result.success) {
+              log('info', `Портфель перезагружен: ${result.assetsCount} активов`);
+              // Уведомляем рендерер
+              sendToRenderer('portfolio:updated', {
+                assetsCount: result.assetsCount,
+                sourceLabel: result.sourceLabel,
+              });
+            } else {
+              log('warn', `Ошибка перезагрузки портфеля: ${result.message}`);
+            }
+          });
+        }
+      } catch (err) {
+        log('warn', `Ошибка при проверке Excel-файла: ${err}`);
+      }
+    });
+  } catch (err) {
+    log('warn', `Не удалось запустить воркер на Excel: ${err}`);
+  }
+}
+
+/** Остановить файловый воркер на Excel-файл */
+function stopExcelWatcher(): void {
+  if (excelFileWatcher) {
+    excelFileWatcher.close();
+    excelFileWatcher = null;
+    lastExcelMtime = null;
+    log('info', 'Файловый воркер Excel остановлен');
   }
 }
 
@@ -175,6 +258,39 @@ function registerIpc(): void {
     return await reloadPortfolio(appState.director, excelPath);
   });
 
+  // Запуск ленивого анализа портфеля
+  ipcMain.handle('director:run-analysis', async () => {
+    if (!appState) {
+      return { success: false, message: 'Приложение не инициализировано' };
+    }
+    try {
+      const result = await appState.director.director.runLazyAnalysis();
+      return { success: true, message: result };
+    } catch (err) {
+      return {
+        success: false,
+        message: `Ошибка анализа: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  });
+
+  // Сброс кэша анализа
+  ipcMain.handle('director:reset-analysis', () => {
+    if (!appState) {
+      return { success: false, message: 'Приложение не инициализировано' };
+    }
+    appState.director.director.resetAnalysisCache();
+    return { success: true };
+  });
+
+  // Статус анализа
+  ipcMain.handle('director:analysis-status', () => {
+    if (!appState) {
+      return { status: 'none' as const };
+    }
+    return { status: appState.director.director.analysisStatus };
+  });
+
   ipcMain.handle('portfolio:status', () => ({
     excelPath: process.env.EXCEL_FILE_PATH ?? '',
     sourceLabel: appState?.director.sourceLabel ?? '—',
@@ -213,6 +329,28 @@ function registerIpc(): void {
       ...loadDesktopSettings(),
       excelFilePath: filePath,
     });
+
+    // Перезагружаем портфель без перезапуска
+    if (appState) {
+      try {
+        const reloadResult = await reloadPortfolio(appState.director, filePath);
+        if (reloadResult.success) {
+          log('info', `Портфель перезагружен: ${reloadResult.assetsCount} активов`);
+          sendToRenderer('portfolio:updated', {
+            assetsCount: reloadResult.assetsCount,
+            sourceLabel: reloadResult.sourceLabel,
+          });
+        } else {
+          log('warn', `Ошибка перезагрузки портфеля: ${reloadResult.message}`);
+        }
+      } catch (err) {
+        log('warn', `Ошибка при перезагрузке портфеля: ${err}`);
+      }
+    }
+
+    // Перезапускаем файловый воркер на новый файл
+    startExcelWatcher(filePath);
+
     return { canceled: false, excelFilePath: filePath };
   });
 

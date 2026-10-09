@@ -21,6 +21,7 @@
 import * as childProcess from 'child_process';
 import * as path from 'path';
 import { AgentBase } from '../agent/agent-base.js';
+import { splitCommandTokens } from '../agent/command-tokens.js';
 import type { AgentConfig } from '../agent/types.js';
 
 // ──────────────────────────────────────────────
@@ -518,7 +519,7 @@ interface ParsedInput {
 /** Разобрать вход: строка команды или объект {command, args?, timeoutMs?} */
 function parseInput(input: unknown, defaultTimeoutMs: number): ParsedInput {
   if (typeof input === 'string') {
-    const tokens = tokenize(input.trim());
+    const tokens = splitCommandTokens(input.trim());
     if (tokens.length === 0) {
       throw new Error('TerminalAgent: команда не указана');
     }
@@ -548,37 +549,6 @@ function parseInput(input: unknown, defaultTimeoutMs: number): ParsedInput {
   return { command: command.trim(), args, timeoutMs };
 }
 
-/** Простой токенизатор с поддержкой одинарных/двойных кавычек (без shell) */
-function tokenize(line: string): string[] {
-  const tokens: string[] = [];
-  let current = '';
-  let quote: string | null = null;
-  for (const char of line) {
-    if (quote) {
-      if (char === quote) {
-        quote = null;
-      } else {
-        current += char;
-      }
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      quote = char;
-      continue;
-    }
-    if (/\s/.test(char)) {
-      if (current !== '') {
-        tokens.push(current);
-        current = '';
-      }
-      continue;
-    }
-    current += char;
-  }
-  if (current !== '') tokens.push(current);
-  return tokens;
-}
-
 /** Полная командная строка для логов */
 function formatCommandLine(command: string, args: string[]): string {
   return [command, ...args].join(' ');
@@ -589,8 +559,8 @@ function containsSeparator(value: string): boolean {
   return value.includes('/') || value.includes('\\');
 }
 
-/** Похож ли аргумент на путь (а не на флаг/значение) */
-function looksLikePath(value: string): boolean {
+/** Похож ли аргумент на путь (а не на флаг/значение). Публичный для SecurityAgent — единая логика распознавания путей */
+export function looksLikePath(value: string): boolean {
   if (value === '' || value.startsWith('-')) return false;
   // Глоб-паттерны не резолвим
   if (/[*?[\]]/.test(value)) return false;
@@ -602,8 +572,9 @@ function looksLikePath(value: string): boolean {
 /**
  * Резолвит аргумент как путь относительно cwd.
  * Возвращает null, если это не путь (опция, глоб, URL и т.п.).
+ * Публичный для SecurityAgent — единая логика с терминалом.
  */
-function resolveArgPath(cwd: string, value: string): string | null {
+export function resolveArgPath(cwd: string, value: string): string | null {
   if (value === '' || value.startsWith('-')) return null;
   if (/[*?[\]]/.test(value)) return null;
   // Не считаем путями значения вида key=value / proto://...

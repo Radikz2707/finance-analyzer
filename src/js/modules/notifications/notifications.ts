@@ -6,6 +6,15 @@
  * - Утренний/вечерний дайджест портфеля
  * - Cron-планировщик для автоматических уведомлений
  * - Интеграция с Telegram Bot
+ *
+ * Границы подсистем уведомлений (не дубли, а слои):
+ * - этот модуль = ДОМЕННАЯ ЛОГИКА «что и когда слать» (правила алертов,
+ *   дайджесты, расписание) для веб/pipeline-контура;
+ * - pipeline/infrastructure/os-integration = ТРАНСПОРТ ОС «как доставить»
+ *   (очередь системных уведомлений, буфер обмена, открытие ссылок) —
+ *   только десктопный контур;
+ * - pipeline/agents/notification-agent = фасад для конвейера: собирает
+ *   результаты агентов в отчёт и пишет файл отчёта (не отправляет в ОС).
  */
 
 import type { PipelineResult } from '../pipeline/pipeline-coordinator.js';
@@ -16,12 +25,7 @@ import type { ReviewResult } from '../pipeline/review/review-agent.js';
 // ──────────────────────────────────────────────
 
 /** Тип уведомления */
-export type NotificationType =
-  | 'alert'
-  | 'digest'
-  | 'review'
-  | 'error'
-  | 'info';
+export type NotificationType = 'alert' | 'digest' | 'review' | 'error' | 'info';
 
 /** Уровень серьёзности */
 export type NotificationSeverity = 'low' | 'medium' | 'high' | 'critical';
@@ -202,7 +206,11 @@ export class NotificationEngine {
     // Добавляем топ-риски
     if (review) {
       const conservative = review.reviewers.get('conservative');
-      if (conservative && conservative.warnings && conservative.warnings.length > 0) {
+      if (
+        conservative &&
+        conservative.warnings &&
+        conservative.warnings.length > 0
+      ) {
         message += '\n<b>⚠️ Топ-риски:</b>\n';
         for (const w of conservative.warnings.slice(0, 3)) {
           message += '• ' + w.message + '\n';
@@ -257,7 +265,10 @@ export class NotificationEngine {
    */
   async sendToTelegram(notification: Notification): Promise<boolean> {
     if (!this.telegramToken || this.adminChatIds.length === 0) {
-      console.log('[Notifications] ⚠️ Telegram не настроен. Пропускаем отправку: ' + notification.title);
+      console.log(
+        '[Notifications] ⚠️ Telegram не настроен. Пропускаем отправку: ' +
+          notification.title,
+      );
       return false;
     }
 
@@ -276,7 +287,12 @@ export class NotificationEngine {
         });
 
         if (!response.ok) {
-          console.error('[Notifications] ❌ Ошибка отправки в Telegram (chatId: ' + chatId + '):', await response.text());
+          console.error(
+            '[Notifications] ❌ Ошибка отправки в Telegram (chatId: ' +
+              chatId +
+              '):',
+            await response.text(),
+          );
           return false;
         }
       }
@@ -326,7 +342,9 @@ export class NotificationEngine {
    */
   clearOld(): void {
     const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    this.notifications = this.notifications.filter((n) => n.timestamp >= cutoff);
+    this.notifications = this.notifications.filter(
+      (n) => n.timestamp >= cutoff,
+    );
   }
 
   /**
@@ -350,7 +368,11 @@ export class CronScheduler {
   private morningHour: number;
   private eveningHour: number;
 
-  constructor(_engine: NotificationEngine, morningHour: number, eveningHour: number) {
+  constructor(
+    _engine: NotificationEngine,
+    morningHour: number,
+    eveningHour: number,
+  ) {
     this.morningHour = morningHour;
     this.eveningHour = eveningHour;
   }
@@ -359,7 +381,9 @@ export class CronScheduler {
    * Запустить планировщик.
    */
   start(): void {
-    console.log(`[CronScheduler] Запуск: утро=${this.morningHour}:00, вечер=${this.eveningHour}:00`);
+    console.log(
+      `[CronScheduler] Запуск: утро=${this.morningHour}:00, вечер=${this.eveningHour}:00`,
+    );
 
     // Проверка каждую минуту
     const checkInterval = setInterval(() => {

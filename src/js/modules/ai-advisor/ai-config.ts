@@ -42,7 +42,7 @@ export const AI_MODELS: AiModelConfig[] = [
     requiresKey: false,
     envKey: '',
     description:
-      'Локальная модель 9B, баланс скорости и качества. Быстрее 14b в 2 раза.',
+      'Локальная модель 14B, баланс скорости и качества.',
   },
   {
     id: 'gigachat',

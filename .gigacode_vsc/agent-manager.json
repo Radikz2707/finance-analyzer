@@ -6,12 +6,23 @@
       "parentBranch": "main",
       "createdAt": "2026-09-23T17:44:07.155Z",
       "remote": "origin"
+    },
+    "wt-1791496173848-1": {
+      "branch": "bitter-shape",
+      "path": "c:\\dev\\finance-analyzer_2\\.gigacode_vsc\\worktrees\\bitter-shape",
+      "parentBranch": "finance-analyzer-2",
+      "createdAt": "2026-10-08T21:49:33.848Z",
+      "remote": "origin"
     }
   },
   "sessions": {
     "ses_f30a19379ffeOACvuPUdnoKps4": {
       "worktreeId": "wt-1790185447155-1",
       "createdAt": "2026-09-23T17:44:27.156Z"
+    },
+    "ses_ee281be1affe3LyqYgpDhlu8GT": {
+      "worktreeId": "wt-1791496173848-1",
+      "createdAt": "2026-10-08T21:49:39.141Z"
     }
   },
   "tabOrder": {
@@ -20,6 +31,7 @@
     ]
   },
   "worktreeOrder": [
-    "wt-1790185447155-1"
+    "wt-1790185447155-1",
+    "wt-1791496173848-1"
   ]
 }

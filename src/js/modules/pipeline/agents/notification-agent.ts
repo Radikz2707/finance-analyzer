@@ -1,3 +1,15 @@
+/**
+ * NotificationAgent — фасад уведомлений для мультиагентного конвейера.
+ *
+ * Собирает результаты агентов (data/analysis/ai/review/scenario/
+ * strategist/consilium) в отчёт и сохраняет его на диск.
+ *
+ * Границы подсистем уведомлений: этот агент = СБОРКА ОТЧЁТА для конвейера;
+ * доменная логика «что и когда слать» — modules/notifications; транспорт
+ * ОС (системные уведомления/буфер/ссылки) — pipeline/infrastructure/
+ * os-integration (только десктопный контур). См. JSDoc этих модулей.
+ */
+
 import * as fs from 'fs';
 import * as path from 'path';
 import { resolveReportsDir } from '../../app-paths.js';

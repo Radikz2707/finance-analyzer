@@ -74,7 +74,10 @@ export type AgentRole =
   | 'review' // ReviewAgent — проверка качества решений
   | 'analysis' // AnalysisAgent — детерминированный анализ портфеля
   | 'file' // FileAgent — файловые операции (чтение/запись/поиск)
-  | 'terminal'; // TerminalAgent — безопасное выполнение команд
+  | 'terminal' // TerminalAgent — безопасное выполнение команд
+  | 'process' // ProcessAgent — запуск/остановка/перезапуск процессов
+  | 'automation' // AutomationAgent — workflow-автоматизация задач
+  | 'code'; // CodingWorkflow — конвейер разработки: write → test → repair → report
 
 /** Описание задачи для агента */
 export interface AgentTask {

@@ -51,6 +51,7 @@ const anomaliesListEl = $('#anomalies-list');
 const quikNewsEl = $('#quik-news');
 const versionEl = $('#app-version');
 const aiStatusEl = $('#ai-status') as HTMLSpanElement | null;
+const analysisStatusEl = $('#analysis-status') as HTMLSpanElement | null;
 const pickExcelBtn = $('#pick-excel-btn') as HTMLButtonElement;
 const ollamaModelSelect = $('#ollama-model-select') as HTMLSelectElement;
 const applyOllamaBtn = $('#apply-ollama-btn') as HTMLButtonElement;
@@ -472,6 +473,30 @@ function renderAiStatus(aiLabel: string): void {
       : 'ai-status fallback';
 }
 
+// ── Индикатор статуса анализа портфеля ────────────────────────
+
+function renderAnalysisStatus(status: string): void {
+  if (!analysisStatusEl) return;
+
+  switch (status) {
+    case 'ready':
+      analysisStatusEl.textContent = '✅ Анализ готов';
+      analysisStatusEl.className = 'analysis-status ready';
+      break;
+    case 'in_progress':
+      analysisStatusEl.textContent = '⏳ Анализ запущен...';
+      analysisStatusEl.className = 'analysis-status in_progress';
+      break;
+    case 'pending':
+      analysisStatusEl.textContent = '⏳ Анализ не запущен';
+      analysisStatusEl.className = 'analysis-status pending';
+      break;
+    default:
+      analysisStatusEl.textContent = '⚠ Нет данных';
+      analysisStatusEl.className = 'analysis-status';
+  }
+}
+
 // ── Запрос к Директору ───────────────────────────────────────
 
 async function ask(question: string): Promise<void> {
@@ -526,6 +551,10 @@ async function refreshAux(): Promise<void> {
       );
       // Обновляем индикатор статуса AI
       renderAiStatus(status.aiLabel);
+      // Обновляем индикатор статуса анализа
+      void window.financeApp.getAnalysisStatus().then((analysisStatus) => {
+        renderAnalysisStatus(analysisStatus?.status ?? 'pending');
+      });
     }
     renderPanel(panel);
     fillConsole(log.entries);
@@ -748,6 +777,7 @@ async function init(): Promise<void> {
         ? 'harness-run-note ok'
         : 'harness-run-note error';
       await refreshHarness();
+      await refreshAux();
 
       // Toast-уведомление о завершении
       showToast(
@@ -770,6 +800,30 @@ async function init(): Promise<void> {
       runAnalysisBtn.textContent = originalText;
     }
   });
+
+  // Ручной запуск анализа директора (ленивый анализ)
+  const directorRunBtn = $('#director-run-analysis-btn') as HTMLButtonElement | null;
+  if (directorRunBtn) {
+    directorRunBtn.addEventListener('click', async () => {
+      directorRunBtn.disabled = true;
+      const originalText = directorRunBtn.textContent || '▶ Анализ директора';
+      directorRunBtn.textContent = '⏳ Анализ...';
+      try {
+        const result = await window.financeApp.runAnalysis();
+        if (result.success) {
+          showToast(`✅ ${result.message}`, 'ok');
+          await refreshAux();
+        } else {
+          showToast(`❌ ${result.message}`, 'error');
+        }
+      } catch (err) {
+        showToast(`❌ Ошибка: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      } finally {
+        directorRunBtn.disabled = false;
+        directorRunBtn.textContent = originalText;
+      }
+    });
+  }
 
   // Экспорт HTML-дашборда диспетчера в файл
   exportReportBtn.addEventListener('click', async () => {

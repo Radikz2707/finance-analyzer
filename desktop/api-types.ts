@@ -93,6 +93,10 @@ export interface FinanceDesktopApi {
   setOllamaModel(model: string): Promise<boolean>;
   /** Переподключить Ollama (если был fallback-режим) */
   reconnectOllama(): Promise<OllamaReconnectResult>;
+  /** Получить статус анализа портфеля */
+  getAnalysisStatus(): Promise<{ status: 'ready' | 'pending' | 'in_progress' | 'none' }>;
+  /** Запустить полный анализ портфеля */
+  runAnalysis(): Promise<{ success: boolean; message: string }>;
   /** Подписка на живой поток событий аудита (стриминг) */
   onDirectorEvent(callback: (event: DirectorAuditEvent) => void): () => void;
   /** Подписка на завершение ответа Директора */

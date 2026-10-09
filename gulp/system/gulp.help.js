@@ -14,6 +14,25 @@ ${c.cyan}${c.bold}==========================================
 🚀  GULP + TYPESCRIPT — ШПАРГАЛКА
 ==========================================${c.reset}
 
+${c.cyan}${c.bold}С ЧЕГО НАЧАТЬ (ДЛЯ НОВИЧКА)?:${c.reset}
+${c.dim}Определи, чего хочешь — и бери команду из нужной строки:${c.reset}
+${c.bold}Хочу пообщаться с Директором в окне программы${c.reset}
+  ${c.green}${c.bold}npm run app:dev${c.reset}       — десктоп-приложение (основной режим!)
+  ${c.green}${c.bold}npm run app:dev:offline${c.reset} — то же, но без ИИ (нет сети/ключей)
+${c.bold}Хочу чат в терминале${c.reset}
+  ${c.green}${c.bold}npm run chat${c.reset}          — диалог с Финансовым Директором в CLI
+${c.bold}Хочу, чтобы робот поработал САМ (без меня)${c.reset}
+  ${c.green}${c.bold}npm run autonomous -- --dry-run${c.reset} — сначала репетиция (ничего не выполняет!)
+  ${c.green}${c.bold}npm run autonomous${c.reset}    — затем реальная автономная смена
+  ${c.dim}... -- --max-minutes 10 / --max-iterations N — ограничения времени/итераций${c.reset}
+${c.bold}Хочу свежий отчёт по портфелю${c.reset}
+  ${c.green}${c.bold}npm run pipeline${c.reset}      — разовый прогон → report.html/report.md
+${c.bold}Хочу посмотреть, что происходит в системе${c.reset}
+  ${c.green}${c.bold}npm run harness${c.reset}       — веб-дашборд с телеметрией агентов
+${c.bold}Хочу проверить код перед коммитом${c.reset}
+  ${c.green}${c.bold}npm run lint${c.reset}          — стиль + типы
+  ${c.green}${c.bold}npm run test:run${c.reset}      — все тесты одним прогоном
+
 ${c.green}${c.bold}БАЗОВЫЕ КОМАНДЫ:${c.reset}
 ${c.green}${c.bold}npm run dev${c.reset}          — запуск dev-сервера
 ${c.green}${c.bold}npm run build${c.reset}        — тесты + продакшен-сборка (ZIP)
@@ -43,6 +62,7 @@ ${c.green}${c.bold}npm run blueprint${c.reset}    — схема структу�
 ${c.green}${c.bold}npm run watch${c.reset}        — слежение за изменениями (TS)
 ${c.green}${c.bold}npm run pipeline${c.reset}     — запуск пайплайна анализа
 ${c.green}${c.bold}npm run harness${c.reset}      — запуск harness-моста
+${c.green}${c.bold}npm run autonomous${c.reset}   — автономная смена Директора (сначала -- --dry-run!)
 ${c.green}${c.bold}npm run chat${c.reset}         — чат с Финансовым Директором (CLI)
 ${c.green}${c.bold}npm run bench${c.reset}        — бенчмарки производительности
 ${c.green}${c.bold}npm run test:integration${c.reset} — интеграционные тесты

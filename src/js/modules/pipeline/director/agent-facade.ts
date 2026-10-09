@@ -25,17 +25,23 @@ import {
   type ScenarioAgentOutput,
   type ScenarioChange,
 } from '../agents/scenario-agent.js';
-import type { IAgent } from '../agent/types.js';
-import type { FileAgentInput } from '../agents/file-agent.js';
-import type { TerminalAgentInput } from '../agents/terminal-agent.js';
+import type { DirectorActionAgents } from '../agents/agent-factory.js';
+import type { FileAgentOutput } from '../agents/file-agent.js';
+import type { ProcessAgentOutput } from '../agents/process-agent.js';
+import type { TerminalAgentOutput } from '../agents/terminal-agent.js';
+import type { AutomationAgentOutput } from '../agents/automation-agent/types.js';
+import type { CodingWorkflowOutput } from '../coding-workflow/types.js';
+import {
+  buildAutomationAgentInput,
+  buildCodingWorkflowInput,
+  buildFileAgentInput,
+  buildProcessAgentInput,
+  buildTerminalAgentInput,
+} from './action-input-builder.js';
 import type {
   SecurityActionRequest,
   SecurityDecision,
 } from '../agents/security-agent.js';
-import {
-  buildFileAgentInput,
-  buildTerminalAgentInput,
-} from './action-input-builder.js';
 import type {
   AgentOpinion,
   AgentResultEntry,
@@ -72,15 +78,12 @@ export type ReviewExecutor = (
 ) => Promise<ReviewExecutorResult>;
 
 /**
- * Карта подключённых action-агентов (file/terminal).
- * Заполняется ТОЛЬКО в Node-контуре (см. agents/agent-factory.ts);
- * в браузерной сборке отсутствует → фасад честно отвечает
- * «доступно в десктопном режиме».
+ * Карта подключённых action-агентов (file/terminal/process/automation/code).
+ * ЕДИНЫЙ источник типа — agents/agent-factory.ts (Node-контур, там же
+ * фабрика). Type-only импорт стирается при сборке: в браузерной сборке
+ * агентов нет → фасад честно отвечает «доступно в десктопном режиме».
  */
-export interface DirectorActionAgents {
-  file?: IAgent<FileAgentInput>;
-  terminal?: IAgent<TerminalAgentInput>;
-}
+export type { DirectorActionAgents } from '../agents/agent-factory.js';
 
 /**
  * Шлюз безопасности action-операций (обёртка над SecurityAgent).
@@ -128,16 +131,16 @@ export class DirectorAgentFacade {
   private readonly scenario: ScenarioAgent;
   private readonly aiExecutor: AiDecisionExecutor;
   private readonly reviewExecutor: ReviewExecutor;
-  private readonly actionAgents: DirectorActionAgents;
-  private readonly security: ActionSecurityGate | null;
+  private readonly actionAgents?: DirectorActionAgents;
+  private readonly security?: ActionSecurityGate;
 
   constructor(opts?: DirectorFacadeOptions) {
     this.strategist = opts?.strategist ?? new StrategistAgent();
     this.scenario = opts?.scenario ?? new ScenarioAgent();
     this.aiExecutor = opts?.aiExecutor ?? defaultAiExecutor;
     this.reviewExecutor = opts?.reviewExecutor ?? defaultReviewExecutor;
-    this.actionAgents = opts?.actionAgents ?? {};
-    this.security = opts?.security ?? null;
+    this.actionAgents = opts?.actionAgents;
+    this.security = opts?.security;
   }
 
   /**
@@ -180,7 +183,9 @@ export class DirectorAgentFacade {
     return results;
   }
 
-  /** Выполнить одну роль */
+  /**
+   * Выполнить одну роль
+   */
   private async executeRole(
     role: AgentRole,
     question: InterpretedQuestion,
@@ -224,149 +229,478 @@ export class DirectorAgentFacade {
                 : 'Замечаний нет.',
             action: null,
             confidence: review.confidence,
-            arguments: review.warnings.slice(0, 3),
+            arguments: review.warnings,
           },
-          summary: review.summary,
+          summary: `ReviewAgent: ${review.summary}`,
           sources: factSources(facts),
-          detail: { warnings: review.warnings },
         };
       }
       case 'file':
+        return this.runFileRole(question);
       case 'terminal':
-        return this.runActionAgent(role, question);
+        return this.runTerminalRole(question);
+      case 'process':
+        return this.runProcessRole(question);
+      case 'automation':
+        return this.runAutomationRole(question);
+      case 'code':
+        return this.runCodeRole(question);
       default:
-        throw new Error(`Неизвестная роль агента: ${role}`);
+        return {
+          summary: `Роль «${role}» не реализована`,
+          sources: [],
+        };
     }
   }
 
   /**
-   * Выполнить action-агента (file/terminal) с прогоном через шлюз
-   * безопасности. При отсутствии агента (браузерная сборка) — честный
-   * ответ, а не ошибка.
+   * Роль file: парсинг запроса → security-gate → выполнение FileAgent.
+   * Без подключённого агента (браузерный контур) — человечный ответ.
    */
-  private async runActionAgent(
-    role: 'file' | 'terminal',
+  private async runFileRole(
     question: InterpretedQuestion,
   ): Promise<DirectorAgentPayload> {
-    const agent: IAgent | null =
-      role === 'file'
-        ? (this.actionAgents.file ?? null)
-        : (this.actionAgents.terminal ?? null);
-
-    // Браузерная сборка: action-агентов нет — честный ответ, а не throw
+    const agent = this.actionAgents?.file;
     if (!agent) {
       return {
-        summary:
-          role === 'file'
-            ? 'Файловые операции доступны в десктопном режиме'
-            : 'Терминальные операции доступны в десктопном режиме',
+        summary: 'Файловые операции доступны в десктопном режиме',
         sources: [],
       };
     }
 
-    const input: unknown =
-      role === 'file'
-        ? buildFileAgentInput(question)
-        : buildTerminalAgentInput(question);
-    if (!input) {
+    const intent = buildFileAgentInput(question);
+    if (!intent) {
       return {
-        summary:
-          role === 'file'
-            ? 'Не удалось определить файловую операцию из запроса — укажите путь к файлу.'
-            : 'Не удалось определить команду из запроса — уточните, что выполнить.',
+        summary: `Не удалось распознать файловую операцию в запросе: «${question.text}»`,
         sources: [],
       };
     }
 
-    // Прогон через SecurityAgent (если подключён в Node-контуре)
     if (this.security) {
-      const decision = await this.security.check(
-        this.buildSecurityRequest(
-          role,
-          input as FileAgentInput | TerminalAgentInput,
-          question,
-        ),
-      );
+      const decision = await this.security.check({
+        kind: 'file',
+        path: intent.path,
+        action: intent.action,
+        description: `Файловая операция «${intent.action}» для «${intent.path ?? ''}»`,
+      });
       if (decision.verdict === 'deny') {
         return {
-          summary: `Операция отклонена: ${decision.reason ?? 'запрещено правилами безопасности'}`,
+          summary: `Операция отклонена: ${
+            decision.reason ?? decision.description ?? 'политика безопасности'
+          }`,
           sources: [],
-          detail: this.securityDetail(decision),
+          detail: { matchedRules: decision.matchedRules },
         };
       }
       if (decision.verdict === 'require-confirmation') {
         return {
-          summary: `Требуется подтверждение: ${decision.description ?? decision.reason ?? 'действие требует ручного подтверждения'}`,
+          summary: `Требуется подтверждение: ${
+            decision.description ??
+            decision.reason ??
+            'подтвердите операцию вручную'
+          }`,
           sources: [],
-          detail: this.securityDetail(decision),
+          detail: {
+            matchedRules: decision.matchedRules,
+            dangerLevel: decision.dangerLevel,
+          },
         };
       }
     }
 
-    const result = await agent.execute(input);
-    if (!result.success) {
-      throw new Error(result.error?.message ?? `Агент «${role}» не выполнен`);
-    }
-    const output = (result.data ?? {}) as Record<string, unknown>;
-
-    return {
-      summary:
-        typeof output.message === 'string' && output.message !== ''
-          ? output.message
-          : role === 'file'
-            ? 'Файловая операция выполнена'
-            : this.describeTerminalOutput(output),
-      sources: [],
-      detail: output,
-    };
-  }
-
-  /** Заявка на проверку безопасности по входу action-агента */
-  private buildSecurityRequest(
-    role: 'file' | 'terminal',
-    input: FileAgentInput | TerminalAgentInput,
-    question: InterpretedQuestion,
-  ): SecurityActionRequest {
-    if (role === 'file') {
-      const fileInput = input as FileAgentInput;
+    const result = await agent.execute(intent);
+    if (!result.success || !result.data) {
+      const message =
+        result.error instanceof Error
+          ? result.error.message
+          : String(result.error ?? 'неизвестная ошибка');
       return {
-        kind: 'file',
-        action: fileInput.action,
-        path: fileInput.path ?? '',
-        description: question.text,
+        summary: `Файловая операция не выполнена: ${message}`,
+        sources: [],
       };
     }
-    const termInput = input as TerminalAgentInput;
+    const output = result.data as FileAgentOutput;
     return {
-      kind: 'terminal',
-      command: termInput.command,
-      args: termInput.args,
-      description: question.text,
+      summary: output.message,
+      sources: [],
+      detail: { action: output.action, path: output.path },
     };
   }
 
-  /** Детали вердикта безопасности для payload */
-  private securityDetail(decision: SecurityDecision): Record<string, unknown> {
-    return {
-      verdict: decision.verdict,
-      dangerLevel: decision.dangerLevel,
-      reason: decision.reason,
-      description: decision.description,
-      matchedRules: decision.matchedRules,
-    };
-  }
-
-  /** Человекочитаемое описание вывода терминала (нет поля message) */
-  private describeTerminalOutput(output: Record<string, unknown>): string {
-    const exitCode = output.exitCode;
-    const stdout = typeof output.stdout === 'string' ? output.stdout : '';
-    const snippet = stdout.slice(0, 200).trim();
-    if (exitCode === 0) {
-      return snippet !== ''
-        ? `Команда выполнена: ${snippet}`
-        : 'Команда выполнена';
+  /**
+   * Роль terminal: парсинг запроса → security-gate → выполнение TerminalAgent.
+   */
+  private async runTerminalRole(
+    question: InterpretedQuestion,
+  ): Promise<DirectorAgentPayload> {
+    const agent = this.actionAgents?.terminal;
+    if (!agent) {
+      return {
+        summary: 'Терминальные операции доступны в десктопном режиме',
+        sources: [],
+      };
     }
-    return `Команда завершилась с кодом ${String(exitCode)}`;
+
+    const intent = buildTerminalAgentInput(question);
+    if (!intent) {
+      return {
+        summary: `Не удалось распознать команду в запросе: «${question.text}»`,
+        sources: [],
+      };
+    }
+
+    if (this.security) {
+      const decision = await this.security.check({
+        kind: 'terminal',
+        command: intent.command,
+        args: intent.args,
+        description: `Терминальная команда «${[intent.command, ...(intent.args ?? [])].join(' ')}»`,
+      });
+      if (decision.verdict === 'deny') {
+        return {
+          summary: `Операция отклонена: ${
+            decision.reason ?? decision.description ?? 'политика безопасности'
+          }`,
+          sources: [],
+          detail: { matchedRules: decision.matchedRules },
+        };
+      }
+      if (decision.verdict === 'require-confirmation') {
+        return {
+          summary: `Требуется подтверждение: ${
+            decision.description ??
+            decision.reason ??
+            'подтвердите операцию вручную'
+          }`,
+          sources: [],
+          detail: {
+            matchedRules: decision.matchedRules,
+            dangerLevel: decision.dangerLevel,
+          },
+        };
+      }
+    }
+
+    const result = await agent.execute(intent);
+    if (!result.success || !result.data) {
+      const message =
+        result.error instanceof Error
+          ? result.error.message
+          : String(result.error ?? 'неизвестная ошибка');
+      return {
+        summary: `Команда не выполнена: ${message}`,
+        sources: [],
+      };
+    }
+    const output = result.data as TerminalAgentOutput;
+    const summary =
+      output.exitCode === 0
+        ? `Команда выполнена: ${output.command}`
+        : `Команда завершилась с ошибкой (exit ${output.exitCode}): ${
+            output.stderr || output.stdout || 'без вывода'
+          }`;
+    return {
+      summary,
+      sources: [],
+      detail: { ...output },
+    };
+  }
+
+  /**
+   * Роль process: парсинг запроса → security-gate → выполнение ProcessAgent.
+   * start/stop/restart проверяются ДО выполнения (kind 'process'); status
+   * безопасен и не требует проверки.
+   */
+  private async runProcessRole(
+    question: InterpretedQuestion,
+  ): Promise<DirectorAgentPayload> {
+    const agent = this.actionAgents?.process;
+    if (!agent) {
+      return {
+        summary: 'Управление процессами доступно в десктопном режиме',
+        sources: [],
+      };
+    }
+
+    const intent = buildProcessAgentInput(question);
+    if (!intent) {
+      return {
+        summary: `Не удалось распознать операцию с процессом в запросе: «${question.text}»`,
+        sources: [],
+      };
+    }
+
+    if (this.security && intent.action !== 'status') {
+      const commandLine = [
+        intent.command ?? '',
+        ...(intent.args ?? []),
+        ...(intent.name !== undefined ? [String(intent.name)] : []),
+      ]
+        .filter(Boolean)
+        .join(' ');
+      const decision = await this.security.check({
+        kind: 'process',
+        command: commandLine || String(intent.name ?? ''),
+        description: `Операция с процессами «${intent.action}»`,
+      });
+      if (decision.verdict === 'deny') {
+        return {
+          summary: `Операция отклонена: ${
+            decision.reason ?? decision.description ?? 'политика безопасности'
+          }`,
+          sources: [],
+          detail: { matchedRules: decision.matchedRules },
+        };
+      }
+      if (decision.verdict === 'require-confirmation') {
+        return {
+          summary: `Требуется подтверждение: ${
+            decision.description ??
+            decision.reason ??
+            'подтвердите операцию вручную'
+          }`,
+          sources: [],
+          detail: {
+            matchedRules: decision.matchedRules,
+            dangerLevel: decision.dangerLevel,
+          },
+        };
+      }
+    }
+
+    const result = await agent.execute(intent);
+    if (!result.success || !result.data) {
+      const message =
+        result.error instanceof Error
+          ? result.error.message
+          : String(result.error ?? 'неизвестная ошибка');
+      return {
+        summary: `Операция с процессами не выполнена: ${message}`,
+        sources: [],
+      };
+    }
+    const output = result.data as ProcessAgentOutput;
+    return {
+      summary: output.message,
+      sources: [],
+      detail: { action: output.action, processes: output.processes },
+    };
+  }
+
+  /**
+   * Роль automation: парсинг запроса → security-gate → AutomationAgent.
+   * Чтения (get-*) безопасны; запуск workflow проверяется как операция с
+   * процессами (внутри workflow могут выполняться команды).
+   */
+  private async runAutomationRole(
+    question: InterpretedQuestion,
+  ): Promise<DirectorAgentPayload> {
+    const agent = this.actionAgents?.automation;
+    if (!agent) {
+      return {
+        summary: 'Автоматизация workflow доступна в десктопном режиме',
+        sources: [],
+      };
+    }
+
+    const intent = buildAutomationAgentInput(question);
+    if (!intent) {
+      return {
+        summary:
+          `Не удалось распознать операцию автоматизации в запросе: «${question.text}». ` +
+          'Создание и редактирование шаблонов задаётся программно или через UI.',
+        sources: [],
+      };
+    }
+
+    if (
+      this.security &&
+      (intent.action === 'run-now' || intent.action === 'run-template')
+    ) {
+      const templateId =
+        intent.action === 'run-now'
+          ? intent.params.templateId
+          : (intent.params as { templateId?: string }).templateId;
+      const decision = await this.security.check({
+        kind: 'process',
+        command: `automation run ${templateId ?? ''}`.trim(),
+        description: `Запуск workflow «${templateId ?? ''}»`,
+      });
+      if (decision.verdict === 'deny') {
+        return {
+          summary: `Операция отклонена: ${
+            decision.reason ?? decision.description ?? 'политика безопасности'
+          }`,
+          sources: [],
+          detail: { matchedRules: decision.matchedRules },
+        };
+      }
+      if (decision.verdict === 'require-confirmation') {
+        return {
+          summary: `Требуется подтверждение: ${
+            decision.description ??
+            decision.reason ??
+            'подтвердите операцию вручную'
+          }`,
+          sources: [],
+          detail: {
+            matchedRules: decision.matchedRules,
+            dangerLevel: decision.dangerLevel,
+          },
+        };
+      }
+    }
+
+    const result = await agent.execute(intent);
+    if (!result.success || !result.data) {
+      const message =
+        result.error instanceof Error
+          ? result.error.message
+          : String(result.error ?? 'неизвестная ошибка');
+      return {
+        summary: `Операция автоматизации не выполнена: ${message}`,
+        sources: [],
+      };
+    }
+    const output = result.data as AutomationAgentOutput;
+    return {
+      summary: output.message,
+      sources: [],
+      detail: {
+        success: output.success,
+        run: output.run ?? null,
+        stats: output.stats ?? null,
+      },
+    };
+  }
+
+  /**
+   * Роль code: конвейер разработки (write → test → analyze → repair →
+   * retest → report). Целиком проходит security-gate; файлы/проверки
+   * внутри выполняют FileAgent/TerminalAgent со своими whitelist'ами.
+   */
+  private async runCodeRole(
+    question: InterpretedQuestion,
+  ): Promise<DirectorAgentPayload> {
+    const agent = this.actionAgents?.code;
+    if (!agent) {
+      return {
+        summary: 'Разработка кода доступна в десктопном режиме',
+        sources: [],
+      };
+    }
+
+    const intent = buildCodingWorkflowInput(question);
+    if (!intent || intent.files.length === 0) {
+      return {
+        summary:
+          'Не удалось определить файлы для разработки из запроса. Укажите ' +
+          'пути (например: «Реализуй функционал в src/js/modules/x/y.ts») ' +
+          'или задайте цель через GoalAgent для автономного цикла.',
+        sources: [],
+      };
+    }
+
+    if (this.security) {
+      const decision = await this.security.check({
+        kind: 'process',
+        command: 'coding-workflow',
+        description: `Разработка кода: ${intent.files.map((file) => file.path).join(', ')}`,
+      });
+      if (decision.verdict === 'deny') {
+        return {
+          summary: `Операция отклонена: ${
+            decision.reason ?? decision.description ?? 'политика безопасности'
+          }`,
+          sources: [],
+          detail: { matchedRules: decision.matchedRules },
+        };
+      }
+      if (decision.verdict === 'require-confirmation') {
+        return {
+          summary: `Требуется подтверждение: ${
+            decision.description ??
+            decision.reason ??
+            'подтвердите разработку вручную'
+          }`,
+          sources: [],
+          detail: {
+            matchedRules: decision.matchedRules,
+            dangerLevel: decision.dangerLevel,
+          },
+        };
+      }
+    }
+
+    const result = await agent.execute(intent);
+    if (!result.success || !result.data) {
+      const message =
+        result.error instanceof Error
+          ? result.error.message
+          : String(result.error ?? 'неизвестная ошибка');
+      return {
+        summary: `Разработка не выполнена: ${message}`,
+        sources: [],
+      };
+    }
+    const output = result.data as CodingWorkflowOutput;
+    return {
+      summary: output.message,
+      sources: [],
+      detail: {
+        testPassed: output.testPassed,
+        repairIterations: output.repairIterations,
+        filesWritten: output.filesWritten,
+        steps: output.steps,
+      },
+    };
+  }
+
+  /**
+   * Запустить полный pipeline-анализ портфеля (для ленивой загрузки).
+   * Возвращает сводку результатов анализа.
+   */
+  async runFullAnalysis(facts: DirectorFactsContext): Promise<string> {
+    // Создаём фиктивный вопрос для запуска всех ролей
+    const dummyQuestion: InterpretedQuestion = {
+      category: 'portfolio',
+      tickers: [],
+      topic: 'Полный анализ портфеля',
+      text: 'Проведи полный анализ портфеля',
+      requiredAgents: [
+        'analysis',
+        'research',
+        'ai',
+        'strategist',
+        'scenario',
+        'review',
+      ],
+      needsConsilium: true,
+      complexity: 5,
+      intent: 'understand',
+    };
+
+    // Запускаем все роли параллельно
+    const results = await this.executeRoles(
+      ['analysis', 'research', 'ai', 'strategist', 'scenario', 'review'],
+      dummyQuestion,
+      facts,
+    );
+
+    // Формируем сводку
+    const summaryLines: string[] = [];
+    for (const result of results) {
+      if (result.success && result.data) {
+        const data = result.data as unknown as DirectorAgentPayload;
+        summaryLines.push(data.summary);
+      } else {
+        summaryLines.push(
+          `Ошибка ${result.role}: ${result.error || 'неизвестно'}`,
+        );
+      }
+    }
+
+    return `Pipeline-анализ завершён:\n${summaryLines.join('\n')}`;
   }
 
   /** StrategistAgent: независимая оценка рисков (реальный агент, синхронно) */

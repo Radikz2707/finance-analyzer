@@ -45,6 +45,16 @@ const AGENT_RATIONALE: Record<AgentRole, string> = {
   terminal:
     'Терминальные операции: безопасное выполнение команд (чтение, npm, git) ' +
     'в пределах корня проекта с whitelist/blacklist и таймаутами.',
+  process:
+    'Управление процессами: запуск, остановка и перезапуск долгоживущих ' +
+    'процессов (серверы, сборка) с авто-перезапуском при падении.',
+  automation:
+    'Автоматизация: создание и запуск workflow (шаблоны задач, расписания, ' +
+    'последовательности действий) через AutomationAgent.',
+  code:
+    'Разработка кода: конвейер write → test → analyze → repair → retest → ' +
+    'report. Пишет файлы через FileAgent, проверяет через TerminalAgent, ' +
+    'чинит провалы через RepairExecutor, отчитывается о работоспособности.',
 };
 
 /** Приоритет задачи по роли */
@@ -57,6 +67,9 @@ const ROLE_PRIORITY: Record<AgentRole, AgentTask['priority']> = {
   review: 'low',
   file: 'normal',
   terminal: 'normal',
+  process: 'high',
+  automation: 'normal',
+  code: 'high',
 };
 
 /** Участвует ли результат роли в Consilium */
@@ -69,6 +82,9 @@ const ROLE_FOR_CONSILIUM: Record<AgentRole, boolean> = {
   review: false,
   file: false,
   terminal: false,
+  process: false,
+  automation: false,
+  code: false,
 };
 
 // ──────────────────────────────────────────────
@@ -244,6 +260,12 @@ export class DirectorDelegationPlanner {
         return `Выполнить файловую операцию в рамках вопроса: ${question.text}. Операции ограничены корнем проекта и не затрагивают служебные пути.`;
       case 'terminal':
         return `Выполнить команду терминала в рамках вопроса: ${question.text}. Команды проходят whitelist/blacklist и не выходят за пределы корня проекта.`;
+      case 'process':
+        return `Выполнить операцию с процессом в рамках вопроса: ${question.text}. Команды проходят whitelist и security-gate до запуска.`;
+      case 'automation':
+        return `Выполнить операцию автоматизации в рамках вопроса: ${question.text}. Workflow проходят проверку безопасности.`;
+      case 'code':
+        return `Разработать функционал в рамках вопроса: ${question.text}. Конвейер: запись файлов → проверка → анализ провала → ремонт → повторная проверка → отчёт.`;
       default:
         return `Проанализировать вопрос по ${subject}.`;
     }
@@ -286,6 +308,18 @@ export class DirectorDelegationPlanner {
         return ['action', 'path', 'message'];
       case 'terminal':
         return ['command', 'stdout', 'stderr', 'exitCode', 'truncated'];
+      case 'process':
+        return ['action', 'processes', 'message'];
+      case 'automation':
+        return ['success', 'message', 'templates', 'runs', 'stats'];
+      case 'code':
+        return [
+          'success',
+          'testPassed',
+          'repairIterations',
+          'filesWritten',
+          'steps',
+        ];
       default:
         return ['result'];
     }
@@ -330,4 +364,7 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   review: 'ReviewAgent (контроль качества)',
   file: 'FileAgent (файловые операции)',
   terminal: 'TerminalAgent (безопасный терминал)',
+  process: 'ProcessAgent (управление процессами)',
+  automation: 'AutomationAgent (workflow-автоматизация)',
+  code: 'CodingWorkflow (разработка кода: write → test → repair)',
 };
