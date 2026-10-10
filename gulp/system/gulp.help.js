@@ -24,7 +24,9 @@ ${c.bold}Хочу чат в терминале${c.reset}
 ${c.bold}Хочу, чтобы робот поработал САМ (без меня)${c.reset}
   ${c.green}${c.bold}npm run autonomous -- --dry-run${c.reset} — сначала репетиция (ничего не выполняет!)
   ${c.green}${c.bold}npm run autonomous${c.reset}    — затем реальная автономная смена
+  ${c.dim}... -- --goal "текст задания" — дать роботу задачу (можно несколько --goal)${c.reset}
   ${c.dim}... -- --max-minutes 10 / --max-iterations N — ограничения времени/итераций${c.reset}
+  ${c.dim}Без целей: «Нет активных целей» — норма, задай через --goal${c.reset}
 ${c.bold}Хочу свежий отчёт по портфелю${c.reset}
   ${c.green}${c.bold}npm run pipeline${c.reset}      — разовый прогон → report.html/report.md
 ${c.bold}Хочу посмотреть, что происходит в системе${c.reset}

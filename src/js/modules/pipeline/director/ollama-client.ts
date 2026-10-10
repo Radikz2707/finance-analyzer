@@ -1,6 +1,6 @@
 /**
  * OllamaClient — клиент для общения с локальной LLM через Ollama.
- * 
+ *
  * Используется для генерации естественных ответов Director.
  */
 
@@ -26,6 +26,20 @@ export interface OllamaConfig {
   temperature?: number;
   maxTokens?: number;
   stream?: boolean;
+  /**
+   * Режим «размышлений» thinking-моделей (qwen3.5 и т.п.).
+   * По умолчанию ВЫКЛЮЧЕН: thinking тратит сотни токенов на рассуждения
+   * перед ответом — на CPU это минуты вместо секунд. Для сложных решений
+   * можно включить (think: true).
+   */
+  think?: boolean;
+  /**
+   * Сколько Ollama держит модель в памяти после запроса (keep_alive).
+   * По умолчанию «30m»: без этого модель выгружается и каждый холодный
+   * запрос платит 15–20 с за загрузку с диска (замер: load_duration).
+   * «-1» — держать всегда.
+   */
+  keepAlive?: string;
 }
 
 /**
@@ -36,10 +50,32 @@ export class OllamaClient {
   private temperature: number;
   private maxTokens: number;
 
+  private think: boolean;
+  private keepAlive: string;
+
   constructor(config: OllamaConfig = {}) {
     this.model = config.model || 'qwen3.5:9b';
     this.temperature = config.temperature ?? 0.7;
     this.maxTokens = config.maxTokens ?? 2000;
+    this.think = config.think ?? false;
+    this.keepAlive = OllamaClient.normalizeKeepAlive(
+      config.keepAlive ?? process.env.OLLAMA_KEEP_ALIVE ?? '30m',
+    );
+  }
+
+  /**
+   * Нормализовать keep_alive к формату, который принимает Ollama.
+   * Ollama ждёт duration-строку С единицей («30m», «-1s»): значение «-1»
+   * из env/конфига без единицы приводит к 400
+   * «time: missing unit in duration "-1"». Голое число (например «-1»
+   * = держать всегда, «300» = 5 минут) трактуем как секунды.
+   */
+  static normalizeKeepAlive(value: string): string {
+    const trimmed = value.trim();
+    if (/^-?\d+$/.test(trimmed)) {
+      return `${trimmed}s`;
+    }
+    return trimmed;
   }
 
   /** Проверить, запущен ли Ollama */
@@ -57,7 +93,9 @@ export class OllamaClient {
     try {
       const response = await fetch(`${OLLAMA_HOST}/api/tags`);
       const data = await response.json();
-      return ((data.models as Array<{ name: string }>) || []).map((m) => m.name);
+      return ((data.models as Array<{ name: string }>) || []).map(
+        (m) => m.name,
+      );
     } catch {
       return [];
     }
@@ -69,18 +107,22 @@ export class OllamaClient {
     onChunk?: (chunk: string) => void,
   ): Promise<string> {
     const stream = !!onChunk;
-    console.log(`[OllamaClient.chat] model=${this.model}, stream=${stream}, messages=${messages.length}`);
-    
+    console.log(
+      `[OllamaClient.chat] model=${this.model}, stream=${stream}, messages=${messages.length}`,
+    );
+
     const response = await fetch(`${OLLAMA_HOST}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: this.model,
-        messages: messages.map(m => ({
+        messages: messages.map((m) => ({
           role: m.role,
           content: m.content,
         })),
         stream,
+        think: this.think,
+        keep_alive: this.keepAlive,
         options: {
           temperature: this.temperature,
           num_predict: this.maxTokens,
@@ -90,7 +132,10 @@ export class OllamaClient {
 
     if (!response.ok) {
       const error = await response.text();
-      console.error(`[OllamaClient.chat] HTTP error: ${response.status}`, error);
+      console.error(
+        `[OllamaClient.chat] HTTP error: ${response.status}`,
+        error,
+      );
       throw new Error(`Ollama error: ${error}`);
     }
 
@@ -101,7 +146,9 @@ export class OllamaClient {
       // Обычный ответ
       const data: OllamaChatResponse = await response.json();
       const content = data.message?.content || '';
-      console.log(`[OllamaClient.chat] non-stream response: ${content.slice(0, 100)}...`);
+      console.log(
+        `[OllamaClient.chat] non-stream response: ${content.slice(0, 100)}...`,
+      );
       return content;
     }
   }
@@ -113,8 +160,10 @@ export class OllamaClient {
     onChunk?: (chunk: string) => void,
   ): Promise<string> {
     const stream = !!onChunk;
-    console.log(`[OllamaClient.generate] model=${this.model}, stream=${stream}`);
-    
+    console.log(
+      `[OllamaClient.generate] model=${this.model}, stream=${stream}`,
+    );
+
     const response = await fetch(`${OLLAMA_HOST}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -122,6 +171,8 @@ export class OllamaClient {
         model: this.model,
         prompt: `${systemPrompt}\n\n${userPrompt}`,
         stream,
+        think: this.think,
+        keep_alive: this.keepAlive,
         options: {
           temperature: this.temperature,
           num_predict: this.maxTokens,
@@ -131,25 +182,28 @@ export class OllamaClient {
 
     if (!response.ok) {
       const error = await response.text();
-      console.error(`[OllamaClient.generate] HTTP error: ${response.status}`, error);
+      console.error(
+        `[OllamaClient.generate] HTTP error: ${response.status}`,
+        error,
+      );
       throw new Error(`Ollama error: ${error}`);
     }
 
     if (onChunk) {
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No response body');
-      
+
       const decoder = new TextDecoder();
       let fullResponse = '';
-      
+
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          
+
           const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n').filter(l => l.trim());
-          
+          const lines = chunk.split('\n').filter((l) => l.trim());
+
           for (const line of lines) {
             try {
               const data = JSON.parse(line);
@@ -166,13 +220,17 @@ export class OllamaClient {
       } finally {
         reader.releaseLock();
       }
-      
-      console.log(`[OllamaClient.generate] stream DONE: ${fullResponse.slice(0, 200)}`);
+
+      console.log(
+        `[OllamaClient.generate] stream DONE: ${fullResponse.slice(0, 200)}`,
+      );
       return fullResponse;
     } else {
       const data = await response.json();
       const content = data.response || '';
-      console.log(`[OllamaClient.generate] non-stream: ${content.slice(0, 100)}...`);
+      console.log(
+        `[OllamaClient.generate] non-stream: ${content.slice(0, 100)}...`,
+      );
       return content;
     }
   }
@@ -198,22 +256,29 @@ export class OllamaClient {
         if (done) break;
 
         const chunk = decoder.decode(value, { stream: true });
-        console.log(`[OllamaClient.streamChat] raw chunk length: ${chunk.length}`);
-        
-        const lines = chunk.split('\n').filter(line => line.trim());
+        console.log(
+          `[OllamaClient.streamChat] raw chunk length: ${chunk.length}`,
+        );
+
+        const lines = chunk.split('\n').filter((line) => line.trim());
 
         for (const line of lines) {
           lineCount++;
           try {
             const data = JSON.parse(line);
-            console.log(`[OllamaClient.streamChat] line ${lineCount}: done=${data.done}, hasMessage=${!!data.message}, content=${(data.message?.content || '').slice(0, 50)}`);
+            console.log(
+              `[OllamaClient.streamChat] line ${lineCount}: done=${data.done}, hasMessage=${!!data.message}, content=${(data.message?.content || '').slice(0, 50)}`,
+            );
             if (data.message?.content) {
               fullResponse += data.message.content;
               onChunk(data.message.content);
             }
           } catch {
             parseErrors++;
-            console.warn(`[OllamaClient.streamChat] parse error line ${lineCount}:`, line.slice(0, 100));
+            console.warn(
+              `[OllamaClient.streamChat] parse error line ${lineCount}:`,
+              line.slice(0, 100),
+            );
           }
         }
       }
@@ -221,7 +286,9 @@ export class OllamaClient {
       reader.releaseLock();
     }
 
-    console.log(`[OllamaClient.streamChat] DONE: lines=${lineCount}, parseErrors=${parseErrors}, fullResponse=${fullResponse.slice(0, 200)}`);
+    console.log(
+      `[OllamaClient.streamChat] DONE: lines=${lineCount}, parseErrors=${parseErrors}, fullResponse=${fullResponse.slice(0, 200)}`,
+    );
     return fullResponse;
   }
 
@@ -234,7 +301,10 @@ export class OllamaClient {
   ): Promise<string> {
     const messages: OllamaMessage[] = [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: context ? `${context}\n\nВопрос: ${userMessage}` : userMessage },
+      {
+        role: 'user',
+        content: context ? `${context}\n\nВопрос: ${userMessage}` : userMessage,
+      },
     ];
 
     return this.chat(messages, onChunk);

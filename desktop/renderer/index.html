@@ -24,16 +24,15 @@
             class="app-version"
             title="Версия приложения"
           ></span>
-          <span
-            id="ai-status"
-            class="ai-status"
-            title="Статус AI-подсистемы"
-          >● Загрузка…</span>
+          <span id="ai-status" class="ai-status" title="Статус AI-подсистемы"
+            >● Загрузка…</span
+          >
           <span
             id="analysis-status"
             class="analysis-status"
             title="Статус анализа портфеля"
-          >⏳ Анализ не запущен</span>
+            >⏳ Анализ не запущен</span
+          >
           <button
             id="director-run-analysis-btn"
             type="button"
@@ -86,6 +85,10 @@
         💬 Чат
       </button>
       <button type="button" class="tab-btn" data-tab="agents">🕸 Агенты</button>
+      <button type="button" class="tab-btn" data-tab="goals">🎯 Цели</button>
+      <button type="button" class="tab-btn" data-tab="analysis">
+        📊 Анализ
+      </button>
       <button type="button" class="tab-btn" data-tab="console">
         🖥 Консоль
       </button>
@@ -121,6 +124,9 @@
                 data-question="Создай файл src/test.txt"
               >
                 Создай файл src/test.txt
+              </button>
+              <button type="button" class="quick-btn" id="ideas-btn">
+                💡 Идеи
               </button>
             </div>
             <div class="input-row">
@@ -193,13 +199,99 @@
         <div id="console-list" class="console-list"></div>
       </section>
 
+      <!-- ── Вкладка «Анализ» (результат + экспорт) ───────────────── -->
+      <section id="tab-analysis" class="tab-panel">
+        <div class="dispatcher-toolbar">
+          <h2>📊 Анализ портфеля</h2>
+          <button id="analysis-run-btn" type="button">
+            ▶ Запустить анализ
+          </button>
+          <button id="analysis-export-html-btn" type="button" class="mini-btn">
+            💾 Сохранить HTML…
+          </button>
+          <button id="analysis-export-pdf-btn" type="button" class="mini-btn">
+            📄 Сохранить PDF…
+          </button>
+          <span id="analysis-meta" class="analysis-status"
+            >анализ не запускался</span
+          >
+        </div>
+        <div
+          id="analysis-note"
+          class="harness-run-note"
+          role="status"
+          aria-live="polite"
+        ></div>
+        <iframe
+          id="analysis-frame"
+          class="analysis-frame"
+          hidden
+          title="Отчёт по портфелю (report.html)"
+        ></iframe>
+        <div
+          id="analysis-report"
+          class="analysis-report"
+          aria-live="polite"
+        ></div>
+        <pre id="analysis-text" class="analysis-text">
+Анализ ещё не запускался. Нажмите «Запустить анализ» — текст отчёта появится здесь, и его можно будет сохранить в HTML или PDF.</pre>
+      </section>
+
+      <!-- ── Вкладка «Цели» (автономный цикл) ─────────────────────── -->
+      <section id="tab-goals" class="tab-panel">
+        <div class="dispatcher-toolbar">
+          <h2>🎯 Автономный цикл</h2>
+          <button id="autonomous-toggle-btn" type="button">…</button>
+          <button id="autonomous-run-btn" type="button" class="mini-btn">
+            ⚙️ Выполнить сейчас
+          </button>
+          <span id="autonomous-status" class="analysis-status">…</span>
+        </div>
+        <div
+          id="goals-note"
+          class="harness-run-note"
+          role="status"
+          aria-live="polite"
+        ></div>
+        <div class="panel-grid">
+          <div class="card">
+            <h2>Добавить цель</h2>
+            <div class="input-row">
+              <input
+                id="goal-input"
+                type="text"
+                placeholder="Текст задачи или идеи…"
+                autocomplete="off"
+              />
+              <button id="add-goal-btn" type="button">🎯 В план</button>
+            </div>
+            <p class="app-subtitle">
+              Задача попадёт в фоновый цикл и выполнится автоматически. Срочные
+              действия формулируйте в чате — они выполняются сразу.
+            </p>
+          </div>
+          <div class="card wide">
+            <h2>Цели</h2>
+            <table class="history-table">
+              <thead>
+                <tr>
+                  <th>Статус</th>
+                  <th>Приоритет</th>
+                  <th>Цель</th>
+                  <th>Обновлена</th>
+                </tr>
+              </thead>
+              <tbody id="goals-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <!-- ── Вкладка «Диспетчер» ──────────────────────────────────── -->
       <section id="tab-dispatcher" class="tab-panel">
         <div class="dispatcher-toolbar">
           <h2>🛰 Гибридный диспетчер</h2>
-          <button id="run-analysis-btn" type="button">
-            ▶ Запустить анализ
-          </button>
+          <button id="run-analysis-btn" type="button">▶ Фоновый прогон</button>
           <button id="export-report-btn" type="button" class="mini-btn">
             💾 Экспорт отчёта
           </button>

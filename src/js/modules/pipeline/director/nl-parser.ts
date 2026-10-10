@@ -669,6 +669,13 @@ const TERMINAL_REQUEST_PATTERNS: RegExp[] = [
   /(?:разверни|развернуть|инициализируй)\s+(?:базовую\s+)?структуру/i,
   // ── Обновление зависимостей (неинтерактивный npm-сценарий) ──
   /(?:обнови|обновить)\s+(?:модули|зависимости|пакеты|node_modules)/i,
+  // ── Резервная копия / восстановление памяти ИИ (npm run backup/restore) ──
+  // Внимание: \w не матчит кириллицу — используем явные классы [а-яё]
+  /резервн[а-яё]*\s+копи[а-яё]*\s+(?:памяти|данных|проекта)/i,
+  /(?:сделай|создай)\s+(?:бэкап|backup)\b/i,
+  /(?:бэкап|backup)\s+(?:памяти|данных)/i,
+  /восстанови\s+(?:память|данные|копи[а-яё]*|бэкап|backup)/i,
+  /восстанов[а-яё]*\s+из\s+(?:копии|бэкапа|backup)/i,
 ];
 
 /**
@@ -757,6 +764,61 @@ const CODE_REQUEST_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * Паттерны, указывающие на операцию с зависимостями (роль `package`).
+ *
+ * Покрывают: «обнови модули/зависимости», «установи пакет X»,
+ * «удали пакет X», «проверь конфликты зависимостей», явные npm/pip
+ * команды (install/update/uninstall). Приоритет над терминальной ролью:
+ * PackageAgent безопаснее TerminalAgent для мутаций манифеста
+ * (whitelist npm/pip + статический анализ конфликтов до выполнения).
+ */
+const PACKAGE_REQUEST_PATTERNS: RegExp[] = [
+  /(?:обнови|обновить)\s+(?:модули|зависимости|пакеты|node_modules)/i,
+  /(?:установи|установить)\s+(?:модуль|пакет|зависимость|зависимости)/i,
+  /(?:удали|удалить)\s+(?:пакет|зависимость|зависимости)/i,
+  /(?:провер(?:ь|ить)|найд(?:и|ти))\s+конфликт/i,
+  /конфликт(?:ы)?\s+(?:версий|зависимост)/i,
+  /\bnpm\s+(?:install|update|uninstall)\b/i,
+  /\bpip\s+(?:install|uninstall)\b/i,
+];
+
+/**
+ * Определить, запрашивает ли пользователь операцию с зависимостями
+ * (PackageAgent: install/update/uninstall/check-conflicts).
+ */
+export function looksLikePackageRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+  return PACKAGE_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
+}
+
+/**
+ * Паттерны, указывающие на запрос состояния системных ресурсов (роль
+ * `system`). Покрывают: «загрузка CPU/процессора», «сколько памяти/ОЗУ»,
+ * «оперативная память», «ресурсы компьютера/системы», «состояние системы».
+ * Сформулированы специфично, чтобы не перехватывать финансовые вопросы
+ * о состоянии портфеля.
+ */
+const SYSTEM_STATUS_REQUEST_PATTERNS: RegExp[] = [
+  /загрузк[аеу]\s+(?:cpu|цп|процессор)/i,
+  /загрузк[аеу]\s+(?:процессора|системы|компьютера)/i,
+  /(?:сколько|какая)\s+(?:памяти|озу)/i,
+  /оперативн[аяое]\s+памят/i,
+  /ресурс[ыа]\s+(?:компьютера|системы|машины|пк)/i,
+  /состояни[ея]\s+(?:системы|компьютера|машины|пк)/i,
+  /снимок\s+(?:системы|ресурсов)/i,
+  /производительность\s+(?:системы|компьютера|пк)/i,
+];
+
+/**
+ * Определить, запрашивает ли пользователь состояние системных ресурсов
+ * (SystemResourceAgent: CPU/RAM). Операция только для чтения.
+ */
+export function looksLikeSystemStatusRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+  return SYSTEM_STATUS_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
+}
+
+/**
  * Определить, запрашивает ли пользователь файловую операцию.
  */
 export function looksLikeFileRequest(text: string): boolean {
@@ -823,6 +885,57 @@ export function looksLikeGreeting(text: string): boolean {
   if (trimmed.length === 0 || trimmed.length > 60) return false;
   const lower = trimmed.toLowerCase();
   return GREETING_KEYWORDS.some((word) => lower.includes(word));
+}
+
+/** Паттерны вопроса о состоянии дел (статусе) — отвечаем мгновенно без LLM */
+const STATUS_QUESTION_PATTERNS: RegExp[] = [
+  /как дела/i,
+  /что новог/i,
+  /как ты/i,
+  /что происходит/i,
+  /как обстановка/i,
+  /как настроение/i,
+  /как поживае/i,
+  /как продвиг/i,
+];
+
+/**
+ * Быстро проверить, спрашивает ли пользователь о состоянии дел
+ * («Как дела?», «Что нового?»). Такие вопросы получают мгновенный ответ
+ * из фактов/статуса БЕЗ LLM — fast-path Director.
+ */
+export function looksLikeStatusQuestion(text: string): boolean {
+  const lower = text.toLowerCase();
+  return STATUS_QUESTION_PATTERNS.some((pattern) => pattern.test(lower));
+}
+
+/** Паттерны «реплика-задача/идея» — кандидат на превращение в цель цикла */
+const TASK_INTENT_PATTERNS: RegExp[] = [
+  /^задача[:\s]/i,
+  /^идея[:\s]/i,
+  /давай\s+(сделаем|сделать|добав|реализ|внедр|напишем|написать|подключ)/i,
+  /хочу,?\s+чтобы/i,
+  /нужно\s+(сделать|добав|реализ|внедр|написать)/i,
+  /стоит\s+(сделать|добав|реализ)/i,
+  /запланир/i,
+  /добавь\s+в\s+план/i,
+  /сделай\s+(это\s+)?(потом|позже)/i,
+  /отложи\s+(это\s+)?(в\s+)?(план|цели)/i,
+  /внедр[иья]/i,
+  /реализуй\s+(в\s+)?(проект|приложен)/i,
+];
+
+/**
+ * Быстро проверить, является ли сообщение репликой-задачей/идеей
+ * («давай добавим экспорт в PDF», «задача: покрыть модуль тестами»).
+ * Такие реплики — кандидат на превращение в цель автономного цикла
+ * (если у Директора подключён goalIntake), а не на мгновенный запуск агентов.
+ */
+export function looksLikeTaskIntent(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length < 8 || trimmed.length > 300) return false;
+  const lower = trimmed.toLowerCase();
+  return TASK_INTENT_PATTERNS.some((pattern) => pattern.test(lower));
 }
 
 /**
@@ -1104,8 +1217,17 @@ function determineRequiredAgents(
     agents.push('file');
   }
 
+  // ── Операции с зависимостями (PackageAgent) ──
+  // Приоритет над терминалом: «обнови модули», «npm install lodash» —
+  // безопаснее через PackageAgent (whitelist npm/pip + статический
+  // анализ конфликтов), чем через TerminalAgent.
+  const packageRequest = looksLikePackageRequest(text);
+  if (packageRequest) {
+    agents.push('package');
+  }
+
   // ── Терминальные операции (TerminalAgent) ──
-  if (looksLikeTerminalRequest(text)) {
+  if (!packageRequest && looksLikeTerminalRequest(text)) {
     agents.push('terminal');
   }
 
@@ -1114,6 +1236,11 @@ function determineRequiredAgents(
   // терминальной командой, «запусти процесс/сервер X» — ProcessAgent.
   if (looksLikeProcessRequest(text)) {
     agents.push('process');
+  }
+
+  // ── Системные ресурсы (SystemResourceAgent) ──
+  if (looksLikeSystemStatusRequest(text)) {
+    agents.push('system');
   }
 
   // ── Операции автоматизации (AutomationAgent) ──

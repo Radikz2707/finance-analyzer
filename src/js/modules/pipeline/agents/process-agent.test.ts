@@ -546,8 +546,11 @@ describe('ProcessAgent — status и outputTail', () => {
       status: 'running',
       exitCode: null,
       restarts: 0,
-      uptimeMs: 0,
+      // uptimeMs — время с запуска: на медленной машине может успеть
+      // стать 1+ мс до замера, поэтому проверяем только тип
+      uptimeMs: expect.any(Number),
     });
+    expect(a.uptimeMs).toBeGreaterThanOrEqual(0);
     expect(a.startedAt).toBeTruthy();
     expect(typeof a.outputTail).toBe('string');
     expect(a.outputTail).toBe('');

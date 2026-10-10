@@ -14,6 +14,11 @@
  */
 
 import type { FileAgentAction, FileAgentInput } from '../agents/file-agent.js';
+import type {
+  PackageAction,
+  PackageAgentInput,
+} from '../agents/package-agent.js';
+import type { SystemResourceInput } from '../agents/system-resource-agent.js';
 import type { ProcessAgentInput } from '../agents/process-agent.js';
 import type { TerminalAgentInput } from '../agents/terminal-agent.js';
 import type { AutomationAgentInput } from '../agents/automation-agent/types.js';
@@ -24,7 +29,9 @@ import {
   looksLikeAutomationRequest,
   looksLikeCodeRequest,
   looksLikeFileRequest,
+  looksLikePackageRequest,
   looksLikeProcessRequest,
+  looksLikeSystemStatusRequest,
   looksLikeTerminalRequest,
 } from './nl-parser.js';
 
@@ -239,6 +246,26 @@ const COMMAND_RULES: ReadonlyArray<{
     build: () => ({ command: 'npm', args: ['run', 'update-modules:auto'] }),
   },
   {
+    // «сделай резервную копию памяти» / «бэкап данных» → npm run backup
+    // (кириллица: \w не матчит её — явные классы [а-яё])
+    pattern:
+      /(?:резервн[а-яё]*\s+копи[а-яё]*\s+(?:памяти|данных|проекта)|(?:сделай|создай)\s+(?:бэкап|backup)\b|(?:бэкап|backup)\s+(?:памяти|данных))/i,
+    build: () => ({ command: 'npm', args: ['run', 'backup'] }),
+  },
+  {
+    // «восстанови память из копии 2026-10-10-22-00-00» / «восстанови из бэкапа»
+    // → npm run restore (без имени — самая свежая копия, --latest).
+    // Существительное обязательно: «восстанови файл X» остаётся FileAgent.
+    pattern:
+      /восстанови\s+(?:память|данные|копию|копии|бэкап|backup)(?:\s+из\s+(?:копии|бэкапа|backup))?(?:\s+([a-z0-9\-:]+))?/i,
+    build: (match) => {
+      const name = (match[1] ?? '').trim();
+      return name
+        ? { command: 'npm', args: ['run', 'restore', '--', name] }
+        : { command: 'npm', args: ['run', 'restore', '--', '--latest'] };
+    },
+  },
+  {
     // «выполни команду npm run build»
     pattern: /выполни\s+команду\s*[:：]?\s*(.+)/i,
     build: (match) => parseCommandString(match[1] ?? ''),
@@ -339,6 +366,148 @@ export function buildTerminalAgentInput(
     return null;
   }
   return extractTerminalCommand(question.text);
+}
+
+// ──────────────────────────────────────────────
+// 2.5. Операции с зависимостями (PackageAgent)
+// ──────────────────────────────────────────────
+
+/** Правила определения действия PackageAgent (в порядке приоритета) */
+const PACKAGE_ACTION_PATTERNS: ReadonlyArray<{
+  action: PackageAction;
+  patterns: ReadonlyArray<RegExp>;
+}> = [
+  {
+    action: 'check-conflicts',
+    patterns: [
+      /(?:провер(?:ь|ить)|найд(?:и|ти))\s+конфликт/i,
+      /конфликт(?:ы)?\s+(?:версий|зависимост)/i,
+    ],
+  },
+  {
+    action: 'uninstall',
+    patterns: [
+      /(?:удали|удалить)\s+(?:пакет|зависимость|зависимости)/i,
+      /\bnpm\s+uninstall/i,
+      /\bpip\s+uninstall/i,
+    ],
+  },
+  {
+    action: 'install',
+    patterns: [
+      /(?:установи|установить)\s+(?:модуль|пакет|зависимость|зависимости)/i,
+      /\bnpm\s+install/i,
+      /\bpip\s+install/i,
+    ],
+  },
+  {
+    action: 'update',
+    patterns: [
+      /(?:обнови|обновить)\s+(?:модули|зависимости|пакеты|node_modules)/i,
+      /\bnpm\s+update/i,
+    ],
+  },
+];
+
+/** Служебные слова, не являющиеся именами пакетов */
+const PACKAGE_STOP_WORDS = new Set([
+  'модуль',
+  'модули',
+  'пакет',
+  'пакеты',
+  'зависимость',
+  'зависимости',
+  'зависимостях',
+  'node_modules',
+  'версии',
+  'конфликты',
+  'конфликт',
+  'проекта',
+  'менеджер',
+]);
+
+/**
+ * Извлечь имена пакетов из текста запроса.
+ * Пустой список допустим: update без имён → `npm update` (все пакеты).
+ */
+function extractPackageNames(text: string): string[] {
+  const tailPatterns: ReadonlyArray<RegExp> = [
+    /\bn(?:pm|px)\s+(?:install|update|uninstall|i)\s+(.+)$/i,
+    /\bpip\s+(?:install|uninstall)\s+(.+)$/i,
+    /(?:установи|установить|удали|удалить|обнови|обновить)\s+(?:модуль|пакет|пакеты|зависимость|зависимости)\s+(.+)$/i,
+  ];
+  for (const pattern of tailPatterns) {
+    const match = text.match(pattern);
+    const tail = match?.[1];
+    if (!tail) {
+      continue;
+    }
+    const names = tail
+      .split(/[\s,;]+/)
+      .map((token) => token.replace(/[.,;:!?»"')\]]+$/u, ''))
+      .filter(
+        (token) =>
+          token.length > 0 &&
+          !token.startsWith('-') &&
+          /^[a-zA-Z0-9@/._~^><=+-]+$/.test(token) &&
+          !PACKAGE_STOP_WORDS.has(token.toLowerCase()),
+      );
+    if (names.length > 0) {
+      return [...new Set(names)];
+    }
+  }
+  return [];
+}
+
+/** Определить менеджер зависимостей по формулировке запроса */
+function detectPackageManager(text: string): 'npm' | 'pip' {
+  if (/\bpip\b/i.test(text)) return 'pip';
+  return 'npm';
+}
+
+/**
+ * Построить вход PackageAgent из интерпретированного вопроса.
+ * Возвращает null, если запрос не про зависимости или действие не
+ * распознано. dryRun: false — реплика в чате означает реальное действие;
+ * мутации блокируются самим PackageAgent при error-конфликтах манифеста.
+ */
+export function buildPackageAgentInput(
+  question: InterpretedQuestion,
+): PackageAgentInput | null {
+  if (!looksLikePackageRequest(question.text)) {
+    return null;
+  }
+  const lower = question.text.toLowerCase();
+  let action: PackageAction | null = null;
+  for (const entry of PACKAGE_ACTION_PATTERNS) {
+    if (entry.patterns.some((pattern) => pattern.test(lower))) {
+      action = entry.action;
+      break;
+    }
+  }
+  if (!action) {
+    return null;
+  }
+  return {
+    action,
+    manager: detectPackageManager(question.text),
+    packages: extractPackageNames(question.text),
+    dryRun: false,
+  };
+}
+
+/**
+ * Построить вход SystemResourceAgent из интерпретированного вопроса.
+ * Запросы о ресурсах только для чтения: любое распознанное обращение
+ * → снимок состояния системы.
+ */
+export function buildSystemResourceInput(
+  question: InterpretedQuestion,
+): SystemResourceInput | null {
+  if (!looksLikeSystemStatusRequest(question.text)) {
+    return null;
+  }
+  return { action: 'status' };
 }
 
 // ──────────────────────────────────────────────

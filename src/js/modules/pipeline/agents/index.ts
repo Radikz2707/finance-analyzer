@@ -1,6 +1,4 @@
-export {
-  AutomationAgent,
-} from './automation-agent/automation-agent.js';
+export { AutomationAgent } from './automation-agent/automation-agent.js';
 export {
   type AutomationAgentInput,
   type AutomationAgentOutput,
@@ -15,7 +13,8 @@ export {
   type WorkflowStatus,
 } from './automation-agent/types.js';
 
-export { GoalAgent } from './goal-agent/goal-agent.js';
+export { GoalAgent, type GoalAgentConfig } from './goal-agent/goal-agent.js';
+export { GoalStore, type GoalStoreOptions } from './goal-agent/goal-store.js';
 export {
   type GoalAgentAction,
   type GoalAgentInput,

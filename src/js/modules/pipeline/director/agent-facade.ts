@@ -28,6 +28,8 @@ import {
 import type { DirectorActionAgents } from '../agents/agent-factory.js';
 import type { FileAgentOutput } from '../agents/file-agent.js';
 import type { ProcessAgentOutput } from '../agents/process-agent.js';
+import type { PackageAgentOutput } from '../agents/package-agent.js';
+import type { SystemResourceOutput } from '../agents/system-resource-agent.js';
 import type { TerminalAgentOutput } from '../agents/terminal-agent.js';
 import type { AutomationAgentOutput } from '../agents/automation-agent/types.js';
 import type { CodingWorkflowOutput } from '../coding-workflow/types.js';
@@ -35,7 +37,9 @@ import {
   buildAutomationAgentInput,
   buildCodingWorkflowInput,
   buildFileAgentInput,
+  buildPackageAgentInput,
   buildProcessAgentInput,
+  buildSystemResourceInput,
   buildTerminalAgentInput,
 } from './action-input-builder.js';
 import type {
@@ -239,6 +243,10 @@ export class DirectorAgentFacade {
         return this.runFileRole(question);
       case 'terminal':
         return this.runTerminalRole(question);
+      case 'package':
+        return this.runPackageRole(question);
+      case 'system':
+        return this.runSystemRole(question);
       case 'process':
         return this.runProcessRole(question);
       case 'automation':
@@ -401,6 +409,98 @@ export class DirectorAgentFacade {
           }`;
     return {
       summary,
+      sources: [],
+      detail: { ...output },
+    };
+  }
+
+  /**
+   * Роль package: парсинг запроса → выполнение PackageAgent.
+   * PackageAgent сам ограничен whitelist-командами npm/pip и
+   * блокирует мутации при error-конфликтах манифеста.
+   */
+  private async runPackageRole(
+    question: InterpretedQuestion,
+  ): Promise<DirectorAgentPayload> {
+    const agent = this.actionAgents?.package;
+    if (!agent) {
+      return {
+        summary: 'Управление зависимостями доступно в десктопном режиме',
+        sources: [],
+      };
+    }
+
+    const intent = buildPackageAgentInput(question);
+    if (!intent) {
+      return {
+        summary: `Не удалось распознать операцию с зависимостями в запросе: «${question.text}»`,
+        sources: [],
+      };
+    }
+
+    const result = await agent.execute(intent);
+    if (!result.success || !result.data) {
+      const message =
+        result.error instanceof Error
+          ? result.error.message
+          : String(result.error ?? 'неизвестная ошибка');
+      return {
+        summary: `Операция с зависимостями не выполнена: ${message}`,
+        sources: [],
+      };
+    }
+    const output = result.data as PackageAgentOutput;
+    return {
+      summary: output.message,
+      sources: [],
+      detail: {
+        action: output.action,
+        manager: output.manager,
+        commands: output.commands,
+        conflicts: output.conflicts,
+        changed: output.changed,
+      },
+    };
+  }
+
+  /**
+   * Роль system: снимок системных ресурсов (CPU/RAM) через
+   * SystemResourceAgent. Операция только для чтения — security-gate
+   * не требуется.
+   */
+  private async runSystemRole(
+    question: InterpretedQuestion,
+  ): Promise<DirectorAgentPayload> {
+    const agent = this.actionAgents?.system;
+    if (!agent) {
+      return {
+        summary: 'Мониторинг системных ресурсов доступен в десктопном режиме',
+        sources: [],
+      };
+    }
+
+    const intent = buildSystemResourceInput(question);
+    if (!intent) {
+      return {
+        summary: `Не удалось распознать запрос о системных ресурсах: «${question.text}»`,
+        sources: [],
+      };
+    }
+
+    const result = await agent.execute(intent);
+    if (!result.success || !result.data) {
+      const message =
+        result.error instanceof Error
+          ? result.error.message
+          : String(result.error ?? 'неизвестная ошибка');
+      return {
+        summary: `Снимок системных ресурсов не выполнен: ${message}`,
+        sources: [],
+      };
+    }
+    const output = result.data as SystemResourceOutput;
+    return {
+      summary: output.message,
       sources: [],
       detail: { ...output },
     };

@@ -45,6 +45,9 @@ data/*-shm
 data/*-wal
 data/*-journal
 
+# 💾 Резервные копии data/ (npm run backup / restore)
+backups/
+
 # Python runtime artifacts
 __pycache__/
 *.py[cod]

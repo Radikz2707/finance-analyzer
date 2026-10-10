@@ -9,9 +9,12 @@
 import type {
   AgentPanelState,
   AskResult,
+  AutonomousIterationEvent,
   DirectorAuditEvent,
   FinanceDesktopApi,
+  GoalSummary,
   HarnessDashboardPayload,
+  LastAnalysisInfo,
 } from '../api-types.js';
 import {
   formatAuditEventLine,
@@ -61,6 +64,28 @@ const reconnectOllamaBtn = $(
 const exportReportBtn = $('#export-report-btn') as HTMLButtonElement;
 const exportPdfBtn = $('#export-report-pdf-btn') as HTMLButtonElement;
 const harnessRunNote = $('#harness-run-note');
+
+// Вкладка «Анализ» (результат + экспорт)
+const analysisFrameEl = $('#analysis-frame') as HTMLIFrameElement;
+const analysisReportEl = $('#analysis-report');
+const analysisMetaEl = $('#analysis-meta');
+const analysisNote = $('#analysis-note');
+const analysisTextEl = $('#analysis-text');
+const analysisRunBtn = $('#analysis-run-btn') as HTMLButtonElement;
+const analysisExportHtmlBtn = $(
+  '#analysis-export-html-btn',
+) as HTMLButtonElement;
+const analysisExportPdfBtn = $('#analysis-export-pdf-btn') as HTMLButtonElement;
+
+// Вкладка «Цели» (автономный цикл)
+const goalsBody = $('#goals-body') as HTMLTableSectionElement;
+const autonomousStatusEl = $('#autonomous-status');
+const autonomousToggleBtn = $('#autonomous-toggle-btn') as HTMLButtonElement;
+const autonomousRunBtn = $('#autonomous-run-btn') as HTMLButtonElement;
+const goalInput = $('#goal-input') as HTMLInputElement;
+const addGoalBtn = $('#add-goal-btn') as HTMLButtonElement;
+const goalsNote = $('#goals-note');
+let autonomousRunning = false;
 
 const MAX_ACTIVITY_LINES = 400;
 const MAX_CONSOLE_LINES = 1500;
@@ -568,6 +593,268 @@ async function refreshHarness(): Promise<void> {
   renderHarness(payload);
 }
 
+// ── Вкладка «Цели»: рендер и действия ────────────────────────
+
+const GOAL_STATUS_MARKS: Record<string, string> = {
+  pending: '⏳',
+  active: '▶',
+  paused: '⏸',
+  completed: '✅',
+  cancelled: '✖',
+};
+
+function renderGoals(goals: readonly GoalSummary[]): void {
+  goalsBody.innerHTML = '';
+  if (goals.length === 0) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 4;
+    cell.textContent =
+      'Целей нет — добавьте первую на этой вкладке или командой /goal в чате.';
+    row.appendChild(cell);
+    goalsBody.appendChild(row);
+    return;
+  }
+  for (const goal of goals) {
+    const row = document.createElement('tr');
+    const statusCell = document.createElement('td');
+    statusCell.textContent = `${GOAL_STATUS_MARKS[goal.status] ?? '•'} ${goal.status}`;
+    const priorityCell = document.createElement('td');
+    priorityCell.textContent = goal.priority;
+    const nameCell = document.createElement('td');
+    nameCell.textContent = goal.name;
+    nameCell.title = goal.description;
+    const updatedCell = document.createElement('td');
+    updatedCell.textContent = goal.createdAt
+      ? formatLocalTime(goal.createdAt)
+      : '—';
+    row.append(statusCell, priorityCell, nameCell, updatedCell);
+    goalsBody.appendChild(row);
+  }
+}
+
+/** Обновить статус цикла и список целей (IPC → main → AutonomousBridge) */
+async function refreshAutonomous(): Promise<void> {
+  try {
+    const [status, goals] = await Promise.all([
+      window.financeApp.autonomousStatus(),
+      window.financeApp.goalsList(),
+    ]);
+    if (status) {
+      autonomousRunning = status.running;
+      autonomousStatusEl.textContent = status.running
+        ? `▶ цикл каждые ${status.intervalSec} с · активных целей: ${status.activeGoals} · итераций: ${status.loop.totalIterations}`
+        : `⏹ выключен · активных целей: ${status.activeGoals} · итераций: ${status.loop.totalIterations}`;
+      autonomousToggleBtn.textContent = status.running
+        ? '⏹ Выключить'
+        : '▶ Включить';
+    } else {
+      autonomousStatusEl.textContent = 'автономный цикл недоступен';
+    }
+    renderGoals(goals);
+  } catch {
+    autonomousStatusEl.textContent = 'автономный цикл недоступен';
+  }
+}
+
+function showGoalsNote(text: string, ok: boolean): void {
+  goalsNote.textContent = text;
+  goalsNote.className = ok ? 'harness-run-note ok' : 'harness-run-note error';
+}
+
+// ── Вкладка «Анализ»: рендер, запуск, экспорт ────────────────
+
+function showAnalysisNote(text: string, ok: boolean): void {
+  analysisNote.textContent = text;
+  analysisNote.className = ok
+    ? 'harness-run-note ok'
+    : 'harness-run-note error';
+}
+
+/** Загрузить последний анализ в pre + метаданные */
+/** Экранирование HTML в данных отчёта */
+function escapeHtmlReport(value: string): string {
+  return value
+    .replace(/&/g, '&')
+    .replace(/</g, '<')
+    .replace(/>/g, '>')
+    .replace(/"/g, '"');
+}
+
+/**
+ * Богатый отчёт на вкладке «Анализ» (в стиле старого report.html):
+ * карточки-показатели + таблица активов + ценовые алерты.
+ * Текстовая сводка остаётся в analysis-text ниже.
+ */
+function renderAnalysisReport(info: LastAnalysisInfo): string {
+  const fmtRub = (value: number): string =>
+    `${Math.round(value).toLocaleString('ru-RU')} ₽`;
+  const fmtPct = (value: number): string => `${value.toFixed(1)}%`;
+  const assets = info.assets ?? [];
+  const alerts = info.alerts ?? [];
+  const totalPnl = assets.reduce(
+    (sum, asset) => sum + (asset.unrealizedProfitRub ?? 0),
+    0,
+  );
+  const maxDeviation = assets.reduce(
+    (max, asset) =>
+      Math.max(max, Math.abs(asset.currentPercent - asset.targetPercent)),
+    0,
+  );
+
+  const cards = `
+    <div class="analysis-cards">
+      <div class="analysis-card"><div class="card-label">Стоимость портфеля</div><div class="card-value">${fmtRub(info.totalValue ?? 0)}</div></div>
+      <div class="analysis-card"><div class="card-label">Нереализованный P&L</div><div class="card-value ${totalPnl < 0 ? 'neg' : 'pos'}">${fmtRub(totalPnl)}</div></div>
+      <div class="analysis-card"><div class="card-label">Активов</div><div class="card-value">${assets.length}</div></div>
+      <div class="analysis-card"><div class="card-label">Макс. отклонение</div><div class="card-value ${maxDeviation > 15 ? 'neg' : ''}">${fmtPct(maxDeviation)}</div></div>
+    </div>`;
+
+  const rows = assets
+    .map((asset) => {
+      const deviation = asset.currentPercent - asset.targetPercent;
+      const pnl = asset.unrealizedProfitRub;
+      const flags = asset.isConcentrated ? ['концентрация'] : [];
+      const ticker = escapeHtmlReport(asset.ticker);
+      const name = escapeHtmlReport(asset.name);
+      const status = escapeHtmlReport(asset.status);
+      const flagsHtml =
+        flags.length > 0
+          ? `<div class="muted">${escapeHtmlReport(flags.join(', '))}</div>`
+          : '';
+      const deviationHtml = `<span class="${deviation > 2 ? 'neg' : deviation < -2 ? 'pos' : ''}">${deviation > 0 ? '+' : ''}${deviation.toFixed(1)} п.п.</span>`;
+      const pnlHtml =
+        pnl === undefined
+          ? '—'
+          : `<span class="${pnl < 0 ? 'neg' : 'pos'}">${fmtRub(pnl)}</span>`;
+      return `<tr${asset.isConcentrated ? ' class="warn"' : ''}><td><b>${ticker}</b><div class="muted">${name}</div></td><td class="num">${fmtPct(asset.currentPercent)}</td><td class="num">${fmtPct(asset.targetPercent)}</td><td class="num">${deviationHtml}</td><td class="num">${pnlHtml}</td><td>${status}${flagsHtml}</td></tr>`;
+    })
+    .join('');
+  const table =
+    rows.length === 0
+      ? ''
+      : `<h2>📋 Структура портфеля</h2><table class="history-table analysis-assets-table"><thead><tr><th>Актив</th><th class="num">Доля (тек.)</th><th class="num">Доля (цель)</th><th class="num">Отклонение</th><th class="num">P&L</th><th>Статус</th></tr></thead><tbody>${rows}</tbody></table>`;
+
+  const alertsHtml =
+    alerts.length === 0
+      ? ''
+      : `<h2>🔔 Ценовые алерты</h2><ul>${alerts
+          .map((alert) => {
+            const price =
+              alert.currentPrice !== undefined
+                ? ` (цена ${alert.currentPrice})`
+                : '';
+            return `<li><b>${escapeHtmlReport(alert.ticker)}</b> — ${escapeHtmlReport(alert.alertLevel ?? 'alert')}${price}</li>`;
+          })
+          .join('')}</ul>`;
+
+  return cards + table + alertsHtml;
+}
+
+async function refreshAnalysis(): Promise<void> {
+  try {
+    // Приоритет 1: полный отчёт конвейера (report.html) — как npm run pipeline
+    const report = await window.financeApp.getLastPipelineReport();
+    if (report && report.htmlContent) {
+      const finished = report.finishedAt
+        ? formatLocalTime(report.finishedAt)
+        : '—';
+      const seconds = (report.elapsedMs / 1000).toFixed(1);
+      analysisMetaEl.textContent = `полный конвейер · завершён ${finished} · ${seconds} с`;
+      analysisFrameEl.hidden = false;
+      analysisFrameEl.srcdoc = report.htmlContent;
+      analysisReportEl.innerHTML = '';
+      analysisTextEl.hidden = true;
+      return;
+    }
+
+    // Приоритет 2: сводка Директора (карточки + таблицы) + текст
+    analysisFrameEl.hidden = true;
+    analysisTextEl.hidden = false;
+    const info = await window.financeApp.getLastAnalysis();
+    if (!info || !info.text) {
+      analysisMetaEl.textContent = 'анализ не запускался';
+      analysisReportEl.innerHTML = '';
+      return;
+    }
+    const finished = info.finishedAt ? formatLocalTime(info.finishedAt) : '—';
+    const seconds = info.elapsedMs ? (info.elapsedMs / 1000).toFixed(1) : '—';
+    analysisMetaEl.textContent = `завершён ${finished} · ${seconds} с · ${info.sourceLabel}`;
+    analysisReportEl.innerHTML = renderAnalysisReport(info);
+    analysisTextEl.textContent = info.text;
+  } catch {
+    analysisMetaEl.textContent = 'статус анализа недоступен';
+  }
+}
+
+/**
+ * Запустить полный конвейер (как npm run pipeline) прямо в приложении
+ * и показать готовый report.html во вкладке «Анализ».
+ */
+async function runPipelineAnalysis(
+  sourceBtn: HTMLButtonElement,
+): Promise<void> {
+  const originalText = sourceBtn.textContent || '▶ Запустить анализ';
+  sourceBtn.disabled = true;
+  analysisNote.textContent =
+    '⏳ Полный конвейер: данные → исследование → AI-анализ ' +
+    '(на CPU может занять несколько минут)…';
+  analysisNote.className = 'harness-run-note progress';
+  try {
+    const report = await window.financeApp.runPipelineReport();
+    const seconds = (report.elapsedMs / 1000).toFixed(1);
+    if (report.success) {
+      analysisNote.textContent = `✅ Отчёт готов за ${seconds} с · ${report.htmlPath || 'report.html'}`;
+      analysisNote.className = 'harness-run-note ok';
+    } else {
+      analysisNote.textContent = `⚠️ Конвейер завершён с замечаниями за ${seconds} с`;
+      analysisNote.className = 'harness-run-note error';
+    }
+    await refreshAnalysis();
+  } catch (err) {
+    analysisNote.textContent = `✗ Конвейер упал: ${
+      err instanceof Error ? err.message : String(err)
+    }`;
+    analysisNote.className = 'harness-run-note error';
+  } finally {
+    sourceBtn.disabled = false;
+    sourceBtn.textContent = originalText;
+  }
+}
+
+/** Запустить анализ Директора (единая точка для шапки и вкладки) */
+async function runPortfolioAnalysis(
+  sourceBtn: HTMLButtonElement,
+): Promise<void> {
+  sourceBtn.disabled = true;
+  const originalText = sourceBtn.textContent || '▶ Запустить анализ';
+  sourceBtn.textContent = '⏳ Анализ…';
+  try {
+    const result = await window.financeApp.runAnalysis();
+    if (result.success) {
+      appendActivityLine(`📊 ${result.message}`, 'type-agent');
+      showAnalysisNote(`✅ ${result.message}`, true);
+      showToast('✅ Анализ завершён', 'ok');
+    } else {
+      showAnalysisNote(`✗ ${result.message}`, false);
+      showToast(`❌ ${result.message}`, 'error');
+    }
+  } catch (err) {
+    showAnalysisNote(
+      `✗ Ошибка анализа: ${err instanceof Error ? err.message : String(err)}`,
+      false,
+    );
+    showToast(
+      `❌ Ошибка анализа: ${err instanceof Error ? err.message : String(err)}`,
+      'error',
+    );
+  } finally {
+    sourceBtn.disabled = false;
+    sourceBtn.textContent = originalText;
+    await refreshAnalysis();
+  }
+}
+
 // ── Вкладки ──────────────────────────────────────────────────
 
 function bindTabs(): void {
@@ -592,6 +879,12 @@ function bindTabs(): void {
       }
       if (target === 'agents') {
         void refreshAux();
+      }
+      if (target === 'goals') {
+        void refreshAutonomous();
+      }
+      if (target === 'analysis') {
+        void refreshAnalysis();
       }
     });
   }
@@ -744,10 +1037,42 @@ async function init(): Promise<void> {
   for (const btn of Array.from(
     document.querySelectorAll<HTMLButtonElement>('.quick-btn'),
   )) {
+    // «Идеи» — отдельная кнопка: показывает предложения, а не отправляет вопрос
+    if (btn.id === 'ideas-btn') {
+      continue;
+    }
     btn.addEventListener('click', () => {
       void ask(btn.dataset.question ?? '');
     });
   }
+
+  const ideasBtn = $('#ideas-btn') as HTMLButtonElement;
+  ideasBtn.addEventListener('click', async () => {
+    ideasBtn.disabled = true;
+    try {
+      const ideas = await window.financeApp.getProactiveIdeas();
+      if (ideas.length === 0) {
+        appendMessage(
+          '💡 Пока предложений нет. Поставь цель («давай добавим …») ' +
+            'или задай вопрос по портфелю.',
+          'director',
+        );
+        return;
+      }
+      const lines = ideas.map(
+        (idea) =>
+          `${idea.kind === 'project' ? '🛠' : '📈'} ${idea.title}\n${idea.text}`,
+      );
+      appendMessage('💡 Мои предложения:\n\n' + lines.join('\n\n'), 'director');
+    } catch (err) {
+      appendMessage(
+        `Не удалось получить идеи: ${err instanceof Error ? err.message : String(err)}`,
+        'director',
+      );
+    } finally {
+      ideasBtn.disabled = false;
+    }
+  });
 
   activityClearBtn.addEventListener('click', () => {
     activityEl.textContent = '';
@@ -801,27 +1126,17 @@ async function init(): Promise<void> {
     }
   });
 
-  // Ручной запуск анализа директора (ленивый анализ)
-  const directorRunBtn = $('#director-run-analysis-btn') as HTMLButtonElement | null;
+  // Шапка «▶ Анализ»: запускает анализ и открывает вкладку «📊 Анализ»,
+  // где виден результат и кнопки экспорта (единая точка входа)
+  const directorRunBtn = $(
+    '#director-run-analysis-btn',
+  ) as HTMLButtonElement | null;
   if (directorRunBtn) {
-    directorRunBtn.addEventListener('click', async () => {
-      directorRunBtn.disabled = true;
-      const originalText = directorRunBtn.textContent || '▶ Анализ директора';
-      directorRunBtn.textContent = '⏳ Анализ...';
-      try {
-        const result = await window.financeApp.runAnalysis();
-        if (result.success) {
-          showToast(`✅ ${result.message}`, 'ok');
-          await refreshAux();
-        } else {
-          showToast(`❌ ${result.message}`, 'error');
-        }
-      } catch (err) {
-        showToast(`❌ Ошибка: ${err instanceof Error ? err.message : String(err)}`, 'error');
-      } finally {
-        directorRunBtn.disabled = false;
-        directorRunBtn.textContent = originalText;
-      }
+    directorRunBtn.addEventListener('click', () => {
+      document
+        .querySelector<HTMLButtonElement>('.tab-btn[data-tab="analysis"]')
+        ?.click();
+      void runPortfolioAnalysis(analysisRunBtn);
     });
   }
 
@@ -857,6 +1172,147 @@ async function init(): Promise<void> {
     }
   });
 
+  // ── Вкладка «Анализ»: полный конвейер + экспорт ──
+  analysisRunBtn.addEventListener('click', () => {
+    void runPipelineAnalysis(analysisRunBtn);
+  });
+
+  const exportAnalysis = async (
+    button: HTMLButtonElement,
+    action: () => Promise<{ ok: boolean; message: string }>,
+  ): Promise<void> => {
+    button.disabled = true;
+    try {
+      const result = await action();
+      showAnalysisNote(
+        `${result.ok ? '💾' : '✗'} ${result.message}`,
+        result.ok,
+      );
+      appendActivityLine(
+        `${result.ok ? '💾' : '✗'} ${result.message}`,
+        result.ok ? 'type-agent' : 'type-error',
+      );
+    } catch (err) {
+      showAnalysisNote(
+        `✗ Ошибка экспорта: ${err instanceof Error ? err.message : String(err)}`,
+        false,
+      );
+    } finally {
+      button.disabled = false;
+    }
+  };
+  analysisExportHtmlBtn.addEventListener('click', () => {
+    void exportAnalysis(analysisExportHtmlBtn, () =>
+      window.financeApp.exportAnalysisHtml(),
+    );
+  });
+  analysisExportPdfBtn.addEventListener('click', () => {
+    void exportAnalysis(analysisExportPdfBtn, () =>
+      window.financeApp.exportAnalysisPdf(),
+    );
+  });
+
+  // ── Вкладка «Цели»: переключение цикла, разовый запуск, добавление цели ──
+  autonomousToggleBtn.addEventListener('click', async () => {
+    autonomousToggleBtn.disabled = true;
+    try {
+      const status = autonomousRunning
+        ? await window.financeApp.autonomousStop()
+        : await window.financeApp.autonomousStart();
+      showGoalsNote(
+        status?.running
+          ? `👀 Автономный цикл включён: каждые ${status.intervalSec} с`
+          : '⏹ Автономный цикл остановлен',
+        true,
+      );
+    } catch (err) {
+      showGoalsNote(
+        `✗ Ошибка: ${err instanceof Error ? err.message : String(err)}`,
+        false,
+      );
+    } finally {
+      autonomousToggleBtn.disabled = false;
+      await refreshAutonomous();
+    }
+  });
+
+  autonomousRunBtn.addEventListener('click', async () => {
+    autonomousRunBtn.disabled = true;
+    try {
+      const result = await window.financeApp.autonomousRunOnce();
+      showGoalsNote(
+        result.started ? `⚙️ ${result.message}` : `⚠️ ${result.message}`,
+        result.started,
+      );
+    } catch (err) {
+      showGoalsNote(
+        `✗ Ошибка: ${err instanceof Error ? err.message : String(err)}`,
+        false,
+      );
+    } finally {
+      autonomousRunBtn.disabled = false;
+      await refreshAutonomous();
+    }
+  });
+
+  const submitGoal = async (): Promise<void> => {
+    const text = goalInput.value.trim();
+    if (!text) {
+      showGoalsNote('Введите текст задачи', false);
+      return;
+    }
+    addGoalBtn.disabled = true;
+    try {
+      const goal = await window.financeApp.goalsAdd(text);
+      goalInput.value = '';
+      showGoalsNote(
+        `🎯 Цель добавлена и активирована: «${goal.name}» — выполнится фоном`,
+        true,
+      );
+      appendActivityLine(
+        `🎯 Цель поставлена в план: ${goal.name}`,
+        'type-agent',
+      );
+    } catch (err) {
+      showGoalsNote(
+        `✗ Не удалось добавить цель: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        false,
+      );
+    } finally {
+      addGoalBtn.disabled = false;
+      await refreshAutonomous();
+    }
+  };
+  addGoalBtn.addEventListener('click', () => {
+    void submitGoal();
+  });
+  goalInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') void submitGoal();
+  });
+
+  // Живые уведомления о выполненных целях автономного цикла
+  window.financeApp.onAutonomousUpdate((event: AutonomousIterationEvent) => {
+    const outcome = event.outcome ? ` (${event.outcome})` : '';
+    appendActivityLine(
+      `${event.success ? '✅' : '❌'} Автономный цикл · «${event.goalName}»${outcome}`,
+      event.success ? 'type-agent' : 'type-error',
+    );
+    showToast(
+      event.success
+        ? `🎯 Цель выполнена: «${event.goalName}»${outcome}`
+        : `⚠️ Цель не выполнена: «${event.goalName}»${outcome}`,
+      event.success ? 'ok' : 'error',
+    );
+    void refreshAutonomous();
+  });
+
+  // Автообновление вкладки «Цели» (цикл работает фоном)
+  setInterval(() => {
+    void refreshAutonomous();
+  }, 10000);
+
   // Живой стриминг событий аудита
   window.financeApp.onDirectorEvent(onDirectorEvent);
   window.financeApp.onDirectorReply(onDirectorReply);
@@ -879,6 +1335,8 @@ async function init(): Promise<void> {
 
   await refreshAux();
   await refreshHarness();
+  await refreshAutonomous();
+  await refreshAnalysis();
 }
 
 void init();

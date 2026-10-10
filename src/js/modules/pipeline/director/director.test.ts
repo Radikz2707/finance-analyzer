@@ -71,6 +71,10 @@ interface BuildOpts {
   initialFacts?: DirectorFactsContext;
   maxRounds?: number;
   chatResponder?: ChatResponder;
+  /** Хук приёма задач из свободного текста (мост к автономному циклу) */
+  goalIntake?: {
+    addGoal(text: string): Promise<{ id: string; name: string }>;
+  };
   /** Детерминированный генератор случайных чисел (0..1) */
   random?: () => number;
 }
@@ -99,6 +103,7 @@ function buildDirector(opts?: BuildOpts): {
     {
       maxConsiliumRounds: opts?.maxRounds ?? 3,
       chatResponder: opts?.chatResponder,
+      goalIntake: opts?.goalIntake,
     },
   );
   director.createSession();
@@ -423,6 +428,64 @@ describe('Director: приветствия (smalltalk)', () => {
 
     expect(response.connectedAgents).toEqual([]);
     expect(response.recommendation).toBeUndefined();
+  });
+});
+
+describe('Director: приём задач из свободного текста (goalIntake)', () => {
+  it('реплика-задача превращается в цель без запуска агентов', async () => {
+    const created: string[] = [];
+    const { director } = buildDirector({
+      goalIntake: {
+        async addGoal(text) {
+          created.push(text);
+          return { id: 'goal-1234-uuid', name: text };
+        },
+      },
+    });
+    const response = await ask(
+      director,
+      'Давай добавим экспорт дашборда в PDF',
+    );
+
+    // Цель создана и подтверждена в ответе
+    expect(created).toHaveLength(1);
+    expect(created[0]).toContain('экспорт');
+    expect(response.task).toBeUndefined();
+    expect(response.connectedAgents).toHaveLength(0);
+    expect(response.text).toContain('goal-1234'.slice(0, 4));
+    expect(response.text).toContain('план');
+  });
+
+  it('немедленные действия (файл) НЕ превращаются в цель', async () => {
+    const created: string[] = [];
+    const { director } = buildDirector({
+      goalIntake: {
+        async addGoal(text) {
+          created.push(text);
+          return { id: 'goal-x', name: text };
+        },
+      },
+    });
+    const response = await ask(
+      director,
+      'Давай создай файл report-test.txt с текстом проверки',
+    );
+
+    // Файловый запрос ушёл агентам как действие, а не в цели
+    expect(created).toHaveLength(0);
+    expect(response.task).toBeDefined();
+  });
+
+  it('без goalIntake реплика-задача обрабатывается по-старому', async () => {
+    const { director } = buildDirector();
+    const response = await ask(
+      director,
+      'Давай добавим экспорт дашборда в PDF',
+    );
+
+    // Хук не подключён — задача не создаётся, идёт свободным диалогом
+    expect(response.task).toBeUndefined();
+    expect(response.text.length).toBeGreaterThan(0);
   });
 });
 

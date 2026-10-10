@@ -155,3 +155,43 @@ describe('action-input-builder: терминальные операции', () =
     ]);
   });
 });
+
+describe('backup/restore памяти ИИ через терминал', () => {
+  it('«сделай резервную копию памяти» → npm run backup', () => {
+    expect(
+      buildTerminalAgentInput(question('Сделай резервную копию памяти')),
+    ).toEqual({ command: 'npm', args: ['run', 'backup'] });
+  });
+
+  it('«бэкап данных» → npm run backup', () => {
+    expect(buildTerminalAgentInput(question('бэкап данных'))).toEqual({
+      command: 'npm',
+      args: ['run', 'backup'],
+    });
+  });
+
+  it('«восстанови память из бэкапа» → restore --latest', () => {
+    expect(
+      buildTerminalAgentInput(question('восстанови память из бэкапа')),
+    ).toEqual({ command: 'npm', args: ['run', 'restore', '--', '--latest'] });
+  });
+
+  it('«восстанови из копии 2026-10-10-22-00-00» → restore с именем', () => {
+    expect(
+      buildTerminalAgentInput(
+        question('восстанови копию из бэкапа 2026-10-10-22-00-00'),
+      ),
+    ).toEqual({
+      command: 'npm',
+      args: ['run', 'restore', '--', '2026-10-10-22-00-00'],
+    });
+  });
+
+  it('«восстанови файл src/x.ts» НЕ превращается в restore', () => {
+    const input = buildTerminalAgentInput(
+      question('восстанови файл src/test.ts'),
+    );
+    // Файловая операция: restore-правило не должно срабатывать (честный null)
+    expect(input).toBeNull();
+  });
+});

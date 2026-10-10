@@ -1,10 +1,16 @@
 /**
  * GoalAgent — управление целями, приоритетами и жизненным циклом задач.
+ *
+ * Цели персистентны: хранятся в JSON-файле (по умолчанию <dataDir>/goals.json,
+ * см. GoalStore) и переживают перезапуск процесса. Персистентность можно
+ * отключить (persistence.enabled=false) — например, в тестах или браузере.
  */
 
 import { randomUUID } from 'crypto';
 import { AgentBase } from '../../agent/agent-base.js';
 import type { AgentConfig } from '../../agent/types.js';
+import { GoalStore } from './goal-store.js';
+import type { GoalStoreOptions } from './goal-store.js';
 import type {
   GoalPriority,
   GoalStatus,
@@ -25,16 +31,110 @@ const DEFAULT_PRIORITY: Goal['priority'] = 'medium';
 const DEFAULT_TAGS: Goal['tags'] = [];
 const PRIORITIES: GoalPriority[] = ['low', 'medium', 'high', 'critical'];
 
+/** Опции конструктора GoalAgent */
+export interface GoalAgentConfig extends AgentConfig {
+  /** Настройки файловой персистентности целей */
+  persistence?: GoalStoreOptions & {
+    /** Включить сохранение в JSON-файл (по умолчанию true) */
+    enabled?: boolean;
+  };
+}
+
+/** Действия, изменяющие цели (после них требуется сохранение) */
+const MUTATING_ACTIONS = new Set<GoalAgentInput['action']>([
+  'add',
+  'update',
+  'complete',
+  'cancel',
+  'pause',
+  'resume',
+  'delete',
+  'reorder',
+]);
+
 export class GoalAgent extends AgentBase {
   private goals: Map<string, Goal>;
+  private readonly store: GoalStore | null;
+  private loaded = false;
+  private loadPromise: Promise<void> | null = null;
 
-  constructor(config: AgentConfig) {
+  constructor(config: GoalAgentConfig) {
     super({ ...config, timeoutMs: config.timeoutMs ?? 10000 });
     this.goals = new Map();
+    this.store =
+      config.persistence?.enabled === false
+        ? null
+        : new GoalStore(config.persistence ?? {});
+  }
+
+  /**
+   * Ленивая загрузка целей из файла (один раз за время жизни агента).
+   * Падение загрузки не роняет агент — GoalStore вернёт пустой список.
+   */
+  private async ensureLoaded(): Promise<void> {
+    const store = this.store;
+    if (!store || this.loaded) return;
+    if (!this.loadPromise) {
+      this.loadPromise = store
+        .load()
+        .then((stored) => {
+          for (const goal of stored) {
+            // Файл не перезаписывает цели, добавленные в памяти до загрузки
+            if (!this.goals.has(goal.id)) this.goals.set(goal.id, goal);
+          }
+        })
+        .catch((err) => {
+          console.warn(
+            `[GoalAgent] Загрузка целей из ${store.filePath} не удалась: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+    }
+    await this.loadPromise;
+    this.loaded = true;
+  }
+
+  /**
+   * Перечитать цели из файла (source of truth — диск).
+   * Для долгоживущих процессов (watch-режим): подхватывает цели,
+   * добавленные внешне (другим процессом) после запуска.
+   * При отключённой персистентности — no-op.
+   */
+  async reload(): Promise<void> {
+    const store = this.store;
+    if (!store) return;
+    const stored = await store.load();
+    this.goals = new Map(stored.map((goal) => [goal.id, goal]));
+    this.loaded = true;
+    this.loadPromise = null;
+  }
+
+  /** Сохранить текущие цели (ошибки не роняют операцию — только warn) */
+  private async persist(): Promise<void> {
+    if (!this.store) return;
+    try {
+      await this.store.save(this.getAllGoals());
+    } catch (err) {
+      console.warn(
+        `[GoalAgent] Не удалось сохранить цели в ${this.store.filePath}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   protected async executeInternal(input: unknown): Promise<unknown> {
     const params = input as GoalAgentInput;
+    await this.ensureLoaded();
+    const result = await this.dispatch(params);
+    if (MUTATING_ACTIONS.has(params.action)) {
+      await this.persist();
+    }
+    return result;
+  }
+
+  private async dispatch(params: GoalAgentInput): Promise<unknown> {
     switch (params.action) {
       case 'add':
         return this.addGoal(params.params as GoalAddParams);
@@ -371,7 +471,9 @@ export class GoalAgent extends AgentBase {
       'createdAt',
     ];
     const rows = goals.map((g) =>
-      headers.map((h) => String((g as unknown as Record<string, unknown>)[h] ?? '')).join(','),
+      headers
+        .map((h) => String((g as unknown as Record<string, unknown>)[h] ?? ''))
+        .join(','),
     );
     const content = [headers.join(','), ...rows].join('\n');
     return { format: 'csv', content, goalCount: goals.length };

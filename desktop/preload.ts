@@ -10,6 +10,7 @@ import type { IpcRendererEvent } from 'electron';
 
 import type {
   AskResult,
+  AutonomousIterationEvent,
   DirectorAuditEvent,
   FinanceDesktopApi,
 } from './api-types.js';
@@ -36,6 +37,33 @@ const api: FinanceDesktopApi = {
   reconnectOllama: () => ipcRenderer.invoke('director:reconnect-ollama'),
   getAnalysisStatus: () => ipcRenderer.invoke('director:analysis-status'),
   runAnalysis: () => ipcRenderer.invoke('director:run-analysis'),
+
+  goalsList: (status) => ipcRenderer.invoke('goals:list', status),
+  goalsAdd: (text) => ipcRenderer.invoke('goals:add', text),
+  autonomousStatus: () => ipcRenderer.invoke('autonomous:status'),
+  autonomousStart: (intervalSec) =>
+    ipcRenderer.invoke('autonomous:start', intervalSec),
+  autonomousStop: () => ipcRenderer.invoke('autonomous:stop'),
+  autonomousRunOnce: () => ipcRenderer.invoke('autonomous:run-once'),
+  getLastAnalysis: () => ipcRenderer.invoke('analysis:last'),
+  exportAnalysisHtml: () => ipcRenderer.invoke('analysis:export-html'),
+  exportAnalysisPdf: () => ipcRenderer.invoke('analysis:export-pdf'),
+  getProactiveIdeas: () => ipcRenderer.invoke('director:proactive'),
+  runPipelineReport: () => ipcRenderer.invoke('pipeline:run'),
+  getLastPipelineReport: () => ipcRenderer.invoke('pipeline:last'),
+
+  onAutonomousUpdate: (callback) => {
+    const listener = (
+      _event: IpcRendererEvent,
+      payload: AutonomousIterationEvent,
+    ): void => {
+      callback(payload);
+    };
+    ipcRenderer.on('autonomous:update', listener);
+    return () => {
+      ipcRenderer.removeListener('autonomous:update', listener);
+    };
+  },
 
   onDirectorEvent: (callback) => {
     const listener = (

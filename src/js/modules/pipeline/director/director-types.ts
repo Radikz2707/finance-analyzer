@@ -75,8 +75,10 @@ export type AgentRole =
   | 'analysis' // AnalysisAgent — детерминированный анализ портфеля
   | 'file' // FileAgent — файловые операции (чтение/запись/поиск)
   | 'terminal' // TerminalAgent — безопасное выполнение команд
+  | 'package' // PackageAgent — управление зависимостями (npm/pip)
   | 'process' // ProcessAgent — запуск/остановка/перезапуск процессов
   | 'automation' // AutomationAgent — workflow-автоматизация задач
+  | 'system' // SystemResourceAgent — мониторинг системных ресурсов (CPU/RAM)
   | 'code'; // CodingWorkflow — конвейер разработки: write → test → repair → report
 
 /** Описание задачи для агента */
@@ -304,7 +306,8 @@ export type ProactiveMessageType =
   | 'opportunity' // Возможность для пересмотра позиции
   | 'pending-review' // Необходимость проверить отложенный вопрос
   | 'contradiction' // Обнаружено противоречие между решениями
-  | 'new-topic'; // Новая тема для обсуждения
+  | 'new-topic' // Новая тема для обсуждения
+  | 'project-improvement'; // Идея по развитию/совершенствованию проекта
 
 /** Промптное сообщение Director */
 export interface ProactiveMessage {
@@ -386,7 +389,9 @@ export type DirectorAuditEventType =
   | 'director.memory_saved'
   | 'director.proactive_message_sent'
   | 'director.chat_message_sent'
-  | 'director.greeting_answered';
+  | 'director.greeting_answered'
+  | 'director.status_answered'
+  | 'director.goal_created';
 
 /** Событие audit Director */
 export interface DirectorAuditEvent {
@@ -610,4 +615,13 @@ export interface DirectorConfig {
   includeAgentDetails?: boolean;
   /** Свободный диалог (нефинансовые темы) через LLM с контекстом портфеля */
   chatResponder?: ChatResponder;
+  /**
+   * Приём задач из свободного текста: если задан, реплики-задачи/идеи
+   * («давай добавим…», «хочу, чтобы…») не запускают агентов сразу,
+   * а превращаются в цель автономного цикла (goalIntake.addGoal).
+   * Не задан (терминальный chat без цикла) — реплики обрабатываются как раньше.
+   */
+  goalIntake?: {
+    addGoal(text: string): Promise<{ id: string; name: string }>;
+  };
 }

@@ -1,5 +1,7 @@
 import {
   looksLikeGreeting,
+  looksLikeStatusQuestion,
+  looksLikeTaskIntent,
   parseUserMessage,
   quickCategory,
   hasTicker,
@@ -106,16 +108,6 @@ describe('NL Parser (Director): файловые операции', () => {
 });
 
 describe('NL Parser (Director): терминальные операции', () => {
-  it('«npm install axios» включает terminal', () => {
-    const parsed = parseUserMessage('npm install axios');
-    expect(parsed.requiredAgents).toContain('terminal');
-  });
-
-  it('«установи пакет axios» включает terminal', () => {
-    const parsed = parseUserMessage('установи пакет axios');
-    expect(parsed.requiredAgents).toContain('terminal');
-  });
-
   it('«git commit и push» включает terminal', () => {
     const parsed = parseUserMessage('git commit и push');
     expect(parsed.requiredAgents).toContain('terminal');
@@ -125,10 +117,84 @@ describe('NL Parser (Director): терминальные операции', () =
     const parsed = parseUserMessage('Запусти тесты');
     expect(parsed.requiredAgents).toContain('terminal');
   });
+});
 
-  it('чистая терминальная операция не тянет analysis/ai', () => {
+describe('NL Parser (Director): операции с зависимостями (package)', () => {
+  it('«npm install axios» включает package вместо terminal', () => {
     const parsed = parseUserMessage('npm install axios');
+    expect(parsed.requiredAgents).toContain('package');
+    expect(parsed.requiredAgents).not.toContain('terminal');
+  });
+
+  it('«установи пакет axios» включает package вместо terminal', () => {
+    const parsed = parseUserMessage('установи пакет axios');
+    expect(parsed.requiredAgents).toContain('package');
+    expect(parsed.requiredAgents).not.toContain('terminal');
+  });
+
+  it('«обнови зависимости» включает package', () => {
+    const parsed = parseUserMessage('обнови зависимости');
+    expect(parsed.requiredAgents).toEqual(['package']);
+  });
+
+  it('«проверь конфликты зависимостей» включает package', () => {
+    const parsed = parseUserMessage('проверь конфликты зависимостей');
+    expect(parsed.requiredAgents).toEqual(['package']);
+  });
+
+  it('«удали пакет lodash» включает package', () => {
+    const parsed = parseUserMessage('удали пакет lodash');
+    expect(parsed.requiredAgents).toEqual(['package']);
+  });
+
+  it('«удали блок old-block» остаётся терминальной (gulp-конструктор)', () => {
+    const parsed = parseUserMessage('удали блок old-block');
     expect(parsed.requiredAgents).toEqual(['terminal']);
+  });
+});
+
+describe('NL Parser (Director): системные ресурсы (system)', () => {
+  it('«какая загрузка CPU» включает system', () => {
+    const parsed = parseUserMessage('какая загрузка CPU?');
+    expect(parsed.requiredAgents).toEqual(['system']);
+  });
+
+  it('«сколько памяти на компьютере» включает system', () => {
+    const parsed = parseUserMessage('сколько памяти на компьютере');
+    expect(parsed.requiredAgents).toEqual(['system']);
+  });
+
+  it('«состояние системы» включает system', () => {
+    const parsed = parseUserMessage('состояние системы');
+    expect(parsed.requiredAgents).toEqual(['system']);
+  });
+
+  it('финансовый вопрос про состояние портфеля не включает system', () => {
+    const parsed = parseUserMessage('Как дела с портфелем?');
+    expect(parsed.requiredAgents).not.toContain('system');
+  });
+});
+
+describe('NL Parser (Director): резервная копия/восстановление памяти', () => {
+  it('«сделай бэкап памяти» включает terminal', () => {
+    const parsed = parseUserMessage('сделай бэкап памяти');
+    expect(parsed.requiredAgents).toEqual(['terminal']);
+  });
+
+  it('«сделай резервную копию данных» включает terminal', () => {
+    const parsed = parseUserMessage('сделай резервную копию данных');
+    expect(parsed.requiredAgents).toEqual(['terminal']);
+  });
+
+  it('«восстанови память из копии» включает terminal', () => {
+    const parsed = parseUserMessage('восстанови память из копии');
+    expect(parsed.requiredAgents).toEqual(['terminal']);
+  });
+
+  it('«восстанови файл src/test.ts» не маршрутизируется как restore', () => {
+    const parsed = parseUserMessage('восстанови файл src/test.ts');
+    expect(parsed.requiredAgents).toContain('file');
+    expect(parsed.requiredAgents).not.toContain('terminal');
   });
 });
 
@@ -178,5 +244,37 @@ describe('NL Parser (Director): приветствия', () => {
 
   it('содержательный финансовый вопрос не считается приветствием', () => {
     expect(looksLikeGreeting('Что делать с SBER?')).toBe(false);
+  });
+
+  it('«Как дела?» распознаётся как вопрос о статусе (fast-path без LLM)', () => {
+    expect(looksLikeStatusQuestion('Как дела?')).toBe(true);
+    expect(looksLikeStatusQuestion('что нового')).toBe(true);
+    expect(looksLikeStatusQuestion('Как ты там?')).toBe(true);
+    expect(looksLikeStatusQuestion('Что происходит с портфелем?')).toBe(true);
+  });
+
+  it('содержательный вопрос не считается вопросом о статусе', () => {
+    expect(looksLikeStatusQuestion('Что делать с SBER?')).toBe(false);
+    expect(looksLikeStatusQuestion('Проанализируй стратегию')).toBe(false);
+  });
+
+  it('реплики-задачи/идеи распознаются как task-intent', () => {
+    expect(looksLikeTaskIntent('Задача: покрыть модуль тестами')).toBe(true);
+    expect(looksLikeTaskIntent('Идея: экспорт дашборда в PDF')).toBe(true);
+    expect(looksLikeTaskIntent('Давай добавим экспорт в Excel')).toBe(true);
+    expect(
+      looksLikeTaskIntent('Хочу, чтобы уведомления приходили в Telegram'),
+    ).toBe(true);
+    expect(looksLikeTaskIntent('Нужно реализовать фильтр по секторам')).toBe(
+      true,
+    );
+    expect(looksLikeTaskIntent('Запланируй рефакторинг модуля')).toBe(true);
+  });
+
+  it('бытовые/финансовые вопросы не считаются task-intent', () => {
+    expect(looksLikeTaskIntent('Как дела?')).toBe(false);
+    expect(looksLikeTaskIntent('Что делать с SBER?')).toBe(false);
+    expect(looksLikeTaskIntent('привет')).toBe(false);
+    expect(looksLikeTaskIntent('')).toBe(false);
   });
 });

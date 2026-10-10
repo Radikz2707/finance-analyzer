@@ -43,6 +43,18 @@ import {
   buildDirectorState,
   buildHarnessState,
   handleAsk,
+  handleAutonomousChatCommand,
+  handleAutonomousRunOnce,
+  handleAutonomousStart,
+  handleAutonomousStatus,
+  handleAutonomousStop,
+  handleProactiveIdeas,
+  handleLastPipelineReport,
+  runPipelineReport,
+  buildAnalysisHtml,
+  handleGoalsAdd,
+  handleGoalsList,
+  handleLastAnalysis,
   handleHarnessExport,
   handleHarnessPayload,
   handleHarnessRun,
@@ -55,6 +67,7 @@ import {
   subscribeEvents,
   type AppState,
 } from './ipc-core.js';
+import { createAutonomousBridge } from './autonomous-bridge.js';
 import { OllamaClient } from '../src/js/modules/pipeline/director/ollama-client.js';
 
 // Пути к собранным артефактам (esbuild: desktop/dist/*)
@@ -94,7 +107,36 @@ async function initAppState(): Promise<void> {
   });
   // Диспетчер опционален: сбой сборки не мешает чату с Директором.
   const harness = await buildHarnessState({});
-  appState = { director, harness };
+  appState = { director, harness, autonomous: null, pipelineReport: null };
+
+  // Автономный цикл: цели + фоновый watch (один организм с чатом и диспетчером)
+  appState.autonomous = createAutonomousBridge({
+    director: appState.director.director,
+    // Живые уведомления о выполненных целях в renderer
+    onCycle: (events) => {
+      for (const event of events) {
+        sendToRenderer('autonomous:update', event);
+      }
+    },
+  });
+  await appState.autonomous.start();
+
+  // Реплики-задачи из свободного текста («давай добавим…») → цель цикла:
+  // Director получает goalIntake-хук, замыкающийся на AutonomousBridge.
+  const autonomousBridge = appState.autonomous;
+  const directorAsRecord = appState.director.director as unknown as Record<
+    string,
+    unknown
+  >;
+  directorAsRecord.config = {
+    ...((directorAsRecord.config as Record<string, unknown> | undefined) ?? {}),
+    goalIntake: {
+      addGoal: async (text: string) => {
+        const goal = await autonomousBridge.addGoal(text);
+        return { id: goal.id, name: goal.name };
+      },
+    },
+  };
 
   // Живой стриминг всех событий аудита в renderer
   unsubscribeDirector = subscribeEvents(director, (event) => {
@@ -135,7 +177,6 @@ async function renderDashboardPdf(html: string): Promise<Buffer> {
     const options: PrintToPDFOptions = {
       pageSize: 'A4',
       printBackground: true,
-      margins: { marginType: 'default' },
     };
     return await win.webContents.printToPDF(options);
   } finally {
@@ -164,39 +205,49 @@ function startExcelWatcher(excelPath: string): void {
     lastExcelMtime = stats.mtimeMs;
 
     // Создаём воркер
-    excelFileWatcher = fs.watch(excelPath, { persistent: true }, (eventType) => {
-      if (eventType !== 'change') return;
+    excelFileWatcher = fs.watch(
+      excelPath,
+      { persistent: true },
+      (eventType) => {
+        if (eventType !== 'change') return;
 
-      try {
-        const stats = fs.statSync(excelPath);
-        if (stats.mtimeMs === lastExcelMtime) return;
+        try {
+          const stats = fs.statSync(excelPath);
+          if (stats.mtimeMs === lastExcelMtime) return;
 
-        lastExcelMtime = stats.mtimeMs;
-        log('info', `Excel-файл изменён: ${excelPath} — перезагрузка портфеля`);
+          lastExcelMtime = stats.mtimeMs;
+          log(
+            'info',
+            `Excel-файл изменён: ${excelPath} — перезагрузка портфеля`,
+          );
 
-        // Перезагружаем портфель
-        if (appState) {
-          // Сбрасываем кэш анализа — нужно провести новый анализ
-          appState.director.director.resetAnalysisCache();
-          log('info', 'Кэш анализа сброшен (Excel изменён)');
-          
-          reloadPortfolio(appState.director, excelPath).then((result) => {
-            if (result.success) {
-              log('info', `Портфель перезагружен: ${result.assetsCount} активов`);
-              // Уведомляем рендерер
-              sendToRenderer('portfolio:updated', {
-                assetsCount: result.assetsCount,
-                sourceLabel: result.sourceLabel,
-              });
-            } else {
-              log('warn', `Ошибка перезагрузки портфеля: ${result.message}`);
-            }
-          });
+          // Перезагружаем портфель
+          if (appState) {
+            // Сбрасываем кэш анализа — нужно провести новый анализ
+            appState.director.director.resetAnalysisCache();
+            log('info', 'Кэш анализа сброшен (Excel изменён)');
+
+            reloadPortfolio(appState.director, excelPath).then((result) => {
+              if (result.success) {
+                log(
+                  'info',
+                  `Портфель перезагружен: ${result.assetsCount} активов`,
+                );
+                // Уведомляем рендерер
+                sendToRenderer('portfolio:updated', {
+                  assetsCount: result.assetsCount,
+                  sourceLabel: result.sourceLabel,
+                });
+              } else {
+                log('warn', `Ошибка перезагрузки портфеля: ${result.message}`);
+              }
+            });
+          }
+        } catch (err) {
+          log('warn', `Ошибка при проверке Excel-файла: ${err}`);
         }
-      } catch (err) {
-        log('warn', `Ошибка при проверке Excel-файла: ${err}`);
-      }
-    });
+      },
+    );
   } catch (err) {
     log('warn', `Не удалось запустить воркер на Excel: ${err}`);
   }
@@ -218,13 +269,155 @@ function registerIpc(): void {
     if (!appState) {
       throw new Error('Состояние приложения не инициализировано');
     }
-    const result = await handleAsk(
-      appState.director,
-      typeof question === 'string' ? question : String(question ?? ''),
-    );
+    const q = typeof question === 'string' ? question : String(question ?? '');
+    // Чат-команды автономного цикла (/goal, /goals, /autonomous) — без LLM
+    const autonomousResult = await handleAutonomousChatCommand(appState, q);
+    const result = autonomousResult ?? (await handleAsk(appState.director, q));
     // Дублируем ответ потоком (в дополнение к возврату invoke)
     sendToRenderer('director:reply', result);
     return result;
+  });
+
+  // ── Идеи Директора (портфельные + проектные) ──
+  ipcMain.handle('director:proactive', () =>
+    appState ? handleProactiveIdeas(appState) : [],
+  );
+
+  // ── Автономный цикл: цели и управление ──
+  ipcMain.handle('goals:list', async (_event, status?: string) =>
+    appState
+      ? handleGoalsList(
+          appState,
+          status as
+            | 'pending'
+            | 'active'
+            | 'paused'
+            | 'completed'
+            | 'cancelled'
+            | undefined,
+        )
+      : [],
+  );
+
+  ipcMain.handle('goals:add', async (_event, text: string) => {
+    if (!appState) {
+      throw new Error('Состояние приложения не инициализировано');
+    }
+    return handleGoalsAdd(appState, String(text ?? ''));
+  });
+
+  ipcMain.handle('autonomous:status', async () =>
+    appState ? handleAutonomousStatus(appState) : null,
+  );
+
+  ipcMain.handle('autonomous:start', async (_event, intervalSec?: number) =>
+    appState ? handleAutonomousStart(appState, intervalSec) : null,
+  );
+
+  ipcMain.handle('autonomous:stop', async () =>
+    appState ? handleAutonomousStop(appState) : null,
+  );
+
+  ipcMain.handle('autonomous:run-once', async () =>
+    appState
+      ? handleAutonomousRunOnce(appState)
+      : { started: false, message: 'Приложение не инициализировано' },
+  );
+
+  // ── Анализ портфеля: результат и экспорт ──
+  ipcMain.handle('analysis:last', () =>
+    appState ? handleLastAnalysis(appState.director) : null,
+  );
+
+  // ── Полный конвейер (как npm run pipeline) внутри приложения ──
+  ipcMain.handle('pipeline:run', async () => {
+    if (!appState) {
+      throw new Error('Состояние приложения не инициализировано');
+    }
+    return runPipelineReport(appState);
+  });
+  ipcMain.handle('pipeline:last', () =>
+    appState ? handleLastPipelineReport(appState) : null,
+  );
+
+  ipcMain.handle('analysis:export-html', async () => {
+    if (!appState) {
+      return { ok: false, message: 'Приложение не инициализировано' };
+    }
+    const info = handleLastAnalysis(appState.director);
+    const now = new Date();
+    // Приоритет: полный отчёт конвейера (report.html) → иначе сводка Директора
+    const html =
+      handleLastPipelineReport(appState)?.htmlContent ||
+      (info.text ? buildAnalysisHtml(info, now) : '');
+    if (!html) {
+      return { ok: false, message: 'Анализ ещё не запускался' };
+    }
+    const saveOptions: SaveDialogOptions = {
+      title: 'Сохранить анализ портфеля (HTML)',
+      defaultPath: `analysis_${timestampLabel(now)}.html`,
+      filters: [{ name: 'HTML-файлы', extensions: ['html'] }],
+    };
+    const save =
+      mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showSaveDialog(mainWindow, saveOptions)
+        : await dialog.showSaveDialog(saveOptions);
+    if (save.canceled || !save.filePath) {
+      return { ok: false, message: 'Сохранение отменено' };
+    }
+    try {
+      fs.writeFileSync(save.filePath, html, 'utf-8');
+      return {
+        ok: true,
+        message: `Анализ сохранён: ${save.filePath}`,
+        filePath: save.filePath,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        message: `Ошибка сохранения: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  });
+
+  ipcMain.handle('analysis:export-pdf', async () => {
+    if (!appState) {
+      return { ok: false, message: 'Приложение не инициализировано' };
+    }
+    const info = handleLastAnalysis(appState.director);
+    const now = new Date();
+    const html =
+      handleLastPipelineReport(appState)?.htmlContent ||
+      (info.text ? buildAnalysisHtml(info, now) : '');
+    if (!html) {
+      return { ok: false, message: 'Анализ ещё не запускался' };
+    }
+    const saveOptions: SaveDialogOptions = {
+      title: 'Сохранить анализ портфеля (PDF)',
+      defaultPath: `analysis_${timestampLabel(now)}.pdf`,
+      filters: [{ name: 'PDF-файлы', extensions: ['pdf'] }],
+    };
+    const save =
+      mainWindow && !mainWindow.isDestroyed()
+        ? await dialog.showSaveDialog(mainWindow, saveOptions)
+        : await dialog.showSaveDialog(saveOptions);
+    if (save.canceled || !save.filePath) {
+      return { ok: false, message: 'Сохранение отменено' };
+    }
+    try {
+      const pdf = await renderDashboardPdf(html);
+      fs.writeFileSync(save.filePath, pdf);
+      return {
+        ok: true,
+        message: `PDF сохранён: ${save.filePath}`,
+        filePath: save.filePath,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        message: `Ошибка сохранения PDF: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
   });
 
   ipcMain.handle('director:status', () =>
@@ -242,7 +435,11 @@ function registerIpc(): void {
   // Переподключение Ollama из UI
   ipcMain.handle('director:reconnect-ollama', async () => {
     if (!appState) {
-      return { success: false, label: '', message: 'Приложение не инициализировано' };
+      return {
+        success: false,
+        label: '',
+        message: 'Приложение не инициализировано',
+      };
     }
     const result = await reconnectOllama(appState.director, {
       getOllamaModel: resolveOllamaModel,
@@ -253,7 +450,12 @@ function registerIpc(): void {
   // Перезагрузка портфеля из Excel
   ipcMain.handle('portfolio:reload', async (_event, excelPath: string) => {
     if (!appState) {
-      return { success: false, sourceLabel: '', assetsCount: 0, message: 'Приложение не инициализировано' };
+      return {
+        success: false,
+        sourceLabel: '',
+        assetsCount: 0,
+        message: 'Приложение не инициализировано',
+      };
     }
     return await reloadPortfolio(appState.director, excelPath);
   });
@@ -324,6 +526,12 @@ function registerIpc(): void {
       };
     }
     const filePath = result.filePaths[0];
+    if (!filePath) {
+      return {
+        canceled: true,
+        excelFilePath: process.env.EXCEL_FILE_PATH ?? '',
+      };
+    }
     process.env.EXCEL_FILE_PATH = filePath;
     saveDesktopSettings({
       ...loadDesktopSettings(),
@@ -335,7 +543,10 @@ function registerIpc(): void {
       try {
         const reloadResult = await reloadPortfolio(appState.director, filePath);
         if (reloadResult.success) {
-          log('info', `Портфель перезагружен: ${reloadResult.assetsCount} активов`);
+          log(
+            'info',
+            `Портфель перезагружен: ${reloadResult.assetsCount} активов`,
+          );
           sendToRenderer('portfolio:updated', {
             assetsCount: reloadResult.assetsCount,
             sourceLabel: reloadResult.sourceLabel,

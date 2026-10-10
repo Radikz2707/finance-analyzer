@@ -21,8 +21,12 @@ import {
   looksLikeCodeRequest,
   looksLikeFileRequest,
   looksLikeGreeting,
+  looksLikePackageRequest,
   looksLikeProcessRequest,
   looksLikeSimpleChat,
+  looksLikeSystemStatusRequest,
+  looksLikeStatusQuestion,
+  looksLikeTaskIntent,
   looksLikeTerminalRequest,
   parseUserMessage,
 } from './nl-parser.js';
@@ -175,6 +179,14 @@ export class DirectorAgent implements IDirectorAgent {
     return 'none';
   }
 
+  /**
+   * Актуальные факты портфеля (обновляются при перезагрузке Excel).
+   * Используется отчётом анализа для таблиц активов/алертов.
+   */
+  getFacts(): DirectorFactsContext {
+    return this.facts;
+  }
+
   /** Запустить ленивый анализ портфеля */
   async runLazyAnalysis(): Promise<string> {
     if (this.analysisInProgress) {
@@ -230,6 +242,81 @@ export class DirectorAgent implements IDirectorAgent {
     const parsed = parseChatInput(message);
     if (parsed.kind === 'command') {
       return this.handleChatCommand(parsed.command, message);
+    }
+
+    // 0.4 Вопрос о состоянии дел («Как дела?», «Что нового?») —
+    // мгновенный ответ из фактов и статуса БЕЗ LLM (fast-path).
+    // Защита от перехвата финансовых вопросов: «Что происходит с портфелем?»
+    // содержит паттерн статуса, но относится к категории portfolio —
+    // такая реплика обрабатывается штатным конвейером агентов.
+    const statusParsed = parseUserMessage(message, []);
+    const isStatusQuestion =
+      looksLikeStatusQuestion(message) &&
+      statusParsed.category === 'general' &&
+      statusParsed.tickers.length === 0;
+    if (isStatusQuestion) {
+      this.chat.appendMessage(this.currentSessionId, 'user', message);
+      this.memory.saveConversation('user', message, []);
+      const replyText = this.buildStatusDigest();
+      this.chat.appendMessage(this.currentSessionId, 'director', replyText);
+      this.memory.saveConversation('director', replyText, []);
+      this.audit.record('director.status_answered', 'Быстрый статус без LLM');
+      this._state = 'idle';
+      return {
+        text: replyText,
+        connectedAgents: [],
+        needsConsilium: false,
+      };
+    }
+
+    // 0.45 Реплика-задача/идея («давай добавим…», «задача: …») —
+    // превращается в цель автономного цикла, если подключён goalIntake.
+    // Немедленные действия (файл/терминал/код/процесс/автоматизация) и
+    // финансовые вопросы обрабатываются штатно — идея создаёт цель, а не
+    // запускает тяжёлый анализ прямо сейчас.
+    if (this.config.goalIntake) {
+      const taskParsed = parseUserMessage(message, []);
+      const isImmediateAction =
+        looksLikeFileRequest(message) ||
+        looksLikeTerminalRequest(message) ||
+        looksLikePackageRequest(message) ||
+        looksLikeProcessRequest(message) ||
+        looksLikeAutomationRequest(message) ||
+        looksLikeSystemStatusRequest(message) ||
+        looksLikeCodeRequest(message);
+      if (
+        looksLikeTaskIntent(message) &&
+        taskParsed.category === 'general' &&
+        taskParsed.tickers.length === 0 &&
+        !isImmediateAction
+      ) {
+        try {
+          const goal = await this.config.goalIntake.addGoal(message);
+          this.chat.appendMessage(this.currentSessionId, 'user', message);
+          this.memory.saveConversation('user', message, []);
+          const replyText =
+            '🎯 Принял как задачу — поставил в план автономного цикла:\n' +
+            `«${goal.name}» [${goal.id.slice(0, 8)}]\n\n` +
+            'Выполню фоном, итог придёт в чат. Список целей: /goals.\n' +
+            'Если нужно сделать СЕЙЧАС — сформулируй как действие, ' +
+            'например: «создай файл …», «запусти тесты».';
+          this.chat.appendMessage(this.currentSessionId, 'director', replyText);
+          this.memory.saveConversation('director', replyText, []);
+          this.audit.record('director.goal_created', goal.id);
+          this._state = 'idle';
+          return {
+            text: replyText,
+            connectedAgents: [],
+            needsConsilium: false,
+          };
+        } catch (err) {
+          // Не удалось создать цель — реплика пойдёт по общему конвейеру
+          this.audit.record(
+            'director.goal_created',
+            `Ошибка приёма задачи: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
     }
 
     // 0.5 Приветствие/smalltalk: дружелюбный ответ без делегирования агентам
@@ -817,6 +904,53 @@ export class DirectorAgent implements IDirectorAgent {
     if (interpreted.category === 'scenario') return true;
     const lower = interpreted.text.toLowerCase();
     return FOLLOW_UP_PREFIXES.some((p) => lower.startsWith(p));
+  }
+
+  /**
+   * Мгновенная сводка «как дела» без LLM: состояние Директора,
+   * краткие факты портфеля, лидер/аутсайдер и подсказки по командам.
+   */
+  private buildStatusDigest(): string {
+    const stateText =
+      this._state === 'running'
+        ? 'сейчас работаю над вашей задачей'
+        : 'свободен и жду указаний';
+    const lines: string[] = [`Всё под контролем: ${stateText}.`];
+
+    const assets = this.facts.assetsAnalysis;
+    if (assets.length > 0) {
+      const rub = (value: number): string =>
+        Math.round(value).toLocaleString('ru-RU');
+      lines.push(
+        `Портфель: ${assets.length} актив(ов), стоимость ` +
+          `${rub(this.facts.totalPortfolioValue)} ₽, свободные средства ` +
+          `${rub(this.facts.freeCashRub)} ₽.`,
+      );
+      const byProfit = [...assets].sort(
+        (a, b) => (b.unrealizedProfitRub ?? 0) - (a.unrealizedProfitRub ?? 0),
+      );
+      const best = byProfit[0];
+      const worst = byProfit[byProfit.length - 1];
+      if (
+        best &&
+        worst &&
+        best.ticker !== worst.ticker &&
+        (best.unrealizedProfitRub ?? 0) !== (worst.unrealizedProfitRub ?? 0)
+      ) {
+        lines.push(
+          `Лидер: ${best.ticker} (+${rub(best.unrealizedProfitRub ?? 0)} ₽), ` +
+            `аутсайдер: ${worst.ticker} (${rub(worst.unrealizedProfitRub ?? 0)} ₽).`,
+        );
+      }
+    } else {
+      lines.push(
+        'Данные портфеля ещё не загружены — откройте Excel с портфелем, ' +
+          'и я подключу полный анализ.',
+      );
+    }
+
+    lines.push('Подробная сводка — команда /status, все команды — /help.');
+    return lines.join('\n');
   }
 
   /**

@@ -22,7 +22,11 @@ import { BrowserAgent } from './browser-agent.js';
 import { ConfigAgent } from './config-agent.js';
 import { FileAgent, type FileAgentInput } from './file-agent.js';
 import { LearningAgent } from './learning-agent.js';
-import { PackageAgent } from './package-agent.js';
+import { PackageAgent, type PackageAgentInput } from './package-agent.js';
+import {
+  SystemResourceAgent,
+  type SystemResourceInput,
+} from './system-resource-agent.js';
 import { ProcessAgent, type ProcessAgentInput } from './process-agent.js';
 import { SchedulerAgent } from './scheduler-agent.js';
 import { TerminalAgent, type TerminalAgentInput } from './terminal-agent.js';
@@ -46,6 +50,7 @@ export type ActionAgentRole =
   | 'browser'
   | 'config'
   | 'process'
+  | 'system'
   | 'scheduler'
   | 'learning'
   | 'auto-repair'
@@ -63,8 +68,10 @@ export type ActionAgentRole =
 export interface DirectorActionAgents {
   file?: IAgent<FileAgentInput>;
   terminal?: IAgent<TerminalAgentInput>;
+  package?: IAgent<PackageAgentInput>;
   process?: IAgent<ProcessAgentInput>;
   automation?: IAgent<AutomationAgentInput>;
+  system?: IAgent<SystemResourceInput>;
   code?: IAgent<CodingWorkflowInput>;
 }
 
@@ -75,7 +82,7 @@ export interface DirectorActionAgents {
  * в проде рекомендуется настроить SecurityAgent-политику с
  * require-confirmation для него.
  */
-const SYSTEM_COMMANDS: readonly string[] = [
+export const SYSTEM_COMMANDS: readonly string[] = [
   'tasklist',
   'taskkill',
   'start',
@@ -137,6 +144,10 @@ export class ActionAgentRegistry {
             { name: 'PackageAgent', timeoutMs: this.defaultTimeoutMs },
             { roots: this.roots },
           ),
+      ],
+      [
+        'system',
+        () => new SystemResourceAgent({ name: 'SystemResourceAgent' }),
       ],
       [
         'browser',
@@ -250,8 +261,10 @@ export class ActionAgentRegistry {
     return {
       file: this.get<IAgent<FileAgentInput>>('file'),
       terminal: this.get<IAgent<TerminalAgentInput>>('terminal'),
+      package: this.get<IAgent<PackageAgentInput>>('package'),
       process: this.get<IAgent<ProcessAgentInput>>('process'),
       automation: this.get<IAgent<AutomationAgentInput>>('automation'),
+      system: this.get<IAgent<SystemResourceInput>>('system'),
       code: this.get<IAgent<CodingWorkflowInput>>('code'),
     };
   }

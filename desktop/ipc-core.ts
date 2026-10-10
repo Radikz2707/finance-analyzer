@@ -34,9 +34,21 @@ import {
   OllamaClient,
   type OllamaMessage,
 } from '../src/js/modules/pipeline/director/ollama-client.js';
-import { SecurityAgent } from '../src/js/modules/pipeline/agents/security-agent.js';
+import {
+  SecurityAgent,
+  type SecurityActionRequest,
+  type SecurityDecision,
+} from '../src/js/modules/pipeline/agents/security-agent.js';
+import type { AutonomousBridge } from './autonomous-bridge.js';
+import {
+  PipelineCoordinator,
+  type PipelineResult,
+} from '../src/js/modules/pipeline/pipeline-coordinator.js';
+import type { NotificationAgentOutput } from '../src/js/modules/pipeline/agents/notification-agent.js';
+import type { Goal } from '../src/js/modules/pipeline/agents/goal-agent/types.js';
 import {
   createDefaultActionAgents,
+  SYSTEM_COMMANDS,
   type DirectorActionAgents,
 } from '../src/js/modules/pipeline/agents/agent-factory.js';
 import {
@@ -52,11 +64,13 @@ import {
 } from '../src/js/modules/pipeline/visualization/agent-panel-model.js';
 import type {
   AgentOpinion,
+  AssetAnalysisLike,
   ChatResponder,
   DirectorAuditEvent,
   DirectorFactsContext,
   DirectorResponse,
   DirectorTask,
+  PriceAlertLike,
 } from '../src/js/modules/pipeline/director/director-types.js';
 import {
   formatConsiliumRounds,
@@ -260,11 +274,11 @@ function compactFactsDigest(
   tickers?: string[],
 ): string {
   const lines: string[] = [];
-  
+
   if (tickers && tickers.length > 0) {
     // Только запрашиваемые тикеры
-    const requested = facts.assetsAnalysis.filter(
-      (a) => tickers.includes(a.ticker),
+    const requested = facts.assetsAnalysis.filter((a) =>
+      tickers.includes(a.ticker),
     );
     for (const asset of requested) {
       lines.push(
@@ -277,8 +291,10 @@ function compactFactsDigest(
     const totalValue = facts.totalPortfolioValue;
     const freeCash = facts.freeCashRub;
     const assetsCount = facts.assetsAnalysis.length;
-    const concentrated = facts.assetsAnalysis.filter((a) => a.isConcentrated).map((a) => a.ticker);
-    
+    const concentrated = facts.assetsAnalysis
+      .filter((a) => a.isConcentrated)
+      .map((a) => a.ticker);
+
     lines.push(`Активов: ${assetsCount}`);
     lines.push(`Стоимость портфеля: ${totalValue} ₽`);
     lines.push(`Свободные средства: ${freeCash} ₽`);
@@ -286,7 +302,7 @@ function compactFactsDigest(
       lines.push(`Концентрация (>25%): ${concentrated.join(', ')}`);
     }
   }
-  
+
   return lines.join('\n');
 }
 
@@ -342,8 +358,6 @@ function buildOpinionFromData(
 
 /** Извлечь мнение из свободного текста (fallback если JSON не распарсился) */
 function parseOpinionFromText(raw: string): AgentOpinion | null {
-  const lower = raw.toLowerCase();
-
   // Определяем action по ключевым словам
   let action: AgentOpinion['action'] = null;
   if (/\b(doкупить|buy|покупк|увелич)\b/i.test(raw)) action = 'BUY';
@@ -357,12 +371,14 @@ function parseOpinionFromText(raw: string): AgentOpinion | null {
   // Извлекаем confidence из текста (ищем числа 0.XX или XX%)
   let confidence = 0.5;
   const confMatch = raw.match(/(\d+)\s*%/);
-  if (confMatch) {
+  if (confMatch && confMatch[1]) {
     const pct = parseInt(confMatch[1], 10);
     confidence = Math.min(1, Math.max(0, pct / 100));
   } else {
-    const confFloat = raw.match(/(?:confidence|уверенност|conf)\s*[:=]?\s*(\d+\.?\d*)/i);
-    if (confFloat) {
+    const confFloat = raw.match(
+      /(?:confidence|уверенност|conf)\s*[:=]?\s*(\d+\.?\d*)/i,
+    );
+    if (confFloat && confFloat[1]) {
       confidence = Math.min(1, Math.max(0, parseFloat(confFloat[1])));
     }
   }
@@ -494,38 +510,28 @@ async function createChatResponder(
 
   // Если Ollama уже доступна для aiExecutor — пропускаем повторный probe.
   if (ollamaAvailable) {
-    log('info', 'Ollama подключён — свободный диалог использует LLM (shared probe)');
-    return async ({ question, facts, history }) => {
+    log(
+      'info',
+      'Ollama подключён — свободный диалог использует LLM (shared probe)',
+    );
+    return async ({ question, facts, history: _history }) => {
       const client = new OllamaClient({
         model: resolveActiveModel(getOllamaModel),
       });
-      const historyMessages: OllamaMessage[] = history
-        .split('\n')
-        .filter((line) => line.includes(': '))
-        .map((line) => {
-          const idx = line.indexOf(': ');
-          const roleRaw = line.slice(0, idx);
-          const role = roleRaw === 'director' ? 'assistant' : 'user';
-          return { role, content: line.slice(idx + 2) };
-        });
-      const messages: OllamaMessage[] = [
-        { role: 'system', content: CHAT_SYSTEM_PROMPT },
-        ...historyMessages,
-        {
-          role: 'user',
-          content: `${question}\n\nФакты портфеля:\n${compactFactsDigest(facts)}`,
-        },
-      ];
       try {
         // Chat responder может ждать дольше AI Agent — 5 минут вместо 45 сек
         const CHAT_RESPONDER_TIMEOUT_MS = 300_000;
-        
+
         // Сначала пробуем stream через /api/generate
         let fullResponse = '';
         const raw = await withTimeout(
-          client.generate(CHAT_SYSTEM_PROMPT, question + '\n\nФакты портфеля:\n' + compactFactsDigest(facts), (chunk) => {
-            fullResponse += chunk;
-          }),
+          client.generate(
+            CHAT_SYSTEM_PROMPT,
+            question + '\n\nФакты портфеля:\n' + compactFactsDigest(facts),
+            (chunk) => {
+              fullResponse += chunk;
+            },
+          ),
           CHAT_RESPONDER_TIMEOUT_MS,
         );
         const text = (fullResponse || raw)?.trim();
@@ -533,15 +539,24 @@ async function createChatResponder(
           log('info', `Ollama chat responder ответ: ${text.slice(0, 80)}...`);
           return text;
         }
-        log('warn', `Ollama chat responder вернул пустой ответ — пробуем non-stream`);
+        log(
+          'warn',
+          'Ollama chat responder вернул пустой ответ — пробуем non-stream',
+        );
         // Fallback: non-stream запрос
         const raw2 = await withTimeout(
-          client.generate(CHAT_SYSTEM_PROMPT, question + '\n\nФакты портфеля:\n' + compactFactsDigest(facts)),
+          client.generate(
+            CHAT_SYSTEM_PROMPT,
+            question + '\n\nФакты портфеля:\n' + compactFactsDigest(facts),
+          ),
           CHAT_RESPONDER_TIMEOUT_MS,
         );
         const text2 = raw2?.trim();
         if (text2 && text2 !== '') {
-          log('info', `Ollama chat responder (non-stream) ответ: ${text2.slice(0, 80)}...`);
+          log(
+            'info',
+            `Ollama chat responder (non-stream) ответ: ${text2.slice(0, 80)}...`,
+          );
           return text2;
         }
         log('warn', 'Ollama chat responder вернул пустой ответ (оба метода)');
@@ -619,8 +634,29 @@ async function createChatResponder(
 }
 
 // ──────────────────────────────────────────────
-// 4. Состояние приложения (Director + Harness)
+// 4. Состояние приложения (Director + Harness + Autonomous)
 // ──────────────────────────────────────────────
+
+/** Результат последнего анализа портфеля (для вкладки «Анализ» и экспорта) */
+export interface AnalysisResultInfo {
+  /** Текст анализа (null — ещё не запускался) */
+  text: string | null;
+  /** ISO-метка времени завершения */
+  finishedAt: string | null;
+  /** Длительность, мс */
+  elapsedMs: number | null;
+}
+
+/** Результат анализа + контекст (для UI) */
+export type LastAnalysisInfo = AnalysisResultInfo & {
+  sourceLabel: string;
+  /** Структура портфеля на момент анализа (для таблиц отчёта) */
+  assets: readonly AssetAnalysisLike[];
+  /** Общая стоимость портфеля, руб */
+  totalValue: number;
+  /** Ценовые алерты */
+  alerts: readonly PriceAlertLike[];
+};
 
 /** Состояние директора (один на весь lifecycle приложения) */
 export interface DirectorState {
@@ -629,6 +665,8 @@ export interface DirectorState {
   actionAgents: DirectorActionAgents;
   sourceLabel: string;
   aiLabel: string;
+  /** Результат последнего анализа (обновляется при каждом запуске) */
+  analysisResult: AnalysisResultInfo;
 }
 
 /** Полное состояние десктоп-приложения */
@@ -636,6 +674,427 @@ export interface AppState {
   director: DirectorState;
   /** «Гибридный диспетчер» — опционально (null при сбое сборки) */
   harness: HarnessHandle | null;
+  /**
+   * Автономный цикл (цели + фоновый watch) — опционально: собирается
+   * в main.ts после инициализации director-состояния.
+   */
+  autonomous: AutonomousBridge | null;
+  /** Последний отчёт полного конвейера (report.html/report.md) — null до прогона */
+  pipelineReport: PipelineReportInfo | null;
+}
+
+/** Цель для UI/renderer (структурная копия Goal без внутренностей) */
+export interface GoalSummary {
+  id: string;
+  name: string;
+  description: string;
+  status: string;
+  priority: string;
+  progress: number;
+  createdAt: string;
+}
+
+/** Статус автономного цикла для UI/renderer */
+export interface AutonomousBridgeStatusInfo {
+  running: boolean;
+  intervalSec: number;
+  activeGoals: number;
+  loop: {
+    state: string;
+    totalIterations: number;
+    consecutiveFailures: number;
+    lastStopReason?: string;
+  };
+}
+
+/** Результат разового запуска автономного цикла */
+export interface AutonomousRunOnceResult {
+  started: boolean;
+  message: string;
+}
+
+function toGoalSummary(goal: Goal): GoalSummary {
+  return {
+    id: goal.id,
+    name: goal.name,
+    description: goal.description,
+    status: goal.status,
+    priority: goal.priority,
+    progress: goal.progress,
+    createdAt: goal.createdAt,
+  };
+}
+
+/**
+ * Отчёт полного конвейера (как `npm run pipeline`): HTML/MD-содержимое
+ * report-файлов + метаданные прогона. Хранится в AppState и показывается
+ * на вкладке «Анализ» в исходном виде report.html.
+ */
+export interface PipelineReportInfo {
+  /** Полный HTML-документ отчёта (report.html) */
+  htmlContent: string;
+  /** Markdown-версия отчёта (report.md) */
+  mdContent: string;
+  /** Путь записанного report.html (пусто — запись не удалась) */
+  htmlPath: string;
+  /** Путь записанного report.md */
+  mdPath: string;
+  /** ISO-метка завершения */
+  finishedAt: string;
+  /** Длительность прогона, мс */
+  elapsedMs: number;
+  /** Успешен ли весь конвейер */
+  success: boolean;
+}
+
+/** Минимальный контракт координатора (для DI в тестах) */
+export interface PipelineCoordinatorLike {
+  run(sharedData?: Record<string, unknown>): Promise<PipelineResult>;
+  onStageComplete(
+    callback: (stage: string, durationMs: number) => void,
+  ): () => void;
+}
+
+/**
+ * Запустить полный конвейер (data → research → analysis → AI → review →
+ * scenario → strategist → notification) и сохранить отчёт в state.
+ * Тот же PipelineCoordinator, что в `npm run pipeline` и гибридном
+ * диспетчере: NotificationAgent пишет report.html/report.md в корень.
+ */
+export async function runPipelineReport(
+  state: AppState,
+  deps: { createCoordinator?: () => PipelineCoordinatorLike } = {},
+): Promise<PipelineReportInfo> {
+  const create = deps.createCoordinator ?? (() => new PipelineCoordinator());
+  const coordinator = create();
+  const startedAt = Date.now();
+  const result = await coordinator.run();
+  const notification = result.stages.notification?.result.data as
+    NotificationAgentOutput | undefined;
+  const info: PipelineReportInfo = {
+    htmlContent: notification?.htmlContent ?? '',
+    mdContent: notification?.mdContent ?? '',
+    htmlPath: notification?.htmlPath ?? '',
+    mdPath: notification?.mdPath ?? '',
+    finishedAt: new Date().toISOString(),
+    elapsedMs: Date.now() - startedAt,
+    success: result.success,
+  };
+  state.pipelineReport = info;
+  return info;
+}
+
+/** Последний отчёт полного конвейера (null — ещё не запускался) */
+export function handleLastPipelineReport(
+  state: AppState,
+): PipelineReportInfo | null {
+  return state.pipelineReport;
+}
+
+/**
+ * Идея для пользователя: из ProactiveSuggester (портфель) или
+ * детерминированных эвристик по целям/циклу (проект).
+ */
+export interface ProactiveIdea {
+  /** Источник идеи */
+  kind: 'portfolio' | 'project';
+  /** Тип (ProactiveMessageType для портфеля, 'project-improvement' для проекта) */
+  type: string;
+  /** Короткий заголовок */
+  title: string;
+  /** Содержание */
+  text: string;
+  /** Приоритет */
+  priority: string;
+}
+
+/**
+ * Детерминированные идеи по развитию ПРОЕКТА: на основе целей автономного
+ * цикла и состояния фонового watch-режима. Честность: если данных нет
+ * (нет autonomous) — идей не выдаём.
+ */
+async function buildProjectIdeas(state: AppState): Promise<ProactiveIdea[]> {
+  const ideas: ProactiveIdea[] = [];
+  const bridge = state.autonomous;
+  if (!bridge) {
+    return ideas;
+  }
+  const goals = await bridge.listGoals();
+  const count = (status: string): number =>
+    goals.filter((goal) => goal.status === status).length;
+  const active = count('active');
+  const pending = count('pending');
+  const paused = count('paused');
+  const completed = count('completed');
+
+  if (goals.length === 0) {
+    ideas.push({
+      kind: 'project',
+      type: 'project-improvement',
+      title: 'Список целей пуст',
+      text:
+        'Скажи в чате «давай добавим …» или «задача: …» — поставлю это ' +
+        'в план автономного цикла и выполню фоном.',
+      priority: 'normal',
+    });
+  }
+  if (active > 0) {
+    ideas.push({
+      kind: 'project',
+      type: 'project-improvement',
+      title: `Активных целей: ${active}`,
+      text:
+        'Включи фоновый цикл на вкладке «Цели» (или попроси «запусти ' +
+        'автономный цикл») — буду закрывать цели по одной и присылать итог.',
+      priority: 'normal',
+    });
+  }
+  if (pending > 0) {
+    ideas.push({
+      kind: 'project',
+      type: 'project-improvement',
+      title: `Целей в ожидании: ${pending}`,
+      text: 'Есть неактивированные цели — стоит активировать их или убрать.',
+      priority: 'low',
+    });
+  }
+  if (paused > 0) {
+    ideas.push({
+      kind: 'project',
+      type: 'project-improvement',
+      title: `Целей на паузе: ${paused}`,
+      text: 'Разберём блокеры по приостановленным целям — возможно, их уже можно возобновить.',
+      priority: 'normal',
+    });
+  }
+  if (completed >= 3) {
+    ideas.push({
+      kind: 'project',
+      type: 'project-improvement',
+      title: `Завершённых целей: ${completed}`,
+      text: 'Накопилась история — можно подвести итоги и почистить список целей.',
+      priority: 'low',
+    });
+  }
+  const status = await bridge.status();
+  if (status.loop.consecutiveFailures >= 2) {
+    ideas.push({
+      kind: 'project',
+      type: 'project-improvement',
+      title: 'Фоновый цикл падает',
+      text: `Подряд неуспешных итераций: ${status.loop.consecutiveFailures}. Посмотри вкладку «Консоль» — там причина.`,
+      priority: 'high',
+    });
+  }
+  return ideas;
+}
+
+/**
+ * Идеи Директора: портфельные (ProactiveSuggester по фактам) + проектные
+ * (эвристики по целям автономного цикла).
+ */
+export async function handleProactiveIdeas(
+  state: AppState,
+): Promise<ProactiveIdea[]> {
+  const ideas: ProactiveIdea[] = [];
+  try {
+    for (const message of state.director.director.suggestProactive()) {
+      ideas.push({
+        kind: 'portfolio',
+        type: message.type,
+        title: message.title,
+        text: message.content,
+        priority: message.priority,
+      });
+    }
+  } catch {
+    // Идеи не критичны: не отвечаем ошибкой в UI
+  }
+  try {
+    ideas.push(...(await buildProjectIdeas(state)));
+  } catch {
+    // Проектные идеи не критичны: не отвечаем ошибкой в UI
+  }
+  return ideas;
+}
+
+/** Список целей (все или по статусу) */
+export async function handleGoalsList(
+  state: AppState,
+  status?: 'pending' | 'active' | 'paused' | 'completed' | 'cancelled',
+): Promise<GoalSummary[]> {
+  if (!state.autonomous) return [];
+  const goals = await state.autonomous.listGoals(status);
+  return goals.map(toGoalSummary);
+}
+
+/** Добавить и активировать цель */
+export async function handleGoalsAdd(
+  state: AppState,
+  text: string,
+): Promise<GoalSummary> {
+  if (!state.autonomous) {
+    throw new Error('Автономный цикл не инициализирован');
+  }
+  const goal = await state.autonomous.addGoal(String(text ?? '').trim());
+  return toGoalSummary(goal);
+}
+
+/** Статус автономного цикла */
+export async function handleAutonomousStatus(
+  state: AppState,
+): Promise<AutonomousBridgeStatusInfo | null> {
+  if (!state.autonomous) return null;
+  return state.autonomous.status();
+}
+
+/** Включить фоновый автономный цикл */
+export async function handleAutonomousStart(
+  state: AppState,
+  intervalSec?: number,
+): Promise<AutonomousBridgeStatusInfo | null> {
+  if (!state.autonomous) return null;
+  return state.autonomous.start(intervalSec);
+}
+
+/** Выключить фоновый автономный цикл */
+export async function handleAutonomousStop(
+  state: AppState,
+): Promise<AutonomousBridgeStatusInfo | null> {
+  if (!state.autonomous) return null;
+  return state.autonomous.stop();
+}
+
+/** Разовый цикл прямо сейчас */
+export async function handleAutonomousRunOnce(
+  state: AppState,
+): Promise<AutonomousRunOnceResult> {
+  if (!state.autonomous) {
+    return { started: false, message: 'Автономный цикл не инициализирован' };
+  }
+  const output = await state.autonomous.runOnce();
+  return {
+    started: output !== null,
+    message:
+      output?.message ??
+      'Цикл уже выполняется или упал (см. лог main-процесса)',
+  };
+}
+
+/**
+ * Чат-команды автономного цикла: /goal «текст», /goals, /autonomous …
+ * Перехватываются ДО processUserMessage — работают мгновенно, без LLM.
+ * Возвращает null, если сообщение не является командой цикла.
+ */
+export async function handleAutonomousChatCommand(
+  state: AppState,
+  question: string,
+): Promise<AskResult | null> {
+  const bridge = state.autonomous;
+  const text = (question ?? '').trim();
+  if (!bridge) return null;
+
+  const startedAt = Date.now();
+  const reply = async (message: string): Promise<AskResult> => ({
+    text: message,
+    events: [],
+    elapsedMs: Date.now() - startedAt,
+  });
+
+  if (text.toLowerCase().startsWith('/goal ')) {
+    const goalText = text.slice(6).trim();
+    if (!goalText) {
+      return reply('Формат: /goal «текст задачи»');
+    }
+    try {
+      const goal = await bridge.addGoal(goalText);
+      return reply(
+        '🎯 Цель добавлена и активирована:\n' +
+          `[${goal.id.slice(0, 8)}] ${goal.name}\n\n` +
+          'Автономный цикл выполнит её на следующем тике. Список — /goals',
+      );
+    } catch (err) {
+      return reply(
+        `Не удалось добавить цель: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  if (
+    text.toLowerCase() === '/goals' ||
+    text.toLowerCase().startsWith('/goals ')
+  ) {
+    const arg = text.slice(6).trim().toLowerCase();
+    const status =
+      arg === 'active'
+        ? ('active' as const)
+        : arg === 'completed'
+          ? ('completed' as const)
+          : undefined;
+    const goals = await bridge.listGoals(status);
+    if (goals.length === 0) {
+      return reply(
+        '📭 Целей нет. Добавьте: /goal «текст задачи» или npm run goals -- add "..."',
+      );
+    }
+    const marks: Record<string, string> = {
+      pending: '⏳',
+      active: '▶',
+      paused: '⏸',
+      completed: '✅',
+      cancelled: '✖',
+    };
+    const lines = goals.map(
+      (g) =>
+        `${marks[g.status] ?? '•'} [${g.id.slice(0, 8)}] ${g.status} — ${g.name}`,
+    );
+    return reply(`Цели (${goals.length}):\n${lines.join('\n')}`);
+  }
+
+  if (
+    text.toLowerCase() === '/autonomous' ||
+    text.toLowerCase().startsWith('/autonomous ')
+  ) {
+    const arg = text.slice(11).trim().toLowerCase();
+    const parts = arg.split(/\s+/).filter(Boolean);
+    const sub = parts[0] ?? 'status';
+
+    if (sub === 'on') {
+      const intervalSec = Number(parts[1]);
+      const st = await bridge.start(
+        Number.isFinite(intervalSec) && intervalSec > 0
+          ? intervalSec
+          : undefined,
+      );
+      return reply(
+        `👀 Автономный цикл включён: каждые ${st.intervalSec} с, активных целей: ${st.activeGoals}.`,
+      );
+    }
+    if (sub === 'off') {
+      const st = await bridge.stop();
+      return reply(
+        `⏹ Автономный цикл остановлен. Активных целей: ${st.activeGoals}.`,
+      );
+    }
+    if (sub === 'now') {
+      const result = await handleAutonomousRunOnce(state);
+      return reply(
+        result.started
+          ? `⚙️ Цикл запущен: ${result.message}`
+          : `⚠️ ${result.message}`,
+      );
+    }
+
+    const st = await bridge.status();
+    return reply(
+      `Автономный цикл: ${st.running ? `работает (каждые ${st.intervalSec} с)` : 'выключен'}\n` +
+        `Итераций всего: ${st.loop.totalIterations}, активных целей: ${st.activeGoals}\n` +
+        `Причина последней остановки: ${st.loop.lastStopReason ?? '—'}\n\n` +
+        'Команды: /autonomous on [сек] | off | now | status',
+    );
+  }
+
+  return null;
 }
 
 /** Опции сборки состояния директора */
@@ -688,8 +1147,21 @@ export async function buildDirectorState(
   // для aiExecutor, она должна быть доступна и для свободного диалога.
   const ollamaAvailable = aiLabel.includes('Ollama');
 
-  const actionAgents = createDefaultActionAgents();
-  const security = new SecurityAgent();
+  // Расширенный режим управления компьютером: системные команды Windows
+  // (tasklist/taskkill/explorer/systeminfo/netstat/...) разрешены в терминале
+  // и в whitelist SecurityAgent. taskkill остаётся опасной командой — все
+  // команды по-прежнему проходят security-gate.
+  const actionAgents = createDefaultActionAgents({
+    enableSystemCommands: true,
+  });
+  const security = new SecurityAgent(
+    {
+      name: 'SecurityAgent',
+    },
+    {
+      allowedCommands: [...SYSTEM_COMMANDS],
+    },
+  );
   const facade = new DirectorAgentFacade({
     actionAgents,
     // Адаптер к единому контракту `check` фасада (validate — синхронный)
@@ -714,7 +1186,191 @@ export async function buildDirectorState(
   );
   director.createSession();
 
-  return { director, audit, actionAgents, sourceLabel, aiLabel };
+  // Перехват результата анализа при ЛЮБОМ запуске (кнопка или ленивый
+  // анализ после вопроса): текст сохраняется в state.analysisResult.
+  const analysisResult: AnalysisResultInfo = {
+    text: null,
+    finishedAt: null,
+    elapsedMs: null,
+  };
+  const originalRunLazyAnalysis = director.runLazyAnalysis.bind(director);
+  (director as unknown as Record<string, unknown>).runLazyAnalysis =
+    async (): Promise<string> => {
+      const startedAt = Date.now();
+      const result = await originalRunLazyAnalysis();
+      analysisResult.text = result;
+      analysisResult.finishedAt = new Date().toISOString();
+      analysisResult.elapsedMs = Date.now() - startedAt;
+      return result;
+    };
+
+  return {
+    director,
+    audit,
+    actionAgents,
+    sourceLabel,
+    aiLabel,
+    analysisResult,
+  };
+}
+
+/** Последний анализ + контекст (для вкладки «Анализ») */
+export function handleLastAnalysis(state: DirectorState): LastAnalysisInfo {
+  const facts = state.director.getFacts();
+  return {
+    ...state.analysisResult,
+    sourceLabel: state.sourceLabel,
+    assets: facts.assetsAnalysis,
+    totalValue: facts.totalPortfolioValue,
+    alerts: facts.priceAlerts ?? [],
+  };
+}
+
+/** Полный HTML-документ отчёта по анализу (для HTML/PDF-экспорта) */
+export function buildAnalysisHtml(
+  info: LastAnalysisInfo,
+  now: Date = new Date(),
+): string {
+  return `<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<title>Анализ портфеля</title>
+${buildAnalysisHtmlStyle()}
+</head>
+<body>
+${buildAnalysisBodyHtml(info, now)}
+</body>
+</html>`;
+}
+
+/** Стили отчёта (используются и в HTML-экспорте, и в PDF-рендере) */
+export function buildAnalysisHtmlStyle(): string {
+  return `<style>
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; margin: 32px; color: #1c2733; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 26px 0 10px; color: #2c3e50; }
+  .meta { color: #5b6b7c; font-size: 12px; margin-bottom: 20px; }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
+  .card { background: #f6f8fa; border: 1px solid #d9e1e8; border-radius: 10px; padding: 14px 16px; }
+  .card-label { font-size: 11px; color: #5b6b7c; text-transform: uppercase; letter-spacing: 0.4px; }
+  .card-value { font-size: 20px; font-weight: 600; margin-top: 6px; }
+  .pos { color: #1a7f37; } .neg { color: #c62828; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: #5b6b7c; font-size: 11px; text-transform: uppercase;
+       letter-spacing: 0.4px; padding: 8px 10px; border-bottom: 2px solid #d9e1e8; }
+  td { padding: 9px 10px; border-bottom: 1px solid #e7edf2; vertical-align: top; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  tr.warn td { background: #fff7e6; }
+  .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .muted { color: #5b6b7c; font-size: 11px; margin-top: 2px; }
+  ul.alerts { margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.7; }
+  details { margin-top: 22px; }
+  summary { cursor: pointer; color: #2c3e50; font-weight: 600; font-size: 14px; }
+  pre { white-space: pre-wrap; overflow-wrap: break-word; font-family: Consolas,
+        'Courier New', monospace; font-size: 12.5px; line-height: 1.55;
+        background: #f6f8fa; border: 1px solid #d9e1e8; border-radius: 8px;
+        padding: 16px; margin-top: 10px; }
+  @media print { body { margin: 16px; } details { display: none; } }
+</style>`;
+}
+
+/**
+ * Тело отчёта: карточки-показатели + таблица активов + алерты + текстовая
+ * сводка. Используется в HTML/PDF-экспорте (buildAnalysisHtml) и как
+ * основа отображения на вкладке «Анализ».
+ */
+export function buildAnalysisBodyHtml(
+  info: LastAnalysisInfo,
+  now: Date = new Date(),
+): string {
+  const escapeHtml = (value: string): string =>
+    value
+      .replace(/&/g, '&')
+      .replace(/</g, '<')
+      .replace(/>/g, '>')
+      .replace(/"/g, '"');
+  const finished = info.finishedAt
+    ? new Date(info.finishedAt).toLocaleString('ru-RU')
+    : '—';
+  const fmtRub = (value: number): string =>
+    `${Math.round(value).toLocaleString('ru-RU')} ₽`;
+  const fmtPct = (value: number): string => `${value.toFixed(1)}%`;
+
+  const assets = info.assets ?? [];
+  const totalPnl = assets.reduce(
+    (sum, asset) => sum + (asset.unrealizedProfitRub ?? 0),
+    0,
+  );
+  const maxDeviation = assets.reduce(
+    (max, asset) =>
+      Math.max(max, Math.abs(asset.currentPercent - asset.targetPercent)),
+    0,
+  );
+  const alerts = info.alerts ?? [];
+
+  const cards = `
+<div class="cards">
+  <div class="card"><div class="card-label">Стоимость портфеля</div><div class="card-value">${fmtRub(info.totalValue ?? 0)}</div></div>
+  <div class="card"><div class="card-label">Нереализованный P&L</div><div class="card-value ${totalPnl < 0 ? 'neg' : 'pos'}">${fmtRub(totalPnl)}</div></div>
+  <div class="card"><div class="card-label">Активов</div><div class="card-value">${assets.length}</div></div>
+  <div class="card"><div class="card-label">Макс. отклонение от цели</div><div class="card-value ${maxDeviation > 15 ? 'neg' : ''}">${fmtPct(maxDeviation)}</div></div>
+</div>`;
+
+  const assetsTable =
+    assets.length === 0
+      ? '<p class="muted">Данные портфеля не загружены.</p>'
+      : `<h2>📋 Структура портфеля</h2>
+<table>
+  <thead><tr>
+    <th>Актив</th><th class="num">Доля (тек.)</th><th class="num">Доля (цель)</th>
+    <th class="num">Отклонение</th><th class="num">P&L</th><th>Статус</th>
+  </tr></thead>
+  <tbody>${assets
+    .map((asset) => {
+      const deviation = asset.currentPercent - asset.targetPercent;
+      const deviationClass =
+        deviation > 2 ? 'neg' : deviation < -2 ? 'pos' : '';
+      const pnl = asset.unrealizedProfitRub;
+      const flags = asset.isConcentrated ? ['концентрация'] : [];
+      return `<tr${asset.isConcentrated ? ' class="warn"' : ''}>
+    <td><b>${escapeHtml(asset.ticker)}</b><div class="muted">${escapeHtml(asset.name)}</div></td>
+    <td class="num">${fmtPct(asset.currentPercent)}</td>
+    <td class="num">${fmtPct(asset.targetPercent)}</td>
+    <td class="num ${deviationClass}">${deviation > 0 ? '+' : ''}${deviation.toFixed(1)} п.п.</td>
+    <td class="num">${pnl === undefined ? '—' : `<span class="${pnl < 0 ? 'neg' : 'pos'}">${fmtRub(pnl)}</span>`}</td>
+    <td>${escapeHtml(asset.status)}${flags.length > 0 ? `<div class="muted">${escapeHtml(flags.join(', '))}</div>` : ''}</td>
+  </tr>`;
+    })
+    .join('\n')}</tbody>
+</table>`;
+
+  const alertsBlock =
+    alerts.length === 0
+      ? ''
+      : `<h2>🔔 Ценовые алерты</h2>
+<ul class="alerts">${alerts
+          .map(
+            (alert) =>
+              `<li><b>${escapeHtml(alert.ticker)}</b> — ${escapeHtml(
+                alert.alertLevel ?? 'alert',
+              )}${alert.currentPrice !== undefined ? ` (цена ${alert.currentPrice})` : ''}</li>`,
+          )
+          .join('')}</ul>`;
+
+  const textBlock = info.text
+    ? `<details open><summary>📝 Текстовая сводка</summary><pre>${escapeHtml(info.text)}</pre></details>`
+    : '<p class="muted">Анализ ещё не запускался.</p>';
+
+  return `<h1>📊 Анализ инвестиционного портфеля</h1>
+<div class="meta">Завершён: ${finished} · Источник данных: ${escapeHtml(
+    info.sourceLabel,
+  )} · Сформировано: ${now.toLocaleString('ru-RU')}</div>
+${cards}
+${assetsTable}
+${alertsBlock}
+${textBlock}`;
 }
 
 /** Результат переподключения Ollama */
@@ -790,16 +1446,32 @@ export async function reconnectOllama(
   );
 
   // Обновляем executor в существующем фасаде
+  const existingFacade = (
+    state.director as unknown as { facade?: DirectorAgentFacade }
+  ).facade;
   (state.director as unknown as Record<string, unknown>).facade =
-    state.director.facade ??
+    existingFacade ??
     new DirectorAgentFacade({
       actionAgents: state.actionAgents,
-      security: { check: (request: unknown) => {
-        const security = new SecurityAgent();
-        return (security as unknown as Record<string, unknown>).validate
-          ? (security as unknown as Record<string, unknown>).validate(request)
-          : { verdict: 'allow' as const };
-      }},
+      security: {
+        check: (request: unknown) => {
+          const security = new SecurityAgent();
+          const validator = (
+            security as unknown as {
+              validate?: (r: unknown) => SecurityDecision;
+            }
+          ).validate;
+          return validator
+            ? validator(request)
+            : ({
+                id: `allow-${Date.now()}`,
+                timestamp: new Date().toISOString(),
+                request: request as SecurityActionRequest,
+                verdict: 'allow',
+                matchedRules: [],
+              } satisfies SecurityDecision);
+        },
+      },
       aiExecutor,
     });
 
@@ -1142,6 +1814,11 @@ ${formatDashboardHtml(payload)}
 
 /** Остановить все подсистемы приложения (идемпотентно, без проброса ошибок) */
 export async function shutdownAppState(appState: AppState): Promise<void> {
+  try {
+    appState.autonomous?.dispose();
+  } catch {
+    // Остановка — best effort
+  }
   try {
     await appState.director.director.stop();
   } catch {

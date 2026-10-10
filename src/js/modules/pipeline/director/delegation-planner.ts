@@ -45,6 +45,13 @@ const AGENT_RATIONALE: Record<AgentRole, string> = {
   terminal:
     'Терминальные операции: безопасное выполнение команд (чтение, npm, git) ' +
     'в пределах корня проекта с whitelist/blacklist и таймаутами.',
+  package:
+    'Управление зависимостями: установка, обновление и удаление пакетов ' +
+    '(npm/pip) со whitelist-командами и статическим анализом конфликтов ' +
+    'версий манифеста ДО выполнения мутаций.',
+  system:
+    'Мониторинг системных ресурсов: загрузка CPU, занятость оперативной ' +
+    'памяти, аптайм. Операция только для чтения — security-gate не нужен.',
   process:
     'Управление процессами: запуск, остановка и перезапуск долгоживущих ' +
     'процессов (серверы, сборка) с авто-перезапуском при падении.',
@@ -67,7 +74,9 @@ const ROLE_PRIORITY: Record<AgentRole, AgentTask['priority']> = {
   review: 'low',
   file: 'normal',
   terminal: 'normal',
+  package: 'normal',
   process: 'high',
+  system: 'low',
   automation: 'normal',
   code: 'high',
 };
@@ -82,7 +91,9 @@ const ROLE_FOR_CONSILIUM: Record<AgentRole, boolean> = {
   review: false,
   file: false,
   terminal: false,
+  package: false,
   process: false,
+  system: false,
   automation: false,
   code: false,
 };
@@ -260,6 +271,10 @@ export class DirectorDelegationPlanner {
         return `Выполнить файловую операцию в рамках вопроса: ${question.text}. Операции ограничены корнем проекта и не затрагивают служебные пути.`;
       case 'terminal':
         return `Выполнить команду терминала в рамках вопроса: ${question.text}. Команды проходят whitelist/blacklist и не выходят за пределы корня проекта.`;
+      case 'package':
+        return `Выполнить операцию с зависимостями в рамках вопроса: ${question.text}. Команды ограничены whitelist npm/pip, конфликты версий анализируются до выполнения.`;
+      case 'system':
+        return `Снять снимок системных ресурсов в рамках вопроса: ${question.text}. Операция только для чтения.`;
       case 'process':
         return `Выполнить операцию с процессом в рамках вопроса: ${question.text}. Команды проходят whitelist и security-gate до запуска.`;
       case 'automation':
@@ -308,6 +323,10 @@ export class DirectorDelegationPlanner {
         return ['action', 'path', 'message'];
       case 'terminal':
         return ['command', 'stdout', 'stderr', 'exitCode', 'truncated'];
+      case 'package':
+        return ['action', 'manager', 'commands', 'conflicts', 'message'];
+      case 'system':
+        return ['cpuUsagePct', 'memoryUsagePct', 'isBusy', 'message'];
       case 'process':
         return ['action', 'processes', 'message'];
       case 'automation':
@@ -364,6 +383,8 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   review: 'ReviewAgent (контроль качества)',
   file: 'FileAgent (файловые операции)',
   terminal: 'TerminalAgent (безопасный терминал)',
+  package: 'PackageAgent (управление зависимостями npm/pip)',
+  system: 'SystemResourceAgent (мониторинг системных ресурсов CPU/RAM)',
   process: 'ProcessAgent (управление процессами)',
   automation: 'AutomationAgent (workflow-автоматизация)',
   code: 'CodingWorkflow (разработка кода: write → test → repair)',

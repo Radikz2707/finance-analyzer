@@ -5,8 +5,8 @@
  * - «создай блок/модуль/плагин <имя>» → роль terminal с npm run
  *   create|module|plugin -- --<имя>;
  * - «удали <вид> <имя>» → npm run remove -- --<имя> + require-confirmation;
- * - «обнови модули/зависимости» → неинтерактивный npm-сценарий
- *   npm run update-modules:auto (интерактивный -i агенту недоступен);
+ * - «обнови модули/зависимости» → роль package (PackageAgent: npm update
+ *   с whitelist-командами и статическим анализом конфликтов);
  * - «разверни базовую структуру» → npm run init;
  * - пути/расширения («создай модуль data/config.json») остаются файловыми
  *   операциями и НЕ захватываются конструктором;
@@ -23,7 +23,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { parseUserMessage } from './nl-parser.js';
-import { buildTerminalAgentInput } from './action-input-builder.js';
+import {
+  buildPackageAgentInput,
+  buildTerminalAgentInput,
+} from './action-input-builder.js';
 import {
   DirectorAgentFacade,
   type ActionSecurityGate,
@@ -35,6 +38,10 @@ import type {
   TerminalAgentInput,
   TerminalAgentOutput,
 } from '../agents/terminal-agent.js';
+import type {
+  PackageAgentInput,
+  PackageAgentOutput,
+} from '../agents/package-agent.js';
 import { SecurityAgent } from '../agents/security-agent.js';
 import type { SecurityVerdict } from '../agents/security-agent.js';
 
@@ -96,6 +103,42 @@ function makeMockTerminalAgent(): MockAgent<TerminalAgentInput> {
       };
     },
   } as MockAgent<TerminalAgentInput>;
+}
+
+function makeMockPackageAgent(): MockAgent<PackageAgentInput> {
+  const calls: PackageAgentInput[] = [];
+  return {
+    name: 'PackageAgent',
+    state: 'idle',
+    calls,
+    async execute(input: PackageAgentInput) {
+      calls.push(input);
+      const output: PackageAgentOutput = {
+        action: input.action,
+        manager: input.manager ?? 'npm',
+        commands: ['npm update'],
+        conflicts: [],
+        changed: input.dryRun === false,
+        message: 'Команды выполнены',
+      };
+      return {
+        success: true,
+        data: output,
+        durationMs: 1,
+        completedAt: new Date().toISOString(),
+      };
+    },
+    async stop() {},
+    getSummary(): AgentSummary {
+      return {
+        name: 'PackageAgent',
+        state: 'idle',
+        totalExecutions: 0,
+        totalSuccesses: 0,
+        totalFailures: 0,
+      };
+    },
+  } as MockAgent<PackageAgentInput>;
 }
 
 /** Мок шлюза безопасности с фиксированным вердиктом */
@@ -193,12 +236,12 @@ describe('gulp-конструкторы: разбор запроса в кома
     ).toBeNull();
   });
 
-  it('10. nl-parser добавляет роль terminal для конструктора и обновления', () => {
+  it('10. nl-parser: конструктор → terminal, обновление модулей → package', () => {
     expect(parseUserMessage('Создай модуль header').requiredAgents).toContain(
       'terminal',
     );
     expect(parseUserMessage('Обнови модули').requiredAgents).toContain(
-      'terminal',
+      'package',
     );
     expect(parseUserMessage('Удали блок old-block').requiredAgents).toContain(
       'terminal',
@@ -300,22 +343,31 @@ describe('Director + gulp-конструкторы (интеграция)', () =
     });
   });
 
-  it('16. «Обнови модули» доходит до терминала как update-modules:auto', async () => {
-    const terminal = makeMockTerminalAgent();
+  it('16. «Обнови модули» доходит до PackageAgent как npm update', async () => {
+    const pkg = makeMockPackageAgent();
     const facade = new DirectorAgentFacade({
-      actionAgents: { terminal },
+      actionAgents: { package: pkg },
     });
     const director = buildDirector(facade);
 
     const response = await director.processUserMessage('Обнови модули');
 
-    const entry = response.task!.agentResults.find(
-      (r) => r.role === 'terminal',
-    );
+    const entry = response.task!.agentResults.find((r) => r.role === 'package');
     expect(entry).toBeDefined();
-    expect(terminal.calls[0]).toEqual({
-      command: 'npm',
-      args: ['run', 'update-modules:auto'],
+    expect(pkg.calls[0]).toEqual({
+      action: 'update',
+      manager: 'npm',
+      packages: [],
+      dryRun: false,
+    });
+  });
+
+  it('16a. buildPackageAgentInput: «установи пакет axios» → install с пакетом', () => {
+    expect(buildPackageAgentInput(question('установи пакет axios'))).toEqual({
+      action: 'install',
+      manager: 'npm',
+      packages: ['axios'],
+      dryRun: false,
     });
   });
 

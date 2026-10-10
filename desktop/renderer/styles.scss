@@ -127,7 +127,6 @@ body {
     font-weight: 700;
     letter-spacing: 0.02em;
     background: linear-gradient(90deg, #a5b4fc, #c084fc);
-    -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
     color: transparent;
@@ -215,6 +214,83 @@ body {
   font-size: 12px;
   color: var(--text-dim);
   white-space: nowrap;
+}
+
+.analysis-frame {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 190px);
+  border: 1px solid var(--border, #d9e1e8);
+  border-radius: 8px;
+  background: #fff;
+
+  &[hidden] {
+    display: none;
+  }
+}
+
+.analysis-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+
+.analysis-card {
+  background: var(--bg-soft, #f6f8fa);
+  border: 1px solid var(--border, #d9e1e8);
+  border-radius: 10px;
+  padding: 10px 14px;
+
+  .card-label {
+    font-size: 10px;
+    color: var(--text-dim, #5b6b7c);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  .card-value {
+    font-size: 18px;
+    font-weight: 600;
+    margin-top: 4px;
+  }
+}
+
+.analysis-assets-table {
+  font-size: 12.5px;
+  margin-bottom: 14px;
+
+  th {
+    color: var(--text-dim, #5b6b7c);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  td {
+    vertical-align: top;
+  }
+
+  .muted {
+    color: var(--text-dim, #5b6b7c);
+    font-size: 11px;
+    margin-top: 2px;
+  }
+}
+
+.analysis-text {
+  background: var(--bg-soft, #f6f8fa);
+  border: 1px solid var(--border, #d9e1e8);
+  border-radius: 8px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  margin: 0;
+  max-height: calc(100vh - 220px);
+  overflow: auto;
+  padding: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .harness-run-note {
@@ -346,6 +422,7 @@ body {
     opacity: 0;
     transform: translateY(4px);
   }
+
   to {
     opacity: 1;
     transform: none;
@@ -386,7 +463,7 @@ body {
   border-radius: 12px;
   line-height: 1.45;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: break-word;
   animation: fade-in 0.2s ease;
 
   .msg-time {
@@ -551,7 +628,7 @@ body {
     border-left: 2px solid var(--border);
     padding-left: 8px;
     margin-bottom: 4px;
-    word-break: break-word;
+    overflow-wrap: break-word;
 
     .ev-time {
       color: var(--text-dim);
@@ -656,7 +733,7 @@ body {
     margin-top: 6px;
     font-size: 11px;
     color: var(--red);
-    word-break: break-word;
+    overflow-wrap: break-word;
   }
 }
 
@@ -937,7 +1014,7 @@ body {
 
   .news-text {
     margin-top: 3px;
-    word-break: break-word;
+    overflow-wrap: break-word;
   }
 }
 

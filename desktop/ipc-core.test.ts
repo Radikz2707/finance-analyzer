@@ -12,19 +12,25 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
+  buildAnalysisHtml,
   buildDashboardHtml,
   buildDirectorState,
   buildHarnessState,
   handleAsk,
   handleHarnessExport,
+  handleLastPipelineReport,
   handleLog,
   handlePanel,
   handleStatus,
+  runPipelineReport,
   subscribeEvents,
+  type AppState,
   type DirectorState,
+  type PipelineCoordinatorLike,
 } from './ipc-core.js';
 import type { HarnessHandle } from '../src/js/modules/harness-integration/harness-bootstrap.js';
 import type { HarnessDashboardPayload } from '../src/js/modules/harness-integration/types.js';
+import type { PipelineResult } from '../src/js/modules/pipeline/pipeline-coordinator.js';
 
 /** Умеренный таймаут: директор гоняет реальных агентов (детерминированных) */
 const ASK_TIMEOUT_MS = 30_000;
@@ -237,5 +243,144 @@ describe('desktop/ipc-core · Экспорт дашборда', () => {
     expect(html).toContain('<!doctype html>');
     expect(html).toContain('дашборд диспетчера');
     expect(html).toContain('Сформирован:');
+  });
+});
+
+describe('desktop/ipc-core · Отчёт анализа (rich HTML)', () => {
+  const info = {
+    text: 'Сводка: пассивная позиция предпочтительнее.',
+    finishedAt: '2026-10-10T10:00:00.000Z',
+    elapsedMs: 1200,
+    sourceLabel: 'Excel · Данные новые.xlsx',
+    totalValue: 680_000,
+    assets: [
+      {
+        ticker: 'SBER',
+        name: 'Сбербанк',
+        currentPercent: 35.4,
+        targetPercent: 10,
+        deficitRub: 0,
+        status: 'concentrated',
+        unrealizedProfitRub: -5000,
+        isConcentrated: true,
+      },
+      {
+        ticker: 'IRAO',
+        name: 'Интер РАО',
+        currentPercent: 12,
+        targetPercent: 12,
+        deficitRub: 0,
+        status: 'ok',
+      },
+    ],
+    alerts: [
+      {
+        ticker: 'PLZL',
+        name: 'Полюс',
+        currentPrice: 950,
+        alertLevel: 'alert',
+      },
+    ],
+  } as Parameters<typeof buildAnalysisHtml>[0];
+
+  /** ru-RU использует NBSP как разделитель групп — нормализуем для ассертов */
+  const render = (): string =>
+    buildAnalysisHtml(info, new Date('2026-10-10T10:05:00Z')).replace(
+      /\u00A0/g,
+      ' ',
+    );
+
+  it('buildAnalysisHtml содержит карточки-показатели', () => {
+    const html = render();
+    expect(html).toContain('<!doctype html>');
+    expect(html).toContain('Стоимость портфеля');
+    expect(html).toContain('680 000 ₽');
+    expect(html).toContain('Нереализованный P&L');
+    expect(html).toContain('Макс. отклонение от цели');
+  });
+
+  it('buildAnalysisHtml содержит таблицу активов с долями и P&L', () => {
+    const html = render();
+    expect(html).toContain('Структура портфеля');
+    expect(html).toContain('<b>SBER</b>');
+    expect(html).toContain('35.4%');
+    expect(html).toContain('концентрация');
+    expect(html).toContain('-5 000 ₽');
+  });
+
+  it('buildAnalysisHtml выводит ценовые алерты и текстовую сводку', () => {
+    const html = render();
+    expect(html).toContain('Ценовые алерты');
+    expect(html).toContain('PLZL');
+    expect(html).toContain('Сводка: пассивная позиция предпочтительнее.');
+  });
+
+  it('без текста анализа — честная заглушка', () => {
+    const html = buildAnalysisHtml(
+      { ...info, text: null, finishedAt: null },
+      new Date('2026-10-10T10:05:00Z'),
+    );
+    expect(html).toContain('Анализ ещё не запускался');
+  });
+});
+
+describe('desktop/ipc-core · Полный конвейер в приложении', () => {
+  /** runPipelineReport использует только поле pipelineReport — Директор не нужен */
+  function makeAppState(): AppState {
+    return {
+      director: {} as unknown as DirectorState,
+      harness: null,
+      autonomous: null,
+      pipelineReport: null,
+    };
+  }
+
+  function fakeCoordinator(): PipelineCoordinatorLike {
+    const notificationOutput = {
+      htmlContent: '<html><body>полный отчёт</body></html>',
+      mdContent: '# Полный отчёт',
+      htmlPath: 'report.html',
+      mdPath: 'report.md',
+      browserOpened: false,
+      interactiveOrders: [],
+    };
+    return {
+      onStageComplete: () => () => {},
+      run: async (): Promise<PipelineResult> =>
+        ({
+          pipelineId: 'test-pipeline',
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          totalDurationMs: 10,
+          stages: {
+            data: null,
+            research: null,
+            analysis: null,
+            ai: null,
+            review: null,
+            scenario: null,
+            strategist: null,
+            notification: {
+              stage: 'notification',
+              durationMs: 5,
+              result: { success: true, data: notificationOutput },
+            },
+          },
+          agentSummaries: {},
+          success: true,
+        }) as unknown as PipelineResult,
+    };
+  }
+
+  it('runPipelineReport сохраняет report.html/report.md в состояние приложения', async () => {
+    const app = makeAppState();
+    const info = await runPipelineReport(app, {
+      createCoordinator: fakeCoordinator,
+    });
+    expect(info.success).toBe(true);
+    expect(info.htmlContent).toContain('полный отчёт');
+    expect(info.mdPath).toBe('report.md');
+    // Состояние обновлено: handleLastPipelineReport видит отчёт
+    expect(handleLastPipelineReport(app)?.mdContent).toContain('Полный отчёт');
   });
 });
