@@ -39,7 +39,9 @@ const messagesEl = $('#messages');
 const activityEl = $('#activity');
 const questionInput = $('#question-input') as HTMLInputElement;
 const sendBtn = $('#send-btn') as HTMLButtonElement;
-const statusBar = $('#status-bar');
+const settingsToggleBtn = $('#settings-toggle-btn') as HTMLButtonElement;
+const settingsPanel = $('#settings-panel') as HTMLElement;
+const settingsExcelPathEl = $('#settings-excel-path') as HTMLElement;
 const activityClearBtn = $('#activity-clear');
 const agentCardsEl = $('#agent-cards');
 const agentChainsEl = $('#agent-chains');
@@ -72,6 +74,9 @@ const analysisMetaEl = $('#analysis-meta');
 const analysisNote = $('#analysis-note');
 const analysisTextEl = $('#analysis-text');
 const analysisRunBtn = $('#analysis-run-btn') as HTMLButtonElement;
+const openReportCheckbox = $(
+  '#open-report-checkbox',
+) as HTMLInputElement | null;
 const analysisExportHtmlBtn = $(
   '#analysis-export-html-btn',
 ) as HTMLButtonElement;
@@ -423,58 +428,30 @@ function renderHarness(payload: HarnessDashboardPayload | null): void {
 // ── Toast-уведомления ────────────────────────────────────────
 
 function showToast(message: string, type: 'ok' | 'error'): void {
-  // Создаём toast-элемент
+  // Стили toast — в styles.scss (.toast): карточка в теме приложения
+  // с акцентной полосой слева (зелёная ok / красная error).
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
+  toast.setAttribute('role', 'status');
   toast.textContent = message;
-  toast.style.cssText = `
-    position: fixed;
-    bottom: 24px;
-    right: 24px;
-    padding: 12px 20px;
-    border-radius: 8px;
-    font-size: 14px;
-    font-weight: 500;
-    z-index: 10000;
-    background: ${type === 'ok' ? 'var(--success)' : 'var(--danger)'};
-    color: ${type === 'ok' ? '#000' : '#fff'};
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-    animation: slideIn 0.3s ease;
-    max-width: 400px;
-  `;
-
-  // Добавляем CSS-анимацию если ещё нет
-  if (!document.getElementById('toast-styles')) {
-    const style = document.createElement('style');
-    style.id = 'toast-styles';
-    style.textContent = `
-      @keyframes slideIn {
-        from { transform: translateX(100%); opacity: 0; }
-        to { transform: translateX(0); opacity: 1; }
-      }
-      @keyframes slideOut {
-        from { transform: translateX(0); opacity: 1; }
-        to { transform: translateX(100%); opacity: 0; }
-      }
-    `;
-    document.head.appendChild(style);
-  }
-
   document.body.appendChild(toast);
 
-  // Авто-скрытие через 8 секунд
-  setTimeout(() => {
-    toast.style.animation = 'slideOut 0.3s ease';
-    setTimeout(() => toast.remove(), 300);
-  }, 8000);
+  const dismiss = (): void => {
+    clearTimeout(timer);
+    toast.style.animation = 'toast-out 0.2s ease forwards';
+    setTimeout(() => toast.remove(), 200);
+  };
+  const timer = window.setTimeout(dismiss, 5000);
+  // Клик по уведомлению закрывает его
+  toast.addEventListener('click', dismiss);
 }
 
 // ── Статус-бар ───────────────────────────────────────────────
 
 function renderStatusBar(sourceLabel: string, hasData: boolean): void {
-  statusBar.textContent = sourceLabel;
-  statusBar.classList.toggle('has-data', hasData);
-  statusBar.classList.toggle('no-data', !hasData);
+  // Источник данных теперь в панели настроек (не занимает шапку)
+  settingsExcelPathEl.textContent = hasData ? sourceLabel : 'нет данных';
+  settingsExcelPathEl.title = sourceLabel;
 }
 
 // ── Индикатор статуса AI ──────────────────────────────────────
@@ -519,6 +496,42 @@ function renderAnalysisStatus(status: string): void {
     default:
       analysisStatusEl.textContent = '⚠ Нет данных';
       analysisStatusEl.className = 'analysis-status';
+  }
+}
+
+const ANALYSIS_RUN_LABEL = '▶ Запустить анализ';
+
+/**
+ * Синхронизировать кнопку запуска и заметку на вкладке «Анализ» с реальным
+ * статусом: во время прогона кнопка «⏳ Идёт анализ…» и заблокирована,
+ * иначе — обычная надпись и разблокирована. Вызывается при возврате
+ * на вкладку и после завершения прогона, чтобы UI не «залипал».
+ */
+function syncAnalysisRunUi(status: string): void {
+  if (!analysisRunBtn) return;
+  const running = status === 'in_progress';
+  analysisRunBtn.disabled = running;
+  analysisRunBtn.textContent = running ? '⏳ Идёт анализ…' : ANALYSIS_RUN_LABEL;
+  if (running && !analysisNote.classList.contains('ok')) {
+    analysisNote.textContent =
+      '⏳ Полный конвейер: данные → исследование → AI-анализ ' +
+      '(на CPU может занять несколько минут)…';
+    analysisNote.className = 'harness-run-note progress';
+  }
+}
+
+/**
+ * Обновить индикатор анализа в шапке с сервера. Статус сводный:
+ * полный конвейер (in_progress/ready по report.html) + статус Директора.
+ */
+async function refreshAnalysisStatus(): Promise<void> {
+  try {
+    const info = await window.financeApp.getAnalysisStatus();
+    const status = info?.status ?? 'pending';
+    renderAnalysisStatus(status);
+    syncAnalysisRunUi(status);
+  } catch {
+    // Индикатор некритичен — при сбое оставляем как есть
   }
 }
 
@@ -753,6 +766,11 @@ function renderAnalysisReport(info: LastAnalysisInfo): string {
 
 async function refreshAnalysis(): Promise<void> {
   try {
+    // Пока полный конвейер работает — показываем это в шапке и подзаголовке
+    const statusInfo = await window.financeApp.getAnalysisStatus();
+    const inProgress = statusInfo?.status === 'in_progress';
+    renderAnalysisStatus(statusInfo?.status ?? 'pending');
+
     // Приоритет 1: полный отчёт конвейера (report.html) — как npm run pipeline
     const report = await window.financeApp.getLastPipelineReport();
     if (report && report.htmlContent) {
@@ -773,13 +791,33 @@ async function refreshAnalysis(): Promise<void> {
     analysisTextEl.hidden = false;
     const info = await window.financeApp.getLastAnalysis();
     if (!info || !info.text) {
-      analysisMetaEl.textContent = 'анализ не запускался';
+      if (inProgress) {
+        // Конвейер работает: НЕ пишем «анализ не запускался», а показываем прогон
+        analysisMetaEl.textContent =
+          '⏳ Полный конвейер запущен: данные → исследование → AI-анализ…';
+        analysisTextEl.textContent =
+          '⏳ Полный конвейер работает — отчёт (report.html) появится здесь ' +
+          'автоматически после завершения. Можно вернуться на другие вкладки: ' +
+          'о готовности сообщит уведомление и статус в шапке.';
+      } else {
+        analysisMetaEl.textContent = 'анализ не запускался';
+        analysisTextEl.textContent =
+          'Анализ ещё не запускался. Нажмите «Запустить анализ» — текст ' +
+          'отчёта появится здесь, и его можно будет сохранить в HTML или PDF.';
+      }
       analysisReportEl.innerHTML = '';
       return;
     }
     const finished = info.finishedAt ? formatLocalTime(info.finishedAt) : '—';
     const seconds = info.elapsedMs ? (info.elapsedMs / 1000).toFixed(1) : '—';
-    analysisMetaEl.textContent = `завершён ${finished} · ${seconds} с · ${info.sourceLabel}`;
+    // Путь к Excel на виду не нужен — только время и длительность;
+    // источник данных доступен в подсказке при наведении
+    analysisMetaEl.textContent = `завершён ${finished} · ${seconds} с`;
+    if (info.sourceLabel) {
+      analysisMetaEl.title = info.sourceLabel;
+    } else {
+      analysisMetaEl.removeAttribute('title');
+    }
     analysisReportEl.innerHTML = renderAnalysisReport(info);
     analysisTextEl.textContent = info.text;
   } catch {
@@ -794,18 +832,21 @@ async function refreshAnalysis(): Promise<void> {
 async function runPipelineAnalysis(
   sourceBtn: HTMLButtonElement,
 ): Promise<void> {
-  const originalText = sourceBtn.textContent || '▶ Запустить анализ';
   sourceBtn.disabled = true;
+  sourceBtn.textContent = '⏳ Идёт анализ…';
   analysisNote.textContent =
     '⏳ Полный конвейер: данные → исследование → AI-анализ ' +
     '(на CPU может занять несколько минут)…';
   analysisNote.className = 'harness-run-note progress';
+  // Индикатор в шапке сразу виден «запущен» — даже на других вкладках
+  renderAnalysisStatus('in_progress');
   try {
     const report = await window.financeApp.runPipelineReport();
     const seconds = (report.elapsedMs / 1000).toFixed(1);
     if (report.success) {
       analysisNote.textContent = `✅ Отчёт готов за ${seconds} с · ${report.htmlPath || 'report.html'}`;
       analysisNote.className = 'harness-run-note ok';
+      showToast(`✅ Отчёт готов за ${seconds} с`, 'ok');
     } else {
       analysisNote.textContent = `⚠️ Конвейер завершён с замечаниями за ${seconds} с`;
       analysisNote.className = 'harness-run-note error';
@@ -817,8 +858,9 @@ async function runPipelineAnalysis(
     }`;
     analysisNote.className = 'harness-run-note error';
   } finally {
-    sourceBtn.disabled = false;
-    sourceBtn.textContent = originalText;
+    // Сводный статус с сервера: готов / падение / статус Директора —
+    // refreshAnalysisStatus синхронизирует и кнопку (текст + блокировка)
+    await refreshAnalysisStatus();
   }
 }
 
@@ -852,6 +894,7 @@ async function runPortfolioAnalysis(
     sourceBtn.disabled = false;
     sourceBtn.textContent = originalText;
     await refreshAnalysis();
+    await refreshAnalysisStatus();
   }
 }
 
@@ -885,6 +928,7 @@ function bindTabs(): void {
       }
       if (target === 'analysis') {
         void refreshAnalysis();
+        void refreshAnalysisStatus();
       }
     });
   }
@@ -895,6 +939,21 @@ function bindTabs(): void {
 async function init(): Promise<void> {
   bindTabs();
 
+  // Панель настроек в шапке: открыть/закрыть по кнопке, клик мимо — закрыть
+  settingsToggleBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    settingsPanel.hidden = !settingsPanel.hidden;
+  });
+  settingsPanel.addEventListener('click', (event) => {
+    event.stopPropagation();
+  });
+  document.addEventListener('click', () => {
+    settingsPanel.hidden = true;
+  });
+
+  // Статус анализа в шапке (в т.ч. если полный конвейер уже запущен/готов)
+  void refreshAnalysisStatus();
+
   // Версия приложения (из package.json через main process)
   window.financeApp
     .getAppVersion()
@@ -904,6 +963,33 @@ async function init(): Promise<void> {
     .catch(() => {
       // Версия не критична — молча пропускаем
     });
+
+  // Настройка: открывать отчёт в браузере после прогона конвейера
+  if (openReportCheckbox) {
+    window.financeApp
+      .getSettings()
+      .then((settings) => {
+        openReportCheckbox.checked = settings.openReportInBrowser;
+      })
+      .catch(() => {
+        // Некритично: останется выключенным
+      });
+    openReportCheckbox.addEventListener('change', async () => {
+      const checked = openReportCheckbox.checked;
+      try {
+        await window.financeApp.setOpenReportInBrowser(checked);
+        showToast(
+          checked
+            ? '🌐 Отчёт будет открываться в браузере после анализа'
+            : '🌐 Отчёт остаётся во вкладке «Анализ»',
+          'ok',
+        );
+      } catch {
+        openReportCheckbox.checked = !checked;
+        showToast('Не удалось сохранить настройку', 'error');
+      }
+    });
+  }
 
   // Настройки: выбор Excel-файла портфеля через нативный диалог
   pickExcelBtn.addEventListener('click', async () => {

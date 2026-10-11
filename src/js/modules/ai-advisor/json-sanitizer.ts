@@ -26,9 +26,14 @@ export function stripJsonBlockFromAiText(text: string): string {
   let result = text;
 
   // 1. Удаляем ```json ... ``` блок (fenced с маркером, тройные бэктики)
-  result = result.replace(/```json\s*[\s\S]*?```/g, '');
+  result = result.replace(/```json\s*[\s\S]*?```/gi, '');
   // 1b. Удаляем `json ... ` блок (fenced с маркером, одинарные бэктики)
-  result = result.replace(/`json\s*[\s\S]*?`/g, '');
+  result = result.replace(/`json\s*[\s\S]*?`/gi, '');
+  // 1c. Оборванные fence-блоки БЕЗ закрывающих бэктиков (модель обрезана на
+  //     лимите токенов). JSON-блок запрошен в КОНЦЕ ответа, поэтому режем
+  //     от открывающего маркера до конца текста. Регистр не важен (```JSON).
+  result = result.replace(/```json[\s\S]*$/i, '');
+  result = result.replace(/`json[\s\S]*$/i, '');
   // 2. Удаляем ``` ... ``` блок (fenced без маркера, тройные бэктики)
   result = result.replace(/```\s*[\s\S]*?```/g, '');
   // 2b. Удаляем ` { ... } ` блок (fenced без маркера, одинарные бэктики, начинается с {)
@@ -47,6 +52,9 @@ export function stripJsonBlockFromAiText(text: string): string {
   // 5. Пост-очистка: удаляем оставшиеся одиночные { "ticker" ... } без закрывающей }
   //    (на случай если LLM оборвал JSON)
   result = result.replace(/\{\s*"ticker"\s*:[^}]*$/gm, '');
+  // 5b. HTML-вариант обрыва: текст уже сконвертирован в HTML (<br> вместо \n),
+  //     а JSON-фрагмент битый/без закрывающей скобки — режем до конца текста.
+  result = result.replace(/\{(?:\s|<br\s*\/?>)*"ticker"[\s\S]*$/i, '');
 
   // 6. Финальная проверка: удаляем любые оставшиеся structured JSON patterns
   //    на случай если что-то проскочило
@@ -119,7 +127,12 @@ function removeInlineJsonObject(text: string): string {
       result += '[JSON_BLOCK_REMOVED]';
       lastIndex = endIdx;
     } else {
-      result += text.slice(lastIndex);
+      // Незакрытый JSON-объект (обрыв модели): JSON всегда в конце ответа —
+      // режем от начала объекта до конца текста и выходим из цикла
+      // (иначе non-global regex вернёт тот же матч снова → бесконечный цикл).
+      result += text.slice(lastIndex, startIdx);
+      lastIndex = text.length;
+      break;
     }
   }
 

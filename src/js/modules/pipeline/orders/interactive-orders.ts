@@ -10,6 +10,7 @@
  * Любое действие SELL/BUY должно быть утверждено пользователем.
  */
 
+import { loadUserPolicy } from '../../../config/user-policy.js';
 import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
 
 /** Минимальный интерфейс заявки QUIK (совместим с xlsx-parser и db-manager) */
@@ -112,9 +113,20 @@ export function buildInteractiveOrders(
     }
 
     // Определяем действие на основе статуса PortfolioMath
-    const action = mapPortfolioMathStatusToAction(asset.status);
+    let action = mapPortfolioMathStatusToAction(asset.status);
     if (!action) {
       continue;
+    }
+
+    // Политика пользователя: тикеры из noSellTickers не продаются.
+    // Снижение их доли — только размыванием (докупкой других активов).
+    let noSellDowngraded = false;
+    if (
+      (action === 'REDUCE' || action === 'EXIT') &&
+      loadUserPolicy().noSellTickers.includes(asset.ticker.toUpperCase())
+    ) {
+      action = 'HOLD';
+      noSellDowngraded = true;
     }
 
     // Пропускаем дубликаты с существующими заявками
@@ -134,16 +146,24 @@ export function buildInteractiveOrders(
     const rationale = buildRationale(asset, action);
 
     // Проверяем guardrail-предупреждения
-    const guardrailWarnings = checkGuardrailWarnings(asset);
+    let guardrailWarnings = checkGuardrailWarnings(asset);
+    if (noSellDowngraded) {
+      guardrailWarnings = [
+        ...guardrailWarnings,
+        `NO_SELL_POLICY: ${asset.ticker} — пользователь держит позицию, продажа ` +
+          'не предлагается. Доля снижается докупкой других активов ' +
+          `(математика PortfolioMath: ${asset.status})`,
+      ];
+    }
 
     orders.push({
       id: generateOrderId(asset.ticker, action),
       ticker: asset.ticker,
       assetName: asset.name,
       action,
-      recommendedQuantity: quantity,
+      recommendedQuantity: noSellDowngraded ? 0 : quantity,
       recommendedPrice: price,
-      totalAmount: Math.round(totalAmount * 100) / 100,
+      totalAmount: noSellDowngraded ? 0 : Math.round(totalAmount * 100) / 100,
       approvalStatus: 'PENDING',
       rationale,
       guardrailWarnings:

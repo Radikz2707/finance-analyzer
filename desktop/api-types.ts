@@ -56,6 +56,8 @@ export interface DesktopSettingsInfo {
   excelFilePath: string;
   /** Выбранная модель Ollama (пусто — значение по умолчанию) */
   ollamaModel: string;
+  /** Открывать отчёт (report.html) в браузере после прогона конвейера */
+  openReportInBrowser: boolean;
 }
 
 /** Результат нативного диалога выбора Excel-файла */
@@ -126,6 +128,8 @@ export interface FinanceDesktopApi {
   setOllamaModel(model: string): Promise<boolean>;
   /** Переподключить Ollama (если был fallback-режим) */
   reconnectOllama(): Promise<OllamaReconnectResult>;
+  /** Включить/выключить открытие отчёта в браузере после прогона конвейера */
+  setOpenReportInBrowser(value: boolean): Promise<boolean>;
   /** Получить статус анализа портфеля */
   getAnalysisStatus(): Promise<{
     status: 'ready' | 'pending' | 'in_progress' | 'none';

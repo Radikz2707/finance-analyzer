@@ -10,6 +10,7 @@
  * os-integration (только десктопный контур). См. JSDoc этих модулей.
  */
 
+import { exec } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { resolveReportsDir } from '../../app-paths.js';
@@ -347,8 +348,31 @@ export class NotificationAgent extends AgentBase {
     );
   }
 
-  private openInBrowser(_filePath: string): boolean {
-    // Открывает только ai-advisor.ts, чтобы не было двух вкладок
-    return false;
+  /**
+   * Открыть report.html в браузере ОС по умолчанию.
+   *
+   * Внутри Electron-приложения отчёт и так показывается во вкладке
+   * «Анализ» (iframe из runPipelineReport) — внешний браузер не открываем,
+   * иначе каждый прогон анализа плодил бы лишние вкладки.
+   * Работает только в CLI-прогонах (npm run pipeline).
+   */
+  private openInBrowser(filePath: string): boolean {
+    // Electron: process.versions.electron определён только в его рантайме
+    if (process.versions.electron) {
+      return false;
+    }
+    try {
+      if (process.platform === 'win32') {
+        // start — внутренняя команда cmd.exe; первый "" — заголовок окна
+        exec(`start "" "${filePath}"`, { shell: 'cmd.exe' });
+      } else if (process.platform === 'darwin') {
+        exec(`open "${filePath}"`);
+      } else {
+        exec(`xdg-open "${filePath}"`);
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

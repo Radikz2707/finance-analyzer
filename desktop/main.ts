@@ -33,6 +33,7 @@ import type {
 } from 'electron';
 import { resolveReportsDir } from '../src/js/modules/app-paths.js';
 import {
+  getDesktopSettings,
   loadDesktopSettings,
   resolveOllamaModel,
   saveDesktopSettings,
@@ -50,6 +51,7 @@ import {
   handleAutonomousStop,
   handleProactiveIdeas,
   handleLastPipelineReport,
+  resolveAnalysisStatus,
   runPipelineReport,
   buildAnalysisHtml,
   handleGoalsAdd,
@@ -107,7 +109,13 @@ async function initAppState(): Promise<void> {
   });
   // Диспетчер опционален: сбой сборки не мешает чату с Директором.
   const harness = await buildHarnessState({});
-  appState = { director, harness, autonomous: null, pipelineReport: null };
+  appState = {
+    director,
+    harness,
+    autonomous: null,
+    pipelineReport: null,
+    pipelineRunning: false,
+  };
 
   // Автономный цикл: цели + фоновый watch (один организм с чатом и диспетчером)
   appState.autonomous = createAutonomousBridge({
@@ -334,7 +342,17 @@ function registerIpc(): void {
     if (!appState) {
       throw new Error('Состояние приложения не инициализировано');
     }
-    return runPipelineReport(appState);
+    const info = await runPipelineReport(appState);
+    // Опционально: открыть отчёт в системном браузере (галочка в шапке).
+    // По умолчанию отчёт остаётся во вкладке «Анализ» (iframe).
+    if (
+      info.success &&
+      info.htmlPath &&
+      getDesktopSettings().openReportInBrowser === true
+    ) {
+      void shell.openPath(info.htmlPath);
+    }
+    return info;
   });
   ipcMain.handle('pipeline:last', () =>
     appState ? handleLastPipelineReport(appState) : null,
@@ -485,12 +503,12 @@ function registerIpc(): void {
     return { success: true };
   });
 
-  // Статус анализа
+  // Статус анализа (сводный: полный конвейер + внутренний статус Директора)
   ipcMain.handle('director:analysis-status', () => {
     if (!appState) {
       return { status: 'none' as const };
     }
-    return { status: appState.director.director.analysisStatus };
+    return { status: resolveAnalysisStatus(appState) };
   });
 
   ipcMain.handle('portfolio:status', () => ({
@@ -504,6 +522,7 @@ function registerIpc(): void {
     excelFilePath: process.env.EXCEL_FILE_PATH ?? '',
     // Актуальная модель: приоритет у выбора пользователя в settings.json
     ollamaModel: resolveOllamaModel() ?? '',
+    openReportInBrowser: getDesktopSettings().openReportInBrowser === true,
   }));
 
   ipcMain.handle('settings:pick-excel', async () => {
@@ -588,6 +607,15 @@ function registerIpc(): void {
       ollamaModel: next,
     });
     process.env.OLLAMA_MODEL = next;
+    return true;
+  });
+
+  // Настройка: открывать отчёт (report.html) в браузере после прогона конвейера
+  ipcMain.handle('settings:set-open-report', (_event, value: boolean) => {
+    saveDesktopSettings({
+      ...loadDesktopSettings(),
+      openReportInBrowser: value === true,
+    });
     return true;
   });
 

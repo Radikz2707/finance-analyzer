@@ -41,42 +41,68 @@
           >
             ▶ Анализ
           </button>
-          <button
-            id="reconnect-ollama-btn"
-            type="button"
-            class="mini-btn"
-            title="Переподключить Ollama (если был fallback-режим)"
-          >
-            🔄 Ollama
-          </button>
-          <label class="ollama-model-label" for="ollama-model-select">
-            Модель:
-          </label>
-          <select
-            id="ollama-model-select"
-            class="ollama-model-select"
-            title="Модель Ollama для общения с директором"
-          ></select>
-          <button
-            id="apply-ollama-btn"
-            type="button"
-            class="pick-excel-btn"
-            title="Сохранить модель Ollama и перезапустить приложение"
-          >
-            🔄 Применить
-          </button>
-          <button
-            id="pick-excel-btn"
-            type="button"
-            class="pick-excel-btn"
-            title="Выбрать Excel-файл портфеля QUIK"
-          >
-            📁 Excel…
-          </button>
+          <div class="header-settings">
+            <button
+              id="settings-toggle-btn"
+              type="button"
+              class="mini-btn"
+              title="Настройки: модель Ollama, файл Excel, отчёты"
+            >
+              ⚙ Настройки
+            </button>
+            <div id="settings-panel" class="settings-panel" hidden>
+              <div class="settings-row">
+                <label class="ollama-model-label" for="ollama-model-select">
+                  Модель:
+                </label>
+                <select
+                  id="ollama-model-select"
+                  class="ollama-model-select"
+                  title="Модель Ollama для общения с директором"
+                ></select>
+                <button
+                  id="apply-ollama-btn"
+                  type="button"
+                  class="pick-excel-btn"
+                  title="Сохранить модель Ollama и перезапустить приложение"
+                >
+                  🔄 Применить
+                </button>
+              </div>
+              <div class="settings-row">
+                <button
+                  id="pick-excel-btn"
+                  type="button"
+                  class="pick-excel-btn"
+                  title="Выбрать Excel-файл портфеля QUIK"
+                >
+                  📁 Excel…
+                </button>
+                <span
+                  id="settings-excel-path"
+                  class="settings-excel-path"
+                  title="Источник данных портфеля"
+                  >—</span
+                >
+              </div>
+              <label
+                class="check-label"
+                title="Открывать отчёт (report.html) в системном браузере после прогона анализа"
+              >
+                <input type="checkbox" id="open-report-checkbox" />
+                🌐 Открывать отчёт в браузере
+              </label>
+              <button
+                id="reconnect-ollama-btn"
+                type="button"
+                class="mini-btn"
+                title="Переподключить Ollama (если был fallback-режим)"
+              >
+                🔄 Переподключить Ollama
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
-      <div id="status-bar" class="status-bar" title="Источник данных портфеля">
-        Загрузка…
       </div>
     </header>
 

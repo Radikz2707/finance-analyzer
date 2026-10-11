@@ -28,6 +28,12 @@ export interface DesktopSettings {
   excelFilePath?: string;
   /** Модель Ollama для общения с директором (по умолчанию qwen3:14b) */
   ollamaModel?: string;
+  /**
+   * Открывать report.html в системном браузере после прогона конвейера
+   * внутри приложения (по умолчанию false — отчёт во вкладке «Анализ»).
+   * CLI-прогон (npm run pipeline) открывает браузер всегда.
+   */
+  openReportInBrowser?: boolean;
 }
 
 /** Кэш настроек: единый источник для живого чтения в рантайме */

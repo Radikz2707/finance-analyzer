@@ -22,6 +22,7 @@ import {
   handleLog,
   handlePanel,
   handleStatus,
+  resolveAnalysisStatus,
   runPipelineReport,
   subscribeEvents,
   type AppState,
@@ -326,12 +327,14 @@ describe('desktop/ipc-core · Отчёт анализа (rich HTML)', () => {
 
 describe('desktop/ipc-core · Полный конвейер в приложении', () => {
   /** runPipelineReport использует только поле pipelineReport — Директор не нужен */
-  function makeAppState(): AppState {
+  function makeAppState(overrides: Partial<AppState> = {}): AppState {
     return {
       director: {} as unknown as DirectorState,
       harness: null,
       autonomous: null,
       pipelineReport: null,
+      pipelineRunning: false,
+      ...overrides,
     };
   }
 
@@ -382,5 +385,40 @@ describe('desktop/ipc-core · Полный конвейер в приложен�
     expect(info.mdPath).toBe('report.md');
     // Состояние обновлено: handleLastPipelineReport видит отчёт
     expect(handleLastPipelineReport(app)?.mdContent).toContain('Полный отчёт');
+    // Флаг прогона снят после завершения
+    expect(app.pipelineRunning).toBe(false);
+  });
+
+  it('resolveAnalysisStatus: конвейер in_progress → готовый отчёт ready → статус Директора', async () => {
+    // 1. Во время прогона — in_progress, даже если Директор «не запускался»
+    const running = makeAppState({ pipelineRunning: true });
+    expect(resolveAnalysisStatus(running)).toBe('in_progress');
+
+    // 2. После успешного прогона (report.html есть) — ready
+    const done = makeAppState();
+    await runPipelineReport(done, { createCoordinator: fakeCoordinator });
+    expect(resolveAnalysisStatus(done)).toBe('ready');
+
+    // 3. Без конвейера — внутренний статус Директора (pending по умолчанию)
+    const idle = makeAppState({
+      director: {
+        director: { analysisStatus: 'pending' },
+      } as unknown as DirectorState,
+    });
+    expect(resolveAnalysisStatus(idle)).toBe('pending');
+
+    // 4. Флаг сброшен даже при падении конвейера
+    const broken = makeAppState();
+    await expect(
+      runPipelineReport(broken, {
+        createCoordinator: () => ({
+          onStageComplete: () => () => {},
+          run: async () => {
+            throw new Error('boom');
+          },
+        }),
+      }),
+    ).rejects.toThrow('boom');
+    expect(broken.pipelineRunning).toBe(false);
   });
 });

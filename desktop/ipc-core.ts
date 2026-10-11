@@ -681,6 +681,8 @@ export interface AppState {
   autonomous: AutonomousBridge | null;
   /** Последний отчёт полного конвейера (report.html/report.md) — null до прогона */
   pipelineReport: PipelineReportInfo | null;
+  /** Идёт ли прямо сейчас прогон полного конвейера */
+  pipelineRunning: boolean;
 }
 
 /** Цель для UI/renderer (структурная копия Goal без внутренностей) */
@@ -768,7 +770,15 @@ export async function runPipelineReport(
   const create = deps.createCoordinator ?? (() => new PipelineCoordinator());
   const coordinator = create();
   const startedAt = Date.now();
-  const result = await coordinator.run();
+  // Флаг прогона для индикатора в шапке приложения (resolveAnalysisStatus):
+  // while-запросы renderer видят in_progress, даже если конвейер длится минуты.
+  state.pipelineRunning = true;
+  let result: PipelineResult;
+  try {
+    result = await coordinator.run();
+  } finally {
+    state.pipelineRunning = false;
+  }
   const notification = result.stages.notification?.result.data as
     NotificationAgentOutput | undefined;
   const info: PipelineReportInfo = {
@@ -789,6 +799,24 @@ export function handleLastPipelineReport(
   state: AppState,
 ): PipelineReportInfo | null {
   return state.pipelineReport;
+}
+
+/**
+ * Сводный статус анализа для индикатора в шапке приложения:
+ * во время прогона полного конвейера — in_progress (Директор при этом
+ * ничего не знает о конвейере), после готового report.html — ready,
+ * иначе — внутренний статус Директора (runLazyAnalysis/ручной запуск).
+ */
+export function resolveAnalysisStatus(
+  state: AppState,
+): 'ready' | 'pending' | 'in_progress' | 'none' {
+  if (state.pipelineRunning) {
+    return 'in_progress';
+  }
+  if (state.pipelineReport?.htmlContent) {
+    return 'ready';
+  }
+  return state.director.director.analysisStatus;
 }
 
 /**
