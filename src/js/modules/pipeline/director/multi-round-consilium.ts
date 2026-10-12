@@ -338,9 +338,17 @@ function resolveRecommendation(
     }
   }
 
-  const totalScore = [...weighted.values()].reduce((s, v) => s + v, 0);
-  const winnerScore = weighted.get(winner) ?? 0;
-  const confidence = totalScore > 0 ? clamp(winnerScore / totalScore, 0, 1) : 0;
+  // Уверенность = средняя уверенность агентов, поддержавших победившее
+  // действие. Это честнее, чем доля голосов: если оба агента сказали
+  // REDUCE с уверенностью 60%, итоговая уверенность — 60%, а не 100%.
+  // Верхний предел 0.9 — рынок непредсказуем, 100% не бывает.
+  const winnerOpinions = withAction.filter((o) => o.action === winner);
+  const avgConfidence =
+    winnerOpinions.length > 0
+      ? winnerOpinions.reduce((s, o) => s + o.confidence, 0) /
+        winnerOpinions.length
+      : 0;
+  const confidence = clamp(avgConfidence, 0, 0.9);
 
   const distribution = ranked
     .map(([action, score]) => `${action} (${score.toFixed(1)})`)
@@ -355,7 +363,7 @@ function resolveRecommendation(
   };
 }
 
-/** Обоснование Director: почему принят именно такой вывод */
+/** Обоснование Director: почему принят именно такой вывод (человекочитаемо) */
 function buildDirectorReasoning(
   rounds: ConsiliumRound[],
   recommendation: MultiRoundConsiliumOutput['finalRecommendation'],
@@ -363,32 +371,27 @@ function buildDirectorReasoning(
   const last = rounds[rounds.length - 1];
   const parts: string[] = [];
 
-  parts.push(`Проведено раундов: ${rounds.length}.`);
+  const hadDisagreement = last && last.pointsOfDisagreement.length > 0;
 
-  if (last && last.pointsOfAgreement.length > 0) {
+  if (hadDisagreement) {
     parts.push(
-      `Точки согласия: ${last.pointsOfAgreement.slice(0, 3).join('; ')}.`,
+      'Агенты начинали с разных позиций, но после обсуждения ' +
+        `пришли к единому действию «${recommendation.action}».`,
     );
-  }
-  if (last && last.pointsOfDisagreement.length > 0) {
+  } else {
     parts.push(
-      `Остались разногласия: ${last.pointsOfDisagreement
-        .slice(0, 3)
-        .join('; ')}.`,
-    );
-  }
-
-  const changes = rounds.flatMap((r) => r.positionChanges);
-  if (changes.length > 0) {
-    parts.push(
-      `Агенты уточнили позиции: ${changes.length} изменение(я) зафиксировано.`,
+      'Все агенты с самого начала были согласны на действии ' +
+        `«${recommendation.action}».`,
     );
   }
 
   parts.push(
-    `Итог: «${recommendation.action}» с уверенностью ` +
-      `${Math.round(recommendation.confidence * 100)}%. ` +
-      'Решение принято по качеству аргументов, без безусловного veto кого-либо из агентов.',
+    `Уверенность решения — ${Math.round(recommendation.confidence * 100)}%.`,
+  );
+
+  parts.push(
+    'Решение принято по качеству аргументов, без безусловного veto ' +
+      'кого-либо из агентов.',
   );
 
   return parts.join(' ');

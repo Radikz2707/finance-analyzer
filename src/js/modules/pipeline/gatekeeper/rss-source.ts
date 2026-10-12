@@ -34,39 +34,30 @@ const DEFAULT_RSS_SOURCES: RssSourceConfig[] = [
   // === РОССИЙСКИЕ НОВОСТИ (Московская биржа) ===
   {
     name: 'РБК Финансы',
-    url: 'https://www.rbc.ru/rss/rbc_news_main.xml',
+    // Актуальный RSS-экспорт РБК (старый rbc.ru/rss/rbc_news_main.xml → 404)
+    url: 'https://rssexport.rbc.ru/rbcnews/news/30/full.rss',
     enabled: true,
     maxItems: 100,
     isMoscowExchange: true,
   },
   {
     name: 'Интерфакс',
-    url: 'https://www.interfax.ru/rss/rss.rdf',
+    // Актуальная лента (старый rss.rdf → 404)
+    url: 'https://www.interfax.ru/rss/',
     enabled: true,
     maxItems: 80,
     isMoscowExchange: true,
   },
   {
-    name: 'Финансы Финам',
-    url: 'https://www.finam.ru/infoblock/newsfeed/rss.aspx',
-    enabled: true,
-    maxItems: 100,
-    isMoscowExchange: true,
-  },
-  {
     name: 'Коммерсантъ Финансы',
-    url: 'https://www.kommersant.ru/rss/finance.xml',
+    // Актуальная лента (старый rss/finance.xml → 403)
+    url: 'https://www.kommersant.ru/RSS/news.xml',
     enabled: true,
     maxItems: 60,
     isMoscowExchange: true,
   },
-  {
-    name: 'Ведомости Финансы',
-    url: 'https://www.vedomosti.ru/rss.xml',
-    enabled: true,
-    maxItems: 60,
-    isMoscowExchange: true,
-  },
+  // Финам (finam.ru/infoblock/newsfeed/rss.aspx → 403, альтернативы → 404)
+  // и Ведомости (vedomosti.ru/rss.xml → 404) отключены: ленты мертвы.
   // === МЕЖДУНАРОДНЫЕ ===
   {
     name: 'Investing.com',
@@ -80,12 +71,9 @@ const DEFAULT_RSS_SOURCES: RssSourceConfig[] = [
     enabled: true,
     maxItems: 30,
   },
-  {
-    name: 'Yahoo Finance',
-    url: 'https://finance.yahoo.com/rss/',
-    enabled: true,
-    maxItems: 30,
-  },
+  // Yahoo Finance прекратил поддержку RSS (finance.yahoo.com/rss/ → 404).
+  // Google News RSS отключён: из РФ недоступен без VPN (таймаут 20с впустую).
+  // РБК/Интерфакс/Коммерсантъ/Investing/Habr дают достаточно новостей.
 ];
 
 /**
@@ -139,19 +127,43 @@ function parseRssXml(xml: string, maxItems: number = 50): RawNewsItem[] {
 function extractTickersFromNews(text: string): string[] {
   const found: string[] = [];
   const knownTickers = [
-    'SBER', 'GMKN', 'LKOH', 'PLZL', 'ROSN', 'VTBR', 'SBERP',
-    'GAZP', 'MGNT', 'YNDX', 'AFLT', 'MTLR', 'TATN', 'SNGS',
-    'ROSNDR', 'MTSS', 'FLOT', 'ALRS', 'CHMF', 'NLMK', 'PHOR',
-    'SENER', 'MAGN', 'SKNG', 'VKCO', 'AFKON', 'BSPB', 'FEES',
+    'SBER',
+    'GMKN',
+    'LKOH',
+    'PLZL',
+    'ROSN',
+    'VTBR',
+    'SBERP',
+    'GAZP',
+    'MGNT',
+    'YNDX',
+    'AFLT',
+    'MTLR',
+    'TATN',
+    'SNGS',
+    'ROSNDR',
+    'MTSS',
+    'FLOT',
+    'ALRS',
+    'CHMF',
+    'NLMK',
+    'PHOR',
+    'SENER',
+    'MAGN',
+    'SKNG',
+    'VKCO',
+    'AFKON',
+    'BSPB',
+    'FEES',
   ];
-  
+
   const lower = text.toLowerCase();
   for (const ticker of knownTickers) {
     if (lower.includes(ticker.toLowerCase())) {
       found.push(ticker);
     }
   }
-  
+
   return found;
 }
 
@@ -179,7 +191,11 @@ export class RssNewsSource implements INewsSource {
   public readonly name: NewsSource = 'custom_rss';
   public readonly enabled: boolean;
   private readonly sources: RssSourceConfig[];
-  private readonly userAgent = 'FinanceAnalyzer/1.0';
+  // Реалистичный браузерный User-Agent: многие сайты (РБК, Коммерсантъ)
+  // блокируют небраузерные UA (403).
+  private readonly userAgent =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+    '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
   constructor(configs?: RssSourceConfig[]) {
     this.sources = configs ?? DEFAULT_RSS_SOURCES;
@@ -240,7 +256,7 @@ export class RssNewsSource implements INewsSource {
     }
 
     const moscowSources = this.sources.filter((s) => s.isMoscowExchange);
-    
+
     if (moscowSources.length === 0) {
       return [];
     }

@@ -20,6 +20,12 @@ describe('buildSystemPrompt', () => {
     expect(basePrompt).toContain('=== JSON-БЛОК');
   });
 
+  it('instructs model to output JSON block FIRST (before narrative)', () => {
+    expect(basePrompt).toContain('ОБЯЗАТЕЛЬНО ПЕРВЫМ');
+    expect(basePrompt).toContain('СНАЧАЛА выведи JSON-блок');
+    expect(basePrompt).toContain('ТЕКСТОВЫЙ ОТВЕТ (7 секций, ПОСЛЕ JSON)');
+  });
+
   it('contains macro context with rate', () => {
     expect(basePrompt).toContain('Ставка ЦБ: 18%');
   });
@@ -47,7 +53,9 @@ describe('buildSystemPrompt', () => {
   // === Core investment freedom rules ===
 
   it('rule 1: USER_TARGET_PERCENT is input fact only', () => {
-    expect(basePrompt).toContain('Целевые доли (targetPercent) — факт пользователя');
+    expect(basePrompt).toContain(
+      'Целевые доли (targetPercent) — факт пользователя',
+    );
     expect(basePrompt).toContain('AI НЕ изменяет этот факт');
   });
 
@@ -57,11 +65,15 @@ describe('buildSystemPrompt', () => {
   });
 
   it('rule 3: AI can disagree with PortfolioMath and USER_TARGET', () => {
-    expect(basePrompt).toContain('AI может НЕ соглашаться с PortfolioMath и USER_TARGET');
+    expect(basePrompt).toContain(
+      'AI может НЕ соглашаться с PortfolioMath и USER_TARGET',
+    );
   });
 
   it('rule 4: deep loss does NOT block SELL/EXIT/REDUCE', () => {
-    expect(basePrompt).toContain('Глубокий убыток НЕ блокирует SELL/EXIT/REDUCE');
+    expect(basePrompt).toContain(
+      'Глубокий убыток НЕ блокирует SELL/EXIT/REDUCE',
+    );
     expect(basePrompt).toContain('AI самостоятельно решает');
   });
 
@@ -92,7 +104,9 @@ describe('buildSystemPrompt', () => {
 
   it('rule 9: deterministic constraints precede AI reasoning, reasoning precedes output contract', () => {
     const rulesIndex = basePrompt.indexOf('=== ГЛАВНЫЕ ПРАВИЛА ===');
-    const reasoningIndex = basePrompt.indexOf('=== ИНВЕСТИЦИОННЫЙ REASONING ===');
+    const reasoningIndex = basePrompt.indexOf(
+      '=== ИНВЕСТИЦИОННЫЙ REASONING ===',
+    );
     const jsonIndex = basePrompt.indexOf('=== JSON-БЛОК');
     expect(rulesIndex).toBeGreaterThanOrEqual(0);
     expect(reasoningIndex).toBeGreaterThanOrEqual(0);
@@ -102,7 +116,9 @@ describe('buildSystemPrompt', () => {
   });
 
   it('rule 9: PortfolioMath status is not a hint for AI_RECOMMENDED_ACTION', () => {
-    expect(basePrompt).toContain('PortfolioMath status — результат детерминированной математики');
+    expect(basePrompt).toContain(
+      'PortfolioMath status — результат детерминированной математики',
+    );
     expect(basePrompt).toContain('AI может НЕ соглашаться с PortfolioMath');
   });
 
@@ -118,7 +134,9 @@ describe('buildSystemPrompt', () => {
   });
 
   it('rule 10: AI shows uncertainty when data is missing', () => {
-    expect(basePrompt).toContain('При конфликте данных AI показывает источник/характер неопределённости');
+    expect(basePrompt).toContain(
+      'При конфликте данных AI показывает источник/характер неопределённости',
+    );
   });
 
   // === Prohibitions ===
@@ -132,7 +150,9 @@ describe('buildSystemPrompt', () => {
   });
 
   it('does NOT propose new target structure', () => {
-    expect(basePrompt).not.toContain('Предложи новую сбалансированную структуру');
+    expect(basePrompt).not.toContain(
+      'Предложи новую сбалансированную структуру',
+    );
   });
 
   it('does NOT require stop-loss', () => {

@@ -1,5 +1,9 @@
 import {
+  extractCorrection,
+  looksLikeCorrection,
   looksLikeGreeting,
+  looksLikeOffTopic,
+  looksLikeReportRequest,
   looksLikeStatusQuestion,
   looksLikeTaskIntent,
   parseUserMessage,
@@ -276,5 +280,71 @@ describe('NL Parser (Director): приветствия', () => {
     expect(looksLikeTaskIntent('Что делать с SBER?')).toBe(false);
     expect(looksLikeTaskIntent('привет')).toBe(false);
     expect(looksLikeTaskIntent('')).toBe(false);
+  });
+
+  it('оффтопик-вопросы (погода, спорт) распознаются и НЕ идут в агенты', () => {
+    expect(looksLikeOffTopic('Какая завтра погода в Домодедово?')).toBe(true);
+    expect(looksLikeOffTopic('о погоде можно поговорить?')).toBe(true);
+    expect(looksLikeOffTopic('Кто выиграл вчерашний матч?')).toBe(true);
+    expect(looksLikeOffTopic('Дай рецепт борща')).toBe(true);
+    expect(looksLikeOffTopic('Какой фильм посмотреть?')).toBe(true);
+  });
+
+  it('финансовые вопросы НЕ считаются оффтопиком', () => {
+    expect(looksLikeOffTopic('Что делать с PLZL?')).toBe(false);
+    expect(looksLikeOffTopic('Как выглядит портфель?')).toBe(false);
+    expect(looksLikeOffTopic('Есть ли риски?')).toBe(false);
+    expect(looksLikeOffTopic('Стратегия на год')).toBe(false);
+  });
+
+  it('«а если» классифицируется как сценарный вопрос (ScenarioAgent)', () => {
+    const parsed = parseUserMessage(
+      'а если я сокращу PLZL за счет увеличения доли других активов, что тогда?',
+    );
+    expect(parsed.category).toBe('scenario');
+    expect(parsed.requiredAgents).toContain('scenario');
+  });
+
+  it('запрос отчёта/анализа распознаётся', () => {
+    expect(
+      looksLikeReportRequest('ты же видишь сейчас мой отчет по портфелю?'),
+    ).toBe(true);
+    expect(looksLikeReportRequest('Проанализируй отчёт ещё раз')).toBe(true);
+    expect(looksLikeReportRequest('Что во вкладке Анализ?')).toBe(true);
+    expect(looksLikeReportRequest('Покажи отчёт по портфелю')).toBe(true);
+  });
+
+  it('финансовые вопросы не считаются запросом отчёта', () => {
+    expect(looksLikeReportRequest('Что делать с SBER?')).toBe(false);
+    expect(looksLikeReportRequest('Как дела?')).toBe(false);
+  });
+
+  it('поправки пользователя распознаются и извлекаются', () => {
+    expect(
+      looksLikeCorrection(
+        'С чего ты взял, что 35,4%? Его доля всего почти 19%',
+      ),
+    ).toBe(true);
+    expect(looksLikeCorrection('доля PLZL 19%')).toBe(true);
+    expect(looksLikeCorrection('не 35,4%')).toBe(true);
+    expect(looksLikeCorrection('35,4% неверно')).toBe(true);
+    expect(looksLikeCorrection('на самом деле 19%')).toBe(true);
+  });
+
+  it('extractCorrection извлекает тикер и процент', () => {
+    const correction = extractCorrection('доля PLZL 19%');
+    expect(correction).not.toBeNull();
+    expect(correction!.ticker).toBe('PLZL');
+    expect(correction!.currentPercent).toBeCloseTo(19, 5);
+
+    const noTicker = extractCorrection('не 35,4%');
+    expect(noTicker).not.toBeNull();
+    expect(noTicker!.ticker).toBeNull();
+    expect(noTicker!.currentPercent).toBeCloseTo(35.4, 5);
+  });
+
+  it('extractCorrection возвращает null для не-поправок', () => {
+    expect(extractCorrection('Что делать с PLZL?')).toBeNull();
+    expect(extractCorrection('Как дела?')).toBeNull();
   });
 });

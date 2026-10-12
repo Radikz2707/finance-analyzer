@@ -9,7 +9,13 @@
  * - Полная замена пользователя — действует в его интересах
  */
 
-import { parseUserMessage } from './nl-parser.js';
+import {
+  extractCorrection,
+  looksLikeCorrection,
+  looksLikeOffTopic,
+  looksLikeReportRequest,
+  parseUserMessage,
+} from './nl-parser.js';
 import {
   DirectorDelegationPlanner,
   AGENT_ROLE_LABELS,
@@ -18,6 +24,7 @@ import { DirectorAgentFacade } from './agent-facade.js';
 import { DirectorChatStore } from './chat-session.js';
 import { BrowserPersistentMemory } from './browser-persistent-memory.js';
 import { OllamaClient } from './ollama-client.js';
+import { buildPortfolioSummary } from './browser-chat-responder.js';
 import { buildInvestmentAdvisorPrompt } from './ollama-system-prompt.js';
 import { NewsCache } from '../gatekeeper/news-cache.js';
 import type { NewsTrend } from '../gatekeeper/news-cache.js';
@@ -77,6 +84,10 @@ export class BrowserDirector {
   private strategicPlan: StrategicPlan | null = null;
   private portfolioHistory: PortfolioSnapshot[] = [];
   private chatHistory: Array<{ role: string; content: string }> = [];
+  /** Поправки пользователя к долям активов (ticker → корректный %) */
+  private userCorrections: Map<string, number> = new Map();
+  /** Тикеры последнего обсуждённого вопроса (для follow-up «а если») */
+  private lastTickers: string[] = [];
 
   constructor(_config: DirectorConfig = {}) {
     this.facts = emptyFacts();
@@ -244,6 +255,52 @@ export class BrowserDirector {
       return this.createResponse(answer, []);
     }
 
+    // --- Оффтопик: темы вне компетенции (погода, спорт, кулинария и т.д.) ---
+    // Честный ответ БЕЗ запуска агентов и БЕЗ портфельного контекста в LLM.
+    if (looksLikeOffTopic(message)) {
+      const answer = this.buildOffTopicAnswer();
+      await this.saveChatMessage('director', answer);
+      return this.createResponse(answer, []);
+    }
+
+    // --- Поправка пользователя к данным портфеля ---
+    // «доля PLZL 19%», «не 35,4%» — запоминаем и применяем в дальнейших
+    // расчётах, чтобы не повторять ошибочную цифру.
+    if (looksLikeCorrection(message)) {
+      const knownAssets = this.facts.assetsAnalysis.map((a) => ({
+        ticker: a.ticker,
+        name: a.name,
+      }));
+      const correction = extractCorrection(message, knownAssets);
+      if (correction) {
+        const ticker = (
+          correction.ticker ?? this.lastTickers[0]
+        )?.toUpperCase();
+        if (ticker) {
+          this.userCorrections.set(ticker, correction.currentPercent);
+          const asset = this.facts.assetsAnalysis.find(
+            (a) => a.ticker.toUpperCase() === ticker,
+          );
+          const answer =
+            'Принято, спасибо за поправку! ✅\n\n' +
+            `Доля ${asset?.name ?? ticker} (${ticker}) — ` +
+            `${correction.currentPercent.toFixed(1)}%.\n` +
+            'Учту это значение во всех дальнейших расчётах и рекомендациях.';
+          await this.saveChatMessage('director', answer);
+          return this.createResponse(answer, []);
+        }
+      }
+    }
+
+    // --- Запрос отчёта/анализа портфеля: сводка по РЕАЛЬНЫМ фактам ---
+    // «ты видишь мой отчёт?» — показываем факты, а не отдаём в LLM,
+    // который может выдумать активы (VKCO/IRAO из примеров промпта).
+    if (looksLikeReportRequest(message)) {
+      const answer = this.buildPortfolioReportAnswer();
+      await this.saveChatMessage('director', answer);
+      return this.createResponse(answer, []);
+    }
+
     // --- Сложный вопрос — запускаем агентов и отправляем в LLM ---
 
     console.log(
@@ -257,9 +314,21 @@ export class BrowserDirector {
     const agentResults = await this.runAgents(message);
     console.log('[BrowserDirector] Результаты агентов:', agentResults.length);
 
-    // Запускаем консилиум если агенты спорят
+    // Запоминаем тикеры вопроса для follow-up («а если…» без тикера)
+    const parsedTickers = parseUserMessage(message).tickers;
+    if (parsedTickers.length > 0) {
+      this.lastTickers = parsedTickers;
+    }
+
+    // Запускаем консилиум если агенты спорят ИЛИ пользователь явно просит
+    // («собери консилиум», «обсуди между собой»).
     let consiliumSummary = '';
-    const hasDisagreement = this.detectDisagreement(agentResults);
+    const wantsConsilium =
+      /(консилиум|consilium|созови|собери\s+агентов|обсуди\s+между\s+собой)/i.test(
+        message,
+      );
+    const hasDisagreement =
+      this.detectDisagreement(agentResults) || wantsConsilium;
 
     if (hasDisagreement) {
       console.log(
@@ -327,7 +396,23 @@ export class BrowserDirector {
   }
 
   private async runAgents(question: string): Promise<AgentResultEntry[]> {
-    const interpreted = parseUserMessage(question);
+    let interpreted = parseUserMessage(question);
+
+    // Follow-up «а если/что если» без тикеров — подтягиваем тикеры из
+    // последнего обсуждённого вопроса, чтобы ScenarioAgent считал сценарий
+    // по тому же активу (например, «а если сокращу PLZL…»).
+    if (interpreted.tickers.length === 0 && this.lastTickers.length > 0) {
+      const lower = question.toLowerCase();
+      if (
+        /(а если|что если|если я|если мы|допустим|предположим)/i.test(lower)
+      ) {
+        interpreted = {
+          ...interpreted,
+          tickers: [...this.lastTickers],
+        };
+      }
+    }
+
     const plan = this.planner.buildPlan(interpreted, '');
 
     if (plan.connectedAgents.length === 0) {
@@ -338,7 +423,7 @@ export class BrowserDirector {
       const results = await this.facade.executeRoles(
         plan.connectedAgents,
         interpreted,
-        this.facts,
+        this.correctedFacts(),
       );
 
       // Мониторим производительность
@@ -529,7 +614,33 @@ export class BrowserDirector {
   ): string {
     if (agentResults.length === 0) return '';
 
-    let context = `Портфель: ${this.formatCurrency(this.facts.totalPortfolioValue)} ₽, ${this.facts.assetsAnalysis.length} активов\n\n`;
+    const facts = this.correctedFacts();
+    let context = `Портфель: ${this.formatCurrency(facts.totalPortfolioValue)} ₽, ${facts.assetsAnalysis.length} активов\n\n`;
+
+    // Полный список активов — чтобы LLM НЕ выдумывал тикеры, которых нет
+    // в портфеле (например, VKCO/IRAO из примеров системного промпта).
+    context += 'Активы в портфеле (используй ТОЛЬКО этот список):\n';
+    for (const asset of facts.assetsAnalysis) {
+      context += `• ${asset.ticker} (${asset.name}): доля ${asset.currentPercent.toFixed(1)}%`;
+      if (asset.targetPercent > 0) {
+        context += `, цель ${asset.targetPercent.toFixed(1)}%`;
+      }
+      if (asset.unrealizedProfitRub !== undefined) {
+        context += `, P&L ${Math.round(asset.unrealizedProfitRub)} ₽`;
+      }
+      context += '\n';
+    }
+    context += '\n';
+
+    // Поправки пользователя — приоритет над исходными данными
+    if (this.userCorrections.size > 0) {
+      context +=
+        'Поправки пользователя (используй ТОЛЬКО эти значения долей):\n';
+      for (const [ticker, percent] of this.userCorrections) {
+        context += `• ${ticker}: ${percent.toFixed(1)}%\n`;
+      }
+      context += '\n';
+    }
 
     for (const result of agentResults) {
       const data = result.data as
@@ -595,6 +706,51 @@ export class BrowserDirector {
     };
     await this.memory.saveMessage(message);
     this.chat.appendMessage(this.currentSessionId!, role, content);
+  }
+
+  /**
+   * Вернуть факты с применёнными поправками пользователя.
+   * Оригинальные факты НЕ мутируются (immutable-контракт Director).
+   */
+  private correctedFacts(): DirectorFactsContext {
+    if (this.userCorrections.size === 0) return this.facts;
+    const assets = this.facts.assetsAnalysis.map((a) => {
+      const corrected = this.userCorrections.get(a.ticker.toUpperCase());
+      if (corrected === undefined) return a;
+      return { ...a, currentPercent: corrected };
+    });
+    return { ...this.facts, assetsAnalysis: assets };
+  }
+
+  /** Честный ответ на вопрос вне компетенции (погода, спорт и т.д.) */
+  private buildOffTopicAnswer(): string {
+    return (
+      'Хороший вопрос, но он не про портфель 😊\n\n' +
+      'Я — ваш финансовый директор и разбираюсь в инвестициях, ' +
+      'а не в погоде, спорте или кулинарии. Зато могу помочь с:\n' +
+      '• «Что с SBER?» — разбор конкретного актива\n' +
+      '• «Как выглядит портфель?» — сводка по всем позициям\n' +
+      '• «Есть ли риски?» — концентрация, просадки, отклонения\n' +
+      '• «Стратегия» — план по структуре портфеля'
+    );
+  }
+
+  /** Сводка по РЕАЛЬНЫМ фактам портфеля (для запроса отчёта) */
+  private buildPortfolioReportAnswer(): string {
+    if (this.facts.assetsAnalysis.length === 0) {
+      return (
+        'Я вижу, что вы спрашиваете про отчёт, но данные портфеля ' +
+        'пока не загружены. Запустите пайплайн (npm run pipeline), ' +
+        'и я покажу полный анализ.'
+      );
+    }
+    return (
+      'Да, вижу ваш отчёт по портфелю 📊\n\n' +
+      buildPortfolioSummary(this.correctedFacts()) +
+      '\n\nЧто разобрать подробнее — например, «Что с ' +
+      (this.facts.assetsAnalysis[0]?.ticker ?? 'SBER') +
+      '?»?'
+    );
   }
 
   private createResponse(text: string, agents: string[]): DirectorResponse {

@@ -36,15 +36,21 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "data": detect_anomalies(payload, config)}
 
     if command == "get_candles":
-        return get_candles(
+        result = get_candles(
             ticker=payload.get("ticker", ""),
             days=int(payload.get("days", 120)),
             interval=int(payload.get("interval", 24)),
             board=payload.get("board", "TQBR"),
         )
+        # Протокол моста: {"ok": ..., "data": ...}. get_candles возвращает
+        # {ok, ticker, candles} на верхнем уровне — оборачиваем в data,
+        # иначе PythonBridge вернёт parsed.data = undefined.
+        return {"ok": result.get("ok", False), "data": result}
 
     if command == "get_quotes":
-        return get_quotes(payload.get("tickers", []))
+        result = get_quotes(payload.get("tickers", []))
+        # Аналогично: get_quotes возвращает {ok, quotes} — оборачиваем в data.
+        return {"ok": result.get("ok", False), "data": result}
 
     if command == "health":
         return {

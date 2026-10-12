@@ -72,7 +72,11 @@ export class MoexQuoteProvider {
     tickers: string[],
   ): Promise<Record<string, MoexFetchedQuote>> {
     const clean = tickers
-      .map((t) => String(t ?? '').trim().toUpperCase())
+      .map((t) =>
+        String(t ?? '')
+          .trim()
+          .toUpperCase(),
+      )
       .filter((t) => t.length > 0);
 
     if (clean.length === 0) {
@@ -92,7 +96,14 @@ export class MoexQuoteProvider {
     }
 
     if (!data || !data.ok || !Array.isArray(data.quotes)) {
-      console.warn('[MoexQuoteProvider] Пустой/некорректный ответ get_quotes');
+      // Логируем реальную причину от Python-движка (data.error), а не только
+      // общее сообщение — иначе диагностика невозможна.
+      const reason = data?.error ? `: ${data.error}` : '';
+      const quotesCount = Array.isArray(data?.quotes) ? data.quotes.length : 0;
+      console.warn(
+        `[MoexQuoteProvider] Пустой/некорректный ответ get_quotes${reason}` +
+          ` (ok=${data?.ok}, quotes=${quotesCount})`,
+      );
       return {};
     }
 

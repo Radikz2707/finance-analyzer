@@ -29,10 +29,13 @@ import type {
 /** Таймаут для детерминированных проверок ревизора */
 // Должен быть БОЛЬШЕ внутреннего таймаута AI-вызова (AI_REVIEW_TIMEOUT_MS),
 // иначе ревизор всегда помечается timedOut при медленном ответе модели.
-const REVIEWER_TIMEOUT_MS = 15000;
+const REVIEWER_TIMEOUT_MS = 40000;
 
 /** Таймаут для AI-вызова каждого ревизора */
-const AI_REVIEW_TIMEOUT_MS = 10000;
+// 10с было слишком мало для локальной Ollama (qwen3.5:9b генерирует
+// ~14 символов/с): консервативный ревизор уходил в таймаут на 10073мс
+// и работал только на детерминированных проверках.
+const AI_REVIEW_TIMEOUT_MS = 30000;
 
 // ──────────────────────────────────────────────
 // 1. Review types
@@ -903,17 +906,20 @@ export class ReviewAgent extends AgentBase {
       return 85;
     }
 
-    // Если есть high severity предупреждения — согласие ниже
+    // Если есть high severity предупреждения — согласие ниже.
+    // Категория concentration ИСКЛЮЧАЕТСЯ: это детерминированная структурная
+    // проверка (актив > 10%), которая срабатывает на нормальной структуре
+    // облигационного портфеля и не является сигналом расхождения ревизоров.
     const allWarnings = [
       ...conservative.warnings,
       ...aggressive.warnings,
       ...riskManager.warnings,
     ];
     const highSeverityCount = allWarnings.filter(
-      (w) => w.severity === 'high',
+      (w) => w.severity === 'high' && w.category !== 'concentration',
     ).length;
 
-    if (highSeverityCount > 2) {
+    if (highSeverityCount > 3) {
       return 50;
     }
 

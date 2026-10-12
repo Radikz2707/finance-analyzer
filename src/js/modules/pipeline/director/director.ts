@@ -21,6 +21,7 @@ import {
   looksLikeCodeRequest,
   looksLikeFileRequest,
   looksLikeGreeting,
+  looksLikeOffTopic,
   looksLikePackageRequest,
   looksLikeProcessRequest,
   looksLikeSimpleChat,
@@ -329,6 +330,30 @@ export class DirectorAgent implements IDirectorAgent {
       this.chat.appendMessage(this.currentSessionId, 'director', replyText);
       this.memory.saveConversation('director', replyText, []);
       this.audit.record('director.greeting_answered', replyText.slice(0, 80));
+      this._state = 'idle';
+      return {
+        text: replyText,
+        connectedAgents: [],
+        needsConsilium: false,
+      };
+    }
+
+    // 0.55 Оффтопик: темы вне компетенции (погода, спорт, кулинария и т.д.)
+    // Честный ответ БЕЗ запуска агентов анализа и БЕЗ портфельного контекста.
+    if (looksLikeOffTopic(message)) {
+      this.chat.appendMessage(this.currentSessionId, 'user', message);
+      this.memory.saveConversation('user', message, []);
+      const replyText =
+        'Хороший вопрос, но он не про портфель 😊\n\n' +
+        'Я — ваш финансовый директор и разбираюсь в инвестициях, ' +
+        'а не в погоде, спорте или кулинарии. Зато могу помочь с:\n' +
+        '• «Что с SBER?» — разбор конкретного актива\n' +
+        '• «Как выглядит портфель?» — сводка по всем позициям\n' +
+        '• «Есть ли риски?» — концентрация, просадки, отклонения\n' +
+        '• «Стратегия» — план по структуре портфеля';
+      this.chat.appendMessage(this.currentSessionId, 'director', replyText);
+      this.memory.saveConversation('director', replyText, []);
+      this.audit.record('director.offtopic_answered', replyText.slice(0, 80));
       this._state = 'idle';
       return {
         text: replyText,
@@ -1110,12 +1135,19 @@ export class DirectorAgent implements IDirectorAgent {
 
     lines.push('');
     const recLabel = actionLabel(recommendation.action);
+    // Если тикеры не указаны в вопросе, но рекомендация упоминает актив —
+    // показываем его (например, «сократить по PLZL» вместо «сократить»).
+    let recTickers = question.tickers;
+    if (recTickers.length === 0) {
+      const mentioned = this.facts.assetsAnalysis.find((a) =>
+        recommendation.reasoning.includes(a.ticker),
+      );
+      if (mentioned) recTickers = [mentioned.ticker];
+    }
     lines.push(
       'Моя рекомендация: ' +
         recLabel +
-        (question.tickers.length > 0
-          ? ' по ' + question.tickers.join(', ')
-          : '') +
+        (recTickers.length > 0 ? ' по ' + recTickers.join(', ') : '') +
         ' (уверенность ' +
         Math.round(recommendation.confidence * 100) +
         '%).',
@@ -1184,49 +1216,51 @@ export class DirectorAgent implements IDirectorAgent {
   ): string[] {
     const result: string[] = [];
     const tickers = question.tickers;
+    // Обобщённый subject: если тикеры не указаны — «позиции»,
+    // чтобы follow-up не выглядели как «Определить целевую долю для ».
+    const subject = tickers.length > 0 ? tickers.join(', ') : 'позиции';
 
     // Пулы follow-up для каждого action
     const followUpPools: Record<string, string[]> = {
       SELL: [
-        'Спланировать поэтапное сокращение ' + tickers.join(', '),
-        'Определить оптимальный объём продажи ' + tickers.join(', '),
-        'Рассчитать налоговые последствия продажи ' + tickers.join(', '),
-        'Подготовить план выхода из ' + tickers.join(', '),
+        'Спланировать поэтапное сокращение ' + subject,
+        'Определить оптимальный объём продажи ' + subject,
+        'Рассчитать налоговые последствия продажи ' + subject,
+        'Подготовить план выхода из ' + subject,
       ],
       REDUCE: [
-        'Спланировать поэтапное сокращение ' + tickers.join(', '),
-        'Определить целевую долю для ' + tickers.join(', '),
-        'Рассчитать оптимальный объём сокращения ' + tickers.join(', '),
+        'Спланировать поэтапное сокращение ' + subject,
+        'Определить целевую долю для ' + subject,
+        'Рассчитать оптимальный объём сокращения ' + subject,
       ],
       BUY: [
         'Определить точную сумму покупки ' +
-          tickers.join(', ') +
+          subject +
           ' в пределах свободных средств',
-        'Составить план накопления ' + tickers.join(', '),
-        'Рассчитать оптимальную дату и объём покупки ' + tickers.join(', '),
-        'Проверить исторические точки входа по ' + tickers.join(', '),
+        'Составить план накопления ' + subject,
+        'Рассчитать оптимальную дату и объём покупки ' + subject,
+        'Проверить исторические точки входа по ' + subject,
       ],
       HOLD: [
         'Проверить фундаментал и рынок по ' +
-          tickers.join(', ') +
+          subject +
           ' в следующем цикле исследования',
-        'Определить триггеры для пересмотра позиции по ' + tickers.join(', '),
+        'Определить триггеры для пересмотра позиции по ' + subject,
         'Сравнить текущую стратегию удержания с альтернативами',
       ],
       EXIT: [
-        'Подготовить полный план выхода из ' + tickers.join(', '),
-        'Оценить последствия полного выхода из ' + tickers.join(', '),
+        'Подготовить полный план выхода из ' + subject,
+        'Оценить последствия полного выхода из ' + subject,
       ],
       AVOID: [
-        'Сформировать критерии для повторного рассмотрения ' +
-          tickers.join(', '),
+        'Сформировать критерии для повторного рассмотрения ' + subject,
         'Определить условия, при которых ' +
-          tickers.join(', ') +
+          subject +
           ' станет привлекательным',
       ],
       AVERAGE: [
-        'Спланировать стратегию усреднения по ' + tickers.join(', '),
-        'Рассчитать точку усреднения для ' + tickers.join(', '),
+        'Спланировать стратегию усреднения по ' + subject,
+        'Рассчитать точку усреднения для ' + subject,
       ],
     };
 

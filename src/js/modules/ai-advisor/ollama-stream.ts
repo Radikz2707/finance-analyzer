@@ -22,8 +22,15 @@ export interface StreamOptions {
   onChunk?: StreamChunkCallback;
   /** Колбэк для получения статуса */
   onStatus?: StreamStatusCallback;
-  /** Таймаут в миллисекундах */
+  /** Таймаут в миллисекундах (применяется к установке соединения) */
   timeout?: number;
+  /**
+   * Таймаут на ОБЩУЮ длительность чтения стрима (мс).
+   * axios timeout не применяется к чтению потока — без этого лимита
+   * медленная модель может генерировать ответ бесконечно долго.
+   * По умолчанию 10 минут.
+   */
+  streamTimeout?: number;
   /** Флаг использования стриминга */
   stream?: boolean;
 }
@@ -58,7 +65,8 @@ export async function streamChat(
   const {
     onChunk,
     onStatus,
-    timeout = 300000, // 5 минут
+    timeout = 300000, // 5 минут (установка соединения)
+    streamTimeout = 600000, // 10 минут (общая длительность чтения стрима)
     stream = true,
   } = streamOptions;
 
@@ -149,6 +157,34 @@ export async function streamChat(
         // ─── Debug: первый чанк ───
         let firstChunkLogged = false;
 
+        // Защита от двойного resolve (таймаут + end/error)
+        let settled = false;
+        const settle = (result: StreamResult) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(streamTimer);
+          resolve(result);
+        };
+
+        // ─── Таймаут общей длительности стрима ───
+        // axios timeout применяется только к установке соединения; чтение
+        // потока без лимита может длиться бесконечно на медленной модели.
+        const streamTimer = setTimeout(() => {
+          console.error(
+            `[Ollama Stream] ❌ Таймаут стрима: ${streamTimeout}мс превышен`,
+          );
+          response.data.destroy();
+          settle({
+            content: fullContent || 'Ошибка получения ответа',
+            model: modelName,
+            totalTokens,
+            totalDuration,
+            loadDuration,
+            success: false,
+            error: `Stream timeout after ${streamTimeout}ms`,
+          });
+        }, streamTimeout);
+
         response.data.on('data', (chunk: Buffer) => {
           chunksReceived++;
 
@@ -197,9 +233,11 @@ export async function streamChat(
                 }
               }
 
-              // Собираем статистику из последнего сообщения
+              // Собираем статистику из последнего сообщения.
+              // Ollama в финальном чанке возвращает eval_count (число
+              // сгенерированных токенов), а не total_tokens — иначе 0.
               if (json.done) {
-                totalTokens = json.total_tokens || 0;
+                totalTokens = json.eval_count ?? json.total_tokens ?? 0;
                 totalDuration = json.total_duration || 0;
                 loadDuration = json.load_duration || 0;
               }
@@ -218,7 +256,7 @@ export async function streamChat(
                 fullContent += json.message.content;
               }
               if (json.done) {
-                totalTokens = json.total_tokens || 0;
+                totalTokens = json.eval_count ?? json.total_tokens ?? 0;
                 totalDuration = json.total_duration || 0;
                 loadDuration = json.load_duration || 0;
               }
@@ -232,7 +270,7 @@ export async function streamChat(
             `[Ollama Stream] ✅ Ответ получен за ${elapsed}мс (${fullContent.length} символов, ${totalTokens} токенов, ${chunksReceived} чанков)`,
           );
 
-          resolve({
+          settle({
             content: fullContent,
             model: modelName,
             totalTokens,
@@ -247,12 +285,12 @@ export async function streamChat(
           // console.error('[STREAM_ERROR_EVENT] FULL:', err);
           // console.error('[STREAM_ERROR_EVENT] STACK:', err.stack);
           console.error('[Ollama Stream] ❌ Ошибка потока:', err.message);
-          resolve({
+          settle({
             content: fullContent || 'Ошибка получения ответа',
             model: modelName,
-            totalTokens: 0,
-            totalDuration: 0,
-            loadDuration: 0,
+            totalTokens,
+            totalDuration,
+            loadDuration,
             success: false,
             error: err.message,
           });
@@ -261,7 +299,7 @@ export async function streamChat(
     } else if (!stream && response.data) {
       // Нестриминговый режим
       const content = response.data.message?.content || '';
-      totalTokens = response.data.total_tokens || 0;
+      totalTokens = response.data.eval_count ?? response.data.total_tokens ?? 0;
       totalDuration = response.data.total_duration || 0;
       loadDuration = response.data.load_duration || 0;
 

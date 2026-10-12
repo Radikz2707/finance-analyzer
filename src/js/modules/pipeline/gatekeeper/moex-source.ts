@@ -52,14 +52,18 @@ const MOEX_ISS_BASE = 'https://iss.moex.com/iss';
  */
 async function fetchMoexNews(maxItems: number = 50): Promise<MoexNewsItem[]> {
   try {
-    const url = `${MOEX_ISS_BASE}/news.json?limit=${maxItems}&sort_order=date_desc`;
+    // Актуальный endpoint MOEX ISS: /sitenews.json (старый /news.json → 404).
+    // Колонки: id, tag, title, published_at, modified_at.
+    const url = `${MOEX_ISS_BASE}/sitenews.json?iss.meta=off&limit=${maxItems}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
 
     const response = await fetch(url, {
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'FinanceAnalyzer/1.0',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+          '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
       },
       signal: controller.signal,
     });
@@ -74,18 +78,20 @@ async function fetchMoexNews(maxItems: number = 50): Promise<MoexNewsItem[]> {
     const data = await response.json();
 
     // Парсим ответ MOEX ISS
-    // Структура: { data: { columns: [...], rows: [[...]] } }
-    const newsData = data?.data?.find((d: { columns: string[] }) =>
-      d.columns?.includes('id'),
-    );
+    // Структура: { sitenews: { columns: [...], data: [[...]] } }
+    const newsData = data?.sitenews;
 
-    if (!newsData) {
+    if (
+      !newsData ||
+      !Array.isArray(newsData.columns) ||
+      !Array.isArray(newsData.data)
+    ) {
       console.warn('[MoexNewsSource] Нет данных в ответе MOEX API');
       return [];
     }
 
     const columns = newsData.columns as string[];
-    const rows = newsData.rows as string[][];
+    const rows = newsData.data as string[][];
 
     const items: MoexNewsItem[] = [];
 
@@ -97,13 +103,14 @@ async function fetchMoexNews(maxItems: number = 50): Promise<MoexNewsItem[]> {
 
       items.push({
         id: Number(item.id) || 0,
-        date: (item.date as string) || '',
+        date: (item.published_at as string) || '',
         title: (item.title as string) || '',
-        description: (item.description as string) || '',
-        url: (item.se_url as string) || '',
-        engine: (item.engine as string) || '',
-        group: (item.group as string) || '',
-        is_main: item.is_main === 'Y' || item.is_main === true,
+        // sitenews не содержит description/url — используем title как описание
+        description: (item.title as string) || '',
+        url: '',
+        engine: '',
+        group: '',
+        is_main: false,
       });
     }
 
@@ -299,7 +306,7 @@ export class MoexNewsSource implements INewsSource {
       this.cachedItems = generalItems.map(toRawNewsItem);
       this.lastFetchTime = now;
 
-    // silent — news loaded
+      // silent — news loaded
 
       return this.cachedItems;
     } catch (error) {

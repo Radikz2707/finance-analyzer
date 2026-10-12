@@ -391,7 +391,8 @@ export type DirectorAuditEventType =
   | 'director.chat_message_sent'
   | 'director.greeting_answered'
   | 'director.status_answered'
-  | 'director.goal_created';
+  | 'director.goal_created'
+  | 'director.offtopic_answered';
 
 /** Событие audit Director */
 export interface DirectorAuditEvent {

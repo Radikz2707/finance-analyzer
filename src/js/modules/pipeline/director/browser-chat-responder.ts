@@ -17,6 +17,7 @@ import type {
   ChatResponder,
   DirectorFactsContext,
 } from './director-types.js';
+import { looksLikeReportRequest } from './nl-parser.js';
 
 /** Ключевые слова запроса возможностей Director */
 const CAPABILITIES_PATTERNS: RegExp[] = [
@@ -74,7 +75,7 @@ function hasPortfolioData(facts: DirectorFactsContext): boolean {
 }
 
 /** Сводка портфеля по фактам */
-function buildPortfolioSummary(facts: DirectorFactsContext): string {
+export function buildPortfolioSummary(facts: DirectorFactsContext): string {
   const lines: string[] = [];
   const assets = [...facts.assetsAnalysis];
 
@@ -255,6 +256,22 @@ export function buildBrowserChatResponse(
   // Запрос возможностей
   if (CAPABILITIES_PATTERNS.some((p) => p.test(question))) {
     return buildCapabilities(facts);
+  }
+
+  // Запрос отчёта/анализа портфеля — сводка по РЕАЛЬНЫМ фактам
+  if (looksLikeReportRequest(question)) {
+    if (!hasPortfolioData(facts)) {
+      return (
+        'Я вижу, что вы спрашиваете про отчёт, но данные портфеля ' +
+        'пока не загружены. Запустите пайплайн (npm run pipeline), ' +
+        'и я покажу полный анализ.'
+      );
+    }
+    return (
+      'Да, вижу ваш отчёт по портфелю 📊\n\n' +
+      buildPortfolioSummary(facts) +
+      '\n\nЧто разобрать подробнее?'
+    );
   }
 
   // Упоминание тикера (в т.ч. русского названия)

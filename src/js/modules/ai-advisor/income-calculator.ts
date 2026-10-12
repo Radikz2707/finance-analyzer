@@ -74,7 +74,24 @@ export async function calculatePortfolioIncome(
   const COL_TYPE = 2; // C
   const COL_NAME = 3; // D
   const COL_QTY = 4; // E
-  const COL_NKD = 12; // M
+
+  // Динамический поиск колонки НКД по заголовку (жёсткий индекс 12/M
+  // ломался при изменении раскладки листа — НКД всегда оказывался 0).
+  let COL_NKD = -1;
+  for (let col = range.s.c; col <= range.e.c; col++) {
+    const headerCell = sheet[XLSX.utils.encode_cell({ r: 0, c: col })];
+    if (headerCell && headerCell.v !== undefined) {
+      const header = String(headerCell.v).toLowerCase();
+      if (
+        header.includes('нкд') ||
+        header.includes('накопл') ||
+        header.includes('nkd')
+      ) {
+        COL_NKD = col;
+        break;
+      }
+    }
+  }
 
   // Динамический поиск столбца с дивидендами по заголовку
   let COL_DIVIDENDS = -1;
@@ -102,6 +119,13 @@ export async function calculatePortfolioIncome(
     );
   }
 
+  if (COL_NKD < 0) {
+    console.warn(
+      '⚠️ [NKD] Столбец с НКД не найден в Excel. ' +
+        'Добавьте заголовок "НКД" или "NKD" в первую строку листа QUIK.',
+    );
+  }
+
   for (let rowIndex = range.s.r + 1; rowIndex <= range.e.r; rowIndex++) {
     const tickerCell =
       sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_TICKER })];
@@ -109,10 +133,11 @@ export async function calculatePortfolioIncome(
       sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_TYPE })];
     const realNameCell =
       sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_NAME })];
-    const qtyCell =
-      sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_QTY })];
+    const qtyCell = sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_QTY })];
     const nkdCell =
-      sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_NKD })];
+      COL_NKD >= 0
+        ? sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_NKD })]
+        : undefined;
     const dividendCell =
       COL_DIVIDENDS >= 0
         ? sheet[XLSX.utils.encode_cell({ r: rowIndex, c: COL_DIVIDENDS })]
@@ -133,7 +158,10 @@ export async function calculatePortfolioIncome(
     const qty =
       qtyCell && qtyCell.v !== undefined ? parseCleanFloat(qtyCell.v) : 0;
 
-    if (ticker === '' && name === '' && assetType === '') {
+    // Служебные строки ниже таблицы (сводки, проценты, P&L) часто имеют
+    // пустые тикер и имя, но непустой assetType (например, "14" или
+    // "-0.2086698053728856"). Пропускаем любую строку без тикера и имени.
+    if (ticker === '' && name === '') {
       continue;
     }
 
@@ -147,7 +175,8 @@ export async function calculatePortfolioIncome(
       name.toUpperCase().includes('ДОЛЯ АКЦИЙ') ||
       name.toUpperCase().includes('ДОЛЯ ОБЛИГА') ||
       /^\d+$/.test(ticker) ||
-      (assetType === '' && (/\d/.test(name) || name.toUpperCase().includes('ИТОГ')))
+      (assetType === '' &&
+        (/\d/.test(name) || name.toUpperCase().includes('ИТОГ')))
     ) {
       continue;
     }
@@ -177,13 +206,20 @@ export async function calculatePortfolioIncome(
 
     // Автоматика дивидендов по акциям — ТОЛЬКО из Excel, без fallback
     if (assetType === 'А' && qty > 0) {
-      const dividendRate = dividendCell && dividendCell.v !== undefined
-        ? parseCleanFloat(dividendCell.v)
-        : 0;
+      const dividendRate =
+        dividendCell && dividendCell.v !== undefined
+          ? parseCleanFloat(dividendCell.v)
+          : 0;
 
       console.log(
-        '[DIVIDENDS] ' + ticker + ' | excelDiv=' + (dividendCell?.v ?? 'N/A') +
-        ' | parsed=' + dividendRate + ' | qty=' + qty,
+        '[DIVIDENDS] ' +
+          ticker +
+          ' | excelDiv=' +
+          (dividendCell?.v ?? 'N/A') +
+          ' | parsed=' +
+          dividendRate +
+          ' | qty=' +
+          qty,
       );
 
       // Если значение из Excel = 0 или не найдено — пропускаем актив
