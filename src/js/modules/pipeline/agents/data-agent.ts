@@ -24,7 +24,55 @@ import type {
   PriceSeriesInput,
 } from '../../python-engine/types.js';
 import { getCbrKeyRate } from '../../ai-advisor/cbr-rate.js';
-import { positionsRepo } from '../../db-manager/db-manager.js';
+import { positionsRepo, newsRepo } from '../../db-manager/db-manager.js';
+
+// ──────────────────────────────────────────────
+// 0. Хелперы персиста новостей
+// ──────────────────────────────────────────────
+
+/** Приоритет Gatekeeper → важность в БД */
+function toNewsImportance(
+  priority: string,
+): 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' {
+  switch (priority) {
+    case 'critical':
+      return 'CRITICAL';
+    case 'high':
+      return 'HIGH';
+    case 'medium':
+      return 'MEDIUM';
+    default:
+      return 'LOW';
+  }
+}
+
+/** Ключевые слова → сентимент (компактная эвристика, как в NewsCache) */
+const POSITIVE_WORDS = [
+  'рост', 'прибыль', 'доход', 'успех', 'развит', 'инвестиц', 'покупк',
+  'увелич', 'рекорд', 'дивиденд', 'выкуп', 'одобр', 'контракт', 'выигр',
+  'лучш', 'позитив', 'дивид',
+];
+const NEGATIVE_WORDS = [
+  'паден', 'снижен', 'убыт', 'кризис', 'риск', 'санкц', 'обвал', 'потер',
+  'долг', 'дефолт', 'банкрот', 'суд', 'арест', 'штраф', 'расслед',
+  'негатив', 'провал', 'угроз', 'сокращ', 'блокировк', 'конфискац',
+];
+
+function detectNewsSentiment(
+  text: string,
+): 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL' | 'UNKNOWN' {
+  const lower = text.toLowerCase();
+  let score = 0;
+  for (const word of POSITIVE_WORDS) {
+    if (lower.includes(word)) score++;
+  }
+  for (const word of NEGATIVE_WORDS) {
+    if (lower.includes(word)) score--;
+  }
+  if (score > 0) return 'POSITIVE';
+  if (score < 0) return 'NEGATIVE';
+  return 'NEUTRAL';
+}
 
 // ──────────────────────────────────────────────
 // 1. Data Agent output types
@@ -257,6 +305,37 @@ export class DataAgent extends AgentBase {
         `[DataAgent] ✅ Gatekeeper: ${newsResult.approvedNews.length} новостей одобрено, ` +
           `${newsResult.filteredOut.total} отфильтровано`,
       );
+
+      // Персист одобренных новостей в БД (relevance_to_ticker, is_processed=1):
+      // desktop-Директор и NewsDriver читают реальный новостной фон из newsRepo.
+      let persistedNews = 0;
+      for (const item of newsResult.approvedNews) {
+        const sentiment = detectNewsSentiment(
+          `${item.title} ${item.summary}`,
+        );
+        for (const ticker of item.relevantTickers) {
+          try {
+            newsRepo.addProcessed({
+              title: item.title,
+              date: item.publishedAt,
+              source: item.source,
+              url: item.url,
+              importance: toNewsImportance(item.priority),
+              sentiment,
+              summary: item.summary,
+              relevanceToTicker: ticker,
+            });
+            persistedNews++;
+          } catch {
+            // Ошибка БД не прерывает конвейер
+          }
+        }
+      }
+      if (persistedNews > 0) {
+        console.log(
+          `[DataAgent] 💾 Новостей сохранено в БД: ${persistedNews}`,
+        );
+      }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.warn(`[DataAgent] ⚠️ Gatekeeper ошибка: ${errorMsg}`);

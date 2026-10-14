@@ -15,7 +15,9 @@ import type { AiAgentOutput } from '../agents/ai-agent.js';
 import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
-import { isOllamaRunning } from '../../ai-advisor/ollama-manager.js';
+import { AiClient } from '../../ai-advisor/ai-client.js';
+import { AiProviderRouter } from '../../ai-advisor/provider-router.js';
+import { getAvailableModels } from '../../ai-advisor/ai-config.js';
 import type {
   ExternalAiProvider,
   ExternalAiRequest,
@@ -29,13 +31,16 @@ import type {
 /** Таймаут для детерминированных проверок ревизора */
 // Должен быть БОЛЬШЕ внутреннего таймаута AI-вызова (AI_REVIEW_TIMEOUT_MS),
 // иначе ревизор всегда помечается timedOut при медленном ответе модели.
-const REVIEWER_TIMEOUT_MS = 40000;
+const REVIEWER_TIMEOUT_MS = 55000;
 
 /** Таймаут для AI-вызова каждого ревизора */
-// 10с было слишком мало для локальной Ollama (qwen3.5:9b генерирует
-// ~14 символов/с): консервативный ревизор уходил в таймаут на 10073мс
+// 10с было слишком мало для локальной Ollama (qwen3.6:27b генерирует
+// медленно): консервативный ревизор уходил в таймаут на 10073мс
 // и работал только на детерминированных проверках.
-const AI_REVIEW_TIMEOUT_MS = 30000;
+// 45с — с запасом под сериализацию chat/completions GigaChat: ревизоры
+// стартуют параллельно, но запросы к SynGX идут по одному (очередь в
+// AiClient), поэтому третий ревизор ждёт завершения первых двух.
+const AI_REVIEW_TIMEOUT_MS = 45000;
 
 // ──────────────────────────────────────────────
 // 1. Review types
@@ -148,9 +153,10 @@ export interface ReviewResult {
 export class ReviewAgent extends AgentBase {
   private readonly externalJudge?: ExternalAiJudge;
 
-  /** Кэш проверки доступности Ollama (один раз на выполнение) */
-  private ollamaChecked = false;
-  private ollamaAvailable = false;
+  /** Клиент AI-провайдеров (Ollama/GigaChat/OpenRouter) для ревизоров */
+  private readonly aiClient = new AiClient();
+  /** Маршрутизатор с circuit breaker + fallback-цепочкой */
+  private readonly aiRouter = new AiProviderRouter();
 
   constructor(config?: AgentConfig, externalJudge?: ExternalAiJudge) {
     super(config ?? { name: 'ReviewAgent' });
@@ -758,81 +764,15 @@ export class ReviewAgent extends AgentBase {
   // ── Helpers ──
 
   /**
-   * Вызов AI с таймаутом.
-   * Приоритет провайдеров (как в AiClient):
-   *   1. Ollama (локально) — с быстрой проверкой доступности;
-   *   2. OpenRouter (openai/gpt-4o-mini), если Ollama недоступна и задан ключ;
-   *   3. null — ревизор продолжает с детерминированными проверками.
+   * Вызов AI с таймаутом через общий маршрутизатор провайдеров.
    *
-   * Раньше здесь был прямой fetch к localhost:11434 без проверки: если Ollama
-   * не запущена, запрос зависал дольше REVIEWER_TIMEOUT_MS и все ревизоры
-   * помечались timedOut, хотя детерминированные проверки готовы мгновенно.
+   * Fallback-цепочка строится из getAvailableModels() (как в AiClient):
+   * primary — модель из AI_MODEL_ID (например GigaChat), остальные — по
+   * приоритету. Каждый провайдер защищён circuit breaker + retry.
+   * В тестовом окружении сетевые запросы не выполняются — ревизоры
+   * работают на детерминированных проверках.
    */
   private async callAiWithTimeout(
-    prompt: string,
-    timeoutMs: number,
-  ): Promise<string | null> {
-    // 1. Локальная модель (Ollama)
-    if (await this.isOllamaReady()) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-        const response = await fetch('http://localhost:11434/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'qwen3.5:9b',
-            messages: [{ role: 'user', content: prompt }],
-            stream: false,
-            options: {
-              temperature: 0.2,
-              num_predict: 512,
-            },
-          }),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
-
-        if (!response.ok) return null;
-
-        const data = await response.json();
-        return data?.message?.content ?? null;
-      } catch {
-        return null;
-      }
-    }
-
-    // 2. Облачный fallback (OpenRouter) — вне тестового окружения
-    return this.callOpenRouterWithTimeout(prompt, timeoutMs);
-  }
-
-  /**
-   * Проверка доступности Ollama с кэшированием результата.
-   * 3 ревизора стартуют параллельно — достаточно одного запроса /api/tags.
-   */
-  private async isOllamaReady(): Promise<boolean> {
-    if (this.ollamaChecked) return this.ollamaAvailable;
-    this.ollamaChecked = true;
-    try {
-      this.ollamaAvailable = await isOllamaRunning();
-    } catch {
-      this.ollamaAvailable = false;
-    }
-    if (!this.ollamaAvailable) {
-      console.warn(
-        '[ReviewAgent] Ollama недоступна — ревизоры работают на детерминированных проверках',
-      );
-    }
-    return this.ollamaAvailable;
-  }
-
-  /**
-   * Fallback на OpenRouter (openai/gpt-4o-mini), если Ollama не запущена.
-   * Отключён в тестовом окружении, чтобы не совершать реальных сетевых запросов.
-   */
-  private async callOpenRouterWithTimeout(
     prompt: string,
     timeoutMs: number,
   ): Promise<string | null> {
@@ -840,46 +780,24 @@ export class ReviewAgent extends AgentBase {
       return null;
     }
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) return null;
+    const availableModels = getAvailableModels();
+    if (availableModels.length === 0) return null;
+
+    const providers = availableModels.map((model) => ({
+      id: model.id,
+      name: model.name,
+      query: async (system: string, user: string): Promise<string> =>
+        this.aiClient.queryProvider(model, system, user),
+    }));
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-      const response = await fetch(
-        'https://openrouter.ai/api/v1/chat/completions',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://github.com/finance-analyzer',
-            'X-Title': 'Finance Analyzer',
-          },
-          body: JSON.stringify({
-            model: 'openai/gpt-4o-mini',
-            messages: [
-              {
-                role: 'system',
-                content:
-                  'Ты — финансовый аналитик. Отвечай строго в запрошенном JSON-формате без markdown.',
-              },
-              { role: 'user', content: prompt },
-            ],
-            max_tokens: 512,
-            temperature: 0.2,
-          }),
-          signal: controller.signal,
-        },
-      );
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) return null;
-
-      const data = await response.json();
-      return data?.choices?.[0]?.message?.content ?? null;
+      const result = await Promise.race([
+        this.aiRouter.execute(providers, '', prompt),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('AI review timeout')), timeoutMs),
+        ),
+      ]);
+      return result.text;
     } catch {
       return null;
     }

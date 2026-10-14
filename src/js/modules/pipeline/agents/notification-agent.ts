@@ -27,8 +27,10 @@ import type { StockQuote } from '../../ai-advisor/report-builders.js';
 import { DashboardReportBuilder } from '../../../../components/dashboard/dashboard.js';
 import { getMarkdownTemplate } from '../../ai-advisor/report-templates.js';
 import { stripJsonBlockFromAiText } from '../../ai-advisor/json-sanitizer.js';
+import { PortfolioConfig } from '../../../config/portfolio-config.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
+import type { PortfolioIncome } from './analysis-agent.js';
 import {
   buildInteractiveOrders,
   type InteractiveOrder,
@@ -260,10 +262,23 @@ export class NotificationAgent extends AgentBase {
         newAssetsWarningMd +
         '\n' +
         priceAlertsMd +
-        '\n\n### 💰 Динамическая аналитика купонов и объявленных дивидендов:\n' +
-        `* Суммарный накопленный НКД по всем облигациям в портфеле: ${income.totalNkd.toLocaleString('ru-RU')} ₽\n` +
-        `* Действующие долевые позиции: ${stocksListText || 'Данные не получены'}\n` +
-        `* Суммарный чистый ожидаемый дивидендный поток: ${income.totalDivsNet.toLocaleString('ru-RU')} ₽\n`,
+        '\n\n### 💰 Доходность портфеля: НКД и дивиденды\n' +
+        `* НКД по облигациям (накопленный купон): **${income.totalNkd.toLocaleString('ru-RU')} ₽**\n` +
+        `* Дивиденды (грязные, до налога): **${income.totalDivs.toLocaleString('ru-RU')} ₽**\n` +
+        `* Дивиденды (чистые, после НДФЛ ${Math.round(PortfolioConfig.tax.dividendNdflRate * 100)}%): **${income.totalDivsNet.toLocaleString('ru-RU')} ₽**\n` +
+        `* Итого чистый доход (НКД + дивиденды): **${(income.totalNkd + income.totalDivsNet).toLocaleString('ru-RU')} ₽**\n` +
+        (income.stocks.length > 0
+          ? '* Дивидендные позиции:\n' +
+            income.stocks
+              .map(
+                (s) =>
+                  `  - ${s.name} (${s.ticker}): ${s.quantity} шт. × ${s.rate.toLocaleString('ru-RU')} ₽ = ` +
+                  `${s.grossIncome.toLocaleString('ru-RU')} ₽ грязными / ${s.netIncome.toLocaleString('ru-RU')} ₽ чистыми`,
+              )
+              .join('\n') +
+            '\n'
+          : '') +
+        `* Действующие долевые позиции: ${stocksListText || 'Данные не получены'}\n`,
     );
 
     // Добавляем AI-текст в конец Markdown
@@ -274,6 +289,81 @@ export class NotificationAgent extends AgentBase {
     }
 
     return mdData;
+  }
+
+  /**
+   * HTML-виджет «Доходность портфеля: НКД и дивиденды».
+   * Показывает грязные и чистые суммы (после НДФЛ) + таблицу позиций.
+   * Оформлен в тёмной теме dashboard (GitHub dark).
+   */
+  private buildIncomeWidgetHtml(income: PortfolioIncome): string {
+    const fmt = (n: number): string => n.toLocaleString('ru-RU');
+    const taxRate = PortfolioConfig.tax.dividendNdflRate;
+    const totalNet = income.totalNkd + income.totalDivsNet;
+
+    const card = (title: string, value: string, sub: string, color: string) =>
+      '<div style="background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:12px;text-align:center;">' +
+      `<div style="font-size:11px;color:#8b949e;text-transform:uppercase;font-weight:bold;margin-bottom:4px;">${title}</div>` +
+      `<div style="font-size:18px;font-weight:bold;color:${color};">${value}</div>` +
+      `<div style="font-size:11px;color:#8b949e;margin-top:4px;">${sub}</div>` +
+      '</div>';
+
+    let html =
+      '<div style="margin-bottom:15px;padding:15px;background:#161b22;border:1px solid #30363d;border-radius:6px;">' +
+      '<h3 style="margin:0 0 12px 0;font-size:14px;color:#fff;border-bottom:1px solid #30363d;padding-bottom:8px;">' +
+      '💰 Доходность портфеля: НКД и дивиденды</h3>' +
+      '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px;">' +
+      card('НКД (облигации)', fmt(income.totalNkd) + ' ₽', 'накопленный купонный доход', '#e3b341') +
+      card('Дивиденды грязные', fmt(income.totalDivs) + ' ₽', 'до налога', '#fff') +
+      card(
+        'Дивиденды чистые',
+        fmt(income.totalDivsNet) + ' ₽',
+        `после НДФЛ ${Math.round(taxRate * 100)}%`,
+        '#56d364',
+      ) +
+      card('Итого чистый доход', fmt(totalNet) + ' ₽', 'НКД + дивиденды', '#58a6ff') +
+      '</div>';
+
+    if (income.stocks.length > 0) {
+      const th =
+        'style="text-align:right;padding:8px;color:#8b949e;border-bottom:1px solid #30363d;"';
+      const thL =
+        'style="text-align:left;padding:8px;color:#8b949e;border-bottom:1px solid #30363d;"';
+      const td =
+        'style="padding:8px;border-bottom:1px solid #30363d;text-align:right;color:#c9d1d9;"';
+      const tdL =
+        'style="padding:8px;border-bottom:1px solid #30363d;color:#c9d1d9;"';
+
+      html +=
+        '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+        '<thead><tr>' +
+        `<th ${thL}>Позиция</th>` +
+        `<th ${th}>Кол-во</th>` +
+        `<th ${th}>Ставка</th>` +
+        `<th ${th}>Грязные</th>` +
+        `<th ${th}>Чистые (-${Math.round(taxRate * 100)}%)</th>` +
+        '</tr></thead><tbody>';
+
+      for (const s of income.stocks) {
+        html +=
+          '<tr>' +
+          `<td ${tdL}><strong style="color:#fff;">${s.name}</strong> ` +
+          `<span style="color:#58a6ff;">(${s.ticker})</span></td>` +
+          `<td ${td}>${s.quantity}</td>` +
+          `<td ${td}>${fmt(s.rate)} ₽</td>` +
+          `<td ${td}><span style="color:#fff;font-weight:600;">${fmt(s.grossIncome)} ₽</span></td>` +
+          `<td ${td}><span style="color:#56d364;font-weight:600;">${fmt(s.netIncome)} ₽</span></td>` +
+          '</tr>';
+      }
+      html += '</tbody></table>';
+    } else {
+      html +=
+        '<div style="color:#8b949e;font-size:12px;text-align:center;padding:8px;">' +
+        'Дивиденды не объявлены или не заполнены в Excel-файле</div>';
+    }
+
+    html += '</div>';
+    return html;
   }
 
   private buildAiBoxHtml(
@@ -287,6 +377,7 @@ export class NotificationAgent extends AgentBase {
 
     let html =
       '<div class="ai-box-styled">' +
+      this.buildIncomeWidgetHtml(analysis.income) +
       `📋 Экспертное заключение ИИ-советника (${currentMonth.charAt(0).toUpperCase() + currentMonth.slice(1)})\n` +
       `🤖 Использована модель: ${ai.aiClientResult.modelUsed}\n\n`;
 

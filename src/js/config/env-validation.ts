@@ -93,6 +93,12 @@ export const ENV_SCHEMA: Readonly<Record<string, EnvKeySpec>> = {
     format: 'token',
     example: 'ваш_gigachat_ключ',
   },
+  GIGACHAT_SCOPE: {
+    description:
+      'Scope GigaChat: GIGACHAT_API_PERS (песочница, default) или GIGACHAT_API_CORP (продакшен)',
+    allowedValues: ['GIGACHAT_API_PERS', 'GIGACHAT_API_CORP'],
+    example: 'GIGACHAT_API_PERS',
+  },
   YANDEXGPT_API_KEY: {
     description: 'Ключ YandexGPT API (Яндекс Cloud)',
     format: 'token',
@@ -109,6 +115,12 @@ export const ENV_SCHEMA: Readonly<Record<string, EnvKeySpec>> = {
       'Базовый URL Ollama (переопределение; в коде дефолт http://localhost:11434)',
     format: 'url',
     example: 'http://localhost:11434',
+  },
+  OLLAMA_MODEL: {
+    description:
+      'Имя локальной модели Ollama — единая точка смены модели для AI-конвейера, ревизоров и Director (default: qwen3.5:9b; 27B требует ≥ 32 ГБ RAM)',
+    format: 'string',
+    example: 'qwen3.5:9b',
   },
   AI_CACHE_ENABLED: {
     description: 'Включить кэш AI-ответов: true/false (default: true)',

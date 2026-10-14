@@ -6,6 +6,7 @@ import { ValidationResult } from '../portfolio-math/portfolio-validator.js';
 import { CalculatedIncome } from './income-calculator.js';
 import axios from 'axios';
 import https from 'https';
+import { randomUUID } from 'node:crypto';
 import {
   buildSystemPrompt,
   type MacroDataContext,
@@ -176,8 +177,11 @@ export class AiClient {
 
   constructor() {
     this.openRouterKey = process.env.OPENROUTER_API_KEY || '';
+    // Приоритет: прямой ключ GigaChat > ProxyAPI (прокси-обёртка).
+    // Раньше было наоборот: PROXYAPI_KEY (даже placeholder из .env.template)
+    // перекрывал настоящий GIGACHAT_API_KEY → GigaChat падал с 403.
     this.gigaChatKey =
-      process.env.PROXYAPI_KEY || process.env.GIGACHAT_API_KEY || '';
+      process.env.GIGACHAT_API_KEY || process.env.PROXYAPI_KEY || '';
     this.yandexGptKey = process.env.YANDEXGPT_API_KEY || '';
   }
 
@@ -562,15 +566,31 @@ export class AiClient {
    * OAuth Key: формат ClientID:ClientSecret (base64)
    */
   private isAuthorizationKey(key: string): boolean {
-    // Authorization Key от Сбера имеет формат UUID или длинную строку без двоеточия
-    // OAuth Key в base64 всегда содержит ':' после декодирования
+    // 1. ':' прямо в ключе → OAuth ClientID:Secret (raw или base64)
+    if (key.includes(':')) return false;
+    // 2. UUID-подобный ключ (Authorization Key от Сбера) — hex с дефисами
+    if (/^[0-9a-fA-F-]{20,}$/.test(key)) return true;
+    // 3. Иначе пробуем декодировать base64: ':' после декодирования → OAuth
     try {
       const decoded = Buffer.from(key, 'base64').toString();
-      // Если после декодирования есть ':' — это OAuth ClientID:Secret
       return !decoded.includes(':');
     } catch {
       // Если не base64 — это Authorization Key
       return true;
+    }
+  }
+
+  /**
+   * Сериализовать тело HTTP-ошибки для диагностики (безопасно, без throw).
+   * Используется во всех запросах GigaChat: OAuth, Authorization Key, chat.
+   */
+  private formatErrorBody(data: unknown): string {
+    try {
+      return typeof data === 'string'
+        ? data.slice(0, 300)
+        : JSON.stringify(data ?? '').slice(0, 300);
+    } catch {
+      return '<не удалось сериализовать body>';
     }
   }
 
@@ -590,31 +610,42 @@ export class AiClient {
 
     console.log('[GigaChat] Использование Authorization Key...');
 
-    const response = await axios.post(
-      'https://gigachat.devices.sber.ru/api/v1/chat/completions',
-      {
-        model: 'GigaChat',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        max_tokens: modelConfig.maxTokens,
-        temperature: modelConfig.temperature,
-        stream: false,
-      },
-      {
-        headers: {
-          Authorization: 'Bearer ' + this.gigaChatKey,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          RqUID: Date.now().toString(),
+    try {
+      const response = await axios.post(
+        'https://gigachat.devices.sberbank.ru/api/v1/chat/completions',
+        {
+          model: 'GigaChat',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          max_tokens: modelConfig.maxTokens,
+          temperature: modelConfig.temperature,
+          stream: false,
         },
-        httpsAgent,
-        timeout: 60000,
-      },
-    );
+        {
+          headers: {
+            Authorization: 'Bearer ' + this.gigaChatKey,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            RqUID: Date.now().toString(),
+          },
+          httpsAgent,
+          timeout: 60000,
+        },
+      );
 
-    return response.data.choices[0].message.content;
+      return response.data.choices[0].message.content;
+    } catch (error) {
+      const err = error as Error & {
+        response?: { status?: number; data?: unknown };
+      };
+      console.error(
+        '[GigaChat] Authorization Key запрос не удался: ' +
+          `status=${err.response?.status ?? '?'} body=${this.formatErrorBody(err.response?.data) || (error instanceof Error ? error.message : String(error))}`,
+      );
+      throw error;
+    }
   }
 
   /**
@@ -625,56 +656,121 @@ export class AiClient {
    */
   private gigaChatToken: string | null = null;
   private gigaChatTokenExpiry: number = 0;
+  /** Promise текущего OAuth-запроса: параллельные вызовы ждут один запрос */
+  private gigaChatTokenPromise: Promise<string> | null = null;
 
   private async getGigaChatToken(httpsAgent?: https.Agent): Promise<string> {
     // Проверяем, есть ли ещё действующий токен (оставляем 10 секунд запаса)
     if (this.gigaChatToken && Date.now() < this.gigaChatTokenExpiry - 10000) {
       return this.gigaChatToken;
     }
+    // 3 ревизора стартуют параллельно: один OAuth-запрос, остальные ждут его.
+    // Иначе SynGX отвечает 429 Too Many Requests.
+    if (this.gigaChatTokenPromise) {
+      return this.gigaChatTokenPromise;
+    }
+    this.gigaChatTokenPromise = this.fetchGigaChatToken(httpsAgent).finally(
+      () => {
+        this.gigaChatTokenPromise = null;
+      },
+    );
+    return this.gigaChatTokenPromise;
+  }
 
+  private async fetchGigaChatToken(httpsAgent?: https.Agent): Promise<string> {
     if (!this.gigaChatKey) {
       throw new Error('GIGACHAT_API_KEY не настроен');
     }
 
-    // Декодируем ключ (формат ClientID:ClientSecret)
+    // Декодируем ключ (формат ClientID:ClientSecret в base64)
     const decodedKey = Buffer.from(this.gigaChatKey, 'base64').toString();
+    if (!decodedKey.includes(':')) {
+      throw new Error(
+        'GIGACHAT_API_KEY не похож на ClientID:Secret (base64). ' +
+          'Проверьте формат ключа в кабинете developers.sber.ru',
+      );
+    }
     const [clientId, clientSecret] = decodedKey.split(':');
     const auth = Buffer.from(clientId + ':' + clientSecret).toString('base64');
 
-    console.log('[GigaChat] Получение нового OAuth токена...');
-
-    // Получаем OAuth токен через api.giga.chat
-    const oauthResponse = await axios.post(
-      'https://api.giga.chat/oauth',
-      'scope=GIGACHAT_API_PERS',
-      {
-        headers: {
-          Authorization: 'Basic ' + auth,
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
-        httpsAgent,
-        timeout: 30000,
-      },
+    console.log(
+      `[GigaChat] Ключ: OAuth (ClientID:Secret), длина=${this.gigaChatKey.length}, ` +
+        `префикс=${this.gigaChatKey.slice(0, 4)}...`,
     );
 
-    const accessToken = oauthResponse.data.access_token;
-    if (!accessToken) {
-      throw new Error('Не получен OAuth токен от GigaChat');
+    // Scope: если задан GIGACHAT_SCOPE — только он; иначе PERS → CORP.
+    // Раньше был жёстко зашит GIGACHAT_API_PERS: для продакшен-ключей
+    // OAuth возвращал 403 «Access denied».
+    const scopes: string[] = process.env.GIGACHAT_SCOPE
+      ? [process.env.GIGACHAT_SCOPE]
+      : ['GIGACHAT_API_PERS', 'GIGACHAT_API_CORP'];
+
+    let lastError: unknown = null;
+    for (let i = 0; i < scopes.length; i++) {
+      const scope = scopes[i]!;
+      // Пауза между scope-попытками: WAF Сбера (SynGX) отвечает 429
+      // при частых запросах подряд.
+      if (i > 0) await sleep(1500);
+      try {
+        console.log(`[GigaChat] Получение OAuth токена (scope=${scope})...`);
+
+        // Официальный OAuth-эндпоинт Сбера. api.giga.chat отдавал 403 от nginx
+        // (запрос не доходил до API), gigachat.devices.sber.ru — ENOTFOUND.
+        const oauthResponse = await axios.post(
+          'https://ngw.devices.sberbank.ru:9443/api/v2/oauth',
+          `scope=${scope}`,
+          {
+            headers: {
+              Authorization: 'Basic ' + auth,
+              'Content-Type': 'application/x-www-form-urlencoded',
+              Accept: 'application/json',
+              // RqUID обязателен для OAuth GigaChat и должен быть UUID
+              // (Date.now() → 400 Bad Request)
+              RqUID: randomUUID(),
+            },
+            httpsAgent,
+            timeout: 30000,
+          },
+        );
+
+        const accessToken = oauthResponse.data.access_token;
+        if (!accessToken) {
+          throw new Error('Не получен OAuth токен от GigaChat');
+        }
+
+        // Кэшируем токен на 90 секунд (токен жив 2 минуты)
+        this.gigaChatToken = accessToken;
+        this.gigaChatTokenExpiry = Date.now() + 90000;
+
+        console.log(
+          `[GigaChat] ✅ Токен получен (scope=${scope}, действует 90 сек)`,
+        );
+        return accessToken;
+      } catch (error) {
+        lastError = error;
+        const err = error as Error & {
+          response?: { status?: number; data?: unknown };
+        };
+        console.error(
+          `[GigaChat] OAuth scope=${scope} не удался: ` +
+            `status=${err.response?.status ?? '?'} body=${this.formatErrorBody(err.response?.data) || (error instanceof Error ? error.message : String(error))}`,
+        );
+      }
     }
 
-    // Кэшируем токен на 90 секунд (токен жив 2 минуты)
-    this.gigaChatToken = accessToken;
-    this.gigaChatTokenExpiry = Date.now() + 90000;
-
-    console.log('[GigaChat] ✅ Токен получен (действует 90 сек)');
-    return accessToken;
+    throw lastError instanceof Error
+      ? lastError
+      : new Error('OAuth GigaChat не удался (все scope)');
   }
 
   /**
    * Запрос к GigaChat (Сбер)
-   * Endpoint: https://api.giga.chat/
+   * Endpoint: https://gigachat.devices.sberbank.ru/api/v1/chat/completions
+   * OAuth: https://ngw.devices.sberbank.ru:9443/api/v2/oauth
    */
+  /** Очередь chat/completions: SynGX (WAF Сбера) отвечает 429 на параллельные запросы */
+  private gigaChatChatQueue: Promise<unknown> = Promise.resolve();
+
   private async queryGigaChat(
     modelConfig: AiModelConfig,
     systemPrompt: string,
@@ -695,35 +791,89 @@ export class AiClient {
       );
     }
 
+    // Сериализуем chat/completions: 3 ревизора стартуют параллельно, а SynGX
+    // отвечает 429 на одновременные запросы (даже с валидным OAuth-токеном).
+    // Один запрос за раз — как с OAuth-токеном (gigaChatTokenPromise).
+    const run = (): Promise<string> =>
+      this.queryGigaChatSerialized(
+        modelConfig,
+        systemPrompt,
+        userPrompt,
+        httpsAgent,
+      );
+    const result = this.gigaChatChatQueue.then(run, run);
+    // Цепочка живёт независимо от результата: ошибка одного запроса
+    // не должна блокировать следующие.
+    this.gigaChatChatQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  /**
+   * Один запрос chat/completions с ретраями на 429.
+   * Вызывается строго последовательно через gigaChatChatQueue.
+   */
+  private async queryGigaChatSerialized(
+    modelConfig: AiModelConfig,
+    systemPrompt: string,
+    userPrompt: string,
+    httpsAgent: https.Agent,
+  ): Promise<string> {
     // Получаем свежий OAuth токен (с тем же HTTPS-агентом, что и основной запрос)
     const accessToken = await this.getGigaChatToken(httpsAgent);
 
-    // Отправляем запрос к API
-    const response = await axios.post(
-      'https://api.giga.chat/v1/chat/completions',
-      {
-        model: 'GigaChat',
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
-        max_tokens: modelConfig.maxTokens,
-        temperature: modelConfig.temperature,
-        stream: false,
-      },
-      {
-        headers: {
-          Authorization: 'Bearer ' + accessToken,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          RqUID: Date.now().toString(),
-        },
-        httpsAgent,
-        timeout: 60000,
-      },
-    );
+    // Ретраи на 429: даже последовательные запросы могут попасть под лимит
+    // частоты SynGX. Задержки растут: 2с → 4с → 8с.
+    const retryDelaysMs = [2000, 4000, 8000];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const response = await axios.post(
+          'https://gigachat.devices.sberbank.ru/api/v1/chat/completions',
+          {
+            model: 'GigaChat',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt },
+            ],
+            max_tokens: modelConfig.maxTokens,
+            temperature: modelConfig.temperature,
+            stream: false,
+          },
+          {
+            headers: {
+              Authorization: 'Bearer ' + accessToken,
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              RqUID: Date.now().toString(),
+            },
+            httpsAgent,
+            timeout: 60000,
+          },
+        );
 
-    return response.data.choices[0].message.content;
+        return response.data.choices[0].message.content;
+      } catch (error) {
+        const err = error as Error & {
+          response?: { status?: number; data?: unknown };
+        };
+        const status = err.response?.status;
+        const isRateLimit = status === 429;
+        if (!isRateLimit || attempt >= retryDelaysMs.length) {
+          console.error(
+            '[GigaChat] chat/completions не удался: ' +
+              `status=${status ?? '?'} body=${this.formatErrorBody(err.response?.data) || (error instanceof Error ? error.message : String(error))}`,
+          );
+          throw error;
+        }
+        const delayMs = retryDelaysMs[attempt]!;
+        console.warn(
+          `[GigaChat] 429 Too Many Requests — повтор через ${delayMs}мс (попытка ${attempt + 1}/${retryDelaysMs.length})`,
+        );
+        await sleep(delayMs);
+      }
+    }
   }
 
   /**
@@ -1254,5 +1404,44 @@ export class AiClient {
       structuredJson,
       structuredValidation,
     };
+  }
+
+  /**
+   * Универсальный запрос к провайдеру по id модели.
+   * Используется ревизорами (ReviewAgent) и другими потребителями, которым
+   * нужен простой текстовый ответ без кэша/валидации полного отчёта.
+   *
+   * Ollama — короткий ответ (512 токенов) через chatWithoutStream;
+   * облачные провайдеры — через штатные query-методы.
+   */
+  public async queryProvider(
+    modelConfig: AiModelConfig,
+    systemPrompt: string,
+    userPrompt: string,
+  ): Promise<string> {
+    if (modelConfig.id === 'ollama') {
+      const result = await chatWithoutStream(
+        [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        modelConfig.modelName,
+        { numPredict: 512, temperature: 0.2 },
+      );
+      if (!result.success) {
+        throw new Error(result.error || 'Ollama не отвечает');
+      }
+      return result.content;
+    }
+    if (modelConfig.id === 'gigachat') {
+      return this.queryGigaChat(modelConfig, systemPrompt, userPrompt);
+    }
+    if (modelConfig.envKey === 'OPENROUTER_API_KEY') {
+      return this.queryOpenRouter(modelConfig, systemPrompt, userPrompt);
+    }
+    if (modelConfig.id === 'yandexgpt') {
+      return this.queryYandexGpt(modelConfig, systemPrompt, userPrompt);
+    }
+    throw new Error(`Модель ${modelConfig.name} пока не поддерживается`);
   }
 }

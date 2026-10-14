@@ -19,6 +19,8 @@ import * as path from 'path';
 import { AgentBase } from '../agent/agent-base.js';
 import { splitCommandWithArgs } from '../agent/command-tokens.js';
 import type { AgentConfig } from '../agent/types.js';
+import type { ActivityStream } from '../agent-activity/activity-stream.js';
+import type { AgentActivityEvent } from '../agent-activity/types.js';
 import { FileAgent, type FileAgentInput } from '../agents/file-agent.js';
 import {
   TerminalAgent,
@@ -54,6 +56,8 @@ export interface CodingWorkflowEngineOptions {
   maxRepairIterations?: number;
   /** Ремонт-исполнитель (по умолчанию — null: «не могу починить») */
   repairExecutor?: RepairExecutor;
+  /** Стрим активности агентов (для живых шагов write/test/repair в UI) */
+  activity?: ActivityStream;
 }
 
 /** Минимальный контракт агента (AgentResult-обёртка) */
@@ -69,6 +73,7 @@ export class CodingWorkflow extends AgentBase {
   private readonly defaultTestCommand: string;
   private readonly maxRepairIterations: number;
   private readonly repairExecutor: RepairExecutor;
+  private readonly activity?: ActivityStream;
 
   constructor(config?: AgentConfig, options?: CodingWorkflowEngineOptions) {
     super(config ?? { name: 'CodingWorkflow' });
@@ -83,6 +88,27 @@ export class CodingWorkflow extends AgentBase {
     this.defaultTestCommand = options?.defaultTestCommand ?? 'npm run test';
     this.maxRepairIterations = Math.max(0, options?.maxRepairIterations ?? 2);
     this.repairExecutor = options?.repairExecutor ?? (() => null);
+    this.activity = options?.activity;
+  }
+
+  /**
+   * Опубликовать событие активности конвейера (no-op без стрима).
+   */
+  private emitActivity(
+    phase: AgentActivityEvent['phase'],
+    taskId: string,
+    message: string,
+    detail?: Record<string, unknown>,
+    durationMs?: number,
+  ): void {
+    this.activity?.emit({
+      taskId,
+      role: 'code',
+      phase,
+      message,
+      detail,
+      durationMs,
+    });
   }
 
   protected async executeInternal(
@@ -90,10 +116,19 @@ export class CodingWorkflow extends AgentBase {
   ): Promise<CodingWorkflowOutput> {
     this.validateInput(input);
 
+    const startedAt = Date.now();
+    const taskId = `code-${input.task}`;
+    this.emitActivity('started', taskId, `задача: ${input.task}`);
+
     const steps: StepRecord[] = [];
     const filesWritten: string[] = [];
 
     // ── Этап write: записываем все файлы ──
+    this.emitActivity(
+      'step',
+      taskId,
+      `записываю файлов: ${input.files.length}`,
+    );
     for (const file of input.files) {
       const result = await this.fileAgent.execute({
         action: 'write',
@@ -106,6 +141,7 @@ export class CodingWorkflow extends AgentBase {
           success: false,
           message: `Не удалось записать ${file.path}: ${errorText(result.error)}`,
         });
+        this.emitActivity('step', taskId, 'формирую отчёт о провале записи');
         return this.report(steps, filesWritten, false, 0);
       }
       filesWritten.push(file.path);
@@ -115,6 +151,11 @@ export class CodingWorkflow extends AgentBase {
       success: true,
       message: `Записано файлов: ${filesWritten.length} (${filesWritten.join(', ')})`,
     });
+    this.emitActivity(
+      'step',
+      taskId,
+      `записано файлов: ${filesWritten.length}`,
+    );
 
     // ── Цикл test → analyze → repair → retest ──
     const maxRepair = Math.max(
@@ -129,6 +170,13 @@ export class CodingWorkflow extends AgentBase {
 
     for (let attempt = 0; attempt <= maxRepair; attempt++) {
       const isRetest = attempt > 0;
+      this.emitActivity(
+        'step',
+        taskId,
+        isRetest
+          ? `повторная проверка: ${command.command}`
+          : `запускаю проверку: ${command.command}`,
+      );
       const run = await this.terminalAgent.execute({
         command: command.command,
         args: command.args,
@@ -167,6 +215,7 @@ export class CodingWorkflow extends AgentBase {
       }
 
       // ── analyze: краткое описание провала ──
+      this.emitActivity('step', taskId, 'анализирую провал проверки');
       const failureOutput = (out.stderr || out.stdout || '').slice(
         0,
         MAX_FAILURE_OUTPUT,
@@ -179,6 +228,7 @@ export class CodingWorkflow extends AgentBase {
       });
 
       // ── repair: исправление от ремонт-исполнителя ──
+      this.emitActivity('step', taskId, 'применяю исправление');
       const action = await this.repairExecutor({
         task: input.task,
         failureOutput,
@@ -211,6 +261,14 @@ export class CodingWorkflow extends AgentBase {
       repairIterations += 1;
     }
 
+    this.emitActivity('step', taskId, 'формирую отчёт');
+    this.emitActivity(
+      'completed',
+      taskId,
+      testPassed ? 'готово' : 'не готово',
+      undefined,
+      Date.now() - startedAt,
+    );
     return this.report(steps, filesWritten, testPassed, repairIterations);
   }
 

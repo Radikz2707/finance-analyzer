@@ -1,8 +1,11 @@
 import { DirectorAgent } from './director.js';
+import { ActivityStream } from '../agent-activity/activity-stream.js';
 import {
   DirectorAgentFacade,
   type AiDecisionExecutor,
 } from './agent-facade.js';
+import { TaskExtractor } from '../task-extractor/task-extractor.js';
+import type { LlmChatLike } from '../task-extractor/types.js';
 import {
   createInMemoryMemoryAdapter,
   DirectorMemoryStore,
@@ -75,6 +78,8 @@ interface BuildOpts {
   goalIntake?: {
     addGoal(text: string): Promise<{ id: string; name: string }>;
   };
+  /** Извлекатель задач из свободной речи (LLM + fallback) */
+  taskExtractor?: TaskExtractor;
   /** Детерминированный генератор случайных чисел (0..1) */
   random?: () => number;
 }
@@ -88,8 +93,11 @@ function buildDirector(opts?: BuildOpts): {
   const memory = new DirectorMemoryStore(adapter);
   const chat = new DirectorChatStore({ memoryAdapter: adapter });
   const audit = new DirectorAuditLog();
+  // Один стрим на фасад и директора: живые шаги агентов попадают в ответ
+  const activity = new ActivityStream();
   const facade = new DirectorAgentFacade({
     aiExecutor: opts?.aiExecutor,
+    activity,
   });
   const director = new DirectorAgent(
     {
@@ -99,6 +107,8 @@ function buildDirector(opts?: BuildOpts): {
       audit,
       initialFacts: opts?.initialFacts ?? makeFacts(),
       random: opts?.random,
+      activity,
+      taskExtractor: opts?.taskExtractor,
     },
     {
       maxConsiliumRounds: opts?.maxRounds ?? 3,
@@ -165,6 +175,24 @@ describe('Director Agent (integration)', () => {
     for (const result of response.task!.agentResults) {
       expect(result.success).toBe(true);
       expect(result.completedAt).toBeTruthy();
+    }
+  });
+
+  it('4.1 Director возвращает activity: живые шаги агентов', async () => {
+    const { director } = buildDirector();
+    const response = await ask(director, 'Что делать с PLZL?');
+
+    expect(response.activity).toBeDefined();
+    expect(response.activity!.length).toBeGreaterThanOrEqual(1);
+
+    const phases = response.activity!.map((event) => event.phase);
+    // Для каждого подключённого агента есть старт и завершение
+    expect(phases).toContain('started');
+    expect(phases).toContain('completed');
+    // События привязаны к ролям подключённых агентов
+    const roles = new Set(response.activity!.map((event) => event.role));
+    for (const role of response.connectedAgents) {
+      expect(roles).toContain(role);
     }
   });
 
@@ -514,5 +542,90 @@ describe('Director: свободный диалог (нефинансовые т
     expect(response.needsConsilium).toBe(false);
     expect(response.recommendation).toBeUndefined();
     expect(response.text).toBe('ОТВЕТ_LLM[Просто поговори со мной] активов: 2');
+  });
+});
+
+describe('Director: извлечение задач из свободной речи (TaskExtractor)', () => {
+  it('«Создай файл src/test.ts с тестом» → FileAgent (write)', async () => {
+    const { director } = buildDirector();
+    const response = await ask(director, 'Создай файл src/test.ts с тестом');
+
+    expect(response.task).toBeDefined();
+    expect(response.connectedAgents).toContain('file');
+    expect(response.task!.interpretedQuestion.text).toBe(
+      'Создай файл src/test.ts с тестом',
+    );
+    // План построен напрямую из задачи, без категорийной маршрутизации
+    expect(response.plan!.goal).toContain('Файловая операция');
+    expect(response.needsConsilium).toBe(false);
+  });
+
+  it('«Запусти тесты и покажи результат» → TerminalAgent (npm run test)', async () => {
+    const { director } = buildDirector();
+    const response = await ask(director, 'Запусти тесты и покажи результат');
+
+    expect(response.task).toBeDefined();
+    expect(response.connectedAgents).toContain('terminal');
+    expect(response.plan!.goal).toContain('Выполнить команду');
+  });
+
+  it('«Реализуй функцию в src/js/modules/x/y.ts» → CodingWorkflow', async () => {
+    const { director } = buildDirector();
+    const response = await ask(
+      director,
+      'Реализуй функцию в src/js/modules/x/y.ts',
+    );
+
+    expect(response.task).toBeDefined();
+    expect(response.connectedAgents).toContain('code');
+    expect(response.plan!.goal).toContain('Разработать функционал');
+  });
+
+  it('«Добавь в план: покрыть модуль тестами» → цель автономного цикла', async () => {
+    const created: string[] = [];
+    const { director } = buildDirector({
+      goalIntake: {
+        async addGoal(text) {
+          created.push(text);
+          return { id: 'goal-task-1', name: text };
+        },
+      },
+    });
+    const response = await ask(
+      director,
+      'Добавь в план: покрыть модуль тестами',
+    );
+
+    expect(created).toHaveLength(1);
+    expect(created[0]).toContain('покрыть модуль тестами');
+    expect(response.connectedAgents).toHaveLength(0);
+    expect(response.text).toContain('план');
+  });
+
+  it('LLM-извлечённая задача → прямой план (минуя категорийную маршрутизацию)', async () => {
+    const llm: LlmChatLike = {
+      async chat() {
+        return '{"tasks":[{"action":"file","target":"src/llm-test.ts","params":{"action":"write"}}]}';
+      },
+    };
+    const { director } = buildDirector({
+      taskExtractor: new TaskExtractor({ llm }),
+    });
+    const response = await ask(director, 'Создай файл src/llm-test.ts');
+
+    expect(response.task).toBeDefined();
+    expect(response.connectedAgents).toContain('file');
+    expect(response.plan!.goal).toContain('Файловая операция');
+    expect(response.plan!.userQuestion).toBe('Создай файл src/llm-test.ts');
+  });
+
+  it('финансовый вопрос не перехватывается извлечением задач', async () => {
+    const { director } = buildDirector();
+    const response = await ask(director, 'Что делать с PLZL?');
+
+    // Категорийная маршрутизация: анализ + AI + стратег, а не action-агенты
+    expect(response.connectedAgents).toContain('analysis');
+    expect(response.connectedAgents).toContain('ai');
+    expect(response.connectedAgents).not.toContain('file');
   });
 });

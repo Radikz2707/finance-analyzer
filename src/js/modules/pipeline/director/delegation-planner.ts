@@ -9,6 +9,8 @@
  * - нужен ли Consilium.
  */
 
+import { resolveTaskAction } from '../task-extractor/action-resolver.js';
+import type { ExtractedTask } from '../task-extractor/types.js';
 import type {
   AgentRole,
   AgentTask,
@@ -62,6 +64,11 @@ const AGENT_RATIONALE: Record<AgentRole, string> = {
     'Разработка кода: конвейер write → test → analyze → repair → retest → ' +
     'report. Пишет файлы через FileAgent, проверяет через TerminalAgent, ' +
     'чинит провалы через RepairExecutor, отчитывается о работоспособности.',
+  'self-improve':
+    'Самоулучшение: замкнутый цикл diagnose (AutoRepairAgent) → plan ' +
+    '(RepairPlanner) → execute (CodingWorkflow + FileAgent/TerminalAgent через ' +
+    'security-gate) → verify (npm test / tsc) → learn (FeedbackLoop + ' +
+    'LearningAgent) → report. Все операции проходят SecurityAgent.',
 };
 
 /** Приоритет задачи по роли */
@@ -79,6 +86,7 @@ const ROLE_PRIORITY: Record<AgentRole, AgentTask['priority']> = {
   system: 'low',
   automation: 'normal',
   code: 'high',
+  'self-improve': 'high',
 };
 
 /** Участвует ли результат роли в Consilium */
@@ -96,6 +104,7 @@ const ROLE_FOR_CONSILIUM: Record<AgentRole, boolean> = {
   system: false,
   automation: false,
   code: false,
+  'self-improve': false,
 };
 
 // ──────────────────────────────────────────────
@@ -150,6 +159,62 @@ export class DirectorDelegationPlanner {
       needsConsilium: this.needsConsilium(question),
       directorSynthesis: '',
     };
+  }
+
+  /**
+   * Построить план делегирования из извлечённой задачи (TaskExtractor).
+   *
+   * В отличие от buildPlan (категорийная маршрутизация), задача уже
+   * содержит действие и цель: роли определяются резолвером напрямую,
+   * Consilium не требуется (действие выполняют action-агенты).
+   */
+  buildPlanFromTask(task: ExtractedTask): DirectorPlan {
+    const taskId = this.newTaskId();
+    const resolved = resolveTaskAction(task);
+    const connected = resolved.roles;
+    const goal = this.buildGoalFromTask(task);
+
+    const assignments = connected.map((role) => ({
+      role,
+      task: resolved.description,
+      inputData: this.buildTaskInputData(task, role),
+      rationale: AGENT_RATIONALE[role],
+    }));
+
+    return {
+      taskId,
+      userQuestion: task.rawText,
+      goal,
+      connectedAgents: connected,
+      agentAssignments: assignments,
+      discussionTopics: [],
+      needsConsilium: false,
+      directorSynthesis: '',
+    };
+  }
+
+  /**
+   * Построить список задач для DirectorTask.agents из извлечённой задачи.
+   */
+  buildAgentTasksFromTask(task: ExtractedTask): AgentTask[] {
+    const resolved = resolveTaskAction(task);
+    const connected = resolved.roles;
+
+    return connected.map((role) => ({
+      taskId: `${this.newTaskId()}-${role}`,
+      role,
+      description: resolved.description,
+      inputData: {
+        topic: task.target || task.rawText,
+        tickers: [],
+        tickersLabel: 'портфель',
+        category: 'general',
+        action: task.action,
+      },
+      expectedOutput: this.expectedOutputs(role),
+      priority: ROLE_PRIORITY[role],
+      forConsilium: ROLE_FOR_CONSILIUM[role],
+    }));
   }
 
   /**
@@ -221,6 +286,55 @@ export class DirectorDelegationPlanner {
 
   // ── Descriptions ──
 
+  /** Человекочитаемая цель задачи из извлечённой задачи */
+  private buildGoalFromTask(task: ExtractedTask): string {
+    const target = task.target || task.rawText;
+    switch (task.action) {
+      case 'file':
+        return `Файловая операция: ${target}`;
+      case 'terminal':
+        return `Выполнить команду: ${target}`;
+      case 'code':
+        return `Разработать функционал: ${target}`;
+      case 'package':
+        return `Операция с зависимостями: ${target}`;
+      case 'process':
+        return `Операция с процессом: ${target}`;
+      case 'automation':
+        return `Автоматизация: ${target}`;
+      case 'research':
+        return `Исследование: ${target}`;
+      case 'portfolio':
+        return `Анализ портфеля: ${target}`;
+      case 'goal':
+        return `Цель автономного цикла: ${target}`;
+    }
+  }
+
+  /** Описание входных данных агента из извлечённой задачи */
+  private buildTaskInputData(task: ExtractedTask, _role: AgentRole): string {
+    const parts: string[] = [];
+    parts.push(`Задача: ${task.rawText}`);
+    parts.push(`Действие: ${task.action}`);
+    if (task.target) {
+      parts.push(`Цель: ${task.target}`);
+    }
+    const params = Object.entries(task.params)
+      .filter(
+        ([, value]) => value !== undefined && value !== null && value !== '',
+      )
+      .map(([key, value]) => {
+        const rendered =
+          typeof value === 'object' ? JSON.stringify(value) : String(value);
+        return `${key}: ${rendered}`;
+      })
+      .join(', ');
+    if (params) {
+      parts.push(`Параметры: ${params}`);
+    }
+    return parts.join('; ');
+  }
+
   /** Человекочитаемая цель задачи */
   private buildGoal(question: InterpretedQuestion): string {
     const tickersLabel =
@@ -281,6 +395,8 @@ export class DirectorDelegationPlanner {
         return `Выполнить операцию автоматизации в рамках вопроса: ${question.text}. Workflow проходят проверку безопасности.`;
       case 'code':
         return `Разработать функционал в рамках вопроса: ${question.text}. Конвейер: запись файлов → проверка → анализ провала → ремонт → повторная проверка → отчёт.`;
+      case 'self-improve':
+        return `Выполнить цикл самоулучшения в рамках вопроса: ${question.text}. Диагностика → план → выполнение через security-gate → проверка → урок в FeedbackLoop.`;
       default:
         return `Проанализировать вопрос по ${subject}.`;
     }
@@ -339,6 +455,15 @@ export class DirectorDelegationPlanner {
           'filesWritten',
           'steps',
         ];
+      case 'self-improve':
+        return [
+          'success',
+          'testPassed',
+          'repairIterations',
+          'lessons',
+          'metrics',
+          'blockedSteps',
+        ];
       default:
         return ['result'];
     }
@@ -388,4 +513,6 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   process: 'ProcessAgent (управление процессами)',
   automation: 'AutomationAgent (workflow-автоматизация)',
   code: 'CodingWorkflow (разработка кода: write → test → repair)',
+  'self-improve':
+    'SelfImprovementLoop (самоулучшение: diagnose → plan → execute → verify → learn)',
 };

@@ -5,6 +5,7 @@
 
 import axios from 'axios';
 import type { OllamaModelInfo } from './ollama-manager';
+import { OLLAMA_MODEL_NAME } from './ollama-model.js';
 
 export interface AiModelConfig {
   /** Уникальный идентификатор модели */
@@ -35,19 +36,24 @@ export const AI_MODELS: AiModelConfig[] = [
     id: 'ollama',
     name: 'Ollama (локально)',
     baseUrl: 'http://localhost:11434/api/chat',
-    modelName: 'qwen3.5:9b',
-    maxTokens: 3072,
+    // Имя модели берётся из OLLAMA_MODEL_NAME (env OLLAMA_MODEL, дефолт
+    // qwen3.5:9b) — единая точка смены модели для всего проекта.
+    modelName: OLLAMA_MODEL_NAME,
+    // 8192 токенов: полный отчёт (JSON-блок ~1k + 7 секций + таблица +
+    // план ребалансировки ~5-6k). 4096 приводило к ОБРЫВУ отчёта на
+    // середине плана ребалансировки. Таймауты в ollama-stream.ts
+    // увеличены до 30 минут, чтобы модель успела на CPU-оффлоаде.
+    maxTokens: 8192,
     temperature: 0.2,
     priority: 1,
     requiresKey: false,
     envKey: '',
-    description:
-      'Локальная модель 14B, баланс скорости и качества.',
+    description: 'Локальная модель (OLLAMA_MODEL), высокое качество анализа.',
   },
   {
     id: 'gigachat',
     name: 'GigaChat (Сбер)',
-    baseUrl: 'https://api.giga.chat/v1/chat/completions',
+    baseUrl: 'https://gigachat.devices.sberbank.ru/api/v1/chat/completions',
     modelName: 'GigaChat',
     maxTokens: 8192,
     temperature: 0.3,
@@ -97,12 +103,26 @@ const MODEL_OVERRIDE =
 export const CURRENT_AI_MODEL: AiModelConfig =
   AI_MODELS.find((m) => m.id === MODEL_OVERRIDE) ?? AI_MODELS[0]!;
 
-/** Получить все доступные модели, отфильтровав те, для которых нет ключей */
+/**
+ * Получить все доступные модели, отфильтровав те, для которых нет ключей.
+ *
+ * Модель из CURRENT_AI_MODEL (env AI_MODEL_ID) ставится ПЕРВОЙ в
+ * fallback-цепочке, остальные — по приоритету. Так:
+ *   AI_MODEL_ID=gigachat → GigaChat primary, Ollama — резерв;
+ *   AI_MODEL_ID=ollama (дефолт) → Ollama primary, GigaChat — резерв.
+ * Если выбранная модель недоступна (нет ключа) — она просто отсутствует
+ * в списке, и порядок остаётся по приоритету.
+ */
 export function getAvailableModels(): AiModelConfig[] {
-  return AI_MODELS.filter((model) => {
+  const available = AI_MODELS.filter((model) => {
     if (!model.requiresKey) return true;
     const key = process.env[model.envKey];
     return key && key.length > 0;
+  });
+  return available.sort((a, b) => {
+    if (a.id === CURRENT_AI_MODEL.id) return -1;
+    if (b.id === CURRENT_AI_MODEL.id) return 1;
+    return a.priority - b.priority;
   });
 }
 

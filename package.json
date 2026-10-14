@@ -15,6 +15,8 @@
   "scripts": {
     "start": "npm run app:dev",
     "pipeline": "tsx scripts/pipeline-report.ts",
+    "pipeline:gigachat": "cross-env AI_MODEL_ID=gigachat tsx scripts/pipeline-report.ts",
+    "pipeline:ollama": "cross-env AI_MODEL_ID=ollama tsx scripts/pipeline-report.ts",
     "backup": "tsx scripts/memory-backup.ts backup",
     "restore": "tsx scripts/memory-backup.ts restore",
     "build": "npm run test:run && gulp build",

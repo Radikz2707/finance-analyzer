@@ -15,6 +15,10 @@
 
 import type { AiAction } from '../../research/types.js';
 import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
+import { NewsDriver } from '../news-driver/news-driver.js';
+import type { NewsCacheLike, NewsImpact } from '../news-driver/types.js';
+import type { ActivityStream } from '../agent-activity/activity-stream.js';
+import type { AgentActivityEvent } from '../agent-activity/types.js';
 import {
   StrategistAgent,
   type StrategistAgentOutput,
@@ -26,13 +30,31 @@ import {
   type ScenarioChange,
 } from '../agents/scenario-agent.js';
 import type { DirectorActionAgents } from '../agents/agent-factory.js';
-import type { FileAgentOutput } from '../agents/file-agent.js';
-import type { ProcessAgentOutput } from '../agents/process-agent.js';
-import type { PackageAgentOutput } from '../agents/package-agent.js';
-import type { SystemResourceOutput } from '../agents/system-resource-agent.js';
-import type { TerminalAgentOutput } from '../agents/terminal-agent.js';
-import type { AutomationAgentOutput } from '../agents/automation-agent/types.js';
-import type { CodingWorkflowOutput } from '../coding-workflow/types.js';
+import type { FileAgentInput, FileAgentOutput } from '../agents/file-agent.js';
+import type {
+  ProcessAgentInput,
+  ProcessAgentOutput,
+} from '../agents/process-agent.js';
+import type {
+  PackageAgentInput,
+  PackageAgentOutput,
+} from '../agents/package-agent.js';
+import type {
+  SystemResourceInput,
+  SystemResourceOutput,
+} from '../agents/system-resource-agent.js';
+import type {
+  TerminalAgentInput,
+  TerminalAgentOutput,
+} from '../agents/terminal-agent.js';
+import type {
+  AutomationAgentInput,
+  AutomationAgentOutput,
+} from '../agents/automation-agent/types.js';
+import type {
+  CodingWorkflowInput,
+  CodingWorkflowOutput,
+} from '../coding-workflow/types.js';
 import {
   buildAutomationAgentInput,
   buildCodingWorkflowInput,
@@ -64,6 +86,8 @@ export interface AiDecisionRequest {
   facts: DirectorFactsContext;
   /** Результаты других агентов (для полноты контекста) */
   agentResults: AgentResultEntry[];
+  /** Новостные impact'ы (NewsDriver) — влияют на мнение AI */
+  newsImpacts?: readonly NewsImpact[];
 }
 
 /** Исполнитель инвестиционного reasoning (роль ai) */
@@ -99,6 +123,13 @@ export interface ActionSecurityGate {
   ): SecurityDecision | Promise<SecurityDecision>;
 }
 
+/**
+ * Входы action-агентов из извлечённой задачи (роль → вход).
+ * Позволяет передать структурированный вход (FileAgentInput,
+ * TerminalAgentInput, ...) напрямую, минуя повторный парсинг текста.
+ */
+export type TaskRoleInputs = Partial<Record<AgentRole, unknown>>;
+
 /** Опции фасада (DI) */
 export interface DirectorFacadeOptions {
   strategist?: StrategistAgent;
@@ -109,6 +140,12 @@ export interface DirectorFacadeOptions {
   actionAgents?: DirectorActionAgents;
   /** Шлюз безопасности action-операций (SecurityAgent) */
   security?: ActionSecurityGate;
+  /** Стрим активности агентов (для живых шагов в UI) */
+  activity?: ActivityStream;
+  /** Новостной драйвер (роль research/ai использует новостной фон) */
+  newsDriver?: NewsDriver;
+  /** Кэш новостей (gatekeeper); без него новостной фон не анализируется */
+  newsCache?: NewsCacheLike;
 }
 
 /** Содержимое результата агента (данные внутри AgentResultEntry.data) */
@@ -137,6 +174,9 @@ export class DirectorAgentFacade {
   private readonly reviewExecutor: ReviewExecutor;
   private readonly actionAgents?: DirectorActionAgents;
   private readonly security?: ActionSecurityGate;
+  private readonly activity?: ActivityStream;
+  private readonly newsDriver: NewsDriver;
+  private readonly newsCache?: NewsCacheLike;
 
   constructor(opts?: DirectorFacadeOptions) {
     this.strategist = opts?.strategist ?? new StrategistAgent();
@@ -145,6 +185,39 @@ export class DirectorAgentFacade {
     this.reviewExecutor = opts?.reviewExecutor ?? defaultReviewExecutor;
     this.actionAgents = opts?.actionAgents;
     this.security = opts?.security;
+    this.activity = opts?.activity;
+    this.newsDriver = opts?.newsDriver ?? new NewsDriver();
+    this.newsCache = opts?.newsCache;
+  }
+
+  /**
+   * Новостные impact'ы по портфелю (NewsDriver).
+   * Пусто, если кэш новостей не подключён.
+   */
+  private analyzeNews(facts: DirectorFactsContext): NewsImpact[] {
+    if (!this.newsCache) return [];
+    return this.newsDriver.analyzePortfolio(facts, this.newsCache);
+  }
+
+  /**
+   * Опубликовать событие активности агента (no-op без подключённого стрима).
+   */
+  private emitActivity(
+    phase: AgentActivityEvent['phase'],
+    role: AgentRole,
+    taskId: string,
+    message: string,
+    detail?: Record<string, unknown>,
+    durationMs?: number,
+  ): void {
+    this.activity?.emit({
+      taskId,
+      role,
+      phase,
+      message,
+      detail,
+      durationMs,
+    });
   }
 
   /**
@@ -155,6 +228,7 @@ export class DirectorAgentFacade {
     roles: AgentRole[],
     question: InterpretedQuestion,
     facts: DirectorFactsContext,
+    taskInputs?: TaskRoleInputs,
   ): Promise<AgentResultEntry[]> {
     const uniqueRoles = [...new Set(roles)];
     const results: AgentResultEntry[] = [];
@@ -162,15 +236,34 @@ export class DirectorAgentFacade {
     // Все задачи запускаются параллельно (независимые агенты)
     const tasks = uniqueRoles.map(async (role) => {
       const startedAt = Date.now();
+      const taskId = `${question.topic}-${role}`;
+      this.emitActivity('started', role, taskId, 'стартовал');
       try {
-        const payload = await this.executeRole(role, question, facts);
+        const payload = await this.executeRole(
+          role,
+          question,
+          facts,
+          taskId,
+          taskInputs,
+        );
+        const durationMs = Date.now() - startedAt;
+        this.emitActivity(
+          'completed',
+          role,
+          taskId,
+          'готово',
+          undefined,
+          durationMs,
+        );
         return this.makeEntry(role, true, payload, startedAt, question);
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.emitActivity('failed', role, taskId, `ошибка: ${message}`);
         return this.makeEntry(
           role,
           false,
           {
-            summary: `Агент «${role}» не выполнен: ${err instanceof Error ? err.message : String(err)}`,
+            summary: `Агент «${role}» не выполнен: ${message}`,
             sources: [],
           },
           startedAt,
@@ -188,23 +281,44 @@ export class DirectorAgentFacade {
   }
 
   /**
-   * Выполнить одну роль
+   * Выполнить одну роль. Эмитит step-события для фаз роли
+   * (например, security-gate → выполнение для action-ролей).
    */
   private async executeRole(
     role: AgentRole,
     question: InterpretedQuestion,
     facts: DirectorFactsContext,
+    taskId: string,
+    taskInputs?: TaskRoleInputs,
   ): Promise<DirectorAgentPayload> {
+    const overrideInput = taskInputs?.[role];
     switch (role) {
       case 'analysis':
+        this.emitActivity(
+          'step',
+          role,
+          taskId,
+          'анализирую структуру портфеля',
+        );
         return analyzeStructure(question, facts);
-      case 'research':
-        return summarizeResearch(question, facts);
+      case 'research': {
+        this.emitActivity(
+          'step',
+          role,
+          taskId,
+          `собираю факты по ${question.tickers.join(', ') || 'портфелю'}`,
+        );
+        const newsImpacts = this.analyzeNews(facts);
+        return summarizeResearch(question, facts, newsImpacts);
+      }
       case 'ai': {
+        this.emitActivity('step', role, taskId, 'формирую мнение');
+        const newsImpacts = this.analyzeNews(facts);
         const opinion = await this.aiExecutor({
           question,
           facts,
           agentResults: [],
+          newsImpacts,
         });
         return {
           opinion,
@@ -215,10 +329,18 @@ export class DirectorAgentFacade {
         };
       }
       case 'strategist':
+        this.emitActivity(
+          'step',
+          role,
+          taskId,
+          'провожу стратегический анализ',
+        );
         return this.runStrategist(question, facts);
       case 'scenario':
+        this.emitActivity('step', role, taskId, 'строю сценарии «что если»');
         return this.runScenario(question, facts);
       case 'review': {
+        this.emitActivity('step', role, taskId, 'проверяю качество решения');
         const review = await this.reviewExecutor({
           question,
           facts,
@@ -240,19 +362,61 @@ export class DirectorAgentFacade {
         };
       }
       case 'file':
-        return this.runFileRole(question);
+        this.emitActivity(
+          'step',
+          role,
+          taskId,
+          'проверка безопасности → выполнение',
+        );
+        return this.runFileRole(question, overrideInput);
       case 'terminal':
-        return this.runTerminalRole(question);
+        this.emitActivity(
+          'step',
+          role,
+          taskId,
+          'проверка безопасности → выполнение',
+        );
+        return this.runTerminalRole(question, overrideInput);
       case 'package':
-        return this.runPackageRole(question);
+        this.emitActivity(
+          'step',
+          role,
+          taskId,
+          'выполняю операцию с зависимостями',
+        );
+        return this.runPackageRole(question, overrideInput);
       case 'system':
-        return this.runSystemRole(question);
+        this.emitActivity(
+          'step',
+          role,
+          taskId,
+          'снимаю показатели системных ресурсов',
+        );
+        return this.runSystemRole(question, overrideInput);
       case 'process':
-        return this.runProcessRole(question);
+        this.emitActivity(
+          'step',
+          role,
+          taskId,
+          'проверка безопасности → выполнение',
+        );
+        return this.runProcessRole(question, overrideInput);
       case 'automation':
-        return this.runAutomationRole(question);
+        this.emitActivity(
+          'step',
+          role,
+          taskId,
+          'проверка безопасности → выполнение',
+        );
+        return this.runAutomationRole(question, overrideInput);
       case 'code':
-        return this.runCodeRole(question);
+        this.emitActivity(
+          'step',
+          role,
+          taskId,
+          'проверка безопасности → конвейер разработки',
+        );
+        return this.runCodeRole(question, overrideInput);
       default:
         return {
           summary: `Роль «${role}» не реализована`,
@@ -267,6 +431,7 @@ export class DirectorAgentFacade {
    */
   private async runFileRole(
     question: InterpretedQuestion,
+    overrideInput?: unknown,
   ): Promise<DirectorAgentPayload> {
     const agent = this.actionAgents?.file;
     if (!agent) {
@@ -276,7 +441,9 @@ export class DirectorAgentFacade {
       };
     }
 
-    const intent = buildFileAgentInput(question);
+    const intent =
+      (overrideInput as FileAgentInput | undefined) ??
+      buildFileAgentInput(question);
     if (!intent) {
       return {
         summary: `Не удалось распознать файловую операцию в запросе: «${question.text}»`,
@@ -340,6 +507,7 @@ export class DirectorAgentFacade {
    */
   private async runTerminalRole(
     question: InterpretedQuestion,
+    overrideInput?: unknown,
   ): Promise<DirectorAgentPayload> {
     const agent = this.actionAgents?.terminal;
     if (!agent) {
@@ -349,7 +517,9 @@ export class DirectorAgentFacade {
       };
     }
 
-    const intent = buildTerminalAgentInput(question);
+    const intent =
+      (overrideInput as TerminalAgentInput | undefined) ??
+      buildTerminalAgentInput(question);
     if (!intent) {
       return {
         summary: `Не удалось распознать команду в запросе: «${question.text}»`,
@@ -421,6 +591,7 @@ export class DirectorAgentFacade {
    */
   private async runPackageRole(
     question: InterpretedQuestion,
+    overrideInput?: unknown,
   ): Promise<DirectorAgentPayload> {
     const agent = this.actionAgents?.package;
     if (!agent) {
@@ -430,7 +601,9 @@ export class DirectorAgentFacade {
       };
     }
 
-    const intent = buildPackageAgentInput(question);
+    const intent =
+      (overrideInput as PackageAgentInput | undefined) ??
+      buildPackageAgentInput(question);
     if (!intent) {
       return {
         summary: `Не удалось распознать операцию с зависимостями в запросе: «${question.text}»`,
@@ -470,6 +643,7 @@ export class DirectorAgentFacade {
    */
   private async runSystemRole(
     question: InterpretedQuestion,
+    overrideInput?: unknown,
   ): Promise<DirectorAgentPayload> {
     const agent = this.actionAgents?.system;
     if (!agent) {
@@ -479,7 +653,9 @@ export class DirectorAgentFacade {
       };
     }
 
-    const intent = buildSystemResourceInput(question);
+    const intent =
+      (overrideInput as SystemResourceInput | undefined) ??
+      buildSystemResourceInput(question);
     if (!intent) {
       return {
         summary: `Не удалось распознать запрос о системных ресурсах: «${question.text}»`,
@@ -513,6 +689,7 @@ export class DirectorAgentFacade {
    */
   private async runProcessRole(
     question: InterpretedQuestion,
+    overrideInput?: unknown,
   ): Promise<DirectorAgentPayload> {
     const agent = this.actionAgents?.process;
     if (!agent) {
@@ -522,7 +699,9 @@ export class DirectorAgentFacade {
       };
     }
 
-    const intent = buildProcessAgentInput(question);
+    const intent =
+      (overrideInput as ProcessAgentInput | undefined) ??
+      buildProcessAgentInput(question);
     if (!intent) {
       return {
         summary: `Не удалось распознать операцию с процессом в запросе: «${question.text}»`,
@@ -594,6 +773,7 @@ export class DirectorAgentFacade {
    */
   private async runAutomationRole(
     question: InterpretedQuestion,
+    overrideInput?: unknown,
   ): Promise<DirectorAgentPayload> {
     const agent = this.actionAgents?.automation;
     if (!agent) {
@@ -603,7 +783,9 @@ export class DirectorAgentFacade {
       };
     }
 
-    const intent = buildAutomationAgentInput(question);
+    const intent =
+      (overrideInput as AutomationAgentInput | undefined) ??
+      buildAutomationAgentInput(question);
     if (!intent) {
       return {
         summary:
@@ -681,6 +863,7 @@ export class DirectorAgentFacade {
    */
   private async runCodeRole(
     question: InterpretedQuestion,
+    overrideInput?: unknown,
   ): Promise<DirectorAgentPayload> {
     const agent = this.actionAgents?.code;
     if (!agent) {
@@ -690,7 +873,9 @@ export class DirectorAgentFacade {
       };
     }
 
-    const intent = buildCodingWorkflowInput(question);
+    const intent =
+      (overrideInput as CodingWorkflowInput | undefined) ??
+      buildCodingWorkflowInput(question);
     if (!intent || intent.files.length === 0) {
       return {
         summary:
@@ -927,6 +1112,7 @@ export class DirectorAgentFacade {
 export const defaultAiExecutor: AiDecisionExecutor = async ({
   question,
   facts,
+  newsImpacts,
 }) => {
   const tickers = question.tickers;
   const assets = facts.assetsAnalysis;
@@ -948,6 +1134,29 @@ export const defaultAiExecutor: AiDecisionExecutor = async ({
       confidence: 0.4,
       arguments: [
         'Данные по активу отсутствуют, поэтому менять ничего не следует.',
+      ],
+    };
+  }
+
+  // Новостной фон (NewsDriver): критический негатив по активу перевешивает
+  // структурную логику — не докупаем, а пересматриваем позицию.
+  const relevantNews = (newsImpacts ?? []).filter(
+    (i) =>
+      tickers.length === 0 ||
+      tickers.some((t) => t.toUpperCase() === i.ticker.toUpperCase()),
+  );
+  const criticalNegative = relevantNews.find(
+    (i) => i.impactDirection === 'negative' && i.importance === 'critical',
+  );
+  if (criticalNegative) {
+    return {
+      role: 'ai',
+      position: `Критический негатив по ${criticalNegative.ticker} — пересмотреть позицию.`,
+      action: 'REDUCE',
+      confidence: 0.7,
+      arguments: [
+        criticalNegative.reasoning,
+        'Новостной риск перевешивает структурную логику: сокращение снижает уязвимость.',
       ],
     };
   }
@@ -1260,6 +1469,7 @@ function analyzeStructure(
 function summarizeResearch(
   question: InterpretedQuestion,
   facts: DirectorFactsContext,
+  newsImpacts: readonly NewsImpact[] = [],
 ): DirectorAgentPayload {
   const tickers = question.tickers;
   const priceAlerts = (facts.priceAlerts ?? []).filter(
@@ -1278,9 +1488,27 @@ function summarizeResearch(
           .join('; ')
       : 'ценовых алертов нет';
 
-  const newsSummary = facts.newsContext
-    ? facts.newsContext.slice(0, 200)
-    : 'новостной контекст не передан';
+  // Новостной фон: приоритет — impact'ы NewsDriver, иначе сырой newsContext
+  const relevantImpacts = newsImpacts.filter(
+    (i) =>
+      tickers.length === 0 ||
+      tickers.some((t) => t.toUpperCase() === i.ticker.toUpperCase()),
+  );
+  let newsSummary: string;
+  if (relevantImpacts.length > 0) {
+    newsSummary = relevantImpacts
+      .slice(0, 3)
+      .map(
+        (i) =>
+          `${i.ticker}: ${i.impactDirection} ` +
+          `(сентимент ${i.sentimentScore.toFixed(2)}, важность «${i.importance}»)`,
+      )
+      .join('; ');
+  } else if (facts.newsContext) {
+    newsSummary = facts.newsContext.slice(0, 200);
+  } else {
+    newsSummary = 'новостной контекст не передан';
+  }
 
   return {
     summary:
@@ -1288,7 +1516,10 @@ function summarizeResearch(
       `Новости: ${newsSummary}. ` +
       'Факты переданы без изменения.',
     sources: factSources(facts),
-    detail: { priceAlerts: priceAlerts.length },
+    detail: {
+      priceAlerts: priceAlerts.length,
+      newsImpacts: relevantImpacts.length,
+    },
   };
 }
 

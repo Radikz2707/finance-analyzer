@@ -4,6 +4,7 @@ import {
   looksLikeGreeting,
   looksLikeOffTopic,
   looksLikeReportRequest,
+  looksLikeSelfImprovementRequest,
   looksLikeStatusQuestion,
   looksLikeTaskIntent,
   parseUserMessage,
@@ -346,5 +347,38 @@ describe('NL Parser (Director): приветствия', () => {
   it('extractCorrection возвращает null для не-поправок', () => {
     expect(extractCorrection('Что делать с PLZL?')).toBeNull();
     expect(extractCorrection('Как дела?')).toBeNull();
+  });
+});
+
+describe('NL Parser (Director): самоулучшение проекта', () => {
+  it('«Почини проект» включает роль self-improve', () => {
+    const parsed = parseUserMessage('Почини проект');
+    expect(parsed.requiredAgents).toContain('self-improve');
+    expect(looksLikeSelfImprovementRequest('Почини проект')).toBe(true);
+  });
+
+  it('«Исправь ошибки» включает роль self-improve', () => {
+    const parsed = parseUserMessage('Исправь ошибки в проекте');
+    expect(parsed.requiredAgents).toContain('self-improve');
+    expect(looksLikeSelfImprovementRequest('Исправь ошибки')).toBe(true);
+  });
+
+  it('«Улучши систему» включает роль self-improve', () => {
+    const parsed = parseUserMessage('Улучши систему');
+    expect(parsed.requiredAgents).toContain('self-improve');
+  });
+
+  it('«Проверь здоровье проекта» включает роль self-improve', () => {
+    const parsed = parseUserMessage('Проверь здоровье проекта');
+    expect(parsed.requiredAgents).toContain('self-improve');
+    expect(looksLikeSelfImprovementRequest('Проверь здоровье проекта')).toBe(
+      true,
+    );
+  });
+
+  it('финансовые вопросы не считаются запросом самоулучшения', () => {
+    expect(looksLikeSelfImprovementRequest('Что делать с SBER?')).toBe(false);
+    expect(looksLikeSelfImprovementRequest('Как дела?')).toBe(false);
+    expect(looksLikeSelfImprovementRequest('Сравни PLZL и SBER')).toBe(false);
   });
 });

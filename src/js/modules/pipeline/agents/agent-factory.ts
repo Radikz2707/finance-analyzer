@@ -17,6 +17,7 @@
  */
 
 import type { IAgent } from '../agent/types.js';
+import type { ActivityStream } from '../agent-activity/activity-stream.js';
 import { AutoRepairAgent } from './auto-repair-agent.js';
 import { BrowserAgent } from './browser-agent.js';
 import { ConfigAgent } from './config-agent.js';
@@ -37,6 +38,7 @@ import { GoalAgent } from './goal-agent/goal-agent.js';
 import { ResearchAgentV2 } from './research-agent-v2/research-agent-v2.js';
 import { CommunicationAgent } from './communication-agent/communication-agent.js';
 import { AutomationAgent } from './automation-agent/automation-agent.js';
+import { SelfImprovementLoop } from '../self-improvement/self-improvement-loop.js';
 
 // ──────────────────────────────────────────────
 // 1. Роли и типы
@@ -58,7 +60,8 @@ export type ActionAgentRole =
   | 'research-v2'
   | 'communication'
   | 'automation'
-  | 'code';
+  | 'code'
+  | 'self-improve';
 
 /**
  * Карта базовых action-агентов для Director-фасада (браузер: отсутствует).
@@ -105,6 +108,8 @@ export interface ActionAgentFactoryOptions {
    * только в Node-контуре с настроенным security-gate.
    */
   enableSystemCommands?: boolean;
+  /** Стрим активности агентов (пробрасывается в CodingWorkflow) */
+  activity?: ActivityStream;
 }
 
 /** Таймауты по умолчанию: файловые операции быстрые, терминал дольше */
@@ -123,6 +128,7 @@ export class ActionAgentRegistry {
   private readonly roots: string[];
   private readonly defaultTimeoutMs: number;
   private readonly enableSystemCommands: boolean;
+  private readonly activity?: ActivityStream;
   private readonly factories: ReadonlyMap<ActionAgentRole, () => unknown>;
   private readonly cache = new Map<ActionAgentRole, unknown>();
 
@@ -133,6 +139,7 @@ export class ActionAgentRegistry {
         ? options.defaultTimeoutMs
         : DEFAULT_TIMEOUT_MS;
     this.enableSystemCommands = options.enableSystemCommands ?? false;
+    this.activity = options.activity;
 
     this.factories = new Map<ActionAgentRole, () => unknown>([
       ['file', () => this.createFileAgent()],
@@ -219,6 +226,14 @@ export class ActionAgentRegistry {
         () =>
           new CodingWorkflow(
             { name: 'CodingWorkflow', timeoutMs: 300000 },
+            { roots: this.roots, activity: this.activity },
+          ),
+      ],
+      [
+        'self-improve',
+        () =>
+          new SelfImprovementLoop(
+            { name: 'SelfImprovementLoop', timeoutMs: 300000 },
             { roots: this.roots },
           ),
       ],

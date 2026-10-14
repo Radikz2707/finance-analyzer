@@ -65,8 +65,8 @@ export async function streamChat(
   const {
     onChunk,
     onStatus,
-    timeout = 300000, // 5 минут (установка соединения)
-    streamTimeout = 600000, // 10 минут (общая длительность чтения стрима)
+    timeout = 1800000, // 30 минут (соединение; для не-стрима — весь запрос)
+    streamTimeout = 1800000, // 30 минут (общая длительность чтения стрима)
     stream = true,
   } = streamOptions;
 
@@ -99,11 +99,10 @@ export async function streamChat(
           stream,
           think: false,
           options: {
-            num_predict: options.numPredict || 4096,
-            // Явное контекстное окно: без него Ollama берёт дефолт модели
-            // (часто 2048–4096), и длинный промпт + num_predict дают 500
-            // «context length exceeded». 16384 достаточно для промпта ~4-5k
-            // токенов и ответа до 8192.
+            num_predict: options.numPredict || 8192,
+            // Явное контекстное окно: без него Ollama берёт полный контекст
+            // модели (у qwen3.6:27b это 262144) → огромный KV-cache → OOM.
+            // 16384 достаточно для промпта ~2-3k токенов и ответа до 8192.
             num_ctx: options.numCtx || 16384,
             temperature: options.temperature || 0.3,
             top_p: options.topP || 0.9,

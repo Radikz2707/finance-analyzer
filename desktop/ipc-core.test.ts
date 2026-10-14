@@ -24,6 +24,7 @@ import {
   handleStatus,
   resolveAnalysisStatus,
   runPipelineReport,
+  subscribeActivity,
   subscribeEvents,
   type AppState,
   type DirectorState,
@@ -45,6 +46,12 @@ describe('desktop/ipc-core', () => {
       excelPath: '',
       aiMode: 'off',
       logger: () => {},
+      // Заглушка кэша новостей: тест не должен тянуть better-sqlite3 (БД)
+      newsCache: {
+        getByTicker: () => [],
+        getTickerTrend: () => undefined,
+        getLatest: () => [],
+      },
     });
   }, 60_000);
 
@@ -61,6 +68,12 @@ describe('desktop/ipc-core', () => {
     expect(state.sourceLabel).toContain('нет данных портфеля');
     expect(state.aiLabel).toContain('детерминированный');
     expect(state.director.currentSession).not.toBeNull();
+  });
+
+  it('handleAsk «Привет» отвечает живым smalltalk без запуска агентов', async () => {
+    const result = await handleAsk(state, 'Привет!');
+    expect(result.text).toBeTruthy();
+    expect(result.text).toMatch(/Здравствуйте|финансовый директор|портфель/i);
   });
 
   it(
@@ -135,6 +148,73 @@ describe('desktop/ipc-core', () => {
       await handleAsk(state, 'Оцени стратегию портфеля');
       expect(received.length).toBeGreaterThanOrEqual(1);
       expect(received).toContain('director.question_received');
+
+      // Отписка — безопасный no-op при повторном вызове
+      unsubscribe();
+      unsubscribe();
+
+      const beforeSecond = received.length;
+      await handleAsk(state, 'Какие риски сейчас в портфеле?');
+      expect(received.length).toBe(beforeSecond);
+    },
+    ASK_TIMEOUT_MS,
+  );
+
+  it('buildDirectorState создаёт ActivityStream (живые шаги агентов)', () => {
+    expect(state.activity).toBeDefined();
+    // Буфер — массив событий (может содержать события предыдущих тестов)
+    expect(Array.isArray(state.activity.getRecent())).toBe(true);
+  });
+
+  it('handleAsk возвращает news: новостной фон (NewsDriver-контракт)', async () => {
+    const result = await handleAsk(state, 'Сравни Сбер и Газпром');
+    expect(result.news).toBeDefined();
+    expect(Array.isArray(result.news)).toBe(true);
+    // Контракт NewsImpact: тикер/направление/важность у каждого элемента
+    for (const impact of result.news ?? []) {
+      expect(typeof impact.ticker).toBe('string');
+      expect(['positive', 'negative', 'neutral']).toContain(
+        impact.impactDirection,
+      );
+      expect(impact.importance).toBeTruthy();
+    }
+  });
+
+  it(
+    'handleAsk возвращает activity: живые шаги агентов (started/step/completed)',
+    async () => {
+      const result = await handleAsk(state, 'Что с SBER?');
+
+      expect(result.activity).toBeDefined();
+      expect(result.activity!.length).toBeGreaterThanOrEqual(1);
+
+      const phases = result.activity!.map((event) => event.phase);
+      // Для портфельного вопроса есть старт и завершение агентов
+      expect(phases).toContain('started');
+      expect(phases).toContain('completed');
+      // Каждое событие имеет id/timestamp/role/taskId
+      for (const event of result.activity!) {
+        expect(event.id).toBeTruthy();
+        expect(event.timestamp).toBeTruthy();
+        expect(event.role).toBeTruthy();
+        expect(event.taskId).toBeTruthy();
+      }
+    },
+    ASK_TIMEOUT_MS,
+  );
+
+  it(
+    'subscribeActivity доставляет живые шаги и отписка работает',
+    async () => {
+      const received: string[] = [];
+      const unsubscribe = subscribeActivity(state, (event) => {
+        received.push(`${event.role}:${event.phase}`);
+      });
+
+      await handleAsk(state, 'Оцени стратегию портфеля');
+      expect(received.length).toBeGreaterThanOrEqual(1);
+      expect(received.some((line) => line.endsWith(':started'))).toBe(true);
+      expect(received.some((line) => line.endsWith(':completed'))).toBe(true);
 
       // Отписка — безопасный no-op при повторном вызове
       unsubscribe();

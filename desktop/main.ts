@@ -66,6 +66,7 @@ import {
   reloadPortfolio,
   reconnectOllama,
   shutdownAppState,
+  subscribeActivity,
   subscribeEvents,
   type AppState,
 } from './ipc-core.js';
@@ -149,6 +150,11 @@ async function initAppState(): Promise<void> {
   // Живой стриминг всех событий аудита в renderer
   unsubscribeDirector = subscribeEvents(director, (event) => {
     sendToRenderer('director:event', event);
+  });
+
+  // Живой стриминг шагов агентов (started/step/completed/failed) в renderer
+  subscribeActivity(director, (event) => {
+    sendToRenderer('director:activity', event);
   });
 
   // Запускаем файловый воркер на Excel-файл

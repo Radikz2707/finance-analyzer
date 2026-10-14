@@ -62,6 +62,14 @@ export interface AutonomousBridgeOptions {
 /** Запрещённые роли в автономном режиме (безопасность) */
 const FORBIDDEN_ROLES = ['terminal', 'process', 'package'];
 
+/**
+ * Роль самоулучшения: РАЗРЕШЕНА в автономном режиме (не входит в
+ * FORBIDDEN_ROLES), потому что ВСЕ её операции с компьютером (file/terminal/
+ * code) проходят через SecurityAgent внутри SelfImprovementLoop
+ * (allow / deny / require-confirmation). Отдельный запрет не требуется.
+ */
+export const SELF_IMPROVE_ROLE = 'self-improve';
+
 const DEFAULT_INTERVAL_SEC = 60;
 
 /** Результат операций моста (для IPC и чата) */
@@ -135,13 +143,18 @@ export class AutonomousBridge {
       const allSucceeded =
         response.task?.agentResults?.every((entry) => entry.success) ?? false;
       const action = String(response.recommendation?.action ?? 'NONE');
+      // self-improve разрешена: её операции проходят через SecurityAgent
+      // внутри SelfImprovementLoop (allow/deny/require-confirmation).
+      const gatedNote = agentRoles.includes(SELF_IMPROVE_ROLE)
+        ? ' [self-improve: операции через SecurityAgent]'
+        : '';
       return {
         userQuestion,
         recommendedAction: action,
         success: allSucceeded,
         confidence: response.recommendation?.confidence ?? 0.5,
         agentRoles,
-        reasoning: (response.text ?? '').slice(0, 500),
+        reasoning: `${(response.text ?? '').slice(0, 500)}${gatedNote}`,
       };
     };
   }

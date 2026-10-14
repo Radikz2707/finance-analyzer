@@ -18,6 +18,7 @@
  */
 
 import { TimeSeriesForecaster } from './time-series-forecaster.js';
+import type { NewsImpact } from '../news-driver/types.js';
 import type {
   ForecastResult,
   PlannedScenario,
@@ -50,6 +51,90 @@ export class ScenarioPlannerError extends Error {
   }
 }
 
+/** Ранг важности новости (для выбора сильнейшего impact'а) */
+const NEWS_IMPORTANCE_RANK: Record<string, number> = {
+  critical: 4,
+  high: 3,
+  medium: 2,
+  low: 1,
+  noise: 0,
+};
+
+/** Корректировка сценариев по новостному фону */
+export interface NewsScenarioAdjustment {
+  /** Сдвиг базового сценария, % от последнего значения */
+  baseShiftPercent: number;
+  /** Сдвиг оптимистичного сценария, % */
+  bestShiftPercent: number;
+  /** Сдвиг пессимистичного сценария, % */
+  worstShiftPercent: number;
+  /** Честное описание учёта новостного фона (null — фон не учитывался) */
+  note: string | null;
+}
+
+/** Нейтральная корректировка (новостной фон не учитывается) */
+export const NEUTRAL_NEWS_ADJUSTMENT: NewsScenarioAdjustment = {
+  baseShiftPercent: 0,
+  bestShiftPercent: 0,
+  worstShiftPercent: 0,
+  note: null,
+};
+
+/**
+ * Вычислить корректировку сценариев по новостному фону.
+ * Берётся сильнейший impact (|сентимент| × важность):
+ * - негатив → пессимистичный сценарий усиливается, базовый слегка снижается;
+ * - позитив → оптимистичный сценарий усиливается, базовый слегка растёт.
+ */
+export function computeNewsAdjustment(
+  impacts: readonly NewsImpact[] | undefined,
+): NewsScenarioAdjustment {
+  if (!impacts || impacts.length === 0) return NEUTRAL_NEWS_ADJUSTMENT;
+
+  let strongest: NewsImpact | null = null;
+  let strongestStrength = 0;
+  for (const impact of impacts) {
+    const rank = NEWS_IMPORTANCE_RANK[impact.importance] ?? 0;
+    const strength = Math.abs(impact.sentimentScore) * rank;
+    if (strength > strongestStrength) {
+      strongest = impact;
+      strongestStrength = strength;
+    }
+  }
+
+  if (!strongest || strongestStrength <= 0) return NEUTRAL_NEWS_ADJUSTMENT;
+
+  const magnitude = Math.min(
+    1,
+    Math.abs(strongest.sentimentScore) *
+      ((NEWS_IMPORTANCE_RANK[strongest.importance] ?? 0) / 4),
+  );
+
+  if (strongest.impactDirection === 'negative') {
+    return {
+      baseShiftPercent: -0.5 * magnitude,
+      bestShiftPercent: -0.25 * magnitude,
+      worstShiftPercent: -1.5 * magnitude,
+      note:
+        `Новостной фон негативный по ${strongest.ticker} ` +
+        `(сентимент ${strongest.sentimentScore.toFixed(2)}) — пессимистичный сценарий усилен.`,
+    };
+  }
+
+  if (strongest.impactDirection === 'positive') {
+    return {
+      baseShiftPercent: 0.5 * magnitude,
+      bestShiftPercent: 1.5 * magnitude,
+      worstShiftPercent: 0.25 * magnitude,
+      note:
+        `Новостной фон позитивный по ${strongest.ticker} ` +
+        `(сентимент ${strongest.sentimentScore.toFixed(2)}) — оптимистичный сценарий усилен.`,
+    };
+  }
+
+  return NEUTRAL_NEWS_ADJUSTMENT;
+}
+
 function round(value: number, digits = 4): number {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
@@ -77,8 +162,11 @@ export class ScenarioPlanner {
     this.horizon = Math.max(1, options.horizon ?? DEFAULT_SCENARIO_HORIZON);
   }
 
-  /** Построить сценарии best/base/worst для ряда. */
-  plan(series: readonly TimeSeriesPoint[]): ScenarioPlanResult {
+  /** Построить сценарии best/base/worst для ряда (с учётом новостного фона). */
+  plan(
+    series: readonly TimeSeriesPoint[],
+    newsImpacts?: readonly NewsImpact[],
+  ): ScenarioPlanResult {
     if (!Array.isArray(series) || series.length === 0) {
       throw new ScenarioPlannerError('plan(): ожидается непустой массив точек');
     }
@@ -97,9 +185,21 @@ export class ScenarioPlanner {
       );
     }
 
+    // Новостной фон: сдвиг сценариев в % от последнего значения
+    const newsAdjustment = computeNewsAdjustment(newsImpacts);
+    if (newsAdjustment.note) {
+      warnings.push(newsAdjustment.note);
+    }
+
     const scenarios: PlannedScenario[] = [];
 
     for (const kind of ['base', 'best', 'worst'] as const) {
+      const shiftPercent =
+        kind === 'base'
+          ? newsAdjustment.baseShiftPercent
+          : kind === 'best'
+            ? newsAdjustment.bestShiftPercent
+            : newsAdjustment.worstShiftPercent;
       const points = baseForecast.points.map((p) => {
         // Смещение конуса неопределённости: ± k·σ·√step
         const shift =
@@ -109,7 +209,9 @@ export class ScenarioPlanner {
               baseForecast.residualStd *
               Math.sqrt(p.step) *
               (kind === 'best' ? 1 : -1);
-        const value = round(p.value + shift);
+        // Новостной сдвиг: мультипликативно к прогнозной точке
+        const newsShift = p.value * (shiftPercent / 100);
+        const value = round(p.value + shift + newsShift);
         return {
           step: p.step,
           value,

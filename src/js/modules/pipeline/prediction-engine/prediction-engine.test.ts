@@ -15,9 +15,14 @@ import {
   AnomalyDetectorV2Error,
 } from './anomaly-detector-v2.js';
 import { PredictionEngine } from './prediction-engine.js';
-import { ScenarioPlanner, SCENARIO_WEIGHTS } from './scenario-planner.js';
+import {
+  ScenarioPlanner,
+  SCENARIO_WEIGHTS,
+  computeNewsAdjustment,
+} from './scenario-planner.js';
 import { TimeSeriesForecaster, std } from './time-series-forecaster.js';
 import { TrendAnalyzer } from './trend-analyzer.js';
+import type { NewsImpact } from '../news-driver/types.js';
 import type { TimeSeriesPoint } from './types.js';
 
 // ─── Утилиты ──────────────────────────────────────────────────────────────
@@ -342,6 +347,99 @@ describe('ScenarioPlanner', () => {
   });
 });
 
+// ─── ScenarioPlanner + новостной фон ──────────────────────────────────────
+
+/** Новостной impact для тестов сценариев */
+function makeNewsImpact(overrides: Partial<NewsImpact> = {}): NewsImpact {
+  return {
+    ticker: 'SBER',
+    sentimentScore: -0.9,
+    importance: 'critical',
+    impactDirection: 'negative',
+    affectedMetrics: ['санкционные риски'],
+    suggestedAction: 'REDUCE',
+    headlines: ['Сбербанк под санкциями'],
+    impactScore: 0.9,
+    reasoning: 'Новостной фон по SBER: негативный.',
+    ...overrides,
+  };
+}
+
+describe('computeNewsAdjustment', () => {
+  it('без impact-ов → нейтральная корректировка', () => {
+    const adj = computeNewsAdjustment(undefined);
+    expect(adj.baseShiftPercent).toBe(0);
+    expect(adj.note).toBeNull();
+  });
+
+  it('негатив → пессимистичный сценарий усиливается', () => {
+    const adj = computeNewsAdjustment([makeNewsImpact()]);
+    expect(adj.worstShiftPercent).toBeLessThan(0);
+    expect(adj.baseShiftPercent).toBeLessThan(0);
+    expect(adj.note).toContain('негативный');
+  });
+
+  it('позитив → оптимистичный сценарий усиливается', () => {
+    const adj = computeNewsAdjustment([
+      makeNewsImpact({
+        impactDirection: 'positive',
+        sentimentScore: 0.9,
+        importance: 'high',
+      }),
+    ]);
+    expect(adj.bestShiftPercent).toBeGreaterThan(0);
+    expect(adj.note).toContain('позитивный');
+  });
+
+  it('нейтральный impact → нейтральная корректировка', () => {
+    const adj = computeNewsAdjustment([
+      makeNewsImpact({ impactDirection: 'neutral', sentimentScore: 0 }),
+    ]);
+    expect(adj.note).toBeNull();
+  });
+});
+
+describe('ScenarioPlanner с новостным фоном', () => {
+  it('негативный фон усиливает worst и добавляет warning', () => {
+    const planner = new ScenarioPlanner({ horizon: 5 });
+    const series = linearSeries(30, 100, 2);
+    const base = planner.plan(series);
+    const withNews = planner.plan(series, [makeNewsImpact()]);
+
+    const baseWorst = base.scenarios.find((s) => s.kind === 'worst')!;
+    const newsWorst = withNews.scenarios.find((s) => s.kind === 'worst')!;
+    expect(newsWorst.finalValue).toBeLessThan(baseWorst.finalValue);
+    expect(withNews.warnings.some((w) => w.includes('негативный'))).toBe(true);
+  });
+
+  it('позитивный фон усиливает best', () => {
+    const planner = new ScenarioPlanner({ horizon: 5 });
+    const series = linearSeries(30, 100, 2);
+    const base = planner.plan(series);
+    const withNews = planner.plan(series, [
+      makeNewsImpact({
+        impactDirection: 'positive',
+        sentimentScore: 0.9,
+        importance: 'high',
+      }),
+    ]);
+
+    const baseBest = base.scenarios.find((s) => s.kind === 'best')!;
+    const newsBest = withNews.scenarios.find((s) => s.kind === 'best')!;
+    expect(newsBest.finalValue).toBeGreaterThan(baseBest.finalValue);
+  });
+
+  it('без newsImpacts поведение не меняется', () => {
+    const planner = new ScenarioPlanner({ horizon: 5 });
+    const series = linearSeries(30, 100, 2);
+    const a = planner.plan(series);
+    const b = planner.plan(series, undefined);
+    expect(a.scenarios.map((s) => s.finalValue)).toEqual(
+      b.scenarios.map((s) => s.finalValue),
+    );
+  });
+});
+
 // ─── PredictionEngine (фасад) ─────────────────────────────────────────────
 
 describe('PredictionEngine', () => {
@@ -374,6 +472,46 @@ describe('PredictionEngine', () => {
     expect((scenarios.data as { scenarios: unknown[] }).scenarios).toHaveLength(
       3,
     );
+  });
+
+  it('plan-scenarios учитывает newsImpacts (негатив усиливает worst)', async () => {
+    const engine = new PredictionEngine();
+    const series = linearSeries(30, 100, 2);
+
+    const withoutNews = await engine.execute({
+      action: 'plan-scenarios',
+      series,
+    });
+    const withNews = await engine.execute({
+      action: 'plan-scenarios',
+      series,
+      newsImpacts: [makeNewsImpact()],
+    });
+
+    expect(withNews.success).toBe(true);
+    const baseWorst = (
+      withoutNews.data as {
+        scenarios: Array<{ kind: string; finalValue: number }>;
+      }
+    ).scenarios.find((s) => s.kind === 'worst')!;
+    const newsWorst = (
+      withNews.data as {
+        scenarios: Array<{ kind: string; finalValue: number }>;
+      }
+    ).scenarios.find((s) => s.kind === 'worst')!;
+    expect(newsWorst.finalValue).toBeLessThan(baseWorst.finalValue);
+  });
+
+  it('full-report учитывает newsImpacts в секции scenarios', async () => {
+    const engine = new PredictionEngine();
+    const report = await engine.fullReport(linearSeries(30, 100, 2), {
+      newsImpacts: [makeNewsImpact()],
+    });
+    expect(report.ok).toBe(true);
+    const scenarios = report.sections.scenarios as {
+      warnings: string[];
+    };
+    expect(scenarios.warnings.some((w) => w.includes('негативный'))).toBe(true);
   });
 
   it('execute без series → честная ошибка, success=false', async () => {

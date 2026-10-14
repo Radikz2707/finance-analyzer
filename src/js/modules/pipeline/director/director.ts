@@ -16,21 +16,23 @@
  */
 
 import type { AgentState } from '../agent/types.js';
+import { ActivityStream } from '../agent-activity/activity-stream.js';
+import { NewsDriver } from '../news-driver/news-driver.js';
+import type { NewsCacheLike, NewsImpact } from '../news-driver/types.js';
+import { resolveTaskAction } from '../task-extractor/action-resolver.js';
+import { TaskExtractor } from '../task-extractor/task-extractor.js';
+import type { ExtractedTask, TaskAction } from '../task-extractor/types.js';
 import {
   looksLikeAutomationRequest,
   looksLikeCodeRequest,
   looksLikeFileRequest,
-  looksLikeGreeting,
-  looksLikeOffTopic,
   looksLikePackageRequest,
   looksLikeProcessRequest,
-  looksLikeSimpleChat,
   looksLikeSystemStatusRequest,
-  looksLikeStatusQuestion,
-  looksLikeTaskIntent,
   looksLikeTerminalRequest,
   parseUserMessage,
 } from './nl-parser.js';
+import { DialogueEngine } from '../dialogue-engine/dialogue-engine.js';
 import {
   DirectorDelegationPlanner,
   AGENT_ROLE_LABELS,
@@ -56,6 +58,7 @@ import { runMultiRoundConsilium } from './multi-round-consilium.js';
 import type {
   AgentOpinion,
   AgentResultEntry,
+  AgentRole,
   ChatMessage,
   DirectorAuditEvent,
   DirectorChatSession,
@@ -82,6 +85,16 @@ export interface DirectorAgentDeps {
   initialFacts?: DirectorFactsContext;
   /** Генератор случайных чисел 0..1 (DI для детерминированных тестов) */
   random?: () => number;
+  /** Движок естественного диалога (NLU вместо regex-веток); без него — fallback */
+  dialogue?: DialogueEngine;
+  /** Стрим активности агентов (живые шаги в UI); без него — свой экземпляр */
+  activity?: ActivityStream;
+  /** Извлекатель задач из свободной речи (LLM + fallback на nl-parser) */
+  taskExtractor?: TaskExtractor;
+  /** Новостной драйвер (новости как драйвер прогноза/оценки/корректировки) */
+  newsDriver?: NewsDriver;
+  /** Кэш новостей (gatekeeper); без него новостной фон не анализируется */
+  newsCache?: NewsCacheLike;
 }
 
 /** Пустые факты по умолчанию */
@@ -92,6 +105,19 @@ function emptyFacts(): DirectorFactsContext {
     freeCashRub: 0,
   };
 }
+
+/** Порог уверенности извлечённой задачи по умолчанию */
+const DEFAULT_TASK_EXTRACTION_THRESHOLD = 0.7;
+
+/** Действия, по которым Director строит план напрямую (без категорийной маршрутизации) */
+const DIRECT_PLAN_ACTIONS: ReadonlySet<TaskAction> = new Set([
+  'file',
+  'terminal',
+  'code',
+  'package',
+  'process',
+  'automation',
+]);
 
 /** Слова-связки для определения follow-up сообщения */
 const FOLLOW_UP_PREFIXES = [
@@ -118,12 +144,20 @@ export class DirectorAgent implements IDirectorAgent {
   private readonly chat: DirectorChatStore;
   private readonly audit: DirectorAuditLog;
   private readonly proactiveSuggester: ProactiveSuggester;
+  private readonly dialogue: DialogueEngine;
+  private readonly activity: ActivityStream;
+  private readonly taskExtractor: TaskExtractor;
+  private readonly taskExtractionThreshold: number;
+  private readonly newsDriver: NewsDriver;
+  private readonly newsCache?: NewsCacheLike;
 
   private facts: DirectorFactsContext;
   private currentSessionId: string | null = null;
   private lastActiveTask: DirectorTask | null = null;
   private proactiveMessages: ProactiveMessage[] = [];
   private readonly random: () => number;
+  /** Новостной фон по портфелю (пересчитывается на каждый запрос) */
+  private newsImpacts: NewsImpact[] = [];
 
   // Ленивый анализ
   private analysisReady: boolean = false;
@@ -139,11 +173,19 @@ export class DirectorAgent implements IDirectorAgent {
         maxAgents: this.config.maxAgentsPerTask ?? 0,
         consiliumThreshold: this.config.consiliumComplexityThreshold ?? 3,
       });
-    this.facade = deps?.facade ?? new DirectorAgentFacade();
+    this.activity = deps?.activity ?? new ActivityStream();
+    this.facade =
+      deps?.facade ?? new DirectorAgentFacade({ activity: this.activity });
     this.memory = deps?.memory ?? new DirectorMemoryStore();
     this.chat = deps?.chat ?? new DirectorChatStore();
     this.audit = deps?.audit ?? new DirectorAuditLog();
     this.proactiveSuggester = deps?.proactive ?? new ProactiveSuggester();
+    this.dialogue = deps?.dialogue ?? new DialogueEngine();
+    this.taskExtractor = deps?.taskExtractor ?? new TaskExtractor();
+    this.taskExtractionThreshold =
+      this.config.taskExtractionThreshold ?? DEFAULT_TASK_EXTRACTION_THRESHOLD;
+    this.newsDriver = deps?.newsDriver ?? new NewsDriver();
+    this.newsCache = deps?.newsCache;
     this.facts = deps?.initialFacts ?? emptyFacts();
     this.random = deps?.random ?? Math.random;
   }
@@ -239,23 +281,32 @@ export class DirectorAgent implements IDirectorAgent {
     );
     this.currentSessionId = session.sessionId;
 
+    // 0.1 Новостной фон по портфелю (NewsDriver): влияет на LLM-контекст
+    // и корректировку рекомендаций. Без подключённого кэша — пусто.
+    this.newsImpacts = this.newsCache
+      ? this.newsDriver.analyzePortfolio(this.facts, this.newsCache)
+      : [];
+
     // 0. Системные команды чата (/status, /log, /undo, /help)
     const parsed = parseChatInput(message);
     if (parsed.kind === 'command') {
       return this.handleChatCommand(parsed.command, message);
     }
 
+    // 0.3 Естественный диалог: анализ интента/эмоции/контекста (NLU)
+    // вместо цепочки regex-проверок. DialogueEngine (LLM + fallback на
+    // nl-parser) даёт intent, по которому маршрутизируются ветки ниже.
+    const dialogueAnalysis = await this.dialogue.analyze({
+      text: message,
+      context: this.dialogue.getContext(),
+      facts: this.facts,
+    });
+
     // 0.4 Вопрос о состоянии дел («Как дела?», «Что нового?») —
     // мгновенный ответ из фактов и статуса БЕЗ LLM (fast-path).
-    // Защита от перехвата финансовых вопросов: «Что происходит с портфелем?»
-    // содержит паттерн статуса, но относится к категории portfolio —
-    // такая реплика обрабатывается штатным конвейером агентов.
-    const statusParsed = parseUserMessage(message, []);
-    const isStatusQuestion =
-      looksLikeStatusQuestion(message) &&
-      statusParsed.category === 'general' &&
-      statusParsed.tickers.length === 0;
-    if (isStatusQuestion) {
+    // Financial-реплики («что происходит с портфелем?») классифицируются
+    // как portfolio и обрабатываются штатным конвейером агентов.
+    if (dialogueAnalysis.intent === 'status') {
       this.chat.appendMessage(this.currentSessionId, 'user', message);
       this.memory.saveConversation('user', message, []);
       const replyText = this.buildStatusDigest();
@@ -276,7 +327,6 @@ export class DirectorAgent implements IDirectorAgent {
     // финансовые вопросы обрабатываются штатно — идея создаёт цель, а не
     // запускает тяжёлый анализ прямо сейчас.
     if (this.config.goalIntake) {
-      const taskParsed = parseUserMessage(message, []);
       const isImmediateAction =
         looksLikeFileRequest(message) ||
         looksLikeTerminalRequest(message) ||
@@ -286,9 +336,9 @@ export class DirectorAgent implements IDirectorAgent {
         looksLikeSystemStatusRequest(message) ||
         looksLikeCodeRequest(message);
       if (
-        looksLikeTaskIntent(message) &&
-        taskParsed.category === 'general' &&
-        taskParsed.tickers.length === 0 &&
+        dialogueAnalysis.intent === 'task' &&
+        dialogueAnalysis.category === 'general' &&
+        dialogueAnalysis.tickers.length === 0 &&
         !isImmediateAction
       ) {
         try {
@@ -320,13 +370,18 @@ export class DirectorAgent implements IDirectorAgent {
       }
     }
 
-    // 0.5 Приветствие/smalltalk: дружелюбный ответ без делегирования агентам
-    if (looksLikeGreeting(message)) {
+    // 0.5 Приветствие/прощание: дружелюбный ответ без делегирования агентам
+    if (
+      dialogueAnalysis.intent === 'greeting' ||
+      dialogueAnalysis.intent === 'farewell'
+    ) {
       this.chat.appendMessage(this.currentSessionId, 'user', message);
       this.memory.saveConversation('user', message, []);
       const replyText =
-        'Здравствуйте! Я — ваш финансовый директор. Готов обсудить портфель: ' +
-        'спросите про актив (например, «Что с SBER?»), стратегию, рынок или новости.';
+        dialogueAnalysis.intent === 'farewell'
+          ? 'До встречи! Буду ждать ваших вопросов по портфелю. 🤝'
+          : 'Здравствуйте! Я — ваш финансовый директор. Готов обсудить портфель: ' +
+            'спросите про актив (например, «Что с SBER?»), стратегию, рынок или новости.';
       this.chat.appendMessage(this.currentSessionId, 'director', replyText);
       this.memory.saveConversation('director', replyText, []);
       this.audit.record('director.greeting_answered', replyText.slice(0, 80));
@@ -340,7 +395,7 @@ export class DirectorAgent implements IDirectorAgent {
 
     // 0.55 Оффтопик: темы вне компетенции (погода, спорт, кулинария и т.д.)
     // Честный ответ БЕЗ запуска агентов анализа и БЕЗ портфельного контекста.
-    if (looksLikeOffTopic(message)) {
+    if (dialogueAnalysis.intent === 'off-topic') {
       this.chat.appendMessage(this.currentSessionId, 'user', message);
       this.memory.saveConversation('user', message, []);
       const replyText =
@@ -362,8 +417,11 @@ export class DirectorAgent implements IDirectorAgent {
       };
     }
 
-    // 0.6 Простые бытовые вопросы: сразу LLM без агентов
-    if (looksLikeSimpleChat(message)) {
+    // 0.6 Простые бытовые вопросы (smalltalk/вежливость): сразу LLM без агентов
+    if (
+      dialogueAnalysis.intent === 'smalltalk' ||
+      dialogueAnalysis.intent === 'courtesy'
+    ) {
       this.chat.appendMessage(this.currentSessionId, 'user', message);
       this.memory.saveConversation('user', message, []);
       const historyText = this.chat
@@ -374,7 +432,7 @@ export class DirectorAgent implements IDirectorAgent {
       const answer = this.config.chatResponder
         ? await this.config.chatResponder({
             question: message,
-            facts: this.facts,
+            facts: this.factsWithNewsContext(),
             history: historyText,
           })
         : null;
@@ -392,6 +450,50 @@ export class DirectorAgent implements IDirectorAgent {
         connectedAgents: [],
         needsConsilium: false,
       };
+    }
+
+    // 0.7 Извлечение задач из свободной речи (TaskExtractor).
+    // Запускается для action/task-интентов: LLM-извлечение структурированных
+    // задач с fallback на nl-parser + action-input-builder. Если найдена
+    // задача с confidence >= порога — строим план напрямую, минуя
+    // категорийную маршрутизацию (parseUserMessage).
+    if (
+      dialogueAnalysis.intent === 'action' ||
+      dialogueAnalysis.intent === 'task'
+    ) {
+      const extraction = await this.taskExtractor.extract(message, {
+        facts: this.facts,
+      });
+      const bestTask = extraction.tasks
+        .filter((t) => t.confidence >= this.taskExtractionThreshold)
+        .sort((a, b) => b.confidence - a.confidence)[0];
+
+      if (bestTask) {
+        this.audit.record(
+          'director.task_extracted',
+          `Задача: ${bestTask.action} → ${
+            bestTask.target || bestTask.rawText.slice(0, 60)
+          } (${Math.round(bestTask.confidence * 100)}%)`,
+          {
+            metadata: {
+              action: bestTask.action,
+              confidence: bestTask.confidence,
+              source: extraction.source,
+            },
+          },
+        );
+
+        // Цель автономного цикла (fallback для goalIntake)
+        if (bestTask.action === 'goal') {
+          const goalResponse = await this.tryCreateGoal(bestTask, message);
+          if (goalResponse) {
+            return goalResponse;
+          }
+          // Без goalIntake — задача идёт обычным конвейером
+        } else if (DIRECT_PLAN_ACTIONS.has(bestTask.action)) {
+          return this.handleExtractedTask(bestTask, message);
+        }
+      }
     }
 
     // 1. Интерпретация вопроса
@@ -425,7 +527,7 @@ export class DirectorAgent implements IDirectorAgent {
       const answer = this.config.chatResponder
         ? await this.config.chatResponder({
             question: message,
-            facts: this.facts,
+            facts: this.factsWithNewsContext(),
             history: historyText,
           })
         : null;
@@ -547,11 +649,15 @@ export class DirectorAgent implements IDirectorAgent {
       'Делегирование ' + plan.connectedAgents.length + ' агентам',
       { metadata: { agents: plan.connectedAgents } },
     );
+    // События активности фиксируются до/после делегирования: в ответ
+    // попадают только события текущей задачи (живые шаги агентов).
+    const activityBefore = this.activity.getRecent().length;
     const agentResults = await this.facade.executeRoles(
       plan.connectedAgents,
       interpreted,
       this.facts,
     );
+    const activity = this.activity.getRecent().slice(activityBefore);
     for (const r of agentResults) {
       this.audit.record(
         'director.agent_result_received',
@@ -602,6 +708,26 @@ export class DirectorAgent implements IDirectorAgent {
           best?.position ??
           'Недостаточно данных для рекомендации; факты сохранены.',
       };
+    }
+
+    // 8.1 Новостная корректировка рекомендации (NewsDriver):
+    // критический негатив → пересмотреть позицию, позитив → усилить тезис.
+    if (this.newsImpacts.length > 0) {
+      const adjusted = this.newsDriver.adjustRecommendation(
+        recommendation,
+        this.newsImpacts,
+      );
+      recommendation = {
+        action: adjusted.action,
+        confidence: adjusted.confidence,
+        reasoning: adjusted.reasoning,
+      };
+      this.audit.record(
+        'director.recommendation_formed',
+        'Рекомендация скорректирована новостным фоном: ' +
+          String(adjusted.action),
+        { metadata: { adjustedByNews: true } },
+      );
     }
 
     // 9. Синтез итога
@@ -689,6 +815,8 @@ export class DirectorAgent implements IDirectorAgent {
       isWorking: false,
     });
     this.memory.saveConversation('director', replyText, interpreted.tickers);
+    // Запоминаем ответ Director в контексте диалога (для follow-up-анафор)
+    this.dialogue.pushDirector(replyText);
     this.audit.record(
       'director.chat_message_sent',
       'Ответ Director отправлен',
@@ -708,6 +836,8 @@ export class DirectorAgent implements IDirectorAgent {
       connectedAgents: plan.connectedAgents,
       needsConsilium: needConsilium,
       recommendation,
+      activity,
+      news: this.newsImpacts,
     };
   }
 
@@ -922,6 +1052,273 @@ export class DirectorAgent implements IDirectorAgent {
   }
 
   // ──────────────────────────────────────────────
+  // Извлечённые задачи (TaskExtractor)
+  // ──────────────────────────────────────────────
+
+  /**
+   * Создать цель автономного цикла из извлечённой задачи (action 'goal').
+   * Возвращает ответ Director или null, если goalIntake не подключён/упал.
+   */
+  private async tryCreateGoal(
+    task: ExtractedTask,
+    message: string,
+  ): Promise<DirectorResponse | null> {
+    if (!this.config.goalIntake) return null;
+    const session = this.chat.getOrCreateSession(
+      this.currentSessionId ?? undefined,
+    );
+    this.currentSessionId = session.sessionId;
+    try {
+      const goal = await this.config.goalIntake.addGoal(task.rawText);
+      this.chat.appendMessage(this.currentSessionId, 'user', message);
+      this.memory.saveConversation('user', message, []);
+      const replyText =
+        '🎯 Принял как задачу — поставил в план автономного цикла:\n' +
+        `«${goal.name}» [${goal.id.slice(0, 8)}]\n\n` +
+        'Выполню фоном, итог придёт в чат. Список целей: /goals.';
+      this.chat.appendMessage(this.currentSessionId, 'director', replyText);
+      this.memory.saveConversation('director', replyText, []);
+      this.audit.record('director.goal_created', goal.id);
+      this._state = 'idle';
+      return {
+        text: replyText,
+        connectedAgents: [],
+        needsConsilium: false,
+      };
+    } catch (err) {
+      this.audit.record(
+        'director.goal_created',
+        `Ошибка приёма задачи: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Обработать извлечённую задачу: план напрямую (минуя категорийную
+   * маршрутизацию) → делегирование action-агентам → ответ.
+   */
+  private async handleExtractedTask(
+    task: ExtractedTask,
+    message: string,
+  ): Promise<DirectorResponse> {
+    const session = this.chat.getOrCreateSession(
+      this.currentSessionId ?? undefined,
+    );
+    this.currentSessionId = session.sessionId;
+    const plan = this.planner.buildPlanFromTask(task);
+    const question = this.toInterpretedQuestion(task, plan.connectedAgents);
+    const agentTasks = this.planner.buildAgentTasksFromTask(task);
+    const resolved = resolveTaskAction(task);
+
+    // Входы action-агентов из задачи (если резолвер дал структурированный вход)
+    const taskInputs: Partial<Record<AgentRole, unknown>> = {};
+    if (resolved.input !== undefined && resolved.input !== null) {
+      for (const role of plan.connectedAgents) {
+        taskInputs[role] = resolved.input;
+      }
+    }
+
+    this.audit.record(
+      'director.plan_created',
+      'Подключены агенты: ' +
+        plan.connectedAgents.join(', ') +
+        '. Consilium: false',
+      { metadata: { agents: plan.connectedAgents } },
+    );
+
+    // Сохраняем сообщение пользователя
+    this.chat.appendMessage(this.currentSessionId, 'user', message);
+    this.memory.saveConversation('user', message, []);
+
+    // Делегирование action-агентам
+    this.audit.record(
+      'director.task_delegated',
+      'Делегирование ' + plan.connectedAgents.length + ' агентам',
+      { metadata: { agents: plan.connectedAgents } },
+    );
+    const activityBefore = this.activity.getRecent().length;
+    const agentResults = await this.facade.executeRoles(
+      plan.connectedAgents,
+      question,
+      this.facts,
+      taskInputs,
+    );
+    const activity = this.activity.getRecent().slice(activityBefore);
+    for (const r of agentResults) {
+      this.audit.record(
+        'director.agent_result_received',
+        'Результат от ' + r.role + ': ' + (r.success ? 'ok' : 'error'),
+        { metadata: { durationMs: r.durationMs } },
+      );
+    }
+
+    // Рекомендация для action-задачи: действия выполнили агенты
+    const recommendation: DirectorTask['recommendation'] = {
+      action: null,
+      confidence: 0,
+      reasoning:
+        'Задача выполнена агентами; инвестиционная рекомендация не требуется.',
+    };
+
+    // Синтез
+    const finalSynthesis = this.synthesize(
+      question,
+      plan,
+      agentResults,
+      undefined,
+      recommendation,
+    );
+
+    // Задача Director
+    const taskRecord: DirectorTask = {
+      taskId: plan.taskId,
+      userQuestion: message,
+      interpretedQuestion: question,
+      goal: plan.goal,
+      status: 'completed',
+      agents: agentTasks,
+      agentResults,
+      needsConsilium: false,
+      consiliumRounds: 0,
+      finalSynthesis,
+      recommendation,
+      savedToMemory: false,
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    };
+    this.audit.record(
+      'director.synthesis_created',
+      finalSynthesis.slice(0, 150),
+      { taskId: taskRecord.taskId },
+    );
+
+    // Стратегическая память
+    const saved = this.memory.saveTaskOutcome({
+      taskId: taskRecord.taskId,
+      userQuestion: message,
+      tickers: [],
+      action: recommendation.action,
+      confidence: recommendation.confidence,
+      reasoning: recommendation.reasoning,
+    });
+    taskRecord.savedToMemory = true;
+    this.audit.record(
+      'director.memory_saved',
+      'Решение сохранено: ' + saved.id,
+      { taskId: taskRecord.taskId },
+    );
+
+    // Ответ
+    const replyText = this.buildActionTaskReply(task, plan, agentResults);
+    this.chat.appendMessage(this.currentSessionId, 'director', replyText, {
+      taskId: taskRecord.taskId,
+      connectedAgents: plan.connectedAgents,
+      isWorking: false,
+    });
+    this.memory.saveConversation('director', replyText, []);
+    this.dialogue.pushDirector(replyText);
+    this.audit.record(
+      'director.chat_message_sent',
+      'Ответ Director отправлен',
+      { taskId: taskRecord.taskId },
+    );
+
+    this.lastActiveTask = taskRecord;
+    this._state = 'idle';
+
+    return {
+      text: replyText,
+      task: taskRecord,
+      plan,
+      connectedAgents: plan.connectedAgents,
+      needsConsilium: false,
+      recommendation,
+      activity,
+      news: this.newsImpacts,
+    };
+  }
+
+  /** Построить InterpretedQuestion из извлечённой задачи (для фасада) */
+  private toInterpretedQuestion(
+    task: ExtractedTask,
+    roles: AgentRole[],
+  ): InterpretedQuestion {
+    return {
+      category: 'general',
+      tickers: [],
+      topic: task.target || task.rawText,
+      text: task.rawText,
+      requiredAgents: roles,
+      needsConsilium: false,
+      complexity: 1,
+      intent: 'decide-action',
+    };
+  }
+
+  /** Человеческий ответ на action-задачу (результаты агентов) */
+  private buildActionTaskReply(
+    task: ExtractedTask,
+    plan: DirectorPlan,
+    agentResults: AgentResultEntry[],
+  ): string {
+    const lines: string[] = [];
+    lines.push(
+      this.randomFrom(
+        this.getIntroductions(
+          this.toInterpretedQuestion(task, plan.connectedAgents),
+        ),
+      ),
+    );
+
+    const actionSummaries = agentResults
+      .filter(
+        (entry) =>
+          entry.success &&
+          (entry.role === 'file' ||
+            entry.role === 'terminal' ||
+            entry.role === 'process' ||
+            entry.role === 'automation' ||
+            entry.role === 'code'),
+      )
+      .map(
+        (entry) =>
+          (entry.data as unknown as DirectorAgentPayload | undefined)?.summary,
+      )
+      .filter((summary): summary is string => Boolean(summary));
+
+    if (actionSummaries.length > 0) {
+      lines.push('');
+      lines.push('Выполненные действия:');
+      for (const summary of actionSummaries) {
+        lines.push('• ' + summary);
+      }
+    } else {
+      const failed = agentResults.filter((entry) => !entry.success);
+      if (failed.length > 0) {
+        lines.push('');
+        lines.push('Не удалось выполнить задачу:');
+        for (const entry of failed) {
+          const payload = entry.data as unknown as
+            DirectorAgentPayload | undefined;
+          lines.push(
+            '• ' + (payload?.summary ?? `Агент «${entry.role}» не выполнен`),
+          );
+        }
+      } else {
+        lines.push('');
+        lines.push('Задача принята, агенты подключены.');
+      }
+    }
+
+    lines.push('');
+    lines.push(
+      'Все операции выполняются через SecurityAgent и не выходят за пределы разрешённых корней проекта.',
+    );
+    return lines.join('\n');
+  }
+
+  // ──────────────────────────────────────────────
   // Helpers
   // ──────────────────────────────────────────────
 
@@ -1003,6 +1400,25 @@ export class DirectorAgent implements IDirectorAgent {
         '«Есть ли риски?», «Новости» или «Стратегия».',
     ];
     return this.randomFrom(templates);
+  }
+
+  /**
+   * Новостной контекст для LLM (NewsDriver.buildNewsContext).
+   * Пустая строка, если новостной фон не подключён/нейтрален.
+   */
+  private buildLlmContext(): string {
+    if (this.newsImpacts.length === 0) return '';
+    return this.newsDriver.buildNewsContext(this.newsImpacts);
+  }
+
+  /**
+   * Факты портфеля, обогащённые новостным контекстом (для LLM).
+   * Оригинальные факты НЕ мутируются — возвращается копия.
+   */
+  private factsWithNewsContext(): DirectorFactsContext {
+    const newsContext = this.buildLlmContext();
+    if (!newsContext) return this.facts;
+    return { ...this.facts, newsContext };
   }
 
   /** Синтез: короткое резюме пути решения */
@@ -1153,6 +1569,32 @@ export class DirectorAgent implements IDirectorAgent {
         '%).',
     );
     lines.push(recommendation.reasoning.slice(0, 400));
+
+    // Новостной фон (NewsDriver): сентимент, важность, влияние на позицию
+    const relevantImpacts = this.newsImpacts.filter(
+      (i) =>
+        question.tickers.length === 0 ||
+        question.tickers.some(
+          (t) => t.toUpperCase() === i.ticker.toUpperCase(),
+        ),
+    );
+    if (relevantImpacts.length > 0) {
+      lines.push('');
+      lines.push('📰 Новостной фон:');
+      for (const impact of relevantImpacts.slice(0, 3)) {
+        const directionLabel =
+          impact.impactDirection === 'positive'
+            ? 'позитивный'
+            : impact.impactDirection === 'negative'
+              ? 'негативный'
+              : 'нейтральный';
+        lines.push(
+          `• ${impact.ticker}: ${directionLabel} ` +
+            `(сентимент ${impact.sentimentScore.toFixed(2)}, важность «${impact.importance}»). ` +
+            impact.reasoning,
+        );
+      }
+    }
 
     // Случайное заключение из пула
     const outro = this.randomFrom(this.getOutros());

@@ -22,6 +22,8 @@ import {
   isPackagedApp,
   resolveAppDataDir,
 } from '../src/js/modules/app-paths.js';
+import { ActivityStream } from '../src/js/modules/pipeline/agent-activity/activity-stream.js';
+import type { AgentActivityEvent } from '../src/js/modules/pipeline/agent-activity/types.js';
 import { DirectorAgent } from '../src/js/modules/pipeline/director/director.js';
 import {
   defaultAiExecutor,
@@ -34,6 +36,13 @@ import {
   OllamaClient,
   type OllamaMessage,
 } from '../src/js/modules/pipeline/director/ollama-client.js';
+import { DialogueEngine } from '../src/js/modules/pipeline/dialogue-engine/dialogue-engine.js';
+import { NewsDriver } from '../src/js/modules/pipeline/news-driver/news-driver.js';
+import type {
+  NewsCacheLike,
+  NewsImpact,
+} from '../src/js/modules/pipeline/news-driver/types.js';
+import { createDbNewsCacheAsync } from './db-news-cache.js';
 import {
   SecurityAgent,
   type SecurityActionRequest,
@@ -667,6 +676,8 @@ export interface DirectorState {
   aiLabel: string;
   /** Результат последнего анализа (обновляется при каждом запуске) */
   analysisResult: AnalysisResultInfo;
+  /** Стрим активности агентов (живые шаги для renderer) */
+  activity: ActivityStream;
 }
 
 /** Полное состояние десктоп-приложения */
@@ -1140,6 +1151,12 @@ export interface BuildDirectorStateOptions {
   getOllamaModel?: () => string | undefined;
   /** Логгер (по умолчанию console) */
   logger?: CoreLogger;
+  /**
+   * Кэш новостей (NewsCacheLike). По умолчанию — реальный кэш поверх БД
+   * (newsRepo, заполняется пайплайном); при недоступности БД — пустой.
+   * Заглушка передаётся в тестах, чтобы не грузить better-sqlite3.
+   */
+  newsCache?: NewsCacheLike;
 }
 
 /**
@@ -1175,12 +1192,17 @@ export async function buildDirectorState(
   // для aiExecutor, она должна быть доступна и для свободного диалога.
   const ollamaAvailable = aiLabel.includes('Ollama');
 
+  // Стрим активности агентов: живые шаги (started/step/completed/failed)
+  // уходят в renderer по каналу `director:activity` (см. subscribeActivity).
+  const activity = new ActivityStream();
+
   // Расширенный режим управления компьютером: системные команды Windows
   // (tasklist/taskkill/explorer/systeminfo/netstat/...) разрешены в терминале
   // и в whitelist SecurityAgent. taskkill остаётся опасной командой — все
   // команды по-прежнему проходят security-gate.
   const actionAgents = createDefaultActionAgents({
     enableSystemCommands: true,
+    activity,
   });
   const security = new SecurityAgent(
     {
@@ -1190,11 +1212,22 @@ export async function buildDirectorState(
       allowedCommands: [...SYSTEM_COMMANDS],
     },
   );
+  // Новостной драйвер: impact'ы по тикерам портфеля → LLM-контекст,
+  // корректировка рекомендаций и новостной блок во вкладке «Чат».
+  // Кэш — реальный, поверх БД (newsRepo): пайплайн сохраняет одобренные
+  // gatekeeper'ом новости (DataAgent → newsRepo.addProcessed), Директор
+  // читает их отсюда. При недоступности БД — честный пустой кэш.
+  const newsDriver = new NewsDriver();
+  const newsCache =
+    options.newsCache ?? (await createDbNewsCacheAsync());
   const facade = new DirectorAgentFacade({
     actionAgents,
     // Адаптер к единому контракту `check` фасада (validate — синхронный)
     security: { check: (request) => security.validate(request) },
     aiExecutor,
+    activity,
+    newsDriver,
+    newsCache,
   });
   const audit = new DirectorAuditLog();
   const chatResponder = await createChatResponder(
@@ -1204,8 +1237,37 @@ export async function buildDirectorState(
     options.getOllamaModel,
     ollamaAvailable,
   );
+  // Движок естественного диалога: LLM-классификация интентов (greeting/
+  // smalltalk/off-topic/…) с детерминированным fallback на nl-parser.
+  // LLM подключается только если Ollama доступна (общий probe с aiExecutor);
+  // клиент создаётся на каждый запрос — актуальная модель из настроек.
+  const dialogue = new DialogueEngine({
+    userName: 'Радик',
+    llm: ollamaAvailable
+      ? {
+          chat: async (messages) => {
+            const client = new OllamaClient({
+              model: resolveActiveModel(options.getOllamaModel),
+            });
+            const raw = await withTimeout(
+              client.chat(messages),
+              OLLAMA_RESPONSE_TIMEOUT_MS,
+            );
+            return raw ?? '';
+          },
+        }
+      : undefined,
+  });
   const director = new DirectorAgent(
-    { facade, audit, initialFacts: facts },
+    {
+      facade,
+      audit,
+      initialFacts: facts,
+      dialogue,
+      activity,
+      newsDriver,
+      newsCache,
+    },
     {
       maxConsiliumRounds: 3,
       includeAgentDetails: true,
@@ -1239,6 +1301,7 @@ export async function buildDirectorState(
     sourceLabel,
     aiLabel,
     analysisResult,
+    activity,
   };
 }
 
@@ -1619,6 +1682,10 @@ export interface AskResult {
   consiliumText?: string;
   /** Время обработки, мс */
   elapsedMs: number;
+  /** События активности агентов за время обработки (живые шаги) */
+  activity?: AgentActivityEvent[];
+  /** Новостной фон по портфелю (NewsDriver-impacts для блока «Чат») */
+  news?: NewsImpact[];
 }
 
 /**
@@ -1640,6 +1707,8 @@ export async function handleAsk(
     text: response.text,
     events,
     elapsedMs,
+    activity: response.activity,
+    news: response.news,
   };
   if (response.task) {
     result.task = response.task;
@@ -1719,6 +1788,17 @@ export function subscribeEvents(
   emit: (event: DirectorAuditEvent) => void,
 ): () => void {
   return state.audit.onEvent(emit);
+}
+
+/**
+ * Подписка на поток активности агентов (живые шаги).
+ * @returns функция отписки (безопасная, повторный вызов — no-op).
+ */
+export function subscribeActivity(
+  state: DirectorState,
+  emit: (event: AgentActivityEvent) => void,
+): () => void {
+  return state.activity.subscribe(emit);
 }
 
 // ──────────────────────────────────────────────

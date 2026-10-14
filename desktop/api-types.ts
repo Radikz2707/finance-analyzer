@@ -9,6 +9,7 @@ import type {
   DirectorAuditEvent,
   DirectorTask,
 } from '../src/js/modules/pipeline/director/director-types.js';
+import type { AgentActivityEvent } from '../src/js/modules/pipeline/agent-activity/types.js';
 import type { AgentPanelState } from '../src/js/modules/pipeline/visualization/agent-panel-model.js';
 import type { HarnessDashboardPayload } from '../src/js/modules/harness-integration/types.js';
 import type {
@@ -29,6 +30,7 @@ import type {
 export type {
   DirectorAuditEvent,
   DirectorTask,
+  AgentActivityEvent,
   AgentPanelState,
   HarnessDashboardPayload,
   AskResult,
@@ -171,6 +173,8 @@ export interface FinanceDesktopApi {
   getLastPipelineReport(): Promise<PipelineReportInfo | null>;
   /** Подписка на живой поток событий аудита (стриминг) */
   onDirectorEvent(callback: (event: DirectorAuditEvent) => void): () => void;
+  /** Подписка на живой поток шагов агентов (стриминг) */
+  onDirectorActivity(callback: (event: AgentActivityEvent) => void): () => void;
   /** Подписка на завершение ответа Директора */
   onDirectorReply(callback: (result: AskResult) => void): () => void;
 }

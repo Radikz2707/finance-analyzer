@@ -14,6 +14,7 @@ import type {
   DirectorAuditEvent,
   FinanceDesktopApi,
 } from './api-types.js';
+import type { AgentActivityEvent } from '../src/js/modules/pipeline/agent-activity/types.js';
 
 const api: FinanceDesktopApi = {
   ask: (question) => ipcRenderer.invoke('director:ask', question),
@@ -77,6 +78,19 @@ const api: FinanceDesktopApi = {
     ipcRenderer.on('director:event', listener);
     return () => {
       ipcRenderer.removeListener('director:event', listener);
+    };
+  },
+
+  onDirectorActivity: (callback) => {
+    const listener = (
+      _event: IpcRendererEvent,
+      payload: AgentActivityEvent,
+    ): void => {
+      callback(payload);
+    };
+    ipcRenderer.on('director:activity', listener);
+    return () => {
+      ipcRenderer.removeListener('director:activity', listener);
     };
   },
 

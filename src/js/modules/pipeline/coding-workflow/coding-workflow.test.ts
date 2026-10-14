@@ -16,6 +16,7 @@
  */
 
 import { CodingWorkflow } from './coding-workflow.js';
+import { ActivityStream } from '../agent-activity/activity-stream.js';
 import type { CodingWorkflowInput } from './types.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -277,5 +278,48 @@ describe('CodingWorkflow', () => {
     );
     expect(emptyPath.success).toBe(false);
     expect((emptyPath.error as Error).message).toContain('не указан путь');
+  });
+
+  it('7. Emit шагов write/test/report в ActivityStream', async () => {
+    const activity = new ActivityStream();
+    const file = makeMockAgent(() => ({ success: true, data: {} }));
+    const terminal = makeMockAgent(() => ({
+      success: true,
+      data: makeTerminalData(0),
+    }));
+    const workflow = new CodingWorkflow(
+      { name: 'CodingWorkflow' },
+      {
+        fileAgent: file as never,
+        terminalAgent: terminal as never,
+        activity,
+      },
+    );
+
+    const result = await workflow.execute(makeInput());
+
+    expect(result.success).toBe(true);
+    const events = activity.getRecent();
+    const phases = events.map((event) => event.phase);
+    const messages = events.map((event) => event.message);
+
+    // started → шаги write/test/report → completed
+    expect(phases[0]).toBe('started');
+    expect(phases[phases.length - 1]).toBe('completed');
+    expect(phases).toContain('step');
+
+    // Все события — роль code с taskId от задачи
+    expect(events.every((event) => event.role === 'code')).toBe(true);
+    expect(
+      events.every(
+        (event) => event.taskId === 'code-Добавить функцию суммирования',
+      ),
+    ).toBe(true);
+
+    // Шаги конвейера видны в сообщениях
+    expect(messages.some((m) => m.includes('записываю файлов'))).toBe(true);
+    expect(messages.some((m) => m.includes('запускаю проверку'))).toBe(true);
+    expect(messages.some((m) => m.includes('формирую отчёт'))).toBe(true);
+    expect(messages.some((m) => m === 'готово')).toBe(true);
   });
 });

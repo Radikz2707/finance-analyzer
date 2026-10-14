@@ -36,6 +36,7 @@ describe('agent-factory: реестр action-агентов', () => {
     expect(roles).toContain('scheduler');
     expect(roles).toContain('learning');
     expect(roles).toContain('auto-repair');
+    expect(roles).toContain('self-improve');
     expect(registry.has('file')).toBe(true);
   });
 
@@ -57,6 +58,7 @@ describe('agent-factory: реестр action-агентов', () => {
     expect(registry.get('config')).toBeDefined();
     expect(registry.get('process')).toBeDefined();
     expect(registry.get('auto-repair')).toBeDefined();
+    expect(registry.get('self-improve')).toBeDefined();
   });
 });
 

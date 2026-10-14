@@ -9,13 +9,8 @@
  * - Полная замена пользователя — действует в его интересах
  */
 
-import {
-  extractCorrection,
-  looksLikeCorrection,
-  looksLikeOffTopic,
-  looksLikeReportRequest,
-  parseUserMessage,
-} from './nl-parser.js';
+import { extractCorrection, parseUserMessage } from './nl-parser.js';
+import { DialogueEngine } from '../dialogue-engine/dialogue-engine.js';
 import {
   DirectorDelegationPlanner,
   AGENT_ROLE_LABELS,
@@ -24,10 +19,13 @@ import { DirectorAgentFacade } from './agent-facade.js';
 import { DirectorChatStore } from './chat-session.js';
 import { BrowserPersistentMemory } from './browser-persistent-memory.js';
 import { OllamaClient } from './ollama-client.js';
+import { OLLAMA_MODEL_NAME } from '../../ai-advisor/ollama-model.js';
 import { buildPortfolioSummary } from './browser-chat-responder.js';
 import { buildInvestmentAdvisorPrompt } from './ollama-system-prompt.js';
 import { NewsCache } from '../gatekeeper/news-cache.js';
 import type { NewsTrend } from '../gatekeeper/news-cache.js';
+import { NewsDriver } from '../news-driver/news-driver.js';
+import type { NewsImpact } from '../news-driver/types.js';
 import { RAGEngine } from '../../rag/rag-engine.js';
 import { VectorStore } from '../../rag/vector-store.js';
 import type {
@@ -74,7 +72,9 @@ export class BrowserDirector {
   private memory: BrowserPersistentMemory;
   private chat: DirectorChatStore;
   private ollama: OllamaClient;
+  private dialogue: DialogueEngine;
   private newsCache: NewsCache;
+  private newsDriver: NewsDriver;
   private vectorStore: VectorStore;
   private ragEngine: RAGEngine;
 
@@ -95,12 +95,23 @@ export class BrowserDirector {
     this.chat = new DirectorChatStore({ maxMessagesPerSession: 200 });
     this.planner = new DirectorDelegationPlanner();
     this.facade = new DirectorAgentFacade();
-    this.ollama = new OllamaClient({ model: 'qwen3:14b' });
+    // Модель из единой точки (env OLLAMA_MODEL) — см. ollama-model.ts.
+    // Раньше здесь была жёстко зашита qwen3:14b, которой нет у пользователя.
+    this.ollama = new OllamaClient({ model: OLLAMA_MODEL_NAME });
+    // Естественный диалог: LLM-классификация интентов (Ollama) с fallback
+    // на nl-parser. Заменяет regex-ветки приветствий/оффтопика/отчётов.
+    this.dialogue = new DialogueEngine({
+      userName: 'Радик',
+      llm: {
+        chat: (messages) => this.ollama.chat(messages),
+      },
+    });
     this.newsCache = new NewsCache();
+    this.newsDriver = new NewsDriver();
     this.vectorStore = new VectorStore();
     this.ragEngine = new RAGEngine({
       vectorStore: this.vectorStore,
-      ollamaModel: 'qwen3:14b',
+      ollamaModel: OLLAMA_MODEL_NAME,
       maxContextDocuments: 5,
       maxContextLength: 8000,
     });
@@ -217,56 +228,29 @@ export class BrowserDirector {
     await this.memory.saveMessage(userMessage);
     this.chat.appendMessage(this.currentSessionId!, 'user', message);
 
-    // --- Обработка простых вопросов ---
-    const lowerMessage = message.toLowerCase();
+    // --- Естественный диалог: NLU-классификация интента (вместо regex) ---
+    // DialogueEngine (LLM через Ollama + fallback на nl-parser) понимает
+    // приветствия, прощания, статус, оффтопик, поправки, отчёты, задачи,
+    // действия и финансовые вопросы — как разговор двух людей.
+    const analysis = await this.dialogue.analyze({
+      text: message,
+      context: this.dialogue.getContext(),
+      facts: this.facts,
+    });
 
-    if (
-      /^(привет|здравствуй|хай|hello|hi|hey|добрый|йо|здарова)/i.test(
-        lowerMessage,
-      )
-    ) {
-      const greeting = this.buildGreeting();
-      await this.saveChatMessage('director', greeting);
-      return this.createResponse(greeting, []);
-    }
-
-    if (/как (у тебя|дела|сам|настроение)/i.test(lowerMessage)) {
-      const answer =
-        'У меня всё отлично, Радик! Готов помогать с твоим портфелем. 🚀\n\nСпроси меня о:\n• Состоянии портфеля\n• Конкретных акциях\n• Рекомендациях по покупке/продаже\n• Рисках и стратегии';
-      await this.saveChatMessage('director', answer);
-      return this.createResponse(answer, []);
-    }
-
-    if (/что (ты|можешь)|помощь|help|функции/i.test(lowerMessage)) {
-      const answer =
-        'Я — твой инвестиционный координатор. Вот что я умею:\n\n' +
-        '📊 **Анализ портфеля** — покажу текущее состояние, P&L, структуру\n' +
-        '🎯 **Рекомендации** — покупать, продавать или удерживать\n' +
-        '⚠️ **Риски** — предупрежу о концентрации, просадках\n' +
-        '📈 **Стратегия** — помогу построить долгосрочный план\n\n' +
-        'Просто спроси о чём-нибудь конкретном!';
-      await this.saveChatMessage('director', answer);
-      return this.createResponse(answer, []);
-    }
-
-    if (/^(пока|до свидания|прощай|bye|see you)/i.test(lowerMessage)) {
-      const answer = 'До встречи, Радик! Буду ждать тебя снова. 🤝';
-      await this.saveChatMessage('director', answer);
-      return this.createResponse(answer, []);
-    }
-
-    // --- Оффтопик: темы вне компетенции (погода, спорт, кулинария и т.д.) ---
-    // Честный ответ БЕЗ запуска агентов и БЕЗ портфельного контекста в LLM.
-    if (looksLikeOffTopic(message)) {
-      const answer = this.buildOffTopicAnswer();
-      await this.saveChatMessage('director', answer);
-      return this.createResponse(answer, []);
+    // Smalltalk-ветки (приветствие/прощание/статус/оффтопик/вежливость):
+    // живые ответы БЕЗ агентов и БЕЗ портфельного контекста в LLM.
+    const smallTalk = this.dialogue.buildSmallTalk(analysis, this.facts);
+    if (smallTalk) {
+      await this.saveChatMessage('director', smallTalk);
+      this.dialogue.pushDirector(smallTalk);
+      return this.createResponse(smallTalk, []);
     }
 
     // --- Поправка пользователя к данным портфеля ---
     // «доля PLZL 19%», «не 35,4%» — запоминаем и применяем в дальнейших
     // расчётах, чтобы не повторять ошибочную цифру.
-    if (looksLikeCorrection(message)) {
+    if (analysis.intent === 'correction') {
       const knownAssets = this.facts.assetsAnalysis.map((a) => ({
         ticker: a.ticker,
         name: a.name,
@@ -287,6 +271,7 @@ export class BrowserDirector {
             `${correction.currentPercent.toFixed(1)}%.\n` +
             'Учту это значение во всех дальнейших расчётах и рекомендациях.';
           await this.saveChatMessage('director', answer);
+          this.dialogue.pushDirector(answer);
           return this.createResponse(answer, []);
         }
       }
@@ -295,9 +280,25 @@ export class BrowserDirector {
     // --- Запрос отчёта/анализа портфеля: сводка по РЕАЛЬНЫМ фактам ---
     // «ты видишь мой отчёт?» — показываем факты, а не отдаём в LLM,
     // который может выдумать активы (VKCO/IRAO из примеров промпта).
-    if (looksLikeReportRequest(message)) {
+    if (analysis.intent === 'report') {
       const answer = this.buildPortfolioReportAnswer();
       await this.saveChatMessage('director', answer);
+      this.dialogue.pushDirector(answer);
+      return this.createResponse(answer, []);
+    }
+
+    // --- Задача/идея из свободной речи (без goalIntake в браузере) ---
+    // В десктоп-версии такие реплики превращаются в цель автономного
+    // цикла; здесь — честный ответ и предложение сформулировать действие.
+    if (analysis.intent === 'task') {
+      const answer =
+        '🎯 Принял как задачу!\n\n' +
+        'В десктоп-версии она поставится в план автономного цикла и ' +
+        'выполнится фоном. Здесь, в браузере, могу сразу выполнить, если ' +
+        'сформулируешь как действие: «создай файл …», «запусти тесты», ' +
+        '«реализуй функционал …».';
+      await this.saveChatMessage('director', answer);
+      this.dialogue.pushDirector(answer);
       return this.createResponse(answer, []);
     }
 
@@ -378,6 +379,8 @@ export class BrowserDirector {
 
     // Сохраняем ответ
     await this.saveChatMessage('director', finalSynthesis);
+    // Запоминаем ответ Director в контексте диалога (для follow-up-анафор)
+    this.dialogue.pushDirector(finalSynthesis);
 
     const agentLabels = agentResults.map(
       (r) => AGENT_ROLE_LABELS[r.role] || r.role,
@@ -642,6 +645,16 @@ export class BrowserDirector {
       context += '\n';
     }
 
+    // Новостной фон (NewsDriver): сентимент/важность/влияние на позиции
+    const newsImpacts = this.newsDriver.analyzePortfolio(
+      this.correctedFacts(),
+      this.newsCache,
+    );
+    const newsContext = this.newsDriver.buildNewsContext(newsImpacts);
+    if (newsContext) {
+      context += newsContext + '\n\n';
+    }
+
     for (const result of agentResults) {
       const data = result.data as
         | {
@@ -722,19 +735,6 @@ export class BrowserDirector {
     return { ...this.facts, assetsAnalysis: assets };
   }
 
-  /** Честный ответ на вопрос вне компетенции (погода, спорт и т.д.) */
-  private buildOffTopicAnswer(): string {
-    return (
-      'Хороший вопрос, но он не про портфель 😊\n\n' +
-      'Я — ваш финансовый директор и разбираюсь в инвестициях, ' +
-      'а не в погоде, спорте или кулинарии. Зато могу помочь с:\n' +
-      '• «Что с SBER?» — разбор конкретного актива\n' +
-      '• «Как выглядит портфель?» — сводка по всем позициям\n' +
-      '• «Есть ли риски?» — концентрация, просадки, отклонения\n' +
-      '• «Стратегия» — план по структуре портфеля'
-    );
-  }
-
   /** Сводка по РЕАЛЬНЫМ фактам портфеля (для запроса отчёта) */
   private buildPortfolioReportAnswer(): string {
     if (this.facts.assetsAnalysis.length === 0) {
@@ -789,32 +789,6 @@ export class BrowserDirector {
     };
   }
 
-  private buildGreeting(): string {
-    const timeOfDay =
-      new Date().getHours() < 12
-        ? 'утро'
-        : new Date().getHours() < 18
-          ? 'день'
-          : 'вечер';
-
-    let greeting = `Добрый ${timeOfDay}, Радик! 👋\n\n`;
-
-    // Добавляем актуальную информацию о портфеле
-    if (this.facts.totalPortfolioValue > 0) {
-      greeting += `💰 Твой портфель сейчас стоит **${this.formatCurrency(this.facts.totalPortfolioValue)} ₽**\n`;
-      greeting += `📊 Активов: **${this.facts.assetsAnalysis.length}**\n\n`;
-    }
-
-    greeting +=
-      'Чем могу помочь?\n\n' +
-      '• Спроси "**как портфель**" — покажу текущее состояние\n' +
-      '• Спроси о конкретной акции — "**SBER**", "**GAZP**"\n' +
-      '• Спроси "**рекомендации**" — получу советы агентов\n' +
-      '• Спроси "**риски**" — проверю портфель на проблемы';
-
-    return greeting;
-  }
-
   // ── Private methods ──
 
   private async savePortfolioSnapshot(): Promise<void> {
@@ -860,6 +834,7 @@ export class BrowserDirector {
     trend: NewsTrend | undefined;
     recentNews: Array<{ title: string; sentiment: string; date: string }>;
     prediction: string;
+    impact?: NewsImpact;
   } {
     const trend = this.newsCache.getTickerTrend(ticker);
     const recentNews = this.newsCache.getByTicker(ticker, 5).map((item) => ({
@@ -868,10 +843,32 @@ export class BrowserDirector {
       date: item.date,
     }));
 
+    // Влияние новостей на актив через NewsDriver
+    // (сентимент × важность × релевантность тикера).
+    const impact = this.newsDriver.analyzePortfolio(
+      { assetsAnalysis: [{ ticker }] },
+      this.newsCache,
+    )[0];
+
     // Формируем прогноз на основе новостей
     let prediction: string;
 
-    if (!trend || trend.newsCount === 0) {
+    if (impact) {
+      const directionLabel =
+        impact.impactDirection === 'positive'
+          ? 'позитивное'
+          : impact.impactDirection === 'negative'
+            ? 'негативное'
+            : 'нейтральное';
+      prediction =
+        `Влияние на позицию ${ticker}: ${directionLabel} ` +
+        `(сентимент ${impact.sentimentScore.toFixed(2)}, важность «${impact.importance}», ` +
+        `impact score ${impact.impactScore.toFixed(2)}). ` +
+        impact.reasoning;
+      if (impact.suggestedAction) {
+        prediction += ` Предлагаемое действие: ${impact.suggestedAction}.`;
+      }
+    } else if (!trend || trend.newsCount === 0) {
       prediction = `По тикеру ${ticker} пока мало новостного фона. Рекомендую следить за официальными источниками.`;
     } else {
       const sentimentPercent = ((trend.averageSentiment + 1) / 2) * 100;
@@ -892,7 +889,7 @@ export class BrowserDirector {
       }
     }
 
-    return { trend, recentNews, prediction };
+    return { trend, recentNews, prediction, impact };
   }
 
   /**

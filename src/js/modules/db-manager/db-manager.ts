@@ -695,6 +695,39 @@ const newsRepo = {
     return this.getByTicker(news.relevanceToTicker).pop()!;
   },
 
+  /**
+   * Добавить уже отфильтрованную новость (relevance_to_ticker + is_processed=1).
+   * Используется для персиста новостей, одобренных Gatekeeper (пайплайн),
+   * чтобы desktop-Директор и NewsDriver читали реальный новостной фон из БД.
+   */
+  addProcessed(
+    news: Omit<NewsRecord, 'id' | 'createdAt' | 'isProcessed'>,
+  ): NewsRecord {
+    initializeDatabase();
+    const now = new Date().toISOString();
+    const stmt = db.prepare(`
+      INSERT INTO news (title, date, source, url, importance, sentiment, summary, relevance_to_ticker, is_processed, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+    `);
+    const info = stmt.run(
+      news.title,
+      news.date,
+      news.source,
+      news.url,
+      news.importance,
+      news.sentiment,
+      news.summary,
+      news.relevanceToTicker,
+      now,
+    );
+    return {
+      ...news,
+      id: Number(info.lastInsertRowid),
+      isProcessed: true,
+      createdAt: now,
+    };
+  },
+
   /** Получить неотфильтрованные новости для Gatekeeper */
   getUnprocessed(limit = 50): NewsRecord[] {
     initializeDatabase();
@@ -718,6 +751,15 @@ const newsRepo = {
       'SELECT * FROM news WHERE relevance_to_ticker = ? AND is_processed = 1 ORDER BY date DESC LIMIT ?',
     );
     return stmt.all(ticker, limit) as NewsRecord[];
+  },
+
+  /** Получить последние обработанные новости (для NewsCacheLike.getLatest) */
+  getLatest(limit = 50): NewsRecord[] {
+    initializeDatabase();
+    const stmt = db.prepare(
+      'SELECT * FROM news WHERE is_processed = 1 ORDER BY date DESC LIMIT ?',
+    );
+    return stmt.all(limit) as NewsRecord[];
   },
 
   /** Удалить старые новости (старше 14 дней) */

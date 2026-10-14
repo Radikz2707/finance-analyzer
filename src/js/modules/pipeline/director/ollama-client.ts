@@ -4,6 +4,8 @@
  * Используется для генерации естественных ответов Director.
  */
 
+import { OLLAMA_MODEL_NAME } from '../../ai-advisor/ollama-model.js';
+
 const OLLAMA_HOST = 'http://localhost:11434';
 
 export interface OllamaMessage {
@@ -54,7 +56,8 @@ export class OllamaClient {
   private keepAlive: string;
 
   constructor(config: OllamaConfig = {}) {
-    this.model = config.model || 'qwen3.5:9b';
+    // Модель из единой точки (env OLLAMA_MODEL) — см. ollama-model.ts
+    this.model = config.model || OLLAMA_MODEL_NAME;
     this.temperature = config.temperature ?? 0.7;
     this.maxTokens = config.maxTokens ?? 2000;
     this.think = config.think ?? false;
@@ -126,6 +129,10 @@ export class OllamaClient {
         options: {
           temperature: this.temperature,
           num_predict: this.maxTokens,
+          // Явное контекстное окно: без него Ollama берёт полный контекст
+          // модели (у qwen3.6:27b это 262144) → огромный KV-cache → OOM
+          // на машинах с 16 ГБ RAM. 8192 достаточно для чата Director.
+          num_ctx: 8192,
         },
       }),
     });
@@ -176,6 +183,8 @@ export class OllamaClient {
         options: {
           temperature: this.temperature,
           num_predict: this.maxTokens,
+          // Явное контекстное окно — см. комментарий в chat().
+          num_ctx: 8192,
         },
       }),
     });

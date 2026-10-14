@@ -69,46 +69,56 @@ export async function calculatePortfolioIncome(
 
   const range = XLSX.utils.decode_range(sheet['!ref']);
 
-  // Фиксированные индексы колонок таблицы QUIK с учетом скрытого столбца А (индекс 0)
-  const COL_TICKER = 1; // B
-  const COL_TYPE = 2; // C
-  const COL_NAME = 3; // D
-  const COL_QTY = 4; // E
-
-  // Динамический поиск колонки НКД по заголовку (жёсткий индекс 12/M
-  // ломался при изменении раскладки листа — НКД всегда оказывался 0).
-  let COL_NKD = -1;
-  for (let col = range.s.c; col <= range.e.c; col++) {
-    const headerCell = sheet[XLSX.utils.encode_cell({ r: 0, c: col })];
-    if (headerCell && headerCell.v !== undefined) {
-      const header = String(headerCell.v).toLowerCase();
-      if (
-        header.includes('нкд') ||
-        header.includes('накопл') ||
-        header.includes('nkd')
-      ) {
-        COL_NKD = col;
-        break;
+  // Динамический поиск колонок по заголовкам первой строки.
+  //
+  // Раньше были жёсткие индексы (B/C/D/E) «с учётом скрытого столбца A»,
+  // но в реальном файле столбец A — это «Код инструмента» (тикер), а не
+  // скрытый. Из-за смещения на 1 assetType получал НАЗВАНИЕ инструмента
+  // («Брус 2Р04»), а не вид актива («О»/«А»), поэтому условия НКД/дивидендов
+  // никогда не срабатывали → 0 ₽. Теперь все колонки ищутся по заголовку.
+  const findColumn = (
+    predicate: (header: string) => boolean,
+    fallback: number,
+  ): number => {
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const headerCell = sheet[XLSX.utils.encode_cell({ r: 0, c: col })];
+      if (headerCell && headerCell.v !== undefined) {
+        const header = String(headerCell.v).toLowerCase().trim();
+        if (predicate(header)) return col;
       }
     }
-  }
+    return fallback;
+  };
 
-  // Динамический поиск столбца с дивидендами по заголовку
-  let COL_DIVIDENDS = -1;
-  for (let col = range.s.c; col <= range.e.c; col++) {
-    const headerCell = sheet[XLSX.utils.encode_cell({ r: 0, c: col })];
-    if (headerCell && headerCell.v !== undefined) {
-      const header = String(headerCell.v).toLowerCase();
-      if (
-        header.includes('дивиденд') ||
-        header.includes('dividend') ||
-        header.includes('див')
-      ) {
-        COL_DIVIDENDS = col;
-        break;
-      }
-    }
-  }
+  // Тикер: «Код инструмента» / «Тикер» / «Код» (fallback A)
+  const COL_TICKER = findColumn(
+    (h) => h.includes('код инструмента') || h === 'тикер' || h === 'код',
+    0,
+  );
+  // Вид актива: «Вид активов» / «Тип» (значения А/О/Ф/Д; fallback B)
+  const COL_TYPE = findColumn((h) => h.includes('вид актив') || h === 'тип', 1);
+  // Название: «Инструмент» / «Название» / «Имя» (fallback C)
+  const COL_NAME = findColumn(
+    (h) => h === 'инструмент' || h.includes('название') || h === 'имя',
+    2,
+  );
+  // Количество: «Позиция» / «Кол-во» / «Количество» (fallback D)
+  const COL_QTY = findColumn(
+    (h) =>
+      h.includes('позиция') || h.includes('кол-во') || h.includes('количество'),
+    3,
+  );
+  // НКД: «НКД» / «Накопленный» / «NKD» (нет fallback — иначе warning)
+  const COL_NKD = findColumn(
+    (h) => h.includes('нкд') || h.includes('накопл') || h.includes('nkd'),
+    -1,
+  );
+  // Дивиденды: «Объявленные дивиденды» / «Dividend» / «Див» (нет fallback)
+  const COL_DIVIDENDS = findColumn(
+    (h) =>
+      h.includes('дивиденд') || h.includes('dividend') || h.includes('див'),
+    -1,
+  );
 
   console.log('[PARSER START] Начинаем построчный обход листа QUIK...');
 

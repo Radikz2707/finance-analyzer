@@ -7,6 +7,7 @@
  */
 
 import type {
+  AgentActivityEvent,
   AgentPanelState,
   AskResult,
   AutonomousIterationEvent,
@@ -20,6 +21,8 @@ import {
   formatAuditEventLine,
   stripAnsi,
 } from '../../scripts/director-chat-render.js';
+import { formatActivityEvent } from '../../src/js/modules/pipeline/agent-activity/activity-renderer.js';
+import type { NewsImpact } from '../../src/js/modules/pipeline/news-driver/types.js';
 
 declare global {
   interface Window {
@@ -195,6 +198,29 @@ function onDirectorEvent(event: DirectorAuditEvent): void {
   const text = stripAnsi(formatAuditEventLine(event));
   appendActivityLine(text, activityCssClass(event), event.type);
   appendConsoleLine(event);
+}
+
+// ── Живые шаги агентов ───────────────────────────────────────
+
+/** Троттлинг обновления вкладки «Агенты» (не чаще раза в секунду) */
+let lastAgentsRefreshAt = 0;
+
+function scheduleAgentsRefresh(): void {
+  const now = performance.now();
+  if (now - lastAgentsRefreshAt < 1000) return;
+  lastAgentsRefreshAt = now;
+  void refreshAux();
+}
+
+/**
+ * Живой шаг агента: показываем в чате блок «🤖 Агенты работают: …»
+ * и в ленте активности; вкладка «Агенты» обновляется с троттлингом.
+ */
+function onDirectorActivity(event: AgentActivityEvent): void {
+  const text = formatActivityEvent(event);
+  appendMessage(`🤖 Агенты работают: ${text}`, 'system');
+  appendActivityLine(text, 'type-agent', `activity.${event.phase}`);
+  scheduleAgentsRefresh();
 }
 
 // ── Консоль ──────────────────────────────────────────────────
@@ -535,6 +561,48 @@ async function refreshAnalysisStatus(): Promise<void> {
   }
 }
 
+// ── Новостной блок (NewsDriver) ──────────────────────────────
+
+/**
+ * Новостной блок во вкладке «Чат»: impact'ы NewsDriver по тикерам
+ * портфеля (сентимент, важность, влияние, источники). Показывается
+ * после ответа Director как отдельное system-сообщение.
+ */
+function appendNewsBlock(impacts: NewsImpact[]): void {
+  const lines: string[] = ['📰 Новостной фон по портфелю:'];
+  if (impacts.length === 0) {
+    lines.push(
+      'Новостей по тикерам портфеля пока нет — подключите источник ' +
+        'новостей (пайплайн/gatekeeper), и я учту их в оценке.',
+    );
+    appendMessage(lines.join('\n'), 'system');
+    return;
+  }
+  for (const impact of impacts) {
+    const direction =
+      impact.impactDirection === 'positive'
+        ? '📈'
+        : impact.impactDirection === 'negative'
+          ? '📉'
+          : '➡️';
+    lines.push(
+      `${direction} ${impact.ticker}: ${impact.impactDirection} ` +
+        `(сентимент ${impact.sentimentScore.toFixed(2)}, важность «${impact.importance}», ` +
+        `score ${impact.impactScore.toFixed(2)})`,
+    );
+    if (impact.affectedMetrics.length > 0) {
+      lines.push(`   Затронуто: ${impact.affectedMetrics.join(', ')}.`);
+    }
+    if (impact.suggestedAction) {
+      lines.push(`   Учитываю как: ${impact.suggestedAction}.`);
+    }
+    for (const headline of impact.headlines.slice(0, 2)) {
+      lines.push(`   • ${headline}`);
+    }
+  }
+  appendMessage(lines.join('\n'), 'system');
+}
+
 // ── Запрос к Директору ───────────────────────────────────────
 
 async function ask(question: string): Promise<void> {
@@ -560,6 +628,9 @@ async function ask(question: string): Promise<void> {
 
 function onDirectorReply(result: AskResult): void {
   appendMessage(result.text, 'director');
+  if (result.news) {
+    appendNewsBlock(result.news);
+  }
   if (result.consiliumText) {
     const block = makeEl('div', 'consilium-block', result.consiliumText);
     activityEl.appendChild(block);
@@ -1401,6 +1472,8 @@ async function init(): Promise<void> {
 
   // Живой стриминг событий аудита
   window.financeApp.onDirectorEvent(onDirectorEvent);
+  // Живой стриминг шагов агентов (started/step/completed/failed)
+  window.financeApp.onDirectorActivity(onDirectorActivity);
   window.financeApp.onDirectorReply(onDirectorReply);
 
   // Начальное состояние

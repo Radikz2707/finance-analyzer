@@ -767,6 +767,41 @@ const CODE_REQUEST_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * Паттерны, указывающие на запрос самоулучшения проекта (роль
+ * `self-improve`). Покрывают: «почини проект», «исправь ошибки»,
+ * «улучши систему», «проверь здоровье проекта». Такие запросы запускают
+ * SelfImprovementLoop: diagnose → plan → execute → verify → learn.
+ */
+const SELF_IMPROVEMENT_REQUEST_PATTERNS: RegExp[] = [
+  /почини проект/i,
+  /починить проект/i,
+  /исправь ошибки/i,
+  /исправить ошибки/i,
+  /исправь ошибку/i,
+  /исправить ошибку/i,
+  /улучши систему/i,
+  /улучшить систему/i,
+  /улучши проект/i,
+  /улучшить проект/i,
+  /проверь здоровье проекта/i,
+  /проверить здоровье проекта/i,
+  /здоровье проекта/i,
+  /самоулучшени/i,
+  /self[- ]?improve/i,
+];
+
+/**
+ * Определить, запрашивает ли пользователь самоулучшение проекта
+ * (SelfImprovementLoop: диагностика → ремонт → проверка → урок).
+ */
+export function looksLikeSelfImprovementRequest(text: string): boolean {
+  const lower = text.toLowerCase();
+  return SELF_IMPROVEMENT_REQUEST_PATTERNS.some((pattern) =>
+    pattern.test(lower),
+  );
+}
+
+/**
  * Паттерны, указывающие на операцию с зависимостями (роль `package`).
  *
  * Покрывают: «обнови модули/зависимости», «установи пакет X»,
@@ -1407,6 +1442,13 @@ function determineRequiredAgents(
   // ── Задачи разработки (CodingWorkflow) ──
   if (looksLikeCodeRequest(text)) {
     agents.push('code');
+  }
+
+  // ── Самоулучшение проекта (SelfImprovementLoop) ──
+  // «почини проект», «исправь ошибки», «улучши систему»,
+  // «проверь здоровье проекта» → роль self-improve.
+  if (looksLikeSelfImprovementRequest(text)) {
+    agents.push('self-improve');
   }
 
   // Уникальность

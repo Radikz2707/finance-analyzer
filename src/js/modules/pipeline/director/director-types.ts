@@ -9,6 +9,8 @@
 
 import type { AiAction } from '../../research/types.js';
 import type { AgentState } from '../agent/types.js';
+import type { AgentActivityEvent } from '../agent-activity/types.js';
+import type { NewsImpact } from '../news-driver/types.js';
 
 // ──────────────────────────────────────────────
 // 1. Типы вопросов пользователя
@@ -79,7 +81,8 @@ export type AgentRole =
   | 'process' // ProcessAgent — запуск/остановка/перезапуск процессов
   | 'automation' // AutomationAgent — workflow-автоматизация задач
   | 'system' // SystemResourceAgent — мониторинг системных ресурсов (CPU/RAM)
-  | 'code'; // CodingWorkflow — конвейер разработки: write → test → repair → report
+  | 'code' // CodingWorkflow — конвейер разработки: write → test → repair → report
+  | 'self-improve'; // SelfImprovementLoop — замкнутый цикл самоулучшения (diagnose → plan → execute → verify → learn)
 
 /** Описание задачи для агента */
 export interface AgentTask {
@@ -378,6 +381,7 @@ export interface DirectorChatSession {
 export type DirectorAuditEventType =
   | 'director.question_received'
   | 'director.question_interpreted'
+  | 'director.task_extracted'
   | 'director.plan_created'
   | 'director.task_delegated'
   | 'director.agent_result_received'
@@ -484,6 +488,10 @@ export interface DirectorResponse {
   };
   /** Промптное сообщение (если есть) */
   proactiveMessage?: ProactiveMessage;
+  /** События активности агентов за время обработки (живые шаги) */
+  activity?: AgentActivityEvent[];
+  /** Новостные impact'ы по портфелю (NewsDriver), если подключён кэш новостей */
+  news?: NewsImpact[];
 }
 
 // ──────────────────────────────────────────────
@@ -616,6 +624,12 @@ export interface DirectorConfig {
   includeAgentDetails?: boolean;
   /** Свободный диалог (нефинансовые темы) через LLM с контекстом портфеля */
   chatResponder?: ChatResponder;
+  /**
+   * Порог уверенности извлечённой задачи (TaskExtractor), при котором
+   * Director строит план напрямую, минуя категорийную маршрутизацию.
+   * По умолчанию 0.7.
+   */
+  taskExtractionThreshold?: number;
   /**
    * Приём задач из свободного текста: если задан, реплики-задачи/идеи
    * («давай добавим…», «хочу, чтобы…») не запускают агентов сразу,

@@ -64,6 +64,7 @@ const ROLE_LABELS: Record<AgentRole, string> = {
   system: 'System',
   automation: 'Automation',
   code: 'Code',
+  'self-improve': 'SelfImprove',
 };
 
 // ──────────────────────────────────────────────

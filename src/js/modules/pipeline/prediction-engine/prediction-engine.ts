@@ -17,6 +17,7 @@ import { NeedPredictor } from './need-predictor.js';
 import { AnomalyDetectorV2 } from './anomaly-detector-v2.js';
 import { TrendAnalyzer } from './trend-analyzer.js';
 import { ScenarioPlanner } from './scenario-planner.js';
+import type { NewsImpact } from '../news-driver/types.js';
 import type {
   AnomalyDetectorV2Options,
   ForecastOptions,
@@ -51,6 +52,8 @@ export interface PredictionEngineInput {
   forecastOptions?: ForecastOptions;
   /** Окно тренда (для analyze-trend/full-report) */
   trendWindow?: number;
+  /** Новостной фон (для plan-scenarios/full-report): сценарии с учётом новостей */
+  newsImpacts?: readonly NewsImpact[];
 }
 
 export class PredictionEngine {
@@ -91,9 +94,12 @@ export class PredictionEngine {
     return this.trendAnalyzer.analyze(series, windowSize);
   }
 
-  /** Сценарии best/base/worst. */
-  planScenarios(series: readonly TimeSeriesPoint[]) {
-    return this.scenarioPlanner.plan(series);
+  /** Сценарии best/base/worst (с учётом новостного фона, если передан). */
+  planScenarios(
+    series: readonly TimeSeriesPoint[],
+    newsImpacts?: readonly NewsImpact[],
+  ) {
+    return this.scenarioPlanner.plan(series, newsImpacts);
   }
 
   /** Предсказание потребностей (требует needPredictor в DI). */
@@ -112,7 +118,11 @@ export class PredictionEngine {
    */
   async fullReport(
     series: readonly TimeSeriesPoint[],
-    options?: { forecastOptions?: ForecastOptions; trendWindow?: number },
+    options?: {
+      forecastOptions?: ForecastOptions;
+      trendWindow?: number;
+      newsImpacts?: readonly NewsImpact[];
+    },
   ) {
     const sections: Record<string, unknown> = {};
     const errors: Record<string, string> = {};
@@ -136,7 +146,7 @@ export class PredictionEngine {
     }
 
     try {
-      sections.scenarios = this.planScenarios(series);
+      sections.scenarios = this.planScenarios(series, options?.newsImpacts);
     } catch (e) {
       errors.scenarios = e instanceof Error ? e.message : String(e);
     }
@@ -192,7 +202,7 @@ export class PredictionEngine {
           return {
             action: input.action,
             success: true,
-            data: this.planScenarios(input.series),
+            data: this.planScenarios(input.series, input.newsImpacts),
           };
         }
         case 'full-report': {
@@ -203,6 +213,7 @@ export class PredictionEngine {
             data: await this.fullReport(input.series, {
               forecastOptions: input.forecastOptions,
               trendWindow: input.trendWindow,
+              newsImpacts: input.newsImpacts,
             }),
           };
         }
