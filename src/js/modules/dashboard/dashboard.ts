@@ -158,11 +158,32 @@ function loadDashboardData(): DashboardData {
   macroRepo.getLatest(); // макроэкономические данные (загружаются для будущей интеграции)
 
   // KPI
+  // Расчёт qualityScore: проверяем полноту данных для каждой позиции
+  let validFields = 0;
+  let totalFields = 0;
+  for (const pos of positions) {
+    // Проверяем наличие цены (price_snapshots)
+    totalFields++;
+    const priceSnap = pricesRepo.getLast(pos.ticker, 1);
+    if (priceSnap.length > 0 && priceSnap[0]!.close > 0) {
+      validFields++;
+    }
+    // Проверяем наличие новостей
+    totalFields++;
+    const news = newsRepo.getUnprocessed(1);
+    if (news.length > 0) {
+      validFields++;
+    }
+  }
+  const qualityScore = totalFields > 0
+    ? Math.round((validFields / totalFields) * 100)
+    : 0;
+
   const kpi = {
     totalBalance: summary.totalMarketValue,
     totalGain: summary.totalGain,
     assetsCount: summary.activeCount,
-    qualityScore: 85, // TODO: расчёт на основе quality validation
+    qualityScore,
   };
 
   // Распределение портфеля

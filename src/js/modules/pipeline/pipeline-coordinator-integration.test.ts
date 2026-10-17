@@ -23,6 +23,7 @@ import type { AnalysisAgentOutput } from './agents/analysis-agent.js';
 import type { AiAgentOutput } from './agents/ai-agent.js';
 import type { NotificationAgentOutput } from './agents/notification-agent.js';
 import type { ReviewResult, ReviewerResult } from './review/review-agent.js';
+import type { MathAiAgreement } from '../ai-advisor/math-ai-agreement.js';
 
 // ──────────────────────────────────────────────
 // Mock Agent
@@ -143,6 +144,7 @@ function makeDataOutput(): DataAgentOutput {
     anomalies: [],
     keyRate: 21,
     keyRateDate: '29.10.2024',
+    cbrRateData: null,
   };
 }
 
@@ -179,7 +181,8 @@ function makeAiOutput(): AiAgentOutput {
     aiNarrative: '',
     aiClientResult: { text: '', modelUsed: 'test', success: true },
     structuredRecommendations: new Map(),
-    validationWarnings: [],
+      mathAiAgreements: new Map() as Map<string, MathAiAgreement>,
+      validationWarnings: [],
   };
 }
 

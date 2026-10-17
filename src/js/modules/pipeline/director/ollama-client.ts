@@ -61,8 +61,11 @@ export class OllamaClient {
     this.temperature = config.temperature ?? 0.7;
     this.maxTokens = config.maxTokens ?? 2000;
     this.think = config.think ?? false;
+    // ⚠️ keep_alive: 5 минут вместо 30m — экономит ~20 ГБ RAM.
+    // Модель выгружается быстрее, но холодный запуск добавляет ~15-20с.
+    // Для частых запросов (чат с Director) можно увеличить до 10m.
     this.keepAlive = OllamaClient.normalizeKeepAlive(
-      config.keepAlive ?? process.env.OLLAMA_KEEP_ALIVE ?? '30m',
+      config.keepAlive ?? process.env.OLLAMA_KEEP_ALIVE ?? '5m',
     );
   }
 
@@ -129,10 +132,9 @@ export class OllamaClient {
         options: {
           temperature: this.temperature,
           num_predict: this.maxTokens,
-          // Явное контекстное окно: без него Ollama берёт полный контекст
-          // модели (у qwen3.6:27b это 262144) → огромный KV-cache → OOM
-          // на машинах с 16 ГБ RAM. 8192 достаточно для чата Director.
-          num_ctx: 8192,
+          // Контекстное окно: 32768 для qwen3.6:35b-a3b (32 ГБ RAM)
+          // Позволяет хранить полную историю чата + данные агентов + контекст
+          num_ctx: 32768,
         },
       }),
     });
@@ -183,8 +185,8 @@ export class OllamaClient {
         options: {
           temperature: this.temperature,
           num_predict: this.maxTokens,
-          // Явное контекстное окно — см. комментарий в chat().
-          num_ctx: 8192,
+          // Контекстное окно: 32768 для qwen3.6:35b-a3b (32 ГБ RAM)
+          num_ctx: 32768,
         },
       }),
     });

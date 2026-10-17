@@ -1187,6 +1187,9 @@ export class XlsxParserModule {
       // Текущая цена
       const currentPrice = this.parseValue(row['Цена послед.'] || row['Цена']);
 
+      // Пропускаем строки без цены (заголовки, пустые строки)
+      if (currentPrice <= 0) continue;
+
       // Дневная динамика
       const rawDynamics = this.parseValue(
         row['% измен.закр.'] || row['Динамика'] || row['Изменение'],
@@ -1830,5 +1833,25 @@ export class XlsxParserModule {
     if (!isBond) return 'RUB';
     if (nominal !== undefined && nominal > 0) return 'PERCENT_OF_NOMINAL';
     return 'UNKNOWN';
+  }
+
+  /**
+   * Очистка кэша и освобождение памяти.
+   *
+   * XLSX (SheetJS) загружает ВЕСЬ файл в RAM (~50-300 МБ).
+   * После парсинга нужно освободить workbook, чтобы не держать память.
+   * Вызывается после завершения всех операций с парсером.
+   */
+  public cleanup(): void {
+    this.workbook = null;
+    this.cachedActiveOrdersText = 'Заявки отсутствуют';
+    this.cachedIisOrdersSum = 0;
+    this.cachedBrokerOrdersSum = 0;
+    this.cachedFreeCashFromQuikSheet = 0;
+    this.cachedInvestedFunds = 0;
+    this.parsedActiveOrders = [];
+    this.nameToTickerMap = {};
+    this.bondReferenceData.clear();
+    console.log('[XlsxParser] 🧹 Кэш очищен, workbook освобождён');
   }
 }

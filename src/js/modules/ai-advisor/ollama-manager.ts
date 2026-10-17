@@ -4,6 +4,9 @@
  */
 
 import axios from 'axios';
+import { getLogger } from '../logger/index.js';
+
+const log = getLogger('ollama-manager');
 
 /** Информация о модели Ollama */
 export interface OllamaModelInfo {
@@ -88,7 +91,7 @@ export async function listModels(): Promise<OllamaModelInfo[]> {
     return response.data.models || [];
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('[Ollama] Ошибка получения списка моделей:', errorMessage);
+    log.error('[Ollama] Ошибка получения списка моделей:', errorMessage);
     return [];
   }
 }
@@ -112,7 +115,7 @@ export async function showModelInfo(
     return response.data;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(
+    log.error(
       `[Ollama] Ошибка получения информации о модели ${modelName}:`,
       errorMessage,
     );
@@ -169,7 +172,7 @@ export async function pullModel(
 
                 if (newStatus !== currentStatus) {
                   currentStatus = newStatus;
-                  console.log(
+                  log.info(
                     `[Ollama] ${newStatus} ${modelName}: ${percent}%`,
                   );
                 }
@@ -179,7 +182,7 @@ export async function pullModel(
                 }
               } else if (newStatus && newStatus !== currentStatus) {
                 currentStatus = newStatus;
-                console.log(`[Ollama] ${newStatus} ${modelName}`);
+                log.info(`[Ollama] ${newStatus} ${modelName}`);
 
                 if (onProgress) {
                   onProgress(newStatus, completed, total);
@@ -195,12 +198,12 @@ export async function pullModel(
       });
 
       response.data.on('end', () => {
-        console.log(`[Ollama] ✅ Модель ${modelName} успешно установлена`);
+        log.info(`[Ollama] ✅ Модель ${modelName} успешно установлена`);
         resolve(true);
       });
 
       response.data.on('error', (err: Error) => {
-        console.error(
+        log.error(
           `[Ollama] ❌ Ошибка установки модели ${modelName}:`,
           err.message,
         );
@@ -209,7 +212,7 @@ export async function pullModel(
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(
+    log.error(
       `[Ollama] ❌ Критическая ошибка при установке модели ${modelName}:`,
       errorMessage,
     );
@@ -226,11 +229,11 @@ export async function deleteModel(modelName: string): Promise<boolean> {
       data: { model: modelName },
       timeout: 5000,
     });
-    console.log(`[Ollama] ✅ Модель ${modelName} удалена`);
+    log.info(`[Ollama] ✅ Модель ${modelName} удалена`);
     return true;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(
+    log.error(
       `[Ollama] ❌ Ошибка удаления модели ${modelName}:`,
       errorMessage,
     );
@@ -256,13 +259,13 @@ export async function copyModel(
         timeout: 10000,
       },
     );
-    console.log(
+    log.info(
       `[Ollama] ✅ Модель ${sourceName} скопирована в ${destinationName}`,
     );
     return true;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('[Ollama] ❌ Ошибка копирования модели:', errorMessage);
+    log.error('[Ollama] ❌ Ошибка копирования модели:', errorMessage);
     return false;
   }
 }
@@ -407,7 +410,7 @@ export function validateAiOutput(text: string): string {
   }
 
   if (hasReplacements) {
-    console.warn(
+    log.warn(
       '[AI_OUTPUT_VALIDATION] ⚠️ Запрещённые формулировки заменены на нейтральные',
     );
   }
@@ -466,11 +469,11 @@ export function validateArithmeticConsistency(
   );
 
   if (!result.valid) {
-    console.warn(
+    log.warn(
       '[ARITHMETIC_VALIDATION] ⚠️ Обнаружены расхождения с deterministic значениями:',
     );
     for (const d of result.discrepancies) {
-      console.warn(
+      log.warn(
         `  ${d.ticker} ${d.field}: expected=${d.expected}, found=${d.found ?? 'N/A'}`,
       );
     }
@@ -682,7 +685,7 @@ export function sanitizeAiNarrative(text: string): string {
 
   // Safety: если санитизация удалила >70% текста — возвращаем оригинал
   if (sanitized.length < text.length * 0.3) {
-    console.warn(
+    log.warn(
       '[AI_NARRATIVE_SANITIZATION] ⚠️ Санитизация удалила слишком много текста (>70%), возвращаем оригинал',
     );
     return text;

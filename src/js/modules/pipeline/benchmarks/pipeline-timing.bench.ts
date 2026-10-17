@@ -22,6 +22,7 @@ import type { NotificationAgentOutput } from '../agents/notification-agent.js';
 import type { ReviewResult, ReviewerResult } from '../review/review-agent.js';
 import type { ScenarioAgentOutput } from '../agents/scenario-agent.js';
 import type { StrategistAgentOutput } from '../agents/strategist-agent.js';
+import type { MathAiAgreement } from '../../ai-advisor/math-ai-agreement.js';
 import { measure, type BenchmarkResult } from './benchmark-runner.js';
 
 // ──────────────────────────────────────────────
@@ -98,6 +99,7 @@ function makeDataOutput(): DataAgentOutput {
     anomalies: [],
     keyRate: 21,
     keyRateDate: '06.10.2026',
+    cbrRateData: null,
   };
 }
 
@@ -134,7 +136,8 @@ function makeAiOutput(): AiAgentOutput {
     aiNarrative: '',
     aiClientResult: { text: '', modelUsed: 'BENCH_MOCK', success: true },
     structuredRecommendations: new Map(),
-    validationWarnings: [],
+      mathAiAgreements: new Map() as Map<string, MathAiAgreement>,
+      validationWarnings: [],
   };
 }
 

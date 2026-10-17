@@ -68,15 +68,20 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
   }
 
   // 4. Fallback: последняя известная ставка
+  // ИСПРАВЛЕНИЕ P1: явно помечаем fallback как устаревшие данные
   const fallbackRate: CbrRateData = {
     rate: 14.0,
     date: '2026-09-08',
-    source: 'fallback (cbr.ru недоступен)',
+    source: 'fallback (cbr.ru недоступен, данные устарели)',
     lastUpdated: new Date().toISOString(),
-    isFresh: false,
+    isFresh: false, // Явно указываем, что данные НЕ свежие
   };
 
   cachedRate = fallbackRate;
+  console.warn(
+    '[ЦБ-СТАВКА] ⚠️ Fallback: ставка 14.0% от 2026-09-08 — данные устарели, ' +
+    'cbr.ru недоступен. Используйте CBK_RATE_OVERRIDE для ручной настройки.',
+  );
   return cachedRate;
 }
 

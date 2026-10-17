@@ -12,6 +12,7 @@
 
 import { loadUserPolicy } from '../../../config/user-policy.js';
 import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
+import type { MathAiAgreement } from '../../ai-advisor/math-ai-agreement.js';
 
 /** Минимальный интерфейс заявки QUIK (совместим с xlsx-parser и db-manager) */
 interface OrderLike {
@@ -23,6 +24,8 @@ interface OrderLike {
   quantity?: number;
   side?: 'BUY' | 'SELL';
   type?: 'MARKET' | 'LIMIT';
+  /** Идентификатор счёта (для разграничения ордеров на разных счетах) */
+  accountId?: string;
 }
 
 // ──────────────────────────────────────────────
@@ -78,27 +81,52 @@ export interface OrderActionResult {
 
 /**
  * Формирует массив интерактивных ордеров из анализа активов.
+ * ИСПРАВЛЕНИЕ P0:
+ * - ID ордера включает accountId для разграничения заявок на разных счетах
+ * - MathAiAgreement обязателен при наличии assetsAnalysis
+ * - Дедупликация учитывает реальные статусы заявок QUIK
+ *
  * @param assetsAnalysis — результаты анализа портфеля
  * @param existingOrders — существующие заявки QUIK (для дедупликации)
+ * @param mathAiAgreements — результаты согласования PortfolioMath и ИИ (ОБЯЗАТЕЛЕН при наличии активов)
  * @returns массив интерактивных ордеров
  */
 export function buildInteractiveOrders(
   assetsAnalysis: AssetAnalysis[],
   existingOrders: OrderLike[] = [],
+  mathAiAgreements?: Map<string, MathAiAgreement>,
 ): InteractiveOrder[] {
   const orders: InteractiveOrder[] = [];
-  const existingTickerActions = new Map<string, OrderActionType>();
 
-  // Собираем существующие действия по тикерам
+  // ─── КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: дедупликация по тикеру + счёт ───
+  // Существующие активные заявки группируются по (ticker, accountId)
+  // чтобы заявки на разных счетах не сливались.
+  const existingOrderKeys = new Map<string, OrderActionType>();
+
   for (const order of existingOrders) {
     const status = order.status || '';
     const side = (order.side || order.operation) as OrderActionType | undefined;
+    const accountId = order.accountId || 'DEFAULT';
+
+    // Учитываем только активные заявки
     if (
       (status === 'NEW' || status === 'PARTIAL' || status === 'АКТИВНА') &&
       side
     ) {
-      existingTickerActions.set(order.ticker, side);
+      const key = `${order.ticker.toUpperCase()}:${accountId}`;
+      existingOrderKeys.set(key, side);
     }
+  }
+
+  // ─── КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: MathAiAgreement обязателен ───
+  // Если assetsAnalysis не пустой и mathAiAgreements отсутствует —
+  // это ошибка конфигурации. Блокируем генерацию ордеров.
+  if (assetsAnalysis.length > 0 && !mathAiAgreements) {
+    console.warn(
+      '[InteractiveOrders] [BLOCKED] mathAiAgreements отсутствует при наличии активов. ' +
+      'Генерация ордеров заблокирована для безопасности.',
+    );
+    return [];
   }
 
   for (const asset of assetsAnalysis) {
@@ -110,6 +138,39 @@ export function buildInteractiveOrders(
     // Пропускаем активы без целевой доли (NO_TARGET)
     if (asset.targetPercent === undefined) {
       continue;
+    }
+
+    // ─── Обязательная проверка MathAiAgreement ───
+    const agreement = mathAiAgreements?.get(asset.ticker);
+    if (agreement) {
+      // conflict=true → requiresReview=true → executionAllowed=false
+      if (agreement.conflict || agreement.requiresReview) {
+        console.log(
+          `[InteractiveOrders] [BLOCKED] ${asset.ticker}: ` +
+          `conflict=${agreement.conflict}, requiresReview=${agreement.requiresReview}, ` +
+          `executionAllowed=${agreement.executionAllowed}`,
+        );
+        continue; // Пропускаем создание ордера
+      }
+
+      // executionAllowed=false → блокируем
+      if (!agreement.executionAllowed) {
+        console.log(
+          `[InteractiveOrders] [BLOCKED] ${asset.ticker}: executionAllowed=false`,
+        );
+        continue;
+      }
+    } else {
+      // MathAiAgreement отсутствует для актива — это риск.
+      // Блокируем ордер, если есть хоть один актив с agreement.
+      const hasAnyAgreement = mathAiAgreements && mathAiAgreements.size > 0;
+      if (hasAnyAgreement) {
+        console.warn(
+          `[InteractiveOrders] [BLOCKED] ${asset.ticker}: MathAiAgreement отсутствует, ` +
+          'но другие активы имеют agreement. Блокируем для безопасности.',
+        );
+        continue;
+      }
     }
 
     // Определяем действие на основе статуса PortfolioMath
@@ -129,10 +190,19 @@ export function buildInteractiveOrders(
       noSellDowngraded = true;
     }
 
-    // Пропускаем дубликаты с существующими заявками
-    if (existingTickerActions.has(asset.ticker)) {
-      const existingAction = existingTickerActions.get(asset.ticker)!;
+    // ─── Дедупликация: проверяем (ticker, accountId) ───
+    // Определяем accountId из asset (если есть) или используем DEFAULT
+    const assetAccountId = asset.accountId || 'DEFAULT';
+    const existingKey = `${asset.ticker.toUpperCase()}:${assetAccountId}`;
+
+    if (existingOrderKeys.has(existingKey)) {
+      const existingAction = existingOrderKeys.get(existingKey)!;
       if (existingAction === action) {
+        // Уже есть активная заявка с таким же действием на этом счёте
+        console.log(
+          `[InteractiveOrders] [DUPLICATE] ${asset.ticker} (${assetAccountId}): ` +
+          `existing=${existingAction}, proposed=${action}, skipping`,
+        );
         continue;
       }
     }
@@ -157,7 +227,7 @@ export function buildInteractiveOrders(
     }
 
     orders.push({
-      id: generateOrderId(asset.ticker, action),
+      id: generateOrderId(asset.ticker, action, assetAccountId),
       ticker: asset.ticker,
       assetName: asset.name,
       action,
@@ -275,11 +345,23 @@ function checkGuardrailWarnings(asset: AssetAnalysis): string[] {
 }
 
 /**
- * Генерирует уникальный ID ордера.
+ * Генерирует детерминированный ID ордера на основе тикера, действия и счёта.
+ *
+ * ИСПРАВЛЕНИЕ P0:
+ * - ID включает accountId для разграничения ордеров на разных счетах
+ * - Формат: `${ticker}_${action}_${accountId}` (например, "STME_SELL_S04J3LB")
+ * - Повторная обработка отчёта не создаёт дублирующие заявки
+ *
+ * @param ticker — тикер актива
+ * @param action — тип действия
+ * @param accountId — идентификатор счёта (по умолчанию 'DEFAULT')
  */
-function generateOrderId(ticker: string, action: OrderActionType): string {
-  const timestamp = Date.now();
-  return `${ticker}_${action}_${timestamp}`;
+function generateOrderId(
+  ticker: string,
+  action: OrderActionType,
+  accountId: string = 'DEFAULT',
+): string {
+  return `${ticker}_${action}_${accountId}`;
 }
 
 // ──────────────────────────────────────────────

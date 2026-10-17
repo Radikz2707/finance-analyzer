@@ -51,6 +51,7 @@ import {
   handleAutonomousStop,
   handleProactiveIdeas,
   handleLastPipelineReport,
+  loadLastPipelineReport,
   resolveAnalysisStatus,
   runPipelineReport,
   buildAnalysisHtml,
@@ -82,6 +83,8 @@ let appState: AppState | null = null;
 let unsubscribeDirector: (() => void) | null = null;
 let excelFileWatcher: fs.FSWatcher | null = null;
 let lastExcelMtime: number | null = null;
+let excelWatchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+const EXCEL_WATCH_DEBOUNCE_MS = 3000; // 3 секунды debounce для Windows
 
 /** Логгер main-процесса */
 function log(level: 'info' | 'warn', message: string): void {
@@ -162,6 +165,14 @@ async function initAppState(): Promise<void> {
   if (excelPath) {
     startExcelWatcher(excelPath);
   }
+
+  // Сбрасываем кэш анализа — Director должен работать со свежими данными
+  // из Excel, а не использовать кэшированные результаты предыдущих сессий
+  appState.director.director.resetAnalysisCache();
+
+  // Загружаем последний отчёт report.html с диска (если был запущен npm run pipeline)
+  // Отчёт сохраняется в памяти (state.pipelineReport) и доступен даже при удалении файла
+  loadLastPipelineReport(appState);
 }
 
 /** Отформатировать метку времени для имён файлов (YYYY-MM-DDTHH-MM-SS) */
@@ -201,6 +212,9 @@ async function renderDashboardPdf(html: string): Promise<Buffer> {
 /**
  * Запустить файловый воркер на Excel-файл: при изменении файла —
  * перезагрузить портфель и уведомить рендерер.
+ *
+ * ⚠️ Windows: fs.watch срабатывает 5-10 раз при одном сохранении файла.
+ * Добавлен debounce (3 сек), чтобы не перезагружать портфель постоянно.
  */
 function startExcelWatcher(excelPath: string): void {
   // Остановить старый воркер если есть
@@ -225,41 +239,50 @@ function startExcelWatcher(excelPath: string): void {
       (eventType) => {
         if (eventType !== 'change') return;
 
-        try {
-          const stats = fs.statSync(excelPath);
-          if (stats.mtimeMs === lastExcelMtime) return;
-
-          lastExcelMtime = stats.mtimeMs;
-          log(
-            'info',
-            `Excel-файл изменён: ${excelPath} — перезагрузка портфеля`,
-          );
-
-          // Перезагружаем портфель
-          if (appState) {
-            // Сбрасываем кэш анализа — нужно провести новый анализ
-            appState.director.director.resetAnalysisCache();
-            log('info', 'Кэш анализа сброшен (Excel изменён)');
-
-            reloadPortfolio(appState.director, excelPath).then((result) => {
-              if (result.success) {
-                log(
-                  'info',
-                  `Портфель перезагружен: ${result.assetsCount} активов`,
-                );
-                // Уведомляем рендерер
-                sendToRenderer('portfolio:updated', {
-                  assetsCount: result.assetsCount,
-                  sourceLabel: result.sourceLabel,
-                });
-              } else {
-                log('warn', `Ошибка перезагрузки портфеля: ${result.message}`);
-              }
-            });
-          }
-        } catch (err) {
-          log('warn', `Ошибка при проверке Excel-файла: ${err}`);
+        // Debounce: игнорируем множественные срабатывания на Windows
+        if (excelWatchDebounceTimer) {
+          return;
         }
+
+        excelWatchDebounceTimer = setTimeout(() => {
+          excelWatchDebounceTimer = null;
+
+          try {
+            const stats = fs.statSync(excelPath);
+            if (stats.mtimeMs === lastExcelMtime) return;
+
+            lastExcelMtime = stats.mtimeMs;
+            log(
+              'info',
+              `Excel-файл изменён: ${excelPath} — перезагрузка портфеля`,
+            );
+
+            // Перезагружаем портфель
+            if (appState) {
+              // Сбрасываем кэш анализа — нужно провести новый анализ
+              appState.director.director.resetAnalysisCache();
+              log('info', 'Кэш анализа сброшен (Excel изменён)');
+
+              reloadPortfolio(appState.director, excelPath).then((result) => {
+                if (result.success) {
+                  log(
+                    'info',
+                    `Портфель перезагружен: ${result.assetsCount} активов`,
+                  );
+                  // Уведомляем рендерер
+                  sendToRenderer('portfolio:updated', {
+                    assetsCount: result.assetsCount,
+                    sourceLabel: result.sourceLabel,
+                  });
+                } else {
+                  log('warn', `Ошибка перезагрузки портфеля: ${result.message}`);
+                }
+              });
+            }
+          } catch (err) {
+            log('warn', `Ошибка при проверке Excel-файла: ${err}`);
+          }
+        }, EXCEL_WATCH_DEBOUNCE_MS);
       },
     );
   } catch (err) {
@@ -272,9 +295,13 @@ function stopExcelWatcher(): void {
   if (excelFileWatcher) {
     excelFileWatcher.close();
     excelFileWatcher = null;
-    lastExcelMtime = null;
-    log('info', 'Файловый воркер Excel остановлен');
   }
+  if (excelWatchDebounceTimer) {
+    clearTimeout(excelWatchDebounceTimer);
+    excelWatchDebounceTimer = null;
+  }
+  lastExcelMtime = null;
+  log('info', 'Файловый воркер Excel остановлен');
 }
 
 /** Регистрация IPC-хендлеров (вызывается после готовности состояния) */
@@ -764,6 +791,8 @@ function shutdown(): void {
     } catch {
       // no-op
     }
+    // Останавливаем файловый воркер Excel
+    stopExcelWatcher();
   })();
 }
 

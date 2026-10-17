@@ -192,28 +192,34 @@ async function loadFacts(
   }
   try {
     const parser = new XlsxParserModule();
-    const [assets, goals] = await Promise.all([
-      parser.parseCurrentPortfolio(),
-      parser.parseMacroGoals(),
-    ]);
-    log.info(
-      `Факты портфеля загружены: активов ${assets.length}, файл ${excelPath}`,
-    );
-    return {
-      facts: portfolioToFacts(assets, goals),
-      sourceLabel: `данные портфеля: ${excelPath}`,
-    };
+    try {
+      const [assets, goals] = await Promise.all([
+        parser.parseCurrentPortfolio(),
+        parser.parseMacroGoals(),
+      ]);
+      log.info(
+        `Факты портфеля загружены: активов ${assets.length}, файл ${excelPath}`,
+      );
+      return {
+        facts: portfolioToFacts(assets, goals),
+        sourceLabel: `данные портфеля: ${excelPath}`,
+      };
+    } finally {
+      // Освобождаем память — workbook больше не нужен
+      parser.cleanup();
+    }
   } catch (err) {
     log.warn(
       `Не удалось прочитать Excel (${excelPath}): ${
         err instanceof Error ? err.message : String(err)
-      } — работаем без данных портфеля`,
+      } —работаем без данных портфеля`,
     );
     return {
       facts: emptyFacts(),
       sourceLabel: `Excel прочитать не удалось (${excelPath})`,
     };
   }
+}
 }
 
 // ──────────────────────────────────────────────

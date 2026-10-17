@@ -136,9 +136,11 @@ export class NotificationAgent extends AgentBase {
     }
 
     // ── Шаг 4: Генерация интерактивных ордеров ──
+    // ИСПРАВЛЕНИЕ P0: передаём mathAiAgreements для обязательной проверки
     const interactiveOrders = buildInteractiveOrders(
       analysis.portfolioAnalysis.assetsAnalysis,
       activeOrders,
+      ai.mathAiAgreements,
     );
 
     if (interactiveOrders.length > 0) {
@@ -183,8 +185,14 @@ export class NotificationAgent extends AgentBase {
     );
 
     // Строим DashboardReportBuilder с KPI-данными (единый вызов, без two-phase init)
-    // Используем totalBalance из "Отчет по сделкам" (C10 = Итого активов),
-    // а не пересчитываем из assetsAnalysis (там currentPrice берётся из "Стоимость" = ликвидационная цена)
+    // ИСПРАВЛЕНИЕ P1: единый знаменатель и документирование финансовых показателей.
+    // totalBalance (totalVal) = macroGoals.totalBalance из Excel (лист «Отчет по сделкам», C10 = Итого активов).
+    // profitC10 = реализованная прибыль/убыток (исторический результат из Excel).
+    // profitC11 = нереализованная прибыль/убыток (текущий финансовый результат из Excel).
+    // investedNet = чистые вложенные средства (взносы - выводы).
+    //
+    // НИЧЕГО НЕ суммируется дважды: totalBalance включает текущую стоимость всех позиций.
+    // profitC10 и profitC11 — разные метрики, а не дубли.
     const totalVal = data.macroGoals.totalBalance;
     const totalNetProfitRub = data.historicalTrades.profitC11;
     const aiBoxHtml = this.buildAiBoxHtml(analysis, ai);
@@ -202,7 +210,8 @@ export class NotificationAgent extends AgentBase {
         investedNet: data.investedFunds.totalNet,
         c10Color: data.historicalTrades.profitC10 >= 0 ? '#56d364' : '#ff7b72',
         c11Color: totalNetProfitRub >= 0 ? '#56d364' : '#ff7b72',
-        cbrRate: 0, // будет из macroResearch в будущем
+        // ИСПРАВЛЕНИЕ P1: используем реальную ставку ЦБ из data.cbrRateData
+        cbrRate: data.cbrRateData?.rate ?? 0,
         dateStr: new Date().toLocaleDateString('ru-RU'),
         timeStr: new Date().toLocaleTimeString('ru-RU'),
         aiBoxHtml,

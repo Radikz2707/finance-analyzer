@@ -8,6 +8,17 @@
  * - какие агенты нужны
  * - сложность вопроса
  * - нужен ли Consilium
+ *
+ * @module pipeline/director/nl-parser
+ *
+ * @example
+ * ```ts
+ * import { parseUserMessage, looksLikeGreeting } from './nl-parser.js';
+ *
+ * const question = 'Как дела с Сбером?';
+ * const result = parseUserMessage(question);
+ * // => { category: 'asset', tickers: ['SBER'], intent: 'understand', ... }
+ * ```
  */
 
 import type {
@@ -16,10 +27,34 @@ import type {
   UserIntent,
   AgentRole,
 } from './director-types.js';
+import type { UserCorrection } from './nl-parser-types.js';
 
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+// СОДЕРЖАНИЕ (навигация по разделам)
+// ═══════════════════════════════════════════════════════════
+//
+// 1. Словари тикеров          (стр. 25)   — KNOWN_TICKERS, RUSSIAN_NAME_TO_TICKER
+// 2. Словари ключевых слов    (стр. 295)  — CATEGORY_KEYWORDS, INTENT_KEYWORDS
+// 3. Паттерны операций        (стр. 583)  — FILE/TERMINAL/PROCESS/AUTOMATION/CODE
+// 4. Быстрые проверки         (стр. 921)  — looksLike* функции (greeting, status, task, etc.)
+// 5. Поправки пользователя   (стр. 1106) — CORRECTION_PATTERNS, extractCorrection
+// 6. Парсер                   (стр. 1163) — detectCategory, detectIntent, extractTickers
+// 7. Основной парсер          (стр. 1519) — parseUserMessage, hasTicker, quickCategory
+//
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
 // 1. Словари тикеров
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+/**
+ * @section 1 - Словари тикеров
+ * @description Известные тикеры и маппинг русских названий компаний.
+ * @see KNOWN_TICKERS - массив тикеров из активного списка портфеля
+ * @see RUSSIAN_NAME_TO_TICKER - маппинг русских названий → тикеры
+ * @see fuzzyMatchTicker - fuzzy-поиск тикера по частичному совпадению
+ */
+
+/** Известные тикеры в портфеле */
 
 /** Известные тикеры в портфеле */
 const KNOWN_TICKERS: string[] = [
@@ -251,6 +286,15 @@ const RUSSIAN_NAME_TO_TICKER: Record<string, string> = {
 /**
  * Fuzzy matching для поиска тикеров по частичному совпадению.
  * Используется для обработки опечаток и разговорных форм.
+ *
+ * @param text - текст для поиска тикера
+ * @returns найденный тикер или null
+ *
+ * @example
+ * ```ts
+ * fuzzyMatchTicker('сбер') // => 'SBER'
+ * fuzzyMatchTicker('полюс золото') // => 'PLZL'
+ * ```
  */
 function fuzzyMatchTicker(text: string): string | null {
   const lower = text.toLowerCase().trim();
@@ -288,9 +332,17 @@ function fuzzyMatchTicker(text: string): string | null {
   return null;
 }
 
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
 // 2. Словари ключевых слов
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+/**
+ * @section 2 - Словари ключевых слов
+ * @description Ключевые слова для определения категории и интенции вопроса.
+ * @see CATEGORY_KEYWORDS - слова для каждой UserQuestionCategory
+ * @see INTENT_KEYWORDS - слова для каждой UserIntent
+ * @see detectCategory - определение категории по тексту
+ * @see detectIntent - определение интенции по тексту
+ */
 
 /**
  * Ключевые слова для категорий вопросов.
@@ -579,9 +631,31 @@ const INTENT_KEYWORDS: Record<UserIntent, string[]> = {
   'general-inquiry': ['расскажи', 'объясни', 'что такое', 'помощь'],
 };
 
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
 // 2.5. Операции: файлы и терминал
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+/**
+ * @section 2.5 - Паттерны операций
+ * @description Регулярные выражения для определения типов операций.
+ * @see FILE_REQUEST_PATTERNS - файловые операции (чтение/запись/поиск)
+ * @see TERMINAL_REQUEST_PATTERNS - терминальные операции (npm/git/python)
+ * @see PROCESS_REQUEST_PATTERNS - управление процессами
+ * @see AUTOMATION_REQUEST_PATTERNS - workflow-автоматизация
+ * @see CODE_REQUEST_PATTERNS - задачи разработки
+ * @see SELF_IMPROVEMENT_REQUEST_PATTERNS - самоулучшение проекта
+ * @see PACKAGE_REQUEST_PATTERNS - управление зависимостями
+ * @see SYSTEM_STATUS_REQUEST_PATTERNS - системные ресурсы
+ * @see GULP_RESOURCE_REQUEST_PATTERNS - gulp-конструкторы ресурсов
+ * @see looksLikeFileRequest - проверка файловой операции
+ * @see looksLikeTerminalRequest - проверка терминальной операции
+ * @see looksLikeProcessRequest - проверка процесса
+ * @see looksLikeAutomationRequest - проверка автоматизации
+ * @see looksLikeCodeRequest - проверка задачи разработки
+ * @see looksLikeGulpResourceRequest - проверка gulp-команды
+ * @see looksLikePackageRequest - проверка package-запроса
+ * @see looksLikeSystemStatusRequest - проверка системных ресурсов
+ * @see looksLikeSelfImprovementRequest - проверка самоулучшения
+ */
 
 /**
  * Паттерны, указывающие на файловую операцию (роль `file`).
@@ -1006,9 +1080,15 @@ export function looksLikeSimpleChat(text: string): boolean {
   return SIMPLE_CHAT_PATTERNS.some((pattern) => pattern.test(lower));
 }
 
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
 // 2.6. Оффтопик: темы вне компетенции финансового директора
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+/**
+ * @section 2.6 - Оффтопик
+ * @description Паттерны тем, НЕ относящихся к портфелю/финансам.
+ * @see OFF_TOPIC_PATTERNS - regex для нефинансовых тем
+ * @see looksLikeOffTopic - проверка оффтопика
+ */
 
 /**
  * Паттерны тем, НЕ относящихся к портфелю/финансам: погода, спорт,
@@ -1066,9 +1146,15 @@ export function looksLikeOffTopic(text: string): boolean {
   return OFF_TOPIC_PATTERNS.some((pattern) => pattern.test(lower));
 }
 
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
 // 2.7. Запрос отчёта/анализа портфеля
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+/**
+ * @section 2.7 - Запрос отчёта
+ * @description Паттерны запроса отчёта/анализа портфеля.
+ * @see REPORT_REQUEST_PATTERNS - regex для запросов отчётов
+ * @see looksLikeReportRequest - проверка запроса отчёта
+ */
 
 /**
  * Паттерны запроса отчёта/анализа портфеля: «ты видишь мой отчёт?»,
@@ -1093,9 +1179,17 @@ export function looksLikeReportRequest(text: string): boolean {
   return REPORT_REQUEST_PATTERNS.some((pattern) => pattern.test(lower));
 }
 
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
 // 2.8. Поправки пользователя к данным
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+/**
+ * @section 2.8 - Поправки пользователя
+ * @description Паттерны и функции для извлечения поправок к данным портфеля.
+ * @see CORRECTION_PATTERNS - regex для поправок
+ * @see UserCorrection - интерфейс поправки (экспортируется из nl-parser-types)
+ * @see looksLikeCorrection - проверка наличия поправки
+ * @see extractCorrection - извлечение поправки из текста
+ */
 
 /**
  * Паттерны поправок пользователя к данным портфеля:
@@ -1112,14 +1206,6 @@ const CORRECTION_PATTERNS: RegExp[] = [
   /составляет\s+\d+[.,]?\d*\s*%/i,
   /это\s+\d+[.,]?\d*\s*%/i,
 ];
-
-/** Извлечённая поправка: тикер (если найден) и корректный процент */
-export interface UserCorrection {
-  /** Тикер, к которому относится поправка (null — применить к последнему) */
-  ticker: string | null;
-  /** Корректная доля актива, % */
-  currentPercent: number;
-}
 
 /**
  * Определить, содержит ли сообщение поправку к данным портфеля.
@@ -1159,9 +1245,20 @@ export function extractCorrection(
   return { ticker, currentPercent };
 }
 
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
 // 3. Парсер
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+/**
+ * @section 3 - Парсер
+ * @description Ядро парсера: определение категории, интенции, тикеров, сложности.
+ * @see detectCategory - определение категории вопроса
+ * @see detectIntent - определение интенции пользователя
+ * @see extractTickers - извлечение тикеров из текста
+ * @see estimateComplexity - оценка сложности вопроса (1-5)
+ * @see determineRequiredAgents - определение нужных агентов
+ * @see needsConsilium - проверка необходимости Consilium
+ * @see formulateTopic - формирование темы вопроса
+ */
 
 /**
  * Порядок проверки категорий (от более специфичных к более общим).
@@ -1507,14 +1604,37 @@ function formulateTopic(text: string, category: UserQuestionCategory): string {
   }
 }
 
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
 // 4. Основной парсер
-// ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════
+/**
+ * @section 4 - Основной парсер
+ * @description Точка входа: parseUserMessage, hasTicker, quickCategory.
+ * @see parseUserMessage - главный метод парсинга
+ * @see hasTicker - быстрая проверка наличия тикера
+ * @see quickCategory - быстрое определение категории
+ */
 
 /**
  * Парсить естественный язык пользователя в InterpretedQuestion.
- * @param text - текст вопроса
+ *
+ * @param text - текст вопроса пользователя
  * @param knownAssets - массив активов из портфеля [{ticker, name}]
+ * @returns интерпретированный вопрос с категорией, тикерами, интенцией
+ *
+ * @example
+ * ```ts
+ * const result = parseUserMessage('Как дела с Сбером и Лукойлом?');
+ * // => {
+ * //      category: 'comparison',
+ * //      tickers: ['SBER', 'LKOH'],
+ * //      intent: 'understand',
+ * //      complexity: 3,
+ * //      requiredAgents: ['analysis', 'ai'],
+ * //      needsConsilium: false,
+ * //      topic: 'Вопрос по SBER, LKOH'
+ * //    }
+ * ```
  */
 export function parseUserMessage(
   text: string,

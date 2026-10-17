@@ -24,7 +24,7 @@
     "test": "vitest",
     "test:run": "cross-env LANG=en_US.UTF-8 vitest run",
     "test:integration": "cross-env RUN_INTEGRATION=1 vitest run src/js/modules/integration-tests",
-    "lint": "cross-env NODE_NO_WARNINGS=1 G_MESSAGES_DEBUG=none node --no-deprecation --max-old-space-size=4096 node_modules/gulp/bin/gulp.js lintJs lintCss && npx tsc --noEmit",
+    "lint": "cross-env NODE_NO_WARNINGS=1 G_MESSAGES_DEBUG=none node --no-deprecation --max-old-space-size=8192 node_modules/gulp/bin/gulp.js lintJs lintCss && npx tsc --noEmit",
     "lint:gulp": "npx tsc -p gulp/tsconfig.json",
     "lint:fix": "npx stylelint \"src/**/*.scss\" --fix",
     "clean": "gulp cleandist",
@@ -47,7 +47,10 @@
     "app:build:dir": "npm run app:build:js && npm run app:rebuild && electron-builder --win dir --config desktop/electron-builder.yml",
     "release:patch": "npm version patch && npm run app:build",
     "release:minor": "npm version minor && npm run app:build",
-    "release:major": "npm version major && npm run app:build"
+    "release:major": "npm version major && npm run app:build",
+    "audit": "node gulp/system/run-audit.js && node gulp/system/generate-blueprint.js",
+    "blueprint": "node gulp/system/generate-blueprint.js",
+    "check:memory": "node scripts/check-vscode-memory.mjs"
   },
   "lint-staged": {
     "src/**/*.scss": "npx stylelint --fix"

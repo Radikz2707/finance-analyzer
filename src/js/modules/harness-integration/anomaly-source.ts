@@ -58,11 +58,16 @@ export interface AnomalySource {
 /** Получить тикеры портфеля из Excel-агрегации (как в DataAgent) */
 async function getPortfolioTickers(): Promise<string[]> {
   const parser = new XlsxParserModule();
-  const aggregated = await parser.parseAggregatedPortfolio();
-  return parser
-    .aggregatedToCurrentAssets(aggregated)
-    .map((asset) => asset.ticker)
-    .filter((ticker) => ticker.length > 0);
+  try {
+    const aggregated = await parser.parseAggregatedPortfolio();
+    return parser
+      .aggregatedToCurrentAssets(aggregated)
+      .map((asset) => asset.ticker)
+      .filter((ticker) => ticker.length > 0);
+  } finally {
+    // Освобождаем память — workbook больше не нужен
+    parser.cleanup();
+  }
 }
 
 /** Дата «сегодня» в формате YYYY-MM-DD */

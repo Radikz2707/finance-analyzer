@@ -50,7 +50,6 @@ export {
   deleteModel,
   copyModel,
   cleanAiResponse,
-  validateAiOutput,
   formatFileSize,
   formatModelList,
   OLLAMA_BASE_URL,
@@ -59,8 +58,6 @@ export {
   type OllamaShowResponse,
   type OllamaChatOptions,
   type OllamaMessage,
-  type DeterministicAmounts,
-  type ArithmeticValidationResult,
 } from './ollama-manager.js';
 export {
   streamChat,

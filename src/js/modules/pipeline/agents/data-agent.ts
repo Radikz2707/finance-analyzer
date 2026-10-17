@@ -24,7 +24,9 @@ import type {
   PriceSeriesInput,
 } from '../../python-engine/types.js';
 import { getCbrKeyRate } from '../../ai-advisor/cbr-rate.js';
+import type { CbrRateData } from '../../ai-advisor/cbr-rate.js';
 import { positionsRepo, newsRepo } from '../../db-manager/db-manager.js';
+import { getLogger } from '../../logger/index.js';
 
 // ──────────────────────────────────────────────
 // 0. Хелперы персиста новостей
@@ -139,6 +141,8 @@ export interface DataAgentOutput {
   keyRate: number;
   /** Дата обновления ключевой ставки */
   keyRateDate: string;
+  /** Полные данные о ключевой ставке ЦБ (включая source, isFresh) */
+  cbrRateData: CbrRateData | null;
 }
 
 // ──────────────────────────────────────────────
@@ -161,6 +165,7 @@ export interface DataAgentOutput {
  * дальше по конвейеру (Research Agent + Analysis Agent).
  */
 export class DataAgent extends AgentBase {
+  private readonly log = getLogger('data-agent');
   private parser: XlsxParserModule;
 
   constructor(config?: AgentConfig) {
@@ -169,7 +174,7 @@ export class DataAgent extends AgentBase {
   }
 
   protected async executeInternal(_input: unknown): Promise<DataAgentOutput> {
-    console.log('[DataAgent] >>> Начало парсинга Excel/QUIK');
+    this.log.info('[DataAgent] >>> Начало парсинга Excel/QUIK');
 
     // Шаг 1: Синхронизация новых сделок
     await this.parser.syncNewTrades();
@@ -211,7 +216,7 @@ export class DataAgent extends AgentBase {
           status: 'ACTIVE',
         });
       } catch (e) {
-        console.error(`[DataAgent] ❌ Ошибка сохранения ${asset.ticker}:`, e);
+        this.log.error(`[DataAgent] ❌ Ошибка сохранения ${asset.ticker}:`, e);
       }
     }
 
@@ -262,14 +267,14 @@ export class DataAgent extends AgentBase {
           }
         }
         if (added > 0) {
-          console.log(
+          this.log.info(
             `[DataAgent] ✅ MOEX fallback: дополнено котировок по ${added} тикерам`,
           );
         }
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`[DataAgent] ⚠️ MOEX-котировки недоступны: ${errorMsg}`);
+      this.log.warn(`[DataAgent] ⚠️ MOEX-котировки недоступны: ${errorMsg}`);
     }
 
     // Шаг 6: Активные заявки QUIK
@@ -301,7 +306,7 @@ export class DataAgent extends AgentBase {
         [rssSource, moexSource, quikSource],
       );
       newsResult = await gatekeeper.run();
-      console.log(
+      this.log.info(
         `[DataAgent] ✅ Gatekeeper: ${newsResult.approvedNews.length} новостей одобрено, ` +
           `${newsResult.filteredOut.total} отфильтровано`,
       );
@@ -332,13 +337,13 @@ export class DataAgent extends AgentBase {
         }
       }
       if (persistedNews > 0) {
-        console.log(
+        this.log.info(
           `[DataAgent] 💾 Новостей сохранено в БД: ${persistedNews}`,
         );
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`[DataAgent] ⚠️ Gatekeeper ошибка: ${errorMsg}`);
+      this.log.warn(`[DataAgent] ⚠️ Gatekeeper ошибка: ${errorMsg}`);
     }
 
     // Шаг 10: Python Engine — статистические аномалии цен
@@ -372,29 +377,30 @@ export class DataAgent extends AgentBase {
         const detector = new AnomalyDetector();
         anomalies = await detector.detectAnomalies(series);
         const anomalyCount = anomalies.filter((a) => a.isLastAnomaly).length;
-        console.log(
+        this.log.info(
           `[DataAgent] 🐍 Python Engine: анализ ${anomalies.length} тикеров, ` +
             `${anomalyCount} с аномалией на последнем баре`,
         );
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`[DataAgent] ⚠️ Python Engine ошибка: ${errorMsg}`);
+      this.log.warn(`[DataAgent] ⚠️ Python Engine ошибка: ${errorMsg}`);
     }
 
     // Шаг 11: Ключевая ставка ЦБ РФ
     let keyRate = 0;
     let keyRateDate = '—';
+    let cbrRateDataResult: CbrRateData | null = null;
     try {
-      const cbrRateData = await getCbrKeyRate();
-      keyRate = cbrRateData.rate;
-      keyRateDate = cbrRateData.date;
-      console.log(
-        `[DataAgent] 🏛️ Ключевая ставка ЦБ: ${keyRate}% (от ${keyRateDate})`,
+      cbrRateDataResult = await getCbrKeyRate();
+      keyRate = cbrRateDataResult.rate;
+      keyRateDate = cbrRateDataResult.date;
+      this.log.info(
+        `[DataAgent] 🏛️ Ключевая ставка ЦБ: ${keyRate}% (от ${keyRateDate}, source=${cbrRateDataResult.source}, fresh=${cbrRateDataResult.isFresh})`,
       );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      console.warn(`[DataAgent] ⚠️ Ошибка получения ключевой ставки: ${errorMsg}`);
+      this.log.warn(`[DataAgent] ⚠️ Ошибка получения ключевой ставки: ${errorMsg}`);
     }
 
     const output: DataAgentOutput = {
@@ -421,12 +427,16 @@ export class DataAgent extends AgentBase {
       anomalies,
       keyRate,
       keyRateDate,
+      cbrRateData: cbrRateDataResult,
     };
 
-    console.log(
+    this.log.info(
       `[DataAgent] ✅ Парсинг завершён: ${assets.length} активов, ` +
         `${accounts.length} счетов, ${activeOrders.length} заявок`,
     );
+
+    // Освобождаем память — workbook больше не нужен
+    this.parser.cleanup();
 
     return output;
   }

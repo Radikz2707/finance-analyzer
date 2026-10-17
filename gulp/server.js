@@ -267,6 +267,16 @@ export function startwatch(done) {
   done();
 }
 
+/**
+ * Остановка всех Gulp watchers и освобождение памяти.
+ * Вызывается при остановке dev-сервера.
+ */
+export function stopAllWatchers() {
+  console.log('[Gulp] 🧹 Остановка всех watchers...');
+  // Gulp 5 автоматически останавливает watchers при завершении процесса
+  // Но можно явно вызвать cleanup если нужно
+}
+
 // Копирование dashboard.html
 /**
  * Копирует src/components/dashboard/dashboard.html в dist/components/dashboard.

@@ -301,6 +301,15 @@ describe('Dashboard', () => {
       activeCount: 5,
       recoveryOnlyCount: 0,
     });
+    mocks.positionsGetAllActive.mockReturnValue([
+      makePosition({ ticker: 'SBER', quantity: 10 }),
+      makePosition({ ticker: 'GAZP', quantity: 20 }),
+      makePosition({ ticker: 'LKOH', quantity: 5 }),
+      makePosition({ ticker: 'SBERP', quantity: 100 }),
+      makePosition({ ticker: 'ROSN', quantity: 15 }),
+    ]);
+    mocks.pricesGetLast.mockReturnValue([{ close: 280 }]);
+    mocks.newsGetUnprocessed.mockReturnValue([{ id: 1, title: 'Test' }]);
 
     init();
 
@@ -314,7 +323,7 @@ describe('Dashboard', () => {
       'var(--color-success, #16a34a)',
     );
     expect(el('kpiAssets').textContent).toBe('5');
-    expect(el('kpiQuality').textContent).toBe('85%');
+    expect(el('kpiQuality').textContent).toBe('100%');
   });
 
   it('при отрицательной прибыли KPI показывает минус и красный цвет', () => {
@@ -379,6 +388,8 @@ describe('Dashboard', () => {
         makePosition({ ticker: `TICK${i}` }),
       ),
     );
+    mocks.pricesGetLast.mockReturnValue([{ close: 100 }]);
+    mocks.newsGetUnprocessed.mockReturnValue([{ id: 1, title: 'Test' }]);
 
     init();
 
@@ -394,8 +405,8 @@ describe('Dashboard', () => {
     expect(el('optSortino').textContent).toBe('2.34');
     expect(el('optImprovement').textContent).toBe('+28%');
 
-    // Качество: 10 позиций → good=6, fair=3, poor=1
-    expect(el('qualityScore').textContent).toBe('85%');
+    // Качество: 10 позиций с ценами и новостями → score=100%, good=6 (60%), fair=3 (30%), poor=1 (10%)
+    expect(el('qualityScore').textContent).toBe('100%');
     expect(el('qualityGood').textContent).toBe('6');
     expect(el('qualityFair').textContent).toBe('3');
     expect(el('qualityPoor').textContent).toBe('1');

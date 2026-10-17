@@ -44,6 +44,7 @@ import {
   type RawAIJson,
   type ValidationResult as StructuredValidationResult,
 } from './structured-ai-recommendation.js';
+import { getLogger } from '../logger/index.js';
 
 /** Задержка (мс) */
 function sleep(ms: number): Promise<void> {
@@ -174,6 +175,8 @@ export class AiClient {
   private yandexGptKey: string;
   /** Маршрутизатор ИИ-провайдеров: circuit breaker + retry + fallback chain */
   private readonly aiRouter = new AiProviderRouter();
+  /** Логгер модуля */
+  private readonly log = getLogger('ai-client');
 
   constructor() {
     this.openRouterKey = process.env.OPENROUTER_API_KEY || '';
@@ -276,7 +279,7 @@ export class AiClient {
       stocksPct = Math.round(stocksPct * 100) / 100;
       bondsPct = Math.round(bondsPct * 100) / 100;
       etfPct = Math.round(etfPct * 100) / 100;
-      console.log(
+      this.log.info(
         '[AI_CLIENT] Fallback assetType detection: stocksPct:',
         stocksPct,
         '| bondsPct:',
@@ -526,9 +529,9 @@ export class AiClient {
       rejectUnauthorized: false,
     });
 
-    console.log('[OPENROUTER] Sending request to:', modelConfig.baseUrl);
-    console.log('[OPENROUTER] Model:', modelConfig.modelName);
-    console.log(
+    this.log.info('[OPENROUTER] Sending request to:', modelConfig.baseUrl);
+    this.log.info('[OPENROUTER] Model:', modelConfig.modelName);
+    this.log.info(
       '[OPENROUTER] Key prefix:',
       this.openRouterKey.substring(0, 15) + '...',
     );
@@ -556,7 +559,7 @@ export class AiClient {
       },
     );
 
-    console.log('[OPENROUTER] ✅ Response received, status:', response.status);
+    this.log.info('[OPENROUTER] ✅ Response received, status:', response.status);
     return response.data.choices[0].message.content;
   }
 
@@ -608,7 +611,7 @@ export class AiClient {
       throw new Error('GIGACHAT_API_KEY не настроен');
     }
 
-    console.log('[GigaChat] Использование Authorization Key...');
+    this.log.info('[GigaChat] Использование Authorization Key...');
 
     try {
       const response = await axios.post(
@@ -640,7 +643,7 @@ export class AiClient {
       const err = error as Error & {
         response?: { status?: number; data?: unknown };
       };
-      console.error(
+      this.log.error(
         '[GigaChat] Authorization Key запрос не удался: ' +
           `status=${err.response?.status ?? '?'} body=${this.formatErrorBody(err.response?.data) || (error instanceof Error ? error.message : String(error))}`,
       );
@@ -693,7 +696,7 @@ export class AiClient {
     const [clientId, clientSecret] = decodedKey.split(':');
     const auth = Buffer.from(clientId + ':' + clientSecret).toString('base64');
 
-    console.log(
+    this.log.info(
       `[GigaChat] Ключ: OAuth (ClientID:Secret), длина=${this.gigaChatKey.length}, ` +
         `префикс=${this.gigaChatKey.slice(0, 4)}...`,
     );
@@ -712,7 +715,7 @@ export class AiClient {
       // при частых запросах подряд.
       if (i > 0) await sleep(1500);
       try {
-        console.log(`[GigaChat] Получение OAuth токена (scope=${scope})...`);
+        this.log.debug(`[GigaChat] Получение OAuth токена (scope=${scope})...`);
 
         // Официальный OAuth-эндпоинт Сбера. api.giga.chat отдавал 403 от nginx
         // (запрос не доходил до API), gigachat.devices.sber.ru — ENOTFOUND.
@@ -742,7 +745,7 @@ export class AiClient {
         this.gigaChatToken = accessToken;
         this.gigaChatTokenExpiry = Date.now() + 90000;
 
-        console.log(
+        this.log.info(
           `[GigaChat] ✅ Токен получен (scope=${scope}, действует 90 сек)`,
         );
         return accessToken;
@@ -751,7 +754,7 @@ export class AiClient {
         const err = error as Error & {
           response?: { status?: number; data?: unknown };
         };
-        console.error(
+        this.log.error(
           `[GigaChat] OAuth scope=${scope} не удался: ` +
             `status=${err.response?.status ?? '?'} body=${this.formatErrorBody(err.response?.data) || (error instanceof Error ? error.message : String(error))}`,
         );
@@ -861,14 +864,14 @@ export class AiClient {
         const status = err.response?.status;
         const isRateLimit = status === 429;
         if (!isRateLimit || attempt >= retryDelaysMs.length) {
-          console.error(
+          this.log.error(
             '[GigaChat] chat/completions не удался: ' +
               `status=${status ?? '?'} body=${this.formatErrorBody(err.response?.data) || (error instanceof Error ? error.message : String(error))}`,
           );
           throw error;
         }
         const delayMs = retryDelaysMs[attempt]!;
-        console.warn(
+        this.log.warn(
           `[GigaChat] 429 Too Many Requests — повтор через ${delayMs}мс (попытка ${attempt + 1}/${retryDelaysMs.length})`,
         );
         await sleep(delayMs);
@@ -963,21 +966,21 @@ export class AiClient {
     assetTickers?: string[],
     assetsAnalysis?: AssetAnalysis[],
   ): Promise<string> {
-    console.log('[Ollama] Проверка подключения к localhost:11434...');
+    this.log.info('[Ollama] Проверка подключения к localhost:11434...');
 
     // Проверяем, запущен ли Ollama
     const isRunning = await isOllamaRunning();
-    console.log('[Ollama] isOllamaRunning:', isRunning);
+    this.log.info('[Ollama] isOllamaRunning:', isRunning);
     if (!isRunning) {
       throw new Error('Ollama не запущен. Запустите Ollama на localhost:11434');
     }
 
     // Формируем полный промпт для кэширования
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
-    console.log('[Ollama] fullPrompt length:', fullPrompt.length);
+    this.log.info('[Ollama] fullPrompt length:', fullPrompt.length);
 
     // Пробуем получить из кэша
-    console.log('[Ollama] calling getCachedResponse...');
+    this.log.info('[Ollama] calling getCachedResponse...');
     const cachedResult = await getCachedResponse(
       fullPrompt,
       modelConfig.modelName,
@@ -992,7 +995,7 @@ export class AiClient {
         );
       },
     );
-    console.log('[Ollama] getCachedResponse returned');
+    this.log.info('[Ollama] getCachedResponse returned');
 
     return cachedResult.content;
   }
@@ -1008,7 +1011,7 @@ export class AiClient {
     assetTickers?: string[],
     assetsAnalysis?: AssetAnalysis[],
   ): Promise<string> {
-    console.log(`[Ollama] Запрос к модели ${modelConfig.modelName}...`);
+    this.log.info(`[Ollama] Запрос к модели ${modelConfig.modelName}...`);
 
     const messages: OllamaMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -1017,7 +1020,7 @@ export class AiClient {
 
     try {
       // Пробуем стриминг для лучшего UX
-      console.log('[Ollama] calling streamChat...');
+      this.log.info('[Ollama] calling streamChat...');
       let streamResult: StreamResult = await streamChat(
         messages,
         modelConfig.modelName,
@@ -1034,7 +1037,7 @@ export class AiClient {
       // Один ретрай на транзиентные сбои (5xx, обрывы соединения):
       // модель могла ещё не загрузиться или сервер был перегружен
       if (!streamResult.success && isTransientOllamaError(streamResult.error)) {
-        console.log(
+        this.log.warn(
           '[Ollama] ⚠️ Транзиентный сбой стриминга (' +
             (streamResult.error || 'ошибка') +
             '), повтор через 2 сек...',
@@ -1054,7 +1057,7 @@ export class AiClient {
         );
       }
 
-      console.log(
+      this.log.info(
         '[Ollama] streamChat returned, success:',
         streamResult.success,
       );
@@ -1064,33 +1067,33 @@ export class AiClient {
       }
 
       // Очищаем ответ от markdown-разметки и артефактов
-      console.log('[Ollama] calling cleanAiResponse...');
+      this.log.info('[Ollama] calling cleanAiResponse...');
       const cleanedResponse = cleanAiResponse(
         streamResult.content,
         assetTickers,
       );
-      console.log('[Ollama] cleanAiResponse returned');
+      this.log.info('[Ollama] cleanAiResponse returned');
 
       // AI OUTPUT VALIDATION — детерминированная проверка после cleanAiResponse
-      console.log('[Ollama] calling validateAiOutput...');
+      this.log.info('[Ollama] calling validateAiOutput...');
       const validatedResponse = validateAiOutput(cleanedResponse);
-      console.log('[Ollama] validateAiOutput returned');
+      this.log.info('[Ollama] validateAiOutput returned');
 
       // ARITHMETIC CONSISTENCY — проверяем суммы против deterministic
-      console.log('[Ollama] calling validateArithmeticConsistency...');
+      this.log.info('[Ollama] calling validateArithmeticConsistency...');
       const deterministicAmounts = buildDeterministicAmounts(assetsAnalysis);
       const arithmeticValidatedResponse = validateArithmeticConsistency(
         validatedResponse,
         deterministicAmounts,
       );
-      console.log('[Ollama] validateArithmeticConsistency returned');
+      this.log.info('[Ollama] validateArithmeticConsistency returned');
 
-      console.log(
+      this.log.debug(
         '[Ollama] about to format stream stats, totalDuration:',
         streamResult.totalDuration,
       );
 
-      console.log(
+      this.log.info(
         `[Ollama] ✅ Ответ получен: ${streamResult.content.length} символов, ` +
           `${streamResult.totalTokens} токенов, ` +
           `${((streamResult.totalDuration || 0) / 1_000_000_000).toFixed(2)}с`,
@@ -1099,7 +1102,7 @@ export class AiClient {
       return arithmeticValidatedResponse;
     } catch (error) {
       // Если стриминг не сработал, пробуем обычный запрос
-      console.log('[Ollama] ⚠️ Стриминг не удался, пробуем обычный запрос...');
+      this.log.info('[Ollama] ⚠️ Стриминг не удался, пробуем обычный запрос...');
 
       try {
         const result: StreamResult = await chatWithoutStream(
@@ -1127,7 +1130,7 @@ export class AiClient {
           deterministicAmounts,
         );
 
-        console.log(
+        this.log.info(
           `[Ollama] ✅ Ответ получен: ${result.content.length} символов`,
         );
 
@@ -1164,7 +1167,7 @@ export class AiClient {
     modelName: string,
     onProgress?: (status: string, percent: number) => void,
   ): Promise<boolean> {
-    console.log(`[Ollama] Установка модели ${modelName}...`);
+    this.log.info(`[Ollama] Установка модели ${modelName}...`);
 
     return pullModel(modelName, (status, completed, total) => {
       if (total > 0 && onProgress) {
@@ -1231,7 +1234,7 @@ export class AiClient {
       accountsInfo,
       macroData,
     );
-    console.log('[AI_CLIENT] buildPortfolioContext OK');
+    this.log.info('[AI_CLIENT] buildPortfolioContext OK');
 
     const systemPrompt = buildSystemPrompt(
       macroData.keyRate,
@@ -1265,7 +1268,7 @@ export class AiClient {
     const availableModels = getAvailableModels();
 
     if (availableModels.length === 0) {
-      console.warn(
+      this.log.warn(
         '[AI] Нет доступных API-ключей. Используется локальный fallback.',
       );
       return {
@@ -1282,10 +1285,10 @@ export class AiClient {
       };
     }
 
-    console.log(
+    this.log.info(
       `[AI] Доступные модели: ${availableModels.map((m) => m.name).join(', ')}`,
     );
-    console.log(`[AI] Попытка запроса к: ${CURRENT_AI_MODEL.name}...`);
+    this.log.info(`[AI] Попытка запроса к: ${CURRENT_AI_MODEL.name}...`);
 
     // Пробуем модели по очереди: circuit breaker + retry + fallback chain.
     // Каждый провайдер защищён собственным CircuitBreaker; после N ошибок
@@ -1326,28 +1329,28 @@ export class AiClient {
       );
       aiText = routeResult.text;
       usedProviderName = routeResult.providerName;
-      console.log(
+      this.log.info(
         `[AI] ✅ Ответ получен от ${usedProviderName} (${aiText.length} символов)`,
       );
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.error('[AI] Ошибка всех моделей: ' + msg);
+      this.log.error('[AI] Ошибка всех моделей: ' + msg);
       // Детальная отладка: выводим полный ответ ошибки
       if (error instanceof Error && 'response' in error) {
         const axiosError = error as Error & {
           response?: { data?: unknown; status?: number };
         };
         if (axiosError.response?.data) {
-          console.error(
+          this.log.error(
             '[AI] Response data:',
             JSON.stringify(axiosError.response.data, null, 2).substring(0, 500),
           );
         }
-        console.error('[AI] Response status:', axiosError.response?.status);
+        this.log.error('[AI] Response status:', axiosError.response?.status);
       }
 
       // Если все модели не сработали — локальный fallback
-      console.warn(
+      this.log.warn(
         '[AI] ⚠️ Все модели недоступны. Используется локальный fallback.',
       );
       return {
@@ -1377,24 +1380,24 @@ export class AiClient {
           structuredJson,
           assetTickers,
         );
-        console.log(
+        this.log.info(
           `[AI] JSON извлечён: ticker=${structuredJson.ticker}, ` +
             `action=${structuredJson.recommendedAction}, ` +
             `valid=${structuredValidation?.valid ?? 'N/A'}`,
         );
         if (structuredValidation && !structuredValidation.valid) {
-          console.warn(
+          this.log.warn(
             '[AI] ⚠️ JSON валидация не пройдена:',
             structuredValidation.errors,
           );
         }
       } else {
-        console.warn('[AI] JSON-блок не найден в ответе');
+        this.log.warn('[AI] JSON-блок не найден в ответе');
         // Логгируем начало ответа для отладки
-        console.log('[AI] Начало ответа AI:', aiText.slice(0, 500));
+        this.log.info('[AI] Начало ответа AI:', aiText.slice(0, 500));
       }
     } catch (err) {
-      console.error('[AI] Ошибка парсинга JSON:', err);
+      this.log.error('[AI] Ошибка парсинга JSON:', err);
     }
 
     return {

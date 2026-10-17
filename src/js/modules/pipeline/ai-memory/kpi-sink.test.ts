@@ -91,6 +91,7 @@ function makeDataOutput(
     ],
     keyRate: 21,
     keyRateDate: '29.10.2024',
+    cbrRateData: null,
     ...overrides,
   };
 }

@@ -131,6 +131,41 @@ const FOLLOW_UP_PREFIXES = [
 ];
 
 /**
+ * Разбить текст на чанки для streaming (по предложениям/абзацам).
+ * UI получает части ответа LLM каждые 20-50 символов.
+ */
+function splitIntoChunks(text: string): string[] {
+  const chunks: string[] = [];
+  const chunkSize = 30; // символов на чанк
+
+  // Сначала разбиваем на абзацы
+  const paragraphs = text.split('\n\n');
+
+  for (const paragraph of paragraphs) {
+    if (paragraph.length <= chunkSize) {
+      if (paragraph) chunks.push(paragraph);
+      continue;
+    }
+
+    // Разбиваем длинный абзац на чанки
+    let remaining = paragraph;
+    while (remaining.length > 0) {
+      // Ищем удобную точку разрыва (пробел, знак препинания)
+      let splitAt = chunkSize;
+      const spaceIndex = remaining.indexOf(' ', chunkSize);
+      if (spaceIndex > 0 && spaceIndex < chunkSize + 20) {
+        splitAt = spaceIndex;
+      }
+
+      chunks.push(remaining.slice(0, splitAt).trim());
+      remaining = remaining.slice(splitAt).trim();
+    }
+  }
+
+  return chunks.filter((c) => c.length > 0);
+}
+
+/**
  * Director Agent — координатор диалога и решений.
  */
 export class DirectorAgent implements IDirectorAgent {
@@ -839,6 +874,173 @@ export class DirectorAgent implements IDirectorAgent {
       activity,
       news: this.newsImpacts,
     };
+  }
+
+  /**
+   * Потоковая версия processUserMessage.
+   * Отправляет части ответа LLM через onChunk в реальном времени.
+   * Используется для real-time отображения в UI виджета.
+   *
+   * Поддерживает streaming только для LLM-ответов (smalltalk, analysis).
+   * Системные команды (/status, /log) и быстрые ответы — без streaming.
+   */
+  async processUserMessageStreaming(
+    rawMessage: string,
+    onChunk: (chunk: string) => void,
+  ): Promise<DirectorResponse> {
+    const message = (rawMessage ?? '').trim();
+    this._state = 'running';
+    const session = this.chat.getOrCreateSession(
+      this.currentSessionId ?? undefined,
+    );
+    this.currentSessionId = session.sessionId;
+
+    // Новостной фон
+    this.newsImpacts = this.newsCache
+      ? this.newsDriver.analyzePortfolio(this.facts, this.newsCache)
+      : [];
+
+    // Системные команды — без streaming (мгновенный ответ)
+    const parsed = parseChatInput(message);
+    if (parsed.kind === 'command') {
+      return this.handleChatCommand(parsed.command, message);
+    }
+
+    // NLU анализ
+    const dialogueAnalysis = await this.dialogue.analyze({
+      text: message,
+      context: this.dialogue.getContext(),
+      facts: this.facts,
+    });
+
+    // Быстрые пути — без streaming
+    if (dialogueAnalysis.intent === 'status') {
+      this.chat.appendMessage(this.currentSessionId, 'user', message);
+      this.memory.saveConversation('user', message, []);
+      const replyText = this.buildStatusDigest();
+      this.chat.appendMessage(this.currentSessionId, 'director', replyText);
+      this.memory.saveConversation('director', replyText, []);
+      this.audit.record('director.status_answered', 'Быстрый статус без LLM');
+      this._state = 'idle';
+      return {
+        text: replyText,
+        connectedAgents: [],
+        needsConsilium: false,
+      };
+    }
+
+    // Greeting/farewell — мгновенно
+    if (
+      dialogueAnalysis.intent === 'greeting' ||
+      dialogueAnalysis.intent === 'farewell'
+    ) {
+      this.chat.appendMessage(this.currentSessionId, 'user', message);
+      this.memory.saveConversation('user', message, []);
+      const replyText =
+        dialogueAnalysis.intent === 'farewell'
+          ? 'До встречи! Буду ждать ваших вопросов по портфелю. 🤝'
+          : 'Здравствуйте! Я — ваш финансовый директор. Готов обсудить портфель: ' +
+            'спросите про актив (например, «Что с SBER?»), стратегию, рынок или новости.';
+      this.chat.appendMessage(this.currentSessionId, 'director', replyText);
+      this.memory.saveConversation('director', replyText, []);
+      this.audit.record('director.greeting_answered', replyText.slice(0, 80));
+      this._state = 'idle';
+      return {
+        text: replyText,
+        connectedAgents: [],
+        needsConsilium: false,
+      };
+    }
+
+    // Оффтопик — мгновенно
+    if (dialogueAnalysis.intent === 'off-topic') {
+      this.chat.appendMessage(this.currentSessionId, 'user', message);
+      this.memory.saveConversation('user', message, []);
+      const replyText =
+        'Хороший вопрос, но он не про портфель 😊\n\n' +
+        'Я — ваш финансовый директор и разбираюсь в инвестициях, ' +
+        'а не в погоде, спорте или кулинарии. Зато могу помочь с:\n' +
+        '• «Что с SBER?» — разбор конкретного актива\n' +
+        '• «Как выглядит портфель?» — сводка по всем позициям\n' +
+        '• «Есть ли риски?» — концентрация, просадки, отклонения\n' +
+        '• «Стратегия» — план по структуре портфеля';
+      this.chat.appendMessage(this.currentSessionId, 'director', replyText);
+      this.memory.saveConversation('director', replyText, []);
+      this.audit.record('director.offtopic_answered', replyText.slice(0, 80));
+      this._state = 'idle';
+      return {
+        text: replyText,
+        connectedAgents: [],
+        needsConsilium: false,
+      };
+    }
+
+    // Smalltalk — с streaming через LLM
+    if (dialogueAnalysis.intent === 'smalltalk') {
+      this.chat.appendMessage(this.currentSessionId, 'user', message);
+      this.memory.saveConversation('user', message, []);
+
+      const fullText = await this.handleSmalltalkStreaming(
+        message,
+        onChunk,
+      );
+
+      this.chat.appendMessage(this.currentSessionId, 'director', fullText);
+      this.memory.saveConversation('director', fullText, []);
+      this.dialogue.pushDirector(fullText);
+      this._state = 'idle';
+      return {
+        text: fullText,
+        connectedAgents: [],
+        needsConsilium: false,
+      };
+    }
+
+    // Для сложных запросов (analysis, task, portfolio) — используем
+    // стандартный processUserMessage (streaming не применим из-за
+    // многошаговости: agents → consilium → synthesis).
+    // UI покажет «Director думает…» до получения полного ответа.
+    const response = await this.processUserMessage(message);
+
+    // После получения полного ответа — отправляем через onChunk
+    // для согласованности с UI
+    const chunks = splitIntoChunks(response.text);
+    for (const chunk of chunks) {
+      onChunk(chunk);
+    }
+
+    return response;
+  }
+
+  /**
+   * Обработка smalltalk с потоковой отправкой ответа LLM.
+   */
+  private async handleSmalltalkStreaming(
+    message: string,
+    onChunk: (chunk: string) => void,
+  ): Promise<string> {
+    const systemPrompt = 'Ты — дружелюбный финансовый директор инвестиционного портфеля. Отвечай кратко (2-3 предложения), естественно, с эмодзи. Если вопрос не про финансы — вежливо перенаправь к портфелю.';
+
+    try {
+      const { OllamaClient } = await import('./ollama-client.js');
+      const client = new OllamaClient({
+        temperature: 0.9,
+        maxTokens: 500,
+      });
+
+      const fullText = await client.chat(
+        [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: message },
+        ],
+        onChunk,
+      );
+
+      return fullText || 'Привет! Рад помочь с портфелем 💰';
+    } catch {
+      // Fallback без LLM
+      return 'Привет! Готов обсудить твой портфель 💰';
+    }
   }
 
   // ──────────────────────────────────────────────

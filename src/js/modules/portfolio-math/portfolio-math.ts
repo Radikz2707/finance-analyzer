@@ -1,6 +1,55 @@
 import { MacroGoals, CurrentAsset, PriceUnit } from '../xlsx-parser/xlsx-parser.js';
 import { PortfolioConfig } from '../../config/portfolio-config.js';
 
+// ============================================================================
+// Классификатор типов активов
+// ============================================================================
+
+/**
+ * Определяет класс актива (STOCK / BOND / ETF / CASH / OTHER)
+ * на основе assetType из Excel и дополнительных признаков.
+ */
+export function classifyAsset(asset: CurrentAsset): 'STOCK' | 'BOND' | 'ETF' | 'CASH' | 'OTHER' {
+  const type = (asset.assetType || '').toUpperCase().trim();
+
+  // Акции
+  if (type === 'А' || type === 'АКЦИЯ' || type === 'STOCK') {
+    return 'STOCK';
+  }
+
+  // Облигации
+  if (type === 'О' || type === 'ОБЛИГАЦИЯ' || type === 'BOND') {
+    return 'BOND';
+  }
+
+  // Фонды/ETF
+  if (type === 'Ф' || type === 'ETF' || type === 'FUND' || type.includes('ФОНД') || type.includes('ETF')) {
+    return 'ETF';
+  }
+
+  // Деньги (свободный остаток)
+  if (type === 'Д' || type === 'ДЕНЬГИ' || type === 'CASH' || type === 'ВАЛЮТА') {
+    return 'CASH';
+  }
+
+  // По умолчанию — OTHER (не учитывается в расчётах классов)
+  return 'OTHER';
+}
+
+/**
+ * Является ли актив акцией для целей расчёта stock pool.
+ */
+export function isStockAsset(asset: CurrentAsset): boolean {
+  return classifyAsset(asset) === 'STOCK';
+}
+
+/**
+ * Является ли актив облигацией для целей расчёта bond pool.
+ */
+export function isBondAsset(asset: CurrentAsset): boolean {
+  return classifyAsset(asset) === 'BOND';
+}
+
 export interface AssetAnalysis {
   name: string;
   ticker: string;
@@ -21,6 +70,10 @@ export interface AssetAnalysis {
   unrealizedProfitRub: number;
   priority: number;
   isConcentrated: boolean;
+  /** Запрет на продажу (например, для защитных позиций) */
+  holdOnly?: boolean;
+  /** Идентификатор счёта (например, 'S04J3LB' или '403GPBT') */
+  accountId?: string;
 }
 
 export interface PortfolioReportData {
@@ -36,18 +89,49 @@ export class PortfolioMathModule {
     totalLiquidationValue: number,
   ): PortfolioReportData {
     const assetsAnalysis: AssetAnalysis[] = [];
-    let allocatedStocksPercent = 0;
 
-    // Считаем allocatedStocksPercent, исключая активы с excludeFromStockPool
-    // targetPercent === undefined → НЕ учитываем (нет целевой доли)
-    // targetPercent === 0 → EXIT, НЕ учитываем
-    // targetPercent > 0 → учитываем
+    // ─── Расчёт allocatedStocksPercent и allocatedBondsPercent ───
+    // КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: учитываем ТОЛЬКО активы соответствующего класса.
+    // Фонды, деньги и другие активы НЕ попадают в stock/bond pool.
+    let allocatedStocksPercent = 0;
+    let allocatedBondsPercent = 0;
+
     assets.forEach((asset) => {
+      // Пропускаем активы с excludeFromStockPool или holdOnly
       if (asset.holdOnly || asset.excludeFromStockPool) return;
-      if (asset.targetPercent !== undefined && asset.targetPercent > 0) {
+
+      // Пропускаем активы без целевой доли или с targetPercent=0
+      if (asset.targetPercent === undefined || asset.targetPercent <= 0) return;
+
+      // Классифицируем актив и учитываем ТОЛЬКО соответствующий класс
+      const assetClass = classifyAsset(asset);
+
+      if (assetClass === 'STOCK') {
         allocatedStocksPercent += asset.targetPercent;
+      } else if (assetClass === 'BOND') {
+        allocatedBondsPercent += asset.targetPercent;
       }
+      // ETF, CASH, OTHER — НЕ учитываем в stock/bond pool
     });
+
+    // Валидация: если сумма целевых долей акций превышает макроцель — предупреждаем
+    if (allocatedStocksPercent > macro.stocksPercent) {
+      console.warn(
+        `⚠️ [VALIDATION] Сумма целевых долей акций (${allocatedStocksPercent.toFixed(2)}%) ` +
+        `превышает макроцель (${macro.stocksPercent}%). ` +
+        `Избыток: ${(allocatedStocksPercent - macro.stocksPercent).toFixed(2)}%. ` +
+        'Проверьте целевые доли в Excel.',
+      );
+    }
+
+    if (allocatedBondsPercent > macro.bondsPercent) {
+      console.warn(
+        `⚠️ [VALIDATION] Сумма целевых долей облигаций (${allocatedBondsPercent.toFixed(2)}%) ` +
+        `превышает макроцель (${macro.bondsPercent}%). ` +
+        `Избыток: ${(allocatedBondsPercent - macro.bondsPercent).toFixed(2)}%. ` +
+        'Проверьте целевые доли в Excel.',
+      );
+    }
 
     const freeStocksPoolPercent = Math.max(
       0,
@@ -123,8 +207,25 @@ export class PortfolioMathModule {
       let status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW' | 'EXIT';
       let deficitRub: number;
 
-      if (asset.targetPercent === 0 && asset.liquidationPercent > 0) {
+      // ─── КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: holdOnly проверяется ДО присвоения EXIT/REDUCE/SELL ───
+      // Если позиция запрещена к продаже, мы НЕ можем продать/уменьшить её,
+      // даже если targetPercent=0 или есть перебор.
+      if (asset.holdOnly && asset.liquidationPercent > 0) {
+        // HoldOnly: позиция запрещена к продаже → принудительный HOLD
+        // Но логируем конфликт, если targetPercent=0
+        if (asset.targetPercent === 0) {
+          console.warn(
+            `⚠️ [HOLD_ONLY_CONFLICT] ${asset.ticker}: ` +
+            'holdOnly=true, но targetPercent=0 (EXIT). ' +
+            'Принудительный HOLD — продажа запрещена политикой инвестора.',
+          );
+        }
+        status = 'HOLD';
+        targetPercent = asset.targetPercent ?? asset.liquidationPercent;
+        deficitRub = 0;
+      } else if (asset.targetPercent === 0 && asset.liquidationPercent > 0) {
         // Целевая доля 0, но актив есть в портфеле → плановый выход
+        // (holdOnly уже проверен выше)
         status = 'EXIT';
         targetPercent = 0;
         deficitRub = Math.round(

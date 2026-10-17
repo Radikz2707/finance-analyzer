@@ -19,9 +19,21 @@
 import type { ChatMessage, DirectorResponse } from './director-types.js';
 import type { DangerAssessment } from './director-chat-commands.js';
 
+/** Callback для потоковой отправки частей ответа */
+export type StreamingChunkCallback = (chunk: string) => void;
+
 /** Публичный API для виджета (подмножество DirectorAgent) */
 export interface DirectorChatWidgetApi {
   processUserMessage(message: string): Promise<DirectorResponse>;
+  /**
+   * Потоковая версия processUserMessage.
+   * Вызывает onChunk для каждой части ответа LLM.
+   * Используется для real-time отображения в UI.
+   */
+  processUserMessageStreaming?: (
+    message: string,
+    onChunk: StreamingChunkCallback,
+  ) => Promise<DirectorResponse>;
   getChatHistory(): ChatMessage[];
   /** Проактивные сообщения (опционально) */
   getProactiveMessages?: () => unknown[];
@@ -59,10 +71,45 @@ export interface SimpleChatMessage {
 /** Экранирование текста для безопасного встраивания в HTML */
 function escapeHtml(text: string): string {
   return String(text)
-    .replace(/&/g, '&')
-    .replace(/</g, '<')
-    .replace(/>/g, '>')
-    .replace(/"/g, '"');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Простой Markdown-форматер для ответов Director.
+ * Преобразует базовый Markdown в HTML для красивого отображения.
+ * Поддерживает: **жирный**, *курсив*, `- списки`, `# заголовки`, ``код``.
+ */
+export function formatMarkdown(text: string): string {
+  if (!text) return '';
+
+  let html = escapeHtml(text);
+
+  // Код в строке: `код` → <code>код</code>
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Жирный: **текст** → <strong>текст</strong>
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  // Курсив: *текст* → <em>текст</em>
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+  // Заголовки: # Текст → <h3>Текст</h3>
+  html = html.replace(/^#\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h4>$1</h4>');
+
+  // Списки: - текст → <li>текст</li>
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+
+  // Группируем <li> в <ul>
+  html = html.replace(/((<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+
+  // Переносы строк → <br> (но не если уже есть HTML-теги)
+  html = html.replace(/\n/g, '<br>');
+
+  return html;
 }
 
 /**
@@ -286,15 +333,84 @@ export function mountDirectorChat(
     input.value = '';
     pendingError = null;
     render(true);
-    void api
-      .processUserMessage(text)
-      .catch((err: unknown) => {
-        console.warn('[DirectorChat] Ошибка обработки сообщения:', err);
-        pendingError = err instanceof Error ? err.message : String(err);
-      })
-      .finally(() => {
-        render(false);
-      });
+
+    // Используем streaming, если API поддерживает
+    if (api.processUserMessageStreaming) {
+      const messagesEl = container.querySelector<HTMLElement>('.dc-messages');
+      let streamingMsgEl: HTMLElement | null = null;
+      let fullResponse = '';
+
+      api
+        .processUserMessageStreaming(text, (chunk: string) => {
+          fullResponse += chunk;
+
+          // Создаём элемент для streaming-сообщения при первой части
+          if (!streamingMsgEl && messagesEl) {
+            streamingMsgEl = document.createElement('div');
+            streamingMsgEl.className = 'dc-msg dc-msg-director dc-streaming';
+            streamingMsgEl.innerHTML =
+              '<div class="dc-role">Director</div>' +
+              '<div class="dc-text dc-streaming-text"></div>';
+            messagesEl.appendChild(streamingMsgEl);
+          }
+
+          // Обновляем текст в реальном времени
+          if (streamingMsgEl) {
+            const textEl = streamingMsgEl.querySelector<HTMLElement>('.dc-streaming-text');
+            if (textEl) {
+              textEl.innerHTML = formatMarkdown(fullResponse);
+            }
+          }
+
+          // Автопрокрутка
+          if (messagesEl) {
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+          }
+        })
+        .catch((err: unknown) => {
+          console.warn('[DirectorChat] Ошибка обработки сообщения:', err);
+          pendingError = err instanceof Error ? err.message : String(err);
+        })
+        .finally(() => {
+          // Добавляем завершённое сообщение в историю
+          if (fullResponse) {
+            addMessageToHistory('director', fullResponse);
+          }
+          render(false);
+        });
+    } else {
+      // Fallback: обычный режим без streaming
+      void api
+        .processUserMessage(text)
+        .catch((err: unknown) => {
+          console.warn('[DirectorChat] Ошибка обработки сообщения:', err);
+          pendingError = err instanceof Error ? err.message : String(err);
+        })
+        .finally(() => {
+          render(false);
+        });
+    }
+  };
+
+  /** Добавить сообщение в историю чата */
+  const addMessageToHistory = (
+    role: ChatMessage['role'],
+    text: string,
+  ): void => {
+    // Простая реализация через DOM (если нет доступа к API для добавления)
+    const messagesEl = container.querySelector<HTMLElement>('.dc-messages');
+    if (messagesEl) {
+      const div = document.createElement('div');
+      div.className = `dc-msg dc-msg-${role}`;
+      div.innerHTML =
+        '<div class="dc-role">' +
+        (role === 'user' ? 'Вы' : 'Director') +
+        '</div>' +
+        '<div class="dc-text">' +
+        formatMarkdown(text) +
+        '</div>';
+      messagesEl.appendChild(div);
+    }
   };
 
   const onSendClick = (): void => send();
@@ -346,7 +462,15 @@ export function directorChatStyles(): string {
     '.dc-msg-director{align-self:flex-start;background:#3a3a4c;}' +
     '.dc-msg-system{align-self:center;background:#444;font-size:12px;}' +
     '.dc-role{font-size:11px;opacity:.7;margin-bottom:2px;}' +
-    '.dc-text{font-size:14px;line-height:1.45;}' +
+    '.dc-text{font-size:14px;line-height:1.55;}' +
+    '.dc-text code{background:#2a2a3c;padding:2px 5px;border-radius:3px;font-size:13px;}' +
+    '.dc-text strong{font-weight:700;color:#6cf08f;}' +
+    '.dc-text em{font-style:italic;}' +
+    '.dc-text h3{margin:8px 0 4px;font-size:15px;color:#ffd166;}' +
+    '.dc-text h4{margin:6px 0 3px;font-size:14px;color:#a0d8ef;}' +
+    '.dc-text ul{margin:4px 0;padding-left:20px;}' +
+    '.dc-text li{margin:2px 0;}' +
+    '.dc-text br{display:block;content:"";margin:4px 0;}' +
     '.dc-meta{font-size:11px;opacity:.6;margin-top:4px;}' +
     '.dc-working .dc-text::after{content:"…";animation:dc-blink 1s infinite;}' +
     '.dc-indicator{font-size:12px;opacity:.6;}' +
@@ -364,7 +488,12 @@ export function directorChatStyles(): string {
     '.dc-progress-on{display:block;}' +
     '.dc-progress-bar{height:100%;width:40%;background:#ffd166;border-radius:2px;' +
     'animation:dc-progress-slide 1.2s ease-in-out infinite;}' +
-    '.dc-typing{opacity:.7;font-style:italic;animation:dc-blink 1.4s infinite;}' +
+    '.dc-typing{opacity:.7;font-style:italic;}' +
+    '.dc-typing .dc-text::before{content:"";display:inline-block;width:18px;height:18px;' +
+    'margin-right:8px;vertical-align:middle;}' +
+    '.dc-typing .dc-text::before{content:"⋯";font-size:24px;animation:dc-dots 1.4s infinite;}' +
+    '.dc-streaming{opacity:0.95;}' +
+    '.dc-streaming .dc-text{animation:dc-pulse 2s ease-in-out infinite;}' +
     '.dc-error{border:1px solid #b91c1c;background:#3a1116!important;' +
     'max-width:100%!important;}' +
     '.dc-confirm{border:1px solid #b45309;background:#3d2b10!important;' +
@@ -376,7 +505,9 @@ export function directorChatStyles(): string {
     'background:transparent;color:#ddd;cursor:pointer;}' +
     '@keyframes dc-blink{50%{opacity:0}}' +
     '@keyframes dc-progress-slide{0%{transform:translateX(-120%)}' +
-    '100%{transform:translateX(260%)}}'
+    '100%{transform:translateX(260%)}}' +
+    '@keyframes dc-dots{0%,20%{content:"."}40%{content:".."}60%,100%{content:"..."}}' +
+    '@keyframes dc-pulse{0%,100%{opacity:0.95}50%{opacity:0.8}}'
   );
 }
 

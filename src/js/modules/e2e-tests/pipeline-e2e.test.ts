@@ -47,6 +47,7 @@ import type { AnalysisAgentOutput } from '../pipeline/agents/analysis-agent.js';
 import type { AiAgentOutput } from '../pipeline/agents/ai-agent.js';
 import type { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
 import type { PortfolioPosition } from '../db-manager/types.js';
+import type { MathAiAgreement } from '../ai-advisor/math-ai-agreement.js';
 
 // ──────────────────────────────────────────────
 // Helpers
@@ -410,6 +411,7 @@ describe('E2E: сквозной конвейер (без сети и AI)', () =>
       anomalies,
       keyRate: 0,
       keyRateDate: '—',
+      cbrRateData: null,
     };
 
     // Минимальные mock-данные анализа (без AI-вызовов)
@@ -465,6 +467,7 @@ describe('E2E: сквозной конвейер (без сети и AI)', () =>
         success: true,
       },
       structuredRecommendations: new Map(),
+      mathAiAgreements: new Map() as Map<string, MathAiAgreement>,
       validationWarnings: [],
     };
 

@@ -218,6 +218,31 @@ async function initDirectorChat(): Promise<void> {
           };
         }
       },
+      processUserMessageStreaming: async (
+        message: string,
+        onChunk: (chunk: string) => void,
+      ): Promise<DirectorResponse> => {
+        try {
+          console.log(
+            '[API] processUserMessageStreaming:',
+            message.slice(0, 50),
+          );
+          const response = await directorAgent.processUserMessageStreaming(
+            message,
+            onChunk,
+          );
+          console.log('[API] Streaming response received');
+          return response;
+        } catch (err) {
+          console.error('[API] Error in streaming:', err);
+          return {
+            text: `❌ Ошибка: ${err instanceof Error ? err.message : String(err)}`,
+            plan: emptyDirectorPlan(),
+            connectedAgents: [] as import('./director-types.js').AgentRole[],
+            needsConsilium: false,
+          };
+        }
+      },
       getChatHistory: (): ChatMessage[] => {
         return directorAgent.getChatHistory();
       },

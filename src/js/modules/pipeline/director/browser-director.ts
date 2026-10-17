@@ -62,6 +62,37 @@ function emptyFacts(): DirectorFactsContext {
   };
 }
 
+/**
+ * Разбить текст на чанки для streaming (по предложениям/абзацам).
+ */
+function splitIntoChunks(text: string): string[] {
+  const chunks: string[] = [];
+  const chunkSize = 30;
+
+  const paragraphs = text.split('\n\n');
+
+  for (const paragraph of paragraphs) {
+    if (paragraph.length <= chunkSize) {
+      if (paragraph) chunks.push(paragraph);
+      continue;
+    }
+
+    let remaining = paragraph;
+    while (remaining.length > 0) {
+      let splitAt = chunkSize;
+      const spaceIndex = remaining.indexOf(' ', chunkSize);
+      if (spaceIndex > 0 && spaceIndex < chunkSize + 20) {
+        splitAt = spaceIndex;
+      }
+
+      chunks.push(remaining.slice(0, splitAt).trim());
+      remaining = remaining.slice(splitAt).trim();
+    }
+  }
+
+  return chunks.filter((c) => c.length > 0);
+}
+
 // ──────────────────────────────────────────────
 // BrowserDirector
 // ──────────────────────────────────────────────
@@ -1024,5 +1055,61 @@ export class BrowserDirector {
    */
   clearRAG(): void {
     this.ragEngine.clear();
+  }
+
+  /**
+   * Потоковая версия processUserMessage для браузерной версии.
+   * Поддерживает streaming для smalltalk и простых вопросов.
+   */
+  async processUserMessageStreaming(
+    rawMessage: string,
+    onChunk: (chunk: string) => void,
+  ): Promise<DirectorResponse> {
+    const message = rawMessage.trim();
+    if (!this.currentSessionId) {
+      this.createSession();
+    }
+
+    // Сохраняем сообщение пользователя
+    const userMessage = {
+      id: generateId(),
+      date: new Date().toISOString(),
+      role: 'user' as const,
+      text: message,
+      tickers: [],
+    };
+    await this.memory.saveMessage(userMessage);
+    this.chat.appendMessage(this.currentSessionId!, 'user', message);
+
+    // NLU анализ
+    const analysis = await this.dialogue.analyze({
+      text: message,
+      context: this.dialogue.getContext(),
+      facts: this.facts,
+    });
+
+    // Smalltalk — с streaming через LLM
+    const smallTalk = this.dialogue.buildSmallTalk(analysis, this.facts);
+    if (smallTalk) {
+      // Отправляем по частям
+      const chunks = splitIntoChunks(smallTalk);
+      for (const chunk of chunks) {
+        onChunk(chunk);
+      }
+      await this.saveChatMessage('director', smallTalk);
+      this.dialogue.pushDirector(smallTalk);
+      return this.createResponse(smallTalk, []);
+    }
+
+    // Для сложных запросов — используем стандартный processUserMessage
+    const response = await this.processUserMessage(message);
+
+    // Отправляем полный ответ через onChunk
+    const chunks = splitIntoChunks(response.text);
+    for (const chunk of chunks) {
+      onChunk(chunk);
+    }
+
+    return response;
   }
 }

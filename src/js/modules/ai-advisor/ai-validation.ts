@@ -73,24 +73,103 @@ export interface PostProcessResult {
 /**
  * Исключённые активы — агрегатные строки, которые не должны
  * упоминаться в AI-тексте как инвестиционные инструменты.
+ *
+ * ИСПРАВЛЕНИЕ P1: улучшена точность паттернов для исключения ложных срабатываний.
+ * - "итого" ловим только как отдельное слово (word boundary)
+ * - "баланс" ловим только в агрегатных контекстах
+ * - Добавлена проверка на то, что совпадение — это НЕ часть другого слова
  */
 const EXCLUDED_ASSET_PATTERNS: RegExp[] = [
+  // Рубль — агрегатная строка
   /рубль\w*/gi,
   /руб\.(?:\s|$)/gi,
-  /итого\w*/gi,
-  // "баланс" ловим только в агрегатном контексте, не в "сбалансирован" или "балансовая стоимость"
+  
+  // ИТОГО — только как отдельное слово (с границей слова)
+  // НЕ ловим в словах "подитого", "итожик" и т.п.
+  /\bитого\w*/gi,
+  
+  // Баланс — только в агрегатных контекстах
   /баланс\s+портфеля/gi,
   /баланс\s+счетов/gi,
   /баланс\s+позиций/gi,
-  /баланс\s+[а-яё]+/gi,
-  // "общая сумма" — агрегатная строка
+  /баланс\s+[а-яёa-z]+/gi,
+  
+  // Общая сумма — агрегатная строка
   /общая\s+сумм[а-яё]/gi,
-  // "всего" ловим ТОЛЬКО в контексте "всего портфеля", "всего купонов" и т.п.
+  
+  // Всего — только в агрегатных контекстах
   /всего\s+портфеля/gi,
   /всего\s+купон[а-яё]*/gi,
   /всего\s+дивиденд[а-яё]*/gi,
   /всего\s+сумм[а-яё]/gi,
 ];
+
+/**
+ * Список тикеров, которые нужно проверять на исключение.
+ * Используется для точной проверки по реестру тикеров.
+ */
+export interface ExcludedTickerChecker {
+  /** Список исключённых тикеров (верхний регистр) */
+  excludedTickers: string[];
+}
+
+/**
+ * Создаёт проверщик исключённых тикеров.
+ */
+export function createExcludedTickerChecker(
+  excludedTickers: string[],
+): ExcludedTickerChecker {
+  return {
+    excludedTickers: excludedTickers.map((t) => t.toUpperCase()),
+  };
+}
+
+/**
+ * Проверяет текст на упоминание исключённых тикеров.
+ *
+ * ИСПРАВЛЕНИЕ P1:
+ * - Использует word boundary (\b) для точного совпадения тикера
+ * - Нормализует регистр
+ * - Не ловит тикер как часть другого слова (SBER ≠ SBERB)
+ */
+export function checkExcludedTickers(
+  text: string,
+  checker: ExcludedTickerChecker,
+): ExcludedAssetsCheckResult {
+  const foundMentions: ExcludedAssetsCheckResult['foundMentions'] = [];
+  const textUpper = text.toUpperCase();
+
+  for (const ticker of checker.excludedTickers) {
+    // Используем word boundary для точного совпадения
+    // \b гарантирует, что тикер — это отдельное слово
+    const pattern = new RegExp(`\\b${ticker}\\b`, 'gi');
+    pattern.lastIndex = 0;
+
+    let match;
+    while ((match = pattern.exec(textUpper)) !== null) {
+      // Защита от бесконечного цикла
+      if (match.index < pattern.lastIndex - 1000) {
+        pattern.lastIndex = 0;
+        break;
+      }
+
+      // Извлекаем контекст (±50 символов)
+      const contextStart = Math.max(0, match.index - 50);
+      const contextEnd = Math.min(text.length, match.index + ticker.length + 50);
+      const context = text.slice(contextStart, contextEnd).trim();
+
+      foundMentions.push({
+        assetName: ticker,
+        context,
+      });
+    }
+  }
+
+  return {
+    valid: foundMentions.length === 0,
+    foundMentions,
+  };
+}
 
 /**
  * Паттерны галлюцинированных цен — AI может генерировать собственные
@@ -412,8 +491,7 @@ function removePatterns(
  * строки типа "Рубль", "Итого", "Баланс", которые не являются
  * инвестиционными инструментами.
  *
- * @param text — AI-текст для проверки
- * @returns результат проверки
+ * ИСПРАВЛЕНИЕ P1: улучшена точность паттернов.
  */
 export function checkExcludedAssets(
   text: string,

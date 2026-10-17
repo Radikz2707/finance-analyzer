@@ -199,6 +199,36 @@ async function loadFacts(
       parser.parseCurrentPortfolio(),
       parser.parseMacroGoals(),
     ]);
+    // Освобождаем память — workbook больше не нужен
+    parser.cleanup();
+
+    log(
+      'info',
+      `Факты портфеля загружены: активов ${assets.length}, файл ${excelPath}`,
+    );
+    return {
+      facts: portfolioToFacts(assets, goals),
+      sourceLabel: `данные портфеля: ${excelPath}`,
+    };
+  } catch (err) {
+    log(
+      'warn',
+      `Не удалось прочитать Excel (${excelPath}): ${
+        err instanceof Error ? err.message : String(err)
+      } —работаем без данных портфеля`,
+    );
+    return {
+      facts: emptyFacts(),
+      sourceLabel: `Excel прочитать не удалось (${excelPath})`,
+    };
+  }
+}
+  try {
+    const parser = new XlsxParserModule();
+    const [assets, goals] = await Promise.all([
+      parser.parseCurrentPortfolio(),
+      parser.parseMacroGoals(),
+    ]);
     log(
       'info',
       `Факты портфеля загружены: активов ${assets.length}, файл ${excelPath}`,
@@ -792,10 +822,23 @@ export async function runPipelineReport(
   }
   const notification = result.stages.notification?.result.data as
     NotificationAgentOutput | undefined;
+
+  // Читаем report.html с диска — это надёжнее, чем htmlContent в памяти.
+  // NotificationAgent записывает файл на диск, и мы должны его прочитать.
+  let htmlContent = '';
+  let htmlPath = notification?.htmlPath ?? '';
+  if (htmlPath && fs.existsSync(htmlPath)) {
+    try {
+      htmlContent = fs.readFileSync(htmlPath, 'utf-8');
+    } catch {
+      console.warn(`[Pipeline] Не удалось прочитать ${htmlPath}`);
+    }
+  }
+
   const info: PipelineReportInfo = {
-    htmlContent: notification?.htmlContent ?? '',
+    htmlContent: htmlContent ?? '',
     mdContent: notification?.mdContent ?? '',
-    htmlPath: notification?.htmlPath ?? '',
+    htmlPath,
     mdPath: notification?.mdPath ?? '',
     finishedAt: new Date().toISOString(),
     elapsedMs: Date.now() - startedAt,
@@ -810,6 +853,56 @@ export function handleLastPipelineReport(
   state: AppState,
 ): PipelineReportInfo | null {
   return state.pipelineReport;
+}
+
+/**
+ * Загрузить последний отчёт report.html с диска при старте приложения.
+ *
+ * Если пользователь ранее запускал `npm run pipeline`, файл report.html
+ * уже записан на диск. При запуске десктоп-приложения мы подхватываем
+ * его автоматически, чтобы он отображался во вкладке «Анализ» без
+ * повторного прогона конвейера.
+ */
+export function loadLastPipelineReport(
+  state: AppState,
+): void {
+  try {
+    const reportsDir = resolveReportsDir(isPackagedApp());
+    const htmlPath = path.join(reportsDir, 'report.html');
+
+    if (!fs.existsSync(htmlPath)) {
+      console.log(`[Desktop] report.html не найден в ${reportsDir} — анализ ещё не запускался`);
+      return;
+    }
+
+    console.log(`[Desktop] Найден report.html, загружаю: ${htmlPath}`);
+
+    const htmlContent = fs.readFileSync(htmlPath, 'utf-8');
+    if (!htmlContent || htmlContent.length === 0) {
+      console.warn('[Desktop] report.html пустой — игнорирую');
+      return;
+    }
+
+    // Пытаемся найти report.md рядом
+    const mdPath = path.join(reportsDir, 'report.md');
+    const mdContent = fs.existsSync(mdPath)
+      ? fs.readFileSync(mdPath, 'utf-8')
+      : '';
+
+    state.pipelineReport = {
+      htmlContent,
+      mdContent,
+      htmlPath,
+      mdPath,
+      finishedAt: new Date().toISOString(),
+      elapsedMs: 0,
+      success: true,
+    };
+
+    console.log(`[Desktop] ✅ report.html загружен (${htmlContent.length} байт)`);
+  } catch (err) {
+    console.warn(`[Desktop] Не удалось загрузить report.html: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /**

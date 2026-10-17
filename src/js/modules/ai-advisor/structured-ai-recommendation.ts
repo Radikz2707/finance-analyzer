@@ -309,17 +309,30 @@ export function validateStructuredAIJson(
     }
   }
 
-  // 4. recommendedTargetPercent >= 0
+  // 4. recommendedTargetPercent — валидация диапазона 0..100
   if (json.recommendedTargetPercent !== null) {
     if (typeof json.recommendedTargetPercent !== 'number') {
       errors.push({
         field: 'recommendedTargetPercent',
         message: 'recommendedTargetPercent должен быть числом или null',
       });
+    } else if (
+      json.recommendedTargetPercent !== json.recommendedTargetPercent || // NaN проверка
+      !isFinite(json.recommendedTargetPercent) // Infinity/-Infinity проверка
+    ) {
+      errors.push({
+        field: 'recommendedTargetPercent',
+        message: `recommendedTargetPercent должен быть конечным числом, получено: ${json.recommendedTargetPercent}`,
+      });
     } else if (json.recommendedTargetPercent < 0) {
       errors.push({
         field: 'recommendedTargetPercent',
         message: `recommendedTargetPercent не может быть отрицательным: ${json.recommendedTargetPercent}`,
+      });
+    } else if (json.recommendedTargetPercent > 100) {
+      errors.push({
+        field: 'recommendedTargetPercent',
+        message: `recommendedTargetPercent не может превышать 100%, получено: ${json.recommendedTargetPercent}`,
       });
     }
   }

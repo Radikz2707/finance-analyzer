@@ -31,6 +31,12 @@ import {
   getRecoveryOnlyTickers,
   buildGuardrailsContext,
 } from '../guardrails/guardrails.js';
+import { getLogger } from '../../logger/index.js';
+import {
+  agreeMathAndAi,
+  isExecutionAllowed,
+  type MathAiAgreement,
+} from '../../ai-advisor/math-ai-agreement.js';
 
 // ──────────────────────────────────────────────
 // 1. AI Agent output types
@@ -71,6 +77,8 @@ export interface AiAgentOutput {
   aiClientResult: AiClientResult;
   /** Структурированные рекомендации по каждому активу */
   structuredRecommendations: Map<string, StructuredAIAssetRecommendation>;
+  /** Результаты согласования PortfolioMath и ИИ по каждому активу */
+  mathAiAgreements: Map<string, MathAiAgreement>;
   /** Предупреждения валидации */
   validationWarnings: string[];
 }
@@ -91,6 +99,8 @@ export interface AiAgentOutput {
  * AI-запрос выполняется асинхронно — не блокирует основной поток.
  */
 export class AiAgent extends AgentBase {
+  private readonly log = getLogger('ai-agent');
+
   constructor(config?: AgentConfig) {
     super(config ?? { name: 'AiAgent' });
   }
@@ -131,10 +141,10 @@ export class AiAgent extends AgentBase {
         context += `\nПоследний pipeline: ${result.operationalEntries[0]!.createdAt}\n`;
       }
 
-      console.log('[AiAgent] Контекст из памяти загружен');
+      this.log.info('[AiAgent] Контекст из памяти загружен');
       return context;
     } catch (err) {
-      console.warn('[AiAgent] Ошибка загрузки контекста из памяти:', err);
+      this.log.warn('[AiAgent] Ошибка загрузки контекста из памяти:', err);
       return '';
     }
   }
@@ -144,12 +154,12 @@ export class AiAgent extends AgentBase {
     research: ResearchAgentOutput;
     analysis: AnalysisAgentOutput;
   }): Promise<AiAgentOutput> {
-    console.log('[AiAgent] >>> Начало AI-анализа');
+    this.log.info('[AiAgent] >>> Начало AI-анализа');
 
     // Загружаем контекст из памяти ИИ
     const memoryContext = await this.loadMemoryContext();
     if (memoryContext) {
-      console.log(
+      this.log.info(
         '[AiAgent] Контекст из памяти:',
         memoryContext.substring(0, 200),
       );
@@ -161,7 +171,7 @@ export class AiAgent extends AgentBase {
     const { portfolioAnalysis, riskValidation, income } = analysis;
 
     if (portfolioAnalysis.assetsAnalysis.length === 0) {
-      console.warn('[AiAgent] Нет активов для AI-анализа');
+      this.log.warn('[AiAgent] Нет активов для AI-анализа');
       return this.emptyResult();
     }
 
@@ -178,7 +188,7 @@ export class AiAgent extends AgentBase {
     for (const asset of portfolioAnalysis.assetsAnalysis) {
       const snapshot = snapshots.get(asset.ticker);
       if (!snapshot) {
-        console.warn(`[AiAgent] Нет research snapshot для ${asset.ticker}`);
+        this.log.warn(`[AiAgent] Нет research snapshot для ${asset.ticker}`);
         continue;
       }
 
@@ -201,14 +211,14 @@ export class AiAgent extends AgentBase {
           );
         }
       } catch (err) {
-        console.error(
+        this.log.error(
           `[AiAgent] Ошибка thesis для ${asset.ticker}:`,
           err instanceof Error ? err.message : err,
         );
       }
     }
 
-    console.log(
+    this.log.info(
       '[AiAgent] Сформировано thesis для ' +
         thesisResults.size +
         ' из ' +
@@ -223,7 +233,7 @@ export class AiAgent extends AgentBase {
       positionsRepo,
     );
     if (recoveryTickers.length > 0) {
-      console.log(
+      this.log.warn(
         '[GUARDRAILS] ⚠️ Активы в режиме RECOVERY_ONLY:',
         recoveryTickers.join(', '),
       );
@@ -290,23 +300,89 @@ export class AiAgent extends AgentBase {
       validationWarnings.push(...postProcessResult.warnings);
     }
 
-    // Шаг 5: Структурированные рекомендации
+    // Шаг 5: Структурированные рекомендации с изоляцией по тикерам
     const structuredRecommendations = new Map<
       string,
       StructuredAIAssetRecommendation
     >();
+    const mathAiAgreements = new Map<string, MathAiAgreement>();
+
+    // Извлекаем тикер из AI JSON (если есть)
+    const rawAiJson = aiClientResult.structuredJson as RawAIJson | null;
+    const aiJsonTicker = rawAiJson?.ticker?.toUpperCase() ?? null;
 
     for (const asset of portfolioAnalysis.assetsAnalysis) {
+      const assetTicker = asset.ticker.toUpperCase();
+
+      // ─── Изоляция по тикеру ───
+      // Если AI вернул JSON, проверяем, что тикер совпадает с текущим активом
+      let aiJsonForAsset: RawAIJson | null = null;
+
+      if (rawAiJson) {
+        // Проверяем точное совпадение тикера
+        if (aiJsonTicker === assetTicker) {
+          aiJsonForAsset = rawAiJson;
+        } else {
+          // Тикер не совпадает — рекомендация не для этого актива
+          this.log.debug(
+            `[AiAgent] [TIKER_ISOLATION] AI recommendation ticker=${aiJsonTicker} ` +
+              `does not match asset ticker=${assetTicker}, skipping`,
+          );
+        }
+      }
+
       const det = buildDeterministicAssetData(asset, []);
       const structured = buildStructuredAIRecommendation(
         det,
-        aiClientResult.structuredJson as RawAIJson | null,
+        aiJsonForAsset,
         aiClientResult.structuredValidation as ValidationResult | null,
       );
       structuredRecommendations.set(asset.ticker, structured);
+
+      // ─── Согласование PortfolioMath и ИИ ───
+      const mathAction = asset.status; // PortfolioMathStatus
+      const aiAction = structured.recommendedAction; // AiAction | null
+      const mathAgreement = structured.agreementWithPortfolioMath;
+
+      const agreement = agreeMathAndAi(
+        asset.ticker,
+        mathAction,
+        aiAction,
+        mathAgreement,
+      );
+
+      // Проверяем исполнение с учётом защитных ограничений
+      const executionAllowed = isExecutionAllowed(
+        agreement,
+        asset.holdOnly || false,
+        det.marketDataValid,
+        det.executionBlocked,
+      );
+
+      agreement.executionAllowed = executionAllowed;
+
+      // Логируем результат согласования
+      if (agreement.conflict) {
+        this.log.warn(
+          `[AiAgent] [CONFLICT] ${asset.ticker}: ` +
+            `math=${agreement.conflictDetails?.mathDescription}, ` +
+            `ai=${agreement.conflictDetails?.aiDescription}, ` +
+            `severity=${agreement.conflictDetails?.severity}, ` +
+            'executionAllowed=false',
+        );
+      } else {
+        this.log.info(
+          `[AiAgent] [AGREEMENT] ${asset.ticker}: ` +
+            `math=${agreement.mathAction}, ai=${agreement.aiAction}, ` +
+            `final=${agreement.finalAction}, status=${agreement.status}, ` +
+            `executionAllowed=${executionAllowed}`,
+        );
+      }
+
+      mathAiAgreements.set(asset.ticker, agreement);
     }
 
-    console.log(
+    this.log.info(
       `[AiAgent] ✅ AI-анализ завершён: модель=${aiClientResult.modelUsed}, ` +
         `успех=${aiClientResult.success}, thesis=${thesisResults.size}`,
     );
@@ -316,6 +392,7 @@ export class AiAgent extends AgentBase {
       aiNarrative,
       aiClientResult,
       structuredRecommendations,
+      mathAiAgreements,
       validationWarnings,
     };
   }
@@ -400,7 +477,7 @@ export class AiAgent extends AgentBase {
       };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[AiAgent] Ошибка AiClient: ${errorMsg}`);
+      this.log.error(`[AiAgent] Ошибка AiClient: ${errorMsg}`);
 
       return {
         text: '',
@@ -440,6 +517,7 @@ export class AiAgent extends AgentBase {
         error: 'No assets to analyze',
       },
       structuredRecommendations: new Map(),
+      mathAiAgreements: new Map(),
       validationWarnings: [],
     };
   }

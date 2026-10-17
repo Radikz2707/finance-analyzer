@@ -65,6 +65,8 @@ export interface DashboardReportData {
   stocksPct: number;
   bondsPct: number;
   cbrRate: number;
+  /** Отображаемое значение ставки ЦБ (null если данные отсутствуют) */
+  cbrRateDisplay: number | null;
   totalInvested: string;
   resultC10: string;
   profitC11: string;
@@ -97,7 +99,7 @@ export class DashboardReportBuilder {
       freeCash,
       stocksPct,
       bondsPct,
-      cbrRate,
+      cbrRateDisplay,
       barRows,
       aiBoxHtml,
       tableRows,
@@ -116,6 +118,12 @@ export class DashboardReportBuilder {
       topGainers,
       topLosers,
     } = this.data;
+
+    // Формирование отображения ставки ЦБ
+    const cbrRateHtml =
+      cbrRateDisplay !== null
+        ? `${cbrRateDisplay}%`
+        : '<span style="color: #8b949e;">данные отсутствуют</span>';
 
     // Загружаем скрипт Director Chat
     const directorScript = loadDirectorChatScript();
@@ -344,8 +352,8 @@ export class DashboardReportBuilder {
       "<div class='card' style='border-color: #a371f7;'>" +
       "<div class='card-title'>Ключевая ставка ЦБ</div>" +
       "<div class='card-value' style='color: #d3b6ff;'>" +
-      cbrRate +
-      '%</div>' +
+      cbrRateHtml +
+      '</div>' +
       "<div class='card-sub'>Макро-контекст портфеля</div>" +
       '</div>' +
       '</div>' +
@@ -581,8 +589,12 @@ export class DashboardReportBuilder {
       : '';
     const c10Color = kpiData?.c10Color ?? '';
     const c11Color = kpiData?.c11Color ?? '';
-    const cbrRate =
-      kpiData?.cbrRate && kpiData.cbrRate > 0 ? kpiData.cbrRate : 14.0;
+    // ИСПРАВЛЕНИЕ P1-1: НЕ подменять 0 на фиксированное 14.0
+    // Если cbrRate отсутствует или равен 0 — показываем «данные отсутствуют»
+    const cbrRateDisplay =
+      kpiData?.cbrRate && kpiData.cbrRate > 0
+        ? kpiData.cbrRate
+        : null;
     const dateStr = kpiData?.dateStr ?? '';
     const timeStr = kpiData?.timeStr ?? '';
     const aiBoxHtml = kpiData?.aiBoxHtml ?? '';
@@ -592,7 +604,8 @@ export class DashboardReportBuilder {
       freeCash: freeCashStr,
       stocksPct,
       bondsPct,
-      cbrRate,
+      cbrRate: cbrRateDisplay ?? 0, // 0 означает «нет данных»
+      cbrRateDisplay, // Отображаемое значение (null если нет данных)
       totalInvested: totalInvestedStr,
       resultC10: resultC10Str,
       profitC11: profitC11Str,

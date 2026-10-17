@@ -53,6 +53,7 @@ describe('ReviewAgent', () => {
       anomalies: [],
       keyRate: 21,
       keyRateDate: '29.10.2024',
+      cbrRateData: null,
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -89,6 +90,7 @@ describe('ReviewAgent', () => {
       },
       structuredRecommendations: new Map(),
       validationWarnings: [],
+      mathAiAgreements: new Map(),
     };
 
     const result = await agent.execute({
@@ -139,6 +141,7 @@ describe('ReviewAgent', () => {
       anomalies: [],
       keyRate: 21,
       keyRateDate: '29.10.2024',
+      cbrRateData: null,
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -175,6 +178,7 @@ describe('ReviewAgent', () => {
       },
       structuredRecommendations: new Map(),
       validationWarnings: [],
+      mathAiAgreements: new Map(),
     };
 
     const result = await agent.execute({
@@ -227,6 +231,7 @@ describe('ReviewAgent', () => {
       anomalies: [],
       keyRate: 21,
       keyRateDate: '29.10.2024',
+      cbrRateData: null,
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -263,6 +268,7 @@ describe('ReviewAgent', () => {
       },
       structuredRecommendations: new Map(),
       validationWarnings: [],
+      mathAiAgreements: new Map(),
     };
 
     const result = await agent.execute({
@@ -324,6 +330,7 @@ describe('ReviewAgent', () => {
       anomalies: [],
       keyRate: 21,
       keyRateDate: '29.10.2024',
+      cbrRateData: null,
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -360,6 +367,7 @@ describe('ReviewAgent', () => {
       },
       structuredRecommendations: new Map(),
       validationWarnings: [],
+      mathAiAgreements: new Map(),
     };
 
     const result = await agent.execute({
@@ -413,6 +421,7 @@ describe('ReviewAgent', () => {
       anomalies: [],
       keyRate: 21,
       keyRateDate: '29.10.2024',
+      cbrRateData: null,
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -449,6 +458,7 @@ describe('ReviewAgent', () => {
       },
       structuredRecommendations: new Map(),
       validationWarnings: [],
+      mathAiAgreements: new Map(),
     };
 
     const result = await agent.execute({
@@ -500,6 +510,7 @@ describe('ReviewAgent', () => {
       anomalies: [],
       keyRate: 21,
       keyRateDate: '29.10.2024',
+      cbrRateData: null,
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -536,6 +547,7 @@ describe('ReviewAgent', () => {
       },
       structuredRecommendations: new Map(),
       validationWarnings: [],
+      mathAiAgreements: new Map(),
     };
 
     const result = await agent.execute({
@@ -587,6 +599,7 @@ describe('ReviewAgent — внешний AI-судья', () => {
       anomalies: [],
       keyRate: 21,
       keyRateDate: '29.10.2024',
+      cbrRateData: null,
     };
 
     const mockAnalysis: AnalysisAgentOutput = {
@@ -623,6 +636,7 @@ describe('ReviewAgent — внешний AI-судья', () => {
       },
       structuredRecommendations: new Map(),
       validationWarnings: [],
+      mathAiAgreements: new Map(),
     };
 
     return { data: mockData, analysis: mockAnalysis, ai: mockAi };
