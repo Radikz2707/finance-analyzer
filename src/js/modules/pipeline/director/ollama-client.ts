@@ -59,7 +59,7 @@ export class OllamaClient {
     // Модель из единой точки (env OLLAMA_MODEL) — см. ollama-model.ts
     this.model = config.model || OLLAMA_MODEL_NAME;
     this.temperature = config.temperature ?? 0.7;
-    this.maxTokens = config.maxTokens ?? 2000;
+    this.maxTokens = config.maxTokens ?? 4000;
     this.think = config.think ?? false;
     // ⚠️ keep_alive: 5 минут вместо 30m — экономит ~20 ГБ RAM.
     // Модель выгружается быстрее, но холодный запуск добавляет ~15-20с.

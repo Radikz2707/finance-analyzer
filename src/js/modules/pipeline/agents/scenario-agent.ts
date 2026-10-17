@@ -191,7 +191,6 @@ export class ScenarioAgent extends AgentBase {
   ): ScenarioResult {
     const result = this.applyChanges(assets, total, changes);
     const dev = result.structureDeviationPct;
-    const loss = result.realizedLossRub;
 
     let verdict: ScenarioResult['verdict'] = 'NEUTRAL';
     let rationale =
@@ -215,7 +214,7 @@ export class ScenarioAgent extends AgentBase {
       changes,
       structureDeviationPct: dev,
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
-      realizedLossRub: Math.max(0, -loss),
+      realizedLossRub: Math.max(0, -result.realizedLossRub),
       verdict,
       rationale,
     };
@@ -239,20 +238,20 @@ export class ScenarioAgent extends AgentBase {
 
     const result = this.applyChanges(assets, total, optimizedChanges);
     const dev = result.structureDeviationPct;
-    const loss = result.realizedLossRub;
+    const realizedLoss = result.realizedLossRub; // отрицательный = убыток
     const improved = baselineDeviation - dev >= BASE_CHANGE_THRESHOLD_PCT;
 
     const verdict: ScenarioResult['verdict'] =
-      improved && loss > -1000
+      improved && realizedLoss > -1000
         ? 'IMPROVES'
-        : loss < -1000
+        : realizedLoss < -1000
           ? 'WORSENS'
           : 'NEUTRAL';
 
     const rationale =
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
       `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}. ` +
-      `Зафиксировано: ${this.fmtRub(Math.max(0, -loss))}.`;
+      `Зафиксировано: ${this.fmtRub(Math.max(0, -result.realizedLossRub))}.`;
 
     return {
       id: 'S3_optimized',
@@ -260,11 +259,116 @@ export class ScenarioAgent extends AgentBase {
       changes: optimizedChanges,
       structureDeviationPct: dev,
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
-      realizedLossRub: Math.max(0, -loss),
+      realizedLossRub: Math.max(0, -result.realizedLossRub),
       verdict,
       rationale,
     };
   }
+
+  // ── Model (deterministic calculations) ──
+
+  /** Применить изменения и пересчитать метрики */
+  private applyChanges(
+    assets: AssetAnalysis[],
+    total: number,
+    changes: ScenarioChange[],
+  ): {
+    structureDeviationPct: number;
+    projectedUnrealizedPnL: number;
+    realizedLossRub: number;
+  } {
+    // Работаем с копиями долей, P&L и стоимости покупки
+    const values = new Map<string, number>();
+    const pnl = new Map<string, number>();
+    const costBases = new Map<string, number>(); // Стоимость покупки позиций
+    let realizedLoss = 0;
+
+    for (const asset of assets) {
+      const currentVal = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
+      values.set(asset.ticker.toUpperCase(), currentVal);
+
+      // Нереализованный P&L
+      pnl.set(asset.ticker.toUpperCase(), asset.unrealizedProfitRub ?? 0);
+
+      // Стоимость покупки = текущая стоимость - нереализованный P&L
+      // (если P&L положительный, цена покупки ниже текущей; если отрицательный — выше)
+      costBases.set(
+        asset.ticker.toUpperCase(),
+        currentVal - (asset.unrealizedProfitRub ?? 0),
+      );
+    }
+
+    for (const change of changes) {
+      const key = change.ticker.toUpperCase();
+      const currentValue = values.get(key) ?? 0;
+      const currentPnL = pnl.get(key) ?? 0;
+      const costBase = costBases.get(key) ?? currentValue;
+
+      if (change.action === 'BUY') {
+        values.set(key, currentValue + change.amountRub);
+        // При покупке нового P&L = 0 (новая позиция)
+        pnl.set(key, 0);
+      } else if (change.action === 'SELL' || change.action === 'REDUCE') {
+        const sold = Math.min(change.amountRub, currentValue);
+
+        // Реализованный P&L при продаже:
+        // (текущая стоимость - стоимость покупки) * доля проданного
+        if (currentValue > 0) {
+          const realizedPnL = currentPnL * (sold / currentValue);
+          realizedLoss += realizedPnL; // может быть отрицательным = убыток
+        }
+
+        // Обновляем оставшуюся позицию
+        values.set(key, currentValue - sold);
+        pnl.set(key, currentPnL * (1 - sold / Math.max(1, currentValue)));
+
+        // Обновляем стоимость покупки пропорционально
+        costBases.set(
+          key,
+          costBase * (1 - sold / Math.max(1, currentValue)),
+        );
+      }
+    }
+
+    // Пересчёт долей (total считаем неизменным — перераспределение внутри портфеля)
+    let deviation = 0;
+    let projectedPnL = 0;
+    for (const asset of assets) {
+      const key = asset.ticker.toUpperCase();
+      const value = values.get(key) ?? 0;
+      const percent = total > 0 ? (value / total) * 100 : 0;
+      if (asset.targetPercent !== undefined && asset.targetPercent > 0) {
+        deviation += Math.abs(percent - asset.targetPercent);
+      }
+      projectedPnL += pnl.get(key) ?? 0;
+    }
+
+    return {
+      structureDeviationPct: Math.round(deviation * 10) / 10,
+      projectedUnrealizedPnL: Math.round(projectedPnL),
+      realizedLossRub: Math.round(realizedLoss),
+    };
+  }
+
+  /** Суммарное отклонение структуры от целевых долей */
+  private calcStructureDeviation(assets: AssetAnalysis[]): number {
+    let dev = 0;
+    for (const asset of assets) {
+      if (asset.targetPercent !== undefined && asset.targetPercent > 0) {
+        dev += Math.abs(asset.currentPercent - asset.targetPercent);
+      }
+    }
+    return Math.round(dev * 10) / 10;
+  }
+
+  /** Суммарный нереализованный P&L */
+  private sumUnrealizedPnL(assets: AssetAnalysis[]): number {
+    return Math.round(
+      assets.reduce((sum, a) => sum + (a.unrealizedProfitRub ?? 0), 0),
+    );
+  }
+
+  // drawdownOf удалён — больше не используется (не блокируем по просадке)
 
   /**
    * Гибкий сценарий: докупаем дефицитные активы за счёт продажи
@@ -346,89 +450,6 @@ export class ScenarioAgent extends AgentBase {
         `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}).`,
     };
   }
-
-  // ── Model (deterministic calculations) ──
-
-  /** Применить изменения и пересчитать метрики */
-  private applyChanges(
-    assets: AssetAnalysis[],
-    total: number,
-    changes: ScenarioChange[],
-  ): {
-    structureDeviationPct: number;
-    projectedUnrealizedPnL: number;
-    realizedLossRub: number;
-  } {
-    // Работаем с копиями долей и P&L
-    const values = new Map<string, number>();
-    const pnl = new Map<string, number>();
-    let realizedLoss = 0;
-
-    for (const asset of assets) {
-      values.set(
-        asset.ticker.toUpperCase(),
-        (asset.quantity ?? 0) * (asset.currentPrice ?? 0),
-      );
-      pnl.set(asset.ticker.toUpperCase(), asset.unrealizedProfitRub ?? 0);
-    }
-
-    for (const change of changes) {
-      const key = change.ticker.toUpperCase();
-      const currentValue = values.get(key) ?? 0;
-      const currentPnL = pnl.get(key) ?? 0;
-
-      if (change.action === 'BUY') {
-        values.set(key, currentValue + change.amountRub);
-      } else if (change.action === 'SELL' || change.action === 'REDUCE') {
-        const sold = Math.min(change.amountRub, currentValue);
-        // Доля убытка/прибыли реализуется пропорционально проданной сумме
-        if (currentValue > 0) {
-          realizedLoss += currentPnL * (sold / currentValue);
-        }
-        values.set(key, currentValue - sold);
-        pnl.set(key, currentPnL * (1 - sold / Math.max(1, currentValue)));
-      }
-    }
-
-    // Пересчёт долей (total считаем неизменным — перераспределение внутри портфеля)
-    let deviation = 0;
-    let projectedPnL = 0;
-    for (const asset of assets) {
-      const key = asset.ticker.toUpperCase();
-      const value = values.get(key) ?? 0;
-      const percent = total > 0 ? (value / total) * 100 : 0;
-      if (asset.targetPercent !== undefined && asset.targetPercent > 0) {
-        deviation += Math.abs(percent - asset.targetPercent);
-      }
-      projectedPnL += pnl.get(key) ?? 0;
-    }
-
-    return {
-      structureDeviationPct: Math.round(deviation * 10) / 10,
-      projectedUnrealizedPnL: Math.round(projectedPnL),
-      realizedLossRub: Math.round(realizedLoss),
-    };
-  }
-
-  /** Суммарное отклонение структуры от целевых долей */
-  private calcStructureDeviation(assets: AssetAnalysis[]): number {
-    let dev = 0;
-    for (const asset of assets) {
-      if (asset.targetPercent !== undefined && asset.targetPercent > 0) {
-        dev += Math.abs(asset.currentPercent - asset.targetPercent);
-      }
-    }
-    return Math.round(dev * 10) / 10;
-  }
-
-  /** Суммарный нереализованный P&L */
-  private sumUnrealizedPnL(assets: AssetAnalysis[]): number {
-    return Math.round(
-      assets.reduce((sum, a) => sum + (a.unrealizedProfitRub ?? 0), 0),
-    );
-  }
-
-  // drawdownOf удалён — больше не используется (не блокируем по просадке)
 
   /** Выбрать лучший сценарий: макс. улучшение структуры при отсутствии глубокого убытка */
   private pickBest(scenarios: ScenarioResult[]): ScenarioResult | null {

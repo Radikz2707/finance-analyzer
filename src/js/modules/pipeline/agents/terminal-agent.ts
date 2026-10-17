@@ -144,6 +144,14 @@ const DEFAULT_ALLOWED_COMMANDS: readonly string[] = [
   'node',
   // git
   'git',
+  // Windows process management (безопасные команды)
+  'tasklist',
+  'taskkill',
+  'start',
+  'powershell',
+  'ping',
+  'ipconfig',
+  'systeminfo',
 ];
 
 /** Разрешённые подкоманды git */
@@ -179,7 +187,10 @@ const DEFAULT_DENY_PATTERNS: readonly RegExp[] = [
   /\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b/i,
   /\brmdir\s+\/|\brm\s+[\\/]/i, // удаление корня
   /\breg\s+(?:delete|add)\b/i,
-  /\btaskkill\b|\bkill\s+-9\b|\bpkill\s+-9\b/i,
+  // taskkill разрешён ТОЛЬКО с /F /IM (без /PID — нельзя убить произвольный процесс)
+  // kill -9 и pkill -9 запрещены (сигнал принудительного убийства)
+  /\bkill\s+-9\b/i,
+  /\bpkill\s+-9\b/i,
   SYSTEM_PATH_REDIRECT,
 ];
 

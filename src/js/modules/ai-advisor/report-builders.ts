@@ -479,8 +479,20 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
   const sortedByDynamics = [...quotes].sort(
     (a, b) => b.dailyDynamicsPercent - a.dailyDynamicsPercent,
   );
-  const topGainersList = sortedByDynamics.slice(0, 5);
-  const topLosersList = sortedByDynamics.slice(-5).reverse();
+
+  // Топ-5 роста — только акции с положительной динамикой
+  const risingQuotes = sortedByDynamics.filter(
+    (q) => q.dailyDynamicsPercent > 0,
+  );
+  const topGainersList = risingQuotes.slice(0, 5);
+
+  // Топ-5 падения — только акции с отрицательной динамикой
+  const decliningQuotes = sortedByDynamics.filter(
+    (q) => q.dailyDynamicsPercent < 0,
+  );
+  const topLosersList = decliningQuotes
+    .slice(-5)
+    .reverse();
 
   // Генерация строк таблицы
   for (const quote of quotes) {
@@ -547,6 +559,13 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
         '</div>';
     });
     topGainers += '</div></div>';
+  } else {
+    // Нет растущих акций — показываем сообщение
+    topGainers =
+      "<div class='quotes-top-block'>" +
+      "<h4 class='section-title section-title--green'>🚀 Топ-5 роста</h4>" +
+      "<div style='padding:10px;color:#8b949e;font-size:13px;'>Нет акций с положительной динамикой за сегодня</div>" +
+      '</div>';
   }
 
   // Генерация топ-losers (антитоп)
@@ -568,6 +587,13 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
         '</div>';
     });
     topLosers += '</div></div>';
+  } else {
+    // Нет падающих акций — показываем сообщение
+    topLosers =
+      "<div class='quotes-top-block'>" +
+      "<h4 class='section-title section-title--red'>📉 Топ-5 падения</h4>" +
+      "<div style='padding:10px;color:#8b949e;font-size:13px;'>Нет акций с отрицательной динамикой за сегодня</div>" +
+      '</div>';
   }
 
   return { quotesTableRows, topGainers, topLosers };

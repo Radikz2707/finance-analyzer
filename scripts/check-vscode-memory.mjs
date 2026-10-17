@@ -13,35 +13,59 @@
 
 import { execSync } from 'node:child_process';
 import * as os from 'node:os';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 // ─── Утилиты ──────────────────────────────────────────────
 
 /** Получить список процессов VS Code с памятью */
 function getVsCodeProcesses() {
   try {
-    // Windows: tasklist /FI "IMAGENAME eq Code.exe" /FO CSV /NH
-    // Столбцы: Image Name, PID, Session Name, Session#, Mem Usage, etc.
+    // Используем PowerShell с proper escaping
+    const psScript = `
+      $processes = Get-Process Code -ErrorAction SilentlyContinue
+      if ($processes.Count -eq 0) {
+        Write-Output "NONE"
+      } else {
+        $processes | ForEach-Object {
+          $id = $_.Id
+          $privMB = [math]::Round($_.PrivateMemorySize64/1MB, 1)
+          $workMB = [math]::Round($_.WorkingSet64/1MB, 1)
+          $cpu = $_.CPU
+          Write-Output "$id|$privMB|$workMB|$cpu"
+        }
+      }
+    `;
+
+    // Записываем скрипт во временный файл и выполняем
+    const tmpFile = path.join(os.tmpdir(), 'vscode-check.ps1');
+    fs.writeFileSync(tmpFile, psScript, 'utf-8');
+
     const output = execSync(
-      'tasklist /FI "IMAGENAME eq Code.exe" /FO CSV /NH',
+      `powershell -NoProfile -ExecutionPolicy Bypass -File "${tmpFile}"`,
       { encoding: 'utf-8' },
     );
 
-    const lines = output.trim().split('\n').filter((l) => l.trim());
+    // Удаляем временный файл
+    fs.unlinkSync(tmpFile);
+
+    const trimmed = output.trim();
+    if (trimmed === 'NONE' || !trimmed) {
+      return [];
+    }
+
+    const lines = trimmed.split('\n').filter((l) => l.trim());
     const processes = [];
 
     for (const line of lines) {
-      // Формат CSV: "Code.exe","12345","Console","1","123,456 KB","0:00:00"
-      const match = line.match(
-        /"([^"]+)","(\d+)","([^"]+)","(\d+)","([\d,]+) KB","([^"]+)"/,
-      );
-      if (match) {
+      // Формат: PID|PrivateMB|WorkingMB|CPU
+      const parts = line.split('|');
+      if (parts.length >= 4) {
         processes.push({
-          name: match[1],
-          pid: parseInt(match[2], 10),
-          session: match[3],
-          sessionNum: match[4],
-          memoryKB: parseInt(match[5].replace(/,/g, ''), 10),
-          cpuTime: match[6],
+          pid: parseInt(parts[0], 10),
+          privateMB: parseFloat(parts[1]),
+          workingMB: parseFloat(parts[2]),
+          cpu: parseFloat(parts[3]),
         });
       }
     }
@@ -73,7 +97,7 @@ function getSystemInfo() {
 /** Отформатировать размер */
 function formatSize(mb) {
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)} ГБ`;
-  return `${mb} МБ`;
+  return `${mb.toFixed(1)} МБ`;
 }
 
 // ─── Основная логика ──────────────────────────────────────
@@ -102,54 +126,56 @@ function main() {
   }
 
   // Сортировка по памяти (по убыванию)
-  processes.sort((a, b) => b.memoryKB - a.memoryKB);
+  processes.sort((a, b) => b.privateMB - a.privateMB);
 
   console.log(`\n📋 Найдено процессов VS Code: ${processes.length}`);
   console.log('-'.repeat(70));
 
-  let totalVsCodeMemory = 0;
+  let totalPrivateMemory = 0;
+  let totalWorkingMemory = 0;
   const warnings = [];
 
-    for (let i = 0; i < processes.length; i++) {
+  for (let i = 0; i < processes.length; i++) {
     const proc = processes[i];
-    totalVsCodeMemory += proc.memoryKB;
+    totalPrivateMemory += proc.privateMB;
+    totalWorkingMemory += proc.workingMB;
 
-    const memoryMB = Math.round(proc.memoryKB / 1024);
-    const percent = ((proc.memoryKB / sys.totalMem) * 100).toFixed(1);
+    const percent = ((proc.privateMB / sys.totalMB) * 100).toFixed(1);
 
     // Иконка статуса
     let icon = '🟢';
-    if (memoryMB > 1000) {
+    if (proc.privateMB > 1000) {
       icon = '🔴';
       warnings.push({
         pid: proc.pid,
-        memoryMB,
-        message: `PID ${proc.pid}: ${formatSize(memoryMB)} — очень много!`,
+        memoryMB: proc.privateMB,
+        message: `PID ${proc.pid}: ${formatSize(proc.privateMB)} — очень много!`,
       });
-    } else if (memoryMB > 500) {
+    } else if (proc.privateMB > 500) {
       icon = '🟡';
       warnings.push({
         pid: proc.pid,
-        memoryMB,
-        message: `PID ${proc.pid}: ${formatSize(memoryMB)} — много`,
+        memoryMB: proc.privateMB,
+        message: `PID ${proc.pid}: ${formatSize(proc.privateMB)} — много`,
       });
-    } else if (memoryMB > 200) {
+    } else if (proc.privateMB > 200) {
       icon = '🔵';
     }
 
     console.log(
       `${icon} [${i + 1}] PID: ${proc.pid.toString().padStart(6)} | ` +
-        `Память: ${formatSize(memoryMB).padStart(8)} (${percent}%) | ` +
-        `Сессия: ${proc.session}#${proc.sessionNum} | ` +
-        `CPU: ${proc.cpuTime}`,
+        `Private: ${formatSize(proc.privateMB).padStart(8)} | ` +
+        `Working: ${formatSize(proc.workingMB).padStart(8)} | ` +
+        `CPU: ${proc.cpu.toFixed(1)}с (${percent}%)`,
     );
   }
 
   // 3. Суммарная статистика
   console.log('-'.repeat(70));
   console.log(
-    `📊 Итого VS Code: ${formatSize(Math.round(totalVsCodeMemory / 1024))} | ` +
-      `${((totalVsCodeMemory / sys.totalMem) * 100).toFixed(1)}% от всей RAM`,
+    `📊 Итого: Private ${formatSize(totalPrivateMemory).padStart(8)} | ` +
+      `Working ${formatSize(totalWorkingMemory).padStart(8)} | ` +
+      `${((totalPrivateMemory / sys.totalMB) * 100).toFixed(1)}% от всей RAM`,
   );
 
   // 4. Рекомендации

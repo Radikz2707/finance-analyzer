@@ -101,6 +101,13 @@ export class NotificationAgent extends AgentBase {
     const { activeOrders, quotes } = data;
     const { portfolioAnalysis } = analysis;
 
+    console.log(
+      '[NotificationAgent] Starting buildHtmlReport with scenario=' +
+        !!input.scenario +
+        ', strategist=' +
+        !!input.strategist,
+    );
+
     // ── Шаг 1: Сборка HTML-дашборда ──
     const htmlContent = this.buildHtmlReport(
       activeOrders,
@@ -109,10 +116,24 @@ export class NotificationAgent extends AgentBase {
       data,
       analysis,
       ai,
+      input.scenario,
+      input.strategist,
+    );
+
+    console.log(
+      '[NotificationAgent] buildHtmlReport returned ' +
+        htmlContent.length +
+        ' chars',
     );
 
     // ── Шаг 2: Генерация Markdown-отчёта ──
-    const mdContent = this.buildMarkdownReport(data, analysis, ai);
+    const mdContent = this.buildMarkdownReport(
+      data,
+      analysis,
+      ai,
+      input.scenario,
+      input.strategist,
+    );
 
     // ── Шаг 3: Запись файлов (ошибка записи не должна ронять pipeline) ──
     let htmlWritten = '';
@@ -172,6 +193,8 @@ export class NotificationAgent extends AgentBase {
     data: DataAgentOutput,
     analysis: AnalysisAgentOutput,
     ai: AiAgentOutput,
+    scenario?: ScenarioAgentOutput,
+    strategist?: StrategistAgentOutput,
   ): string {
     // Преобразуем quotes в StockQuote[]
     const stockQuotes: StockQuote[] = Object.entries(quotes).map(
@@ -218,13 +241,43 @@ export class NotificationAgent extends AgentBase {
       },
     );
 
-    return reportBuilder.buildHtml();
+    // Добавляем сценарии "что если" в HTML отчет
+    let html = reportBuilder.buildHtml();
+    console.log(
+      `[NotificationAgent] scenario=${!!scenario}, scenarios.length=${scenario?.scenarios?.length ?? 0}, ` +
+        `bestScenarioId=${scenario?.bestScenarioId ?? 'null'}`,
+    );
+    console.log(
+      `[NotificationAgent] strategist=${!!strategist}, decisions.length=${strategist?.decisions?.length ?? 0}`,
+    );
+    if (scenario && scenario.scenarios.length > 0) {
+      console.log('[NotificationAgent] Calling buildScenarioSectionHtml...');
+      const scenarioHtml = this.buildScenarioSectionHtml(scenario);
+      console.log(
+        `[NotificationAgent] buildScenarioSectionHtml returned ${scenarioHtml.length} chars`,
+      );
+      html += scenarioHtml;
+    }
+
+    // Добавляем стратега в HTML отчет
+    if (strategist && strategist.decisions.length > 0) {
+      console.log('[NotificationAgent] Calling buildStrategistSectionHtml...');
+      const strategistHtml = this.buildStrategistSectionHtml(strategist);
+      console.log(
+        `[NotificationAgent] buildStrategistSectionHtml returned ${strategistHtml.length} chars`,
+      );
+      html += strategistHtml;
+    }
+
+    return html;
   }
 
   private buildMarkdownReport(
     data: DataAgentOutput,
     analysis: AnalysisAgentOutput,
     ai: AiAgentOutput,
+    scenario?: ScenarioAgentOutput,
+    strategist?: StrategistAgentOutput,
   ): string {
     const { assetsAnalysis } = analysis.portfolioAnalysis;
     const { income, priceAlertsMd } = analysis;
@@ -293,11 +346,24 @@ export class NotificationAgent extends AgentBase {
     // Добавляем AI-текст в конец Markdown
     // (очищенный от raw structured JSON — narrative приходит уже чистым,
     // здесь повторная страховка на display-слое)
+    let md = mdData;
     if (ai.aiNarrative) {
-      return mdData + '\n\n---\n\n' + stripJsonBlockFromAiText(ai.aiNarrative);
+      md += '\n\n---\n\n' + stripJsonBlockFromAiText(ai.aiNarrative);
     }
 
-    return mdData;
+    // Добавляем сценарии "что если"
+    if (scenario && scenario.scenarios.length > 0) {
+      md += '\n\n---\n\n';
+      md += this.buildScenarioSectionMd(scenario);
+    }
+
+    // Добавляем стратега
+    if (strategist && strategist.decisions.length > 0) {
+      md += '\n\n---\n\n';
+      md += this.buildStrategistSectionMd(strategist);
+    }
+
+    return md;
   }
 
   /**
@@ -448,14 +514,238 @@ export class NotificationAgent extends AgentBase {
     );
   }
 
+  // ── Markdown секции ──
+
+  private buildScenarioSectionMd(scenario: ScenarioAgentOutput): string {
+    const fmtRub = (v: number): string =>
+      new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
+    const fmtPct = (v: number): string => v.toFixed(1) + '%';
+
+    let md = '## 🎯 Сценарии «Что будет, если?»\n\n';
+
+    // Сводка
+    md += '**Сводка:**\n\n';
+    md += `- Построено сценариев: ${scenario.summary.scenariosBuilt}\n`;
+    md += `- Baseline отклонение: ${fmtPct(scenario.summary.baselineDeviationPct)}\n`;
+    md += `- Лучшее улучшение: ${fmtPct(scenario.summary.bestImprovementPct)}\n\n`;
+
+    // Таблица
+    md += '| Сценарий | Вердикт | Отклонение | P&L прогноз | Зафик. убыток |\n';
+    md += '|----------|---------|------------|-------------|---------------|\n';
+
+    for (const s of scenario.scenarios) {
+      const bestMarker = s.id === scenario.bestScenarioId ? ' ⭐' : '';
+      const verdictLabel =
+        s.verdict === 'IMPROVES'
+          ? 'УЛУЧШАЕТ'
+          : s.verdict === 'WORSENS'
+            ? 'УХУДШАЕТ'
+            : 'НЕЙТРАЛЬНЫЙ';
+
+      md += `| ${s.title}${bestMarker} | ${verdictLabel} | ${fmtPct(s.structureDeviationPct)} | ${fmtRub(s.projectedUnrealizedPnL)} | ${fmtRub(s.realizedLossRub)} |\n`;
+
+      if (s.rationale) {
+        md += `| _${s.rationale}_ | | | | |\n`;
+      }
+    }
+
+    md += '\n';
+    return md;
+  }
+
+  private buildStrategistSectionMd(
+    strategist: StrategistAgentOutput,
+  ): string {
+    let md = '## 🛡️ Стратег — Правила защиты\n\n';
+
+    md += `**Цель:** ${strategist.summary.goal} | **Проверено активов:** ${strategist.summary.assetsChecked}\n\n`;
+
+    md += '| Актив | Действие | Решение | Обоснование |\n';
+    md += '|-------|----------|---------|-------------|\n';
+
+    for (const d of strategist.decisions) {
+      md += `| ${d.ticker} | ${d.suggestedAction || '—'} | ${d.finalAction || '—'} | ${d.note || '—'} |\n`;
+    }
+
+    md += '\n';
+    return md;
+  }
+
+  // ── Сценарии "что если" (HTML) ──
+
+  private buildScenarioSectionHtml(scenario: ScenarioAgentOutput): string {
+    const fmtRub = (v: number): string =>
+      new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
+    const fmtPct = (v: number): string => v.toFixed(1) + '%';
+
+    let html =
+      '<div style="margin-bottom:20px;padding:20px;background:#161b22;border:1px solid #30363d;border-radius:6px;">' +
+      '<h3 style="margin:0 0 15px 0;font-size:16px;color:#fff;border-bottom:1px solid #30363d;padding-bottom:8px;">' +
+      '🎯 Сценарии «Что будет, если?»</h3>';
+
+    // Сводка
+    html +=
+      '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:15px;">' +
+      '<div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:10px;text-align:center;">' +
+      '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;">Построено сценариев</div>' +
+      `<div style="font-size:18px;font-weight:bold;color:#58a6ff;margin-top:4px;">${scenario.summary.scenariosBuilt}</div>` +
+      '</div>' +
+      '<div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:10px;text-align:center;">' +
+      '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;">Baseline отклонение</div>' +
+      `<div style="font-size:18px;font-weight:bold;color:#fff;margin-top:4px;">${fmtPct(scenario.summary.baselineDeviationPct)}</div>` +
+      '</div>' +
+      '<div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:10px;text-align:center;">' +
+      '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;">Лучшее улучшение</div>' +
+      `<div style="font-size:18px;font-weight:bold;color:#56d364;margin-top:4px;">${fmtPct(scenario.summary.bestImprovementPct)}</div>` +
+      '</div>' +
+      '</div>';
+
+    // Таблица сценариев
+    html += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    html +=
+      '<thead><tr style="border-bottom:1px solid #30363d;">' +
+      '<th style="text-align:left;padding:8px;color:#8b949e;">Сценарий</th>' +
+      '<th style="text-align:left;padding:8px;color:#8b949e;">Вердикт</th>' +
+      '<th style="text-align:right;padding:8px;color:#8b949e;">Отклонение</th>' +
+      '<th style="text-align:right;padding:8px;color:#8b949e;">P&L прогноз</th>' +
+      '<th style="text-align:right;padding:8px;color:#8b949e;">Зафикс. убыток</th>' +
+      '</tr></thead><tbody>';
+
+    for (const s of scenario.scenarios) {
+      const isBest = s.id === scenario.bestScenarioId;
+      const rowStyle = isBest
+        ? 'background:rgba(88,166,255,0.08);border-left:3px solid #58a6ff;'
+        : '';
+
+      const verdictColor =
+        s.verdict === 'IMPROVES'
+          ? '#56d364'
+          : s.verdict === 'WORSENS'
+            ? '#ff7b72'
+            : '#8b949e';
+      const verdictLabel =
+        s.verdict === 'IMPROVES'
+          ? 'УЛУЧШАЕТ'
+          : s.verdict === 'WORSENS'
+            ? 'УХУДШАЕТ'
+            : 'НЕЙТРАЛЬНЫЙ';
+
+      html +=
+        '<tr style="border-bottom:1px solid #30363d;">' +
+        `<td style="padding:8px;color:#c9d1d9;${rowStyle}"><strong>${s.title}</strong>${
+          isBest ? ' ⭐' : ''
+        }</td>` +
+        `<td style="padding:8px;color:${verdictColor};${rowStyle}"><strong>${verdictLabel}</strong></td>` +
+        `<td style="padding:8px;text-align:right;color:#c9d1d9;${rowStyle}">${fmtPct(s.structureDeviationPct)}</td>` +
+        `<td style="padding:8px;text-align:right;color:${s.projectedUnrealizedPnL >= 0 ? '#56d364' : '#ff7b72'};${rowStyle}">${fmtRub(s.projectedUnrealizedPnL)}</td>` +
+        `<td style="padding:8px;text-align:right;color:${s.realizedLossRub > 0 ? '#ff7b72' : '#8b949e'};${rowStyle}">${fmtRub(s.realizedLossRub)}</td>` +
+        '</tr>';
+
+      // Rationale (если есть)
+      if (s.rationale) {
+        html +=
+          `<tr><td colspan="5" style="padding:4px 8px 8px 20px;color:#8b949e;font-size:12px;${rowStyle}">${s.rationale}</td></tr>`;
+      }
+    }
+
+    html += '</tbody></table></div>';
+    return html;
+  }
+
+  private buildStrategistSectionHtml(
+    strategist: StrategistAgentOutput,
+  ): string {
+    const fmtPct = (v: number | null): string =>
+      v !== null ? (v >= 0 ? '+' : '') + v.toFixed(1) + '%' : '—';
+
+    let html =
+      '<div style="margin-bottom:20px;padding:20px;background:#161b22;border:1px solid #30363d;border-radius:6px;">' +
+      '<h3 style="margin:0 0 15px 0;font-size:16px;color:#fff;border-bottom:1px solid #30363d;padding-bottom:8px;">' +
+      '🛡️ Стратег — Правила защиты</h3>';
+
+    // Сводка с долями сегментов
+    const buyCount = strategist.decisions.filter(
+      (d) => d.finalAction === 'BUY' || d.finalAction === 'REDUCE',
+    ).length;
+    const sellCount = strategist.decisions.filter(
+      (d) => d.finalAction === 'SELL' || d.finalAction === 'REDUCE',
+    ).length;
+    const holdCount = strategist.decisions.filter(
+      (d) => d.finalAction === 'HOLD',
+    ).length;
+
+    html +=
+      '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px;">' +
+      '<div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:8px;text-align:center;">' +
+      '<div style="font-size:10px;color:#8b949e;text-transform:uppercase;">Активов</div>' +
+      `<div style="font-size:16px;font-weight:bold;color:#58a6ff;margin-top:2px;">${strategist.summary.assetsChecked}</div>` +
+      '</div>' +
+      '<div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:8px;text-align:center;">' +
+      '<div style="font-size:10px;color:#8b949e;text-transform:uppercase;">Покупать</div>' +
+      `<div style="font-size:16px;font-weight:bold;color:#56d364;margin-top:2px;">${buyCount}</div>` +
+      '</div>' +
+      '<div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:8px;text-align:center;">' +
+      '<div style="font-size:10px;color:#8b949e;text-transform:uppercase;">Продавать</div>' +
+      `<div style="font-size:16px;font-weight:bold;color:#ff7b72;margin-top:2px;">${sellCount}</div>` +
+      '</div>' +
+      '<div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:8px;text-align:center;">' +
+      '<div style="font-size:10px;color:#8b949e;text-transform:uppercase;">Держать</div>' +
+      `<div style="font-size:16px;font-weight:bold;color:#e3b341;margin-top:2px;">${holdCount}</div>` +
+      '</div>' +
+      '</div>';
+
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    html +=
+      '<thead><tr style="border-bottom:1px solid #30363d;">' +
+      '<th style="text-align:left;padding:6px 8px;color:#8b949e;">Актив</th>' +
+      '<th style="text-align:right;padding:6px 8px;color:#8b949e;">Доля</th>' +
+      '<th style="text-align:right;padding:6px 8px;color:#8b949e;">Просадка</th>' +
+      '<th style="text-align:left;padding:6px 8px;color:#8b949e;">Действие</th>' +
+      '<th style="text-align:left;padding:6px 8px;color:#8b949e;">Решение</th>' +
+      '<th style="text-align:left;padding:6px 8px;color:#8b949e;">Примечание</th>' +
+      '</tr></thead><tbody>';
+
+    for (const d of strategist.decisions) {
+      const actionColor =
+        d.finalAction === 'BUY' || d.finalAction === 'HOLD'
+          ? '#56d364'
+          : d.finalAction === 'SELL' || d.finalAction === 'REDUCE' || d.finalAction === 'EXIT'
+            ? '#ff7b72'
+            : '#8b949e';
+
+      // Формируем примечание с данными о просадке и концентрации
+      let note = d.note || '';
+      if (d.drawdownPercent !== null && d.drawdownPercent < 0) {
+        note += (note ? ' · ' : '') + `📉 ${fmtPct(d.drawdownPercent)}`;
+      }
+      if (d.concentrationPercent !== null && d.concentrationPercent > 10) {
+        note += (note ? ' · ' : '') + `⚠️ ${fmtPct(d.concentrationPercent)}`;
+      }
+      if (!note) note = '—';
+
+      html +=
+        '<tr style="border-bottom:1px solid #30363d;">' +
+        `<td style="padding:6px 8px;color:#c9d1d9;font-weight:bold;">${d.name || d.ticker}</td>` +
+        `<td style="padding:6px 8px;text-align:right;color:#8b949e;">${fmtPct(d.concentrationPercent)}</td>` +
+        `<td style="padding:6px 8px;text-align:right;color:${d.drawdownPercent !== null ? (d.drawdownPercent < -30 ? '#ff7b72' : d.drawdownPercent < 0 ? '#e3b341' : '#56d364') : '#8b949e'};font-weight:bold;">${fmtPct(d.drawdownPercent)}</td>` +
+        `<td style="padding:6px 8px;color:#8b949e;font-size:11px;">${d.suggestedAction || '—'}</td>` +
+        `<td style="padding:6px 8px;color:${actionColor};font-weight:bold;">${d.finalAction || '—'}</td>` +
+        `<td style="padding:6px 8px;color:#8b949e;font-size:11px;">${note}</td>` +
+        '</tr>';
+    }
+
+    html += '</tbody></table></div>';
+    return html;
+  }
+
   /**
-   * Открыть report.html в браузере ОС по умолчанию.
-   *
-   * Внутри Electron-приложения отчёт и так показывается во вкладке
-   * «Анализ» (iframe из runPipelineReport) — внешний браузер не открываем,
-   * иначе каждый прогон анализа плодил бы лишние вкладки.
-   * Работает только в CLI-прогонах (npm run pipeline).
-   */
+    * Открыть report.html в браузере ОС по умолчанию.
+    *
+    * Внутри Electron-приложения отчёт и так показывается во вкладке
+    * «Анализ» (iframe из runPipelineReport) — внешний браузер не открываем,
+    * иначе каждый прогон анализа плодил бы лишние вкладки.
+    * Работает только в CLI-прогонах (npm run pipeline).
+    */
   private openInBrowser(filePath: string): boolean {
     // Electron: process.versions.electron определён только в его рантайме
     if (process.versions.electron) {

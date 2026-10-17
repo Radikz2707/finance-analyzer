@@ -101,9 +101,9 @@ export async function streamChat(
           options: {
             num_predict: options.numPredict || 8192,
             // Явное контекстное окно: без него Ollama берёт полный контекст
-            // модели (у qwen3.6:27b это 262144) → огромный KV-cache → OOM.
-            // 16384 достаточно для промпта ~2-3k токенов и ответа до 8192.
-            num_ctx: options.numCtx || 16384,
+            // модели (у qwen3.6:35b-a3b это 32768) → огромный KV-cache → OOM.
+            // 24576 достаточно для промпта ~5-7k токенов и ответа до 8192.
+            num_ctx: options.numCtx || 24576,
             temperature: options.temperature || 0.3,
             top_p: options.topP || 0.9,
             top_k: options.topK || 40,

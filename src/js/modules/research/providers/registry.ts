@@ -344,7 +344,7 @@ export class ResearchProviderRegistry {
 
     // Сохраняем в кэш (пропускаем в тестах)
     if (!isTest) {
-      const ttlSeconds = context.ttlSeconds ?? 300;
+      const ttlSeconds = context.ttlSeconds ?? 86400; // 24 часа вместо 5 минут
       try {
         researchCacheRepo.set(
           cacheKey,
@@ -353,7 +353,7 @@ export class ResearchProviderRegistry {
           ttlSeconds,
         );
         console.log(
-          `[ResearchCache] 💾 ${cacheKey} — сохранено в кэш (TTL ${ttlSeconds}с)`,
+          `[ResearchCache] 💾 ${cacheKey} — сохранено в кэш (TTL ${ttlSeconds}с = ${(ttlSeconds / 3600).toFixed(0)}ч)`,
         );
       } catch (err) {
         console.warn(

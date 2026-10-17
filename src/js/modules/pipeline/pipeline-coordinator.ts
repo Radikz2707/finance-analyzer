@@ -20,7 +20,10 @@ import {
   type NotificationAgentOutput,
 } from './agents/notification-agent.js';
 import { ReviewAgent, type ReviewResult } from './review/review-agent.js';
-import { ScenarioAgent, type ScenarioAgentOutput } from './agents/scenario-agent.js';
+import {
+  ScenarioAgent,
+  type ScenarioAgentOutput,
+} from './agents/scenario-agent.js';
 import {
   StrategistAgent,
   type StrategistAgentOutput,
@@ -31,6 +34,11 @@ import { aiMemoryImpl } from './ai-memory/index.js';
 import { Watchdog } from './watchdog/watchdog.js';
 import type { AgentHealthReport } from './watchdog/types.js';
 import { DEFAULT_THRESHOLDS } from './watchdog/types.js';
+import {
+  createGuardrailPolicy,
+  type GuardrailPolicy,
+} from './guardrail-policy.js';
+import type { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
 
 // ──────────────────────────────────────────────
 // 1. Pipeline stage definitions
@@ -99,6 +107,8 @@ export interface PipelineConfig {
   scenario?: AgentConfig;
   strategist?: AgentConfig;
   notification?: AgentConfig;
+  /** Guardrail-политика (по умолчанию moderate) */
+  guardrailPolicy?: GuardrailPolicy;
 }
 
 /**
@@ -156,6 +166,9 @@ export class PipelineCoordinator {
   private strategistAgent: StrategistAgent;
   private notificationAgent: NotificationAgent;
 
+  /** Guardrail-политика (по умолчанию moderate) */
+  private guardrailPolicy: GuardrailPolicy;
+
   private stageResults: Record<PipelineStage, PipelineStageResult | null> = {
     data: null,
     research: null,
@@ -168,7 +181,9 @@ export class PipelineCoordinator {
   };
 
   /** Event-система для стриминга прогресса */
-  private stageListeners: Array<(stage: PipelineStage, durationMs: number) => void> = [];
+  private stageListeners: Array<
+    (stage: PipelineStage, durationMs: number) => void
+  > = [];
 
   private agentSummaries: Record<string, AgentSummary> = {};
   private reviewResultData: ReviewResult | null = null;
@@ -182,7 +197,9 @@ export class PipelineCoordinator {
   }> = [];
 
   /** Подписаться на завершение стадии конвейера */
-  onStageComplete(callback: (stage: PipelineStage, durationMs: number) => void): () => void {
+  onStageComplete(
+    callback: (stage: PipelineStage, durationMs: number) => void,
+  ): () => void {
     this.stageListeners.push(callback);
     return () => {
       this.stageListeners = this.stageListeners.filter((cb) => cb !== callback);
@@ -227,6 +244,10 @@ export class PipelineCoordinator {
     options: PipelineRuntimeOptions = {},
   ) {
     this._state = createPipelineState();
+    // Инициализация guardrail-политики (по умолчанию moderate)
+    this.guardrailPolicy =
+      config.guardrailPolicy ??
+      createGuardrailPolicy('moderate', { PLZL: 50 });
     this.dataAgent = new DataAgent(this.config.data);
     this.researchAgent = new ResearchAgent(this.config.research);
     this.analysisAgent = new AnalysisAgent(this.config.analysis);
@@ -407,7 +428,8 @@ export class PipelineCoordinator {
         : null;
 
       // Извлекаем данные для новых агентов (в scope для всех этапов)
-      const assetsAnalysisList = analysisOutput.portfolioAnalysis.assetsAnalysis;
+      const assetsAnalysisList =
+        analysisOutput.portfolioAnalysis.assetsAnalysis;
       const macroGoalsData = dataOutput.macroGoals;
       const assetsAnalysisJson = JSON.parse(JSON.stringify(assetsAnalysisList));
       const macroGoalsJson = JSON.parse(JSON.stringify(macroGoalsData));
@@ -433,7 +455,8 @@ export class PipelineCoordinator {
               );
               proposedChanges.push({
                 ticker,
-                action: rec.recommendedAction as 'BUY' | 'SELL' | 'REDUCE' | 'HOLD',
+                action: rec.recommendedAction as
+                  'BUY' | 'SELL' | 'REDUCE' | 'HOLD',
                 amountRub: asset?.deficitRub ?? 0,
               });
             }
@@ -448,8 +471,22 @@ export class PipelineCoordinator {
             ticker: c.ticker,
             action: c.action === 'SELL' ? 'SELL' : c.action,
             amountRub: Math.abs(c.amountRub),
-          })),
+           })),
         };
+
+        console.log(
+          `[Pipeline] ScenarioAgent input: assets=${scenarioInput.assetsAnalysis.length}, ` +
+            `total=${scenarioInput.totalPortfolioValue}, freeCash=${scenarioInput.freeCashRub}, ` +
+            `proposedChanges=${scenarioInput.proposedChanges.length}`,
+        );
+        if (scenarioInput.proposedChanges.length > 0) {
+          console.log(
+            '[Pipeline] Proposed changes:',
+            scenarioInput.proposedChanges
+              .map((c) => `${c.ticker}=${c.action} ${c.amountRub}₽`)
+              .join(', '),
+          );
+        }
 
         const result = await this.scenarioAgent.execute(scenarioInput);
         return result.data as ScenarioAgentOutput;
@@ -463,7 +500,15 @@ export class PipelineCoordinator {
 
       this.scenarioResultData = scenarioResult.result.success
         ? scenarioResult.result.data!
-        : { scenarios: [], bestScenarioId: null, summary: { scenariosBuilt: 0, baselineDeviationPct: 0, bestImprovementPct: 0 } };
+        : {
+            scenarios: [],
+            bestScenarioId: null,
+            summary: {
+              scenariosBuilt: 0,
+              baselineDeviationPct: 0,
+              bestImprovementPct: 0,
+            },
+          };
 
       // ── Stage 4.6: Strategist Agent (правила защиты) ──
       const strategistResult = await this.runStage<
@@ -526,9 +571,13 @@ export class PipelineCoordinator {
           proposals,
           strategistOutput: this.strategistResultData,
           scenarioOutput: this.scenarioResultData,
-          newsContext: researchOutput?.allConflicts
-            ?.map((c) => `${c.field}: ${c.providerA}=${c.valueA} vs ${c.providerB}=${c.valueB}`)
-            .join('; ') ?? '',
+          newsContext:
+            researchOutput?.allConflicts
+              ?.map(
+                (c) =>
+                  `${c.field}: ${c.providerA}=${c.valueA} vs ${c.providerB}=${c.valueB}`,
+              )
+              .join('; ') ?? '',
         });
 
         this.consiliumResultData = consiliumOutput;
@@ -573,11 +622,29 @@ export class PipelineCoordinator {
             }>;
           }
         ).interactiveOrders;
-        this.interactiveOrdersData = orders.map((o) => ({
+        
+        // Guardrail-проверка: продажа в убыток > порога требует подтверждения
+        const validatedOrders = this.validateOrdersWithGuardrails(
+          orders,
+          assetsAnalysisList,
+        );
+        
+        this.interactiveOrdersData = validatedOrders.map((o) => ({
           ticker: o.ticker,
           action: o.action,
           id: o.id,
         }));
+        
+        // Логирование guardrail-предупреждений
+        const warnings = validatedOrders.filter(
+          (o) => o.guardrailWarning,
+        );
+        if (warnings.length > 0) {
+          console.warn(
+            `[Pipeline] ⚠️ Guardrail: ${warnings.length} ордер(ов) требуют подтверждения:`,
+            warnings.map((o) => `${o.ticker}=${o.action} (${o.guardrailWarning})`).join(', '),
+          );
+        }
       }
 
       // Строим итоговый результат
@@ -722,6 +789,56 @@ export class PipelineCoordinator {
     }
   }
 
+  /**
+   * Guardrail-проверка ордеров: продажа в убыток > порога требует подтверждения.
+   */
+  private validateOrdersWithGuardrails(
+    orders: Array<{ ticker: string; action: string; id: string }>,
+    assetsAnalysis: AssetAnalysis[],
+  ): Array<{
+    ticker: string;
+    action: string;
+    id: string;
+    guardrailWarning?: string;
+    requiresManualConfirm?: boolean;
+  }> {
+    return orders.map((order) => {
+      const upperTicker = order.ticker.toUpperCase();
+      const asset = assetsAnalysis.find(
+        (a) => a.ticker.toUpperCase() === upperTicker,
+      );
+
+      // Проверяем, является ли ордер продажей/сокращением
+      const isSellAction = ['SELL', 'REDUCE', 'EXIT'].includes(order.action);
+      if (!isSellAction || !asset) {
+        return order;
+      }
+
+      // Рассчитываем убыток по позиции
+      const balancePrice = asset.balancePrice ?? 0;
+      const currentPrice = asset.currentPrice ?? 0;
+      
+      let lossPct = 0;
+      if (balancePrice > 0 && currentPrice > 0) {
+        lossPct = ((currentPrice - balancePrice) / balancePrice) * 100;
+      }
+
+      // Проверяем порог убытка
+      const threshold = this.guardrailPolicy.lossThresholdPct;
+      const requiresConfirm = lossPct < -threshold;
+
+      if (requiresConfirm) {
+        return {
+          ...order,
+          guardrailWarning: `Продажа в убыток ${lossPct.toFixed(1)}% (порог ${threshold}%)`,
+          requiresManualConfirm: true,
+        };
+      }
+
+      return order;
+    });
+  }
+
   private buildResult(totalStart: number, error?: Error): PipelineResult {
     // Обновляем сводки агентов
     this.agentSummaries = this.getAgentSummaries();
@@ -736,7 +853,10 @@ export class PipelineCoordinator {
       startedAt: this._state.startedAt,
       completedAt: new Date().toISOString(),
       totalDurationMs: Date.now() - totalStart,
-      stages: this.stageResults as Record<PipelineStage, PipelineStageResult | null>,
+      stages: this.stageResults as Record<
+        PipelineStage,
+        PipelineStageResult | null
+      >,
       reviewResult: this.reviewResultData || undefined,
       scenarioResult: this.scenarioResultData || undefined,
       strategistResult: this.strategistResultData || undefined,

@@ -250,35 +250,74 @@ export class AiAgent extends AgentBase {
     const actualStocksPct =
       Math.round(
         portfolioAnalysis.assetsAnalysis
-          .filter(
-            (a) => a.assetType === 'А' || a.assetType === 'Акция',
-          )
+          .filter((a) => a.assetType === 'А' || a.assetType === 'Акция')
           .reduce((sum, a) => sum + a.currentPercent, 0) * 100,
       ) / 100;
     const actualBondsPct =
       Math.round(
         portfolioAnalysis.assetsAnalysis
-          .filter(
-            (a) => a.assetType === 'О' || a.assetType === 'Облигация',
-          )
+          .filter((a) => a.assetType === 'О' || a.assetType === 'Облигация')
           .reduce((sum, a) => sum + a.currentPercent, 0) * 100,
       ) / 100;
 
-    const aiClientResult = await this.callAiClient(
-      portfolioReportData,
-      income,
-      riskValidation,
-      new Date().toISOString(),
-      freshMacroData,
-      thesisResults,
-      portfolioAnalysis.assetsAnalysis,
-      data.historicalTrades,
-      data.investedFunds,
-      data.accounts,
-      memoryContext,
-      { stocks: actualStocksPct, bonds: actualBondsPct },
-      guardrailsContext,
-    );
+    // Вызов AiClient с retry-логикой (до 3 попыток)
+    let aiClientResult: Awaited<ReturnType<typeof this.callAiClient>> = {
+      text: '',
+      modelUsed: 'PENDING',
+      success: false,
+    };
+    const maxRetries = 3;
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        aiClientResult = await this.callAiClient(
+          portfolioReportData,
+          income,
+          riskValidation,
+          new Date().toISOString(),
+          freshMacroData,
+          thesisResults,
+          portfolioAnalysis.assetsAnalysis,
+          data.historicalTrades,
+          data.investedFunds,
+          data.accounts,
+          memoryContext,
+          { stocks: actualStocksPct, bonds: actualBondsPct },
+          guardrailsContext,
+        );
+
+        if (aiClientResult.success) {
+          this.log.info(`[AiAgent] ✅ AiClient успешен с попытки ${attempt}`);
+          break;
+        }
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        this.log.warn(
+          `[AiAgent] ⚠️ Попытка ${attempt}/${maxRetries} неудачна: ${lastError.message}`,
+        );
+      }
+
+      // Пауза перед retry (экспоненциальная: 1с, 2с, 4с)
+      if (attempt < maxRetries) {
+        const delayMs = Math.pow(2, attempt - 1) * 1000;
+        this.log.info(`[AiAgent] ⏳ Пауза ${delayMs}мс перед retry...`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    // Если все попытки неудачны — используем пустой результат
+    if (!aiClientResult || !aiClientResult.success) {
+      this.log.error(
+        `[AiAgent] ❌ AiClient не успешен после ${maxRetries} попыток: ${lastError?.message}`,
+      );
+      aiClientResult = {
+        text: '',
+        modelUsed: 'FAILED',
+        success: false,
+        error: lastError?.message ?? 'Unknown error',
+      };
+    }
 
     // Шаг 4: Пост-обработка AI-текста
     let aiNarrative = aiClientResult.text || '';
@@ -323,10 +362,11 @@ export class AiAgent extends AgentBase {
         if (aiJsonTicker === assetTicker) {
           aiJsonForAsset = rawAiJson;
         } else {
-          // Тикер не совпадает — рекомендация не для этого актива
+          // Тикер не совпадает — используем детерминированные данные
+          // для генерации рекомендации (fallback)
           this.log.debug(
             `[AiAgent] [TIKER_ISOLATION] AI recommendation ticker=${aiJsonTicker} ` +
-              `does not match asset ticker=${assetTicker}, skipping`,
+              `does not match asset ticker=${assetTicker}, using deterministic fallback`,
           );
         }
       }
@@ -337,6 +377,19 @@ export class AiAgent extends AgentBase {
         aiJsonForAsset,
         aiClientResult.structuredValidation as ValidationResult | null,
       );
+
+      // Если AI не вернул рекомендацию для актива, используем детерминированную
+      if (!structured.recommendedAction) {
+        this.log.info(
+          `[AiAgent] [FALLBACK] ${asset.ticker}: AI не вернул рекомендацию, ` +
+            `используем PortfolioMath: ${asset.status}`,
+        );
+        structured.recommendedAction =
+          asset.status as StructuredAIAssetRecommendation['recommendedAction'];
+        structured.confidence = 0.5;
+        structured.rationale = 'Рекомендация на основе PortfolioMath (AI не вернул рекомендацию)';
+      }
+
       structuredRecommendations.set(asset.ticker, structured);
 
       // ─── Согласование PortfolioMath и ИИ ───
