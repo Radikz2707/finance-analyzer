@@ -22,7 +22,7 @@
 | Агент                                           | Роль (AgentRole)         | Вход (кратко)                                                                             | Выход (кратко)                                                                                               | Безопасность / ограничения                                                                           |
 | :---------------------------------------------- | :----------------------- | :---------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------- |
 | [`DataAgent`](data-agent.ts:115)                | — (источник данных)      | — (нет входных данных; читает Excel/QUIK)                                                 | [`DataAgentOutput`](data-agent.ts:69): позиции, котировки, счета, заявки, новости, аномалии, ключевая ставка | Только чтение локальных файлов; новости — через Gatekeeper; котировки — через доверенные API         |
-| [`ResearchAgent`](research-agent.ts:87)         | `research`               | [`DataAgentOutput`](data-agent.ts:69) (assets/quotes/macroGoals)                          | [`ResearchAgentOutput`](research-agent.ts:47): снимки по активам, конфликты провайдеров                      | Чтение внешних API через registry провайдеров; конфликты данных фиксируются, не выдумываются         |
+| [`ResearchAgentV2`](research-agent-v2/research-agent-v2.ts:28) | `research` | [`DataAgentOutput`](data-agent.ts:69) (assets/quotes/macroGoals) | [`ResearchV1Output`](research-agent-v2/types.ts:175): алерты, новости, мнение для Consilium + глубокое исследование с кросс-проверкой | Чтение внешних API через NewsDriver; факты immutable; кросс-проверки данных |
 | [`AnalysisAgent`](analysis-agent.ts:92)         | `analysis`               | [`DataAgentOutput`](data-agent.ts:69)                                                     | [`AnalysisAgentOutput`](analysis-agent.ts:62): анализ долей, риски, доходы, ценовые алерты                   | Синхронные вычисления без I/O                                                                        |
 | [`AiAgent`](ai-agent.ts:93)                     | `ai`                     | Data + Research + Analysis (+ память ИИ)                                                  | [`AiAgentOutput`](ai-agent.ts:65): тезисы, narrative, структурированные рекомендации                         | AI-текст санитизируется и валидируется; контекст guardrails                                          |
 | [`NotificationAgent`](notification-agent.ts:60) | — (финализация)          | data/analysis/ai (+review/scenario/strategist/consilium)                                  | [`NotificationAgentOutput`](notification-agent.ts:28): `report.html`, `report.md`, interactive orders        | Записывает только отчёты в cwd; открытие браузера; Telegram опционален                               |
@@ -55,13 +55,13 @@
 - **Откуда данные:** парсер [`xlsx-parser`](../../xlsx-parser/index.ts:1) (Excel/CSV), [`gatekeeper`](../gatekeeper/gatekeeper.ts:1) (новости QUIK/MOEX/RSS), [`python-engine`](../../python-engine/index.ts:1) (аномалии цен), [`cbr-rate.ts`](../../ai-advisor/cbr-rate.ts:1) (ключевая ставка).
 - **Выход:** [`DataAgentOutput`](data-agent.ts:69) — передаётся в Research и Analysis.
 
-### 2. ResearchAgent — исследование активов
+### 2. ResearchAgentV2 — глубокое исследование активов
 
-- **Файл:** [`research-agent.ts`](research-agent.ts:1), класс [`ResearchAgent`](research-agent.ts:87).
-- **Назначение:** параллельное исследование всех активов портфеля через реестр провайдеров.
-- **Ключевые методы:** построение `ResearchContext` из `DataAgentOutput`, запуск `Promise.all` по активам, агрегация снимков и конфликтов значений.
-- **Откуда данные:** 4 провайдера из [`research/providers/registry.ts`](../../research/providers/registry.ts:1): рыночные котировки, фундаментал эмитента, новости, макро-показатели.
-- **Выход:** [`ResearchAgentOutput`](research-agent.ts:47) — `Map<ticker, AssetResearchResult>` + конфликты. Передаётся в AI Agent.
+- **Файл:** [`research-agent-v2/research-agent-v2.ts`](research-agent-v2/research-agent-v2.ts:1), класс [`ResearchAgentV2`](research-agent-v2/research-agent-v2.ts:28).
+- **Назначение:** сбор фактов, новостей, ценовых алертов (V1-совместимость) + глубокое исследование с кросс-проверкой, историческим анализом, экспортом.
+- **Ключевые методы:** `factsV1()` — проверка алертов + анализ новостей + мнение для Consilium; `deepResearch()` — кросс-проверки, исторический анализ, сентимент; `exportResearch()` — JSON/Markdown/CSV.
+- **Откуда данные:** [`NewsDriver`](../news-driver/types.ts:1) (`NewsImpact`), [`DirectorFactsContext`](../director/director-types.ts:550) (priceAlerts, newsContext), реестр провайдеров.
+- **Выход:** [`ResearchV1Output`](research-agent-v2/types.ts:175) для `action: 'facts'` (V1-совместимость); [`ResearchAgentV2Output`](research-agent-v2/types.ts:164) для глубокого исследования. Передаётся в AI Agent.
 
 ### 3. AnalysisAgent — математика портфеля
 
@@ -75,7 +75,7 @@
 - **Файл:** [`ai-agent.ts`](ai-agent.ts:1), класс [`AiAgent`](ai-agent.ts:93).
 - **Назначение:** генерация инвестиционных тезисов по каждому активу, AI-нарратив через `AiClient`, структурированные рекомендации.
 - **Ключевые шаги:** `loadMemoryContext()` (память ИИ: оперативные/стратегические записи, KPI-снимки) → InvestmentThesis по каждому активу → вызов AI → пост-обработка (санитизация, валидация JSON) → построение структурированных рекомендаций.
-- **Откуда данные:** [`DataAgentOutput`](data-agent.ts:69), [`ResearchAgentOutput`](research-agent.ts:47), [`AnalysisAgentOutput`](analysis-agent.ts:62), память [`ai-memory`](../ai-memory/index.ts:1), контекст [`guardrails`](../guardrails/guardrails.ts:1).
+- **Откуда данные:** [`DataAgentOutput`](data-agent.ts:69), [`ResearchV1Output`](research-agent-v2/types.ts:175), [`AnalysisAgentOutput`](analysis-agent.ts:62), память [`ai-memory`](../ai-memory/index.ts:1), контекст [`guardrails`](../guardrails/guardrails.ts:1).
 - **Выход:** [`AiAgentOutput`](ai-agent.ts:65). AI-запрос асинхронный, не блокирует поток.
 
 ### 5. NotificationAgent — отчёты

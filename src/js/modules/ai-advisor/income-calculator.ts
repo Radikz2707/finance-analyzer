@@ -262,7 +262,9 @@ export async function calculatePortfolioIncome(
   }
 
   console.log(
-    '[PARSER END] Расчет завершен. Итоговый НКД: ' + totalNkd + ' руб.',
+    '[PARSER END] Расчет завершен. Итоговый НКД: ' +
+      Math.round(totalNkd * 100) / 100 +
+      ' руб.',
   );
 
   return {

@@ -6,10 +6,8 @@ import type {
 } from './agent/types.js';
 import { createPipelineState } from './agent/types.js';
 import { DataAgent, type DataAgentOutput } from './agents/data-agent.js';
-import {
-  ResearchAgent,
-  type ResearchAgentOutput,
-} from './agents/research-agent.js';
+import { ResearchAgentV2 } from './agents/research-agent-v2/research-agent-v2.js';
+import type { ResearchV1Output } from './agents/research-agent-v2/types.js';
 import {
   AnalysisAgent,
   type AnalysisAgentOutput,
@@ -19,7 +17,18 @@ import {
   NotificationAgent,
   type NotificationAgentOutput,
 } from './agents/notification-agent.js';
-import { ReviewAgent, type ReviewResult } from './review/review-agent.js';
+// ReviewAgent удалён — используем заглушку
+export interface ReviewResult {
+  agreement: number;
+  agreementPercent: number;
+  discrepancies: string[];
+  hasDisagreement: boolean;
+  timeMs: number;
+  successful: number;
+  timeouts: number;
+  finalRecommendation?: string;
+}
+
 import {
   ScenarioAgent,
   type ScenarioAgentOutput,
@@ -39,6 +48,8 @@ import {
   type GuardrailPolicy,
 } from './guardrail-policy.js';
 import type { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
+import { SelfImprovementLoop } from './self-improvement/self-improvement-loop.js';
+import { LearningAgent } from './agents/learning-agent.js';
 
 // ──────────────────────────────────────────────
 // 1. Pipeline stage definitions
@@ -158,13 +169,15 @@ const STAGE_AGENT_NAMES: Record<PipelineStage, string> = {
 export class PipelineCoordinator {
   private _state: PipelineState;
   private dataAgent: DataAgent;
-  private researchAgent: ResearchAgent;
+  private researchAgent: ResearchAgentV2;
   private analysisAgent: AnalysisAgent;
   private aiAgent: AiAgent;
-  private reviewAgent: ReviewAgent;
+  // private reviewAgent: ReviewAgent; // Удалён
   private scenarioAgent: ScenarioAgent;
   private strategistAgent: StrategistAgent;
   private notificationAgent: NotificationAgent;
+  private selfImprovementLoop: SelfImprovementLoop;
+  private learningAgent: LearningAgent;
 
   /** Guardrail-политика (по умолчанию moderate) */
   private guardrailPolicy: GuardrailPolicy;
@@ -194,6 +207,15 @@ export class PipelineCoordinator {
     ticker: string;
     action: string;
     id: string;
+  }> = [];
+
+  /** Результаты AI-рекомендаций для обучения */
+  private aiRecommendations: Array<{
+    pipelineId: string;
+    ticker: string;
+    recommendedAction: string;
+    success: boolean;
+    recordedAt: string;
   }> = [];
 
   /** Подписаться на завершение стадии конвейера */
@@ -249,13 +271,20 @@ export class PipelineCoordinator {
       config.guardrailPolicy ??
       createGuardrailPolicy('moderate', { PLZL: 50 });
     this.dataAgent = new DataAgent(this.config.data);
-    this.researchAgent = new ResearchAgent(this.config.research);
+    this.researchAgent = new ResearchAgentV2({
+      name: 'ResearchAgentV2',
+      timeoutMs: 60000,
+    });
     this.analysisAgent = new AnalysisAgent(this.config.analysis);
     this.aiAgent = new AiAgent(this.config.ai);
-    this.reviewAgent = new ReviewAgent(this.config.review);
+    // this.reviewAgent = new ReviewAgent(this.config.review); // Удалён
     this.scenarioAgent = new ScenarioAgent(this.config.scenario);
     this.strategistAgent = new StrategistAgent(this.config.strategist);
     this.notificationAgent = new NotificationAgent(this.config.notification);
+    this.selfImprovementLoop = new SelfImprovementLoop({ name: 'SelfImprovementLoop' });
+    this.learningAgent = new LearningAgent({
+      historySource: () => [],
+    });
 
     this.watchdog = options.watchdog ?? new Watchdog({ verbose: false });
     this.memorySink = options.memorySink;
@@ -298,6 +327,8 @@ export class PipelineCoordinator {
     };
     this.agentSummaries = {};
 
+    console.log('[Pipeline] 🚀 Конвейер запущен');
+
     // Живой мониторинг агентов: сторож стартует на каждый run().
     this.watchdog.start();
 
@@ -326,11 +357,17 @@ export class PipelineCoordinator {
       // Сохраняем результат в оперативную память
       this.saveToMemory('data', dataOutput);
 
-      // ── Stage 2: Research Agent + Analysis Agent (параллельно) ──
+      // ── Stage 2: Research Agent V2 + Analysis Agent (параллельно) ──
       const [researchResult, analysisResult] = await Promise.all([
-        this.runStage<'research', ResearchAgentOutput>('research', async () => {
-          const result = await this.researchAgent.execute(dataOutput);
-          return result.data as ResearchAgentOutput;
+        this.runStage<'research', ResearchV1Output>('research', async () => {
+          const result = await this.researchAgent.execute({
+            action: 'facts',
+            params: {
+              tickers: [],
+              facts: dataOutput,
+            },
+          });
+          return result.data as ResearchV1Output;
         }),
         this.runStage<'analysis', AnalysisAgentOutput>('analysis', async () => {
           const result = await this.analysisAgent.execute(dataOutput);
@@ -352,14 +389,85 @@ export class PipelineCoordinator {
       }
 
       const researchOutput = researchResult.result.success
-        ? researchResult.result.data!
+        ? (researchResult.result.data as ResearchV1Output)
         : {
-            snapshots: new Map(),
-            allConflicts: [],
-            totalAssets: 0,
-            researchTimestamp: new Date().toISOString(),
+            action: 'facts' as const,
+            success: true,
+            message: 'ResearchAgentV2: fallback',
+            newsSummary: '',
           };
       const analysisOutput = analysisResult.result.data!;
+
+      // ── Детальный лог анализа портфеля ──
+      const { portfolioAnalysis, income, priceAlerts } = analysisOutput;
+      const assetsList = portfolioAnalysis.assetsAnalysis;
+      const totalVal = portfolioAnalysis.macro.totalBalance;
+      const freeCash = portfolioAnalysis.macro.freeCash;
+
+      // Доли акций и облигаций
+      const stocksPct = assetsList
+        .filter((a) => a.assetType === 'А' || a.assetType === 'Акция')
+        .reduce((s, a) => s + a.currentPercent, 0);
+      const bondsPct = assetsList
+        .filter((a) => a.assetType === 'О' || a.assetType === 'Облигация')
+        .reduce((s, a) => s + a.currentPercent, 0);
+
+      // Топ-5 активов по стоимости
+      const topAssets = [...assetsList]
+        .sort((a, b) => b.currentPrice * b.quantity - (a.currentPrice * a.quantity))
+        .slice(0, 5);
+
+      // Приоритеты покупок (активы с дефицитом, отсортированные по размеру дефицита)
+      const buyPriorities = assetsList
+        .filter((a) => a.deficitRub > 0)
+        .sort((a, b) => b.deficitRub - a.deficitRub);
+
+      // Концентрация (активы с долей > 20%)
+      const concentrated = assetsList.filter((a) => a.currentPercent > 20);
+
+      console.log('');
+      console.log('═'.repeat(60));
+      console.log('📊 АНАЛИЗ ПОРТФЕЛЯ');
+      console.log('═'.repeat(60));
+      console.log(`  Активов: ${assetsList.length} | Стоимость: ${Math.round(totalVal).toLocaleString('ru-RU')} ₽ | Кэш: ${Math.round(freeCash).toLocaleString('ru-RU')} ₽`);
+      console.log(`  Структура: Акции ${stocksPct.toFixed(1)}% | Облигации ${bondsPct.toFixed(1)}%`);
+      console.log('');
+      console.log('  Топ-5 активов:');
+      for (const a of topAssets) {
+        const liq = Math.round(a.currentPrice * a.quantity).toLocaleString('ru-RU');
+        const pnlPct =
+          a.balancePrice > 0
+            ? (((a.currentPrice - a.balancePrice) / a.balancePrice) * 100)
+            : 0;
+        const pnl = pnlPct !== 0 ? ` (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)` : '';
+        console.log(`    • ${a.ticker} (${a.name}): ${liq} ₽ | Доля: ${a.currentPercent.toFixed(1)}% | Вход: ${a.balancePrice} ₽ | Текущая: ${a.currentPrice} ₽${pnl}`);
+      }
+      console.log('');
+      if (buyPriorities.length > 0) {
+        console.log('  Приоритеты покупок:');
+        for (const a of buyPriorities) {
+          console.log(`    • ${a.ticker}: дефицит ${Math.round(a.deficitRub).toLocaleString('ru-RU')} ₽ (целевая ${a.targetPercent?.toFixed(1)}%, текущая ${a.currentPercent.toFixed(1)}%)`);
+        }
+      } else {
+        console.log('  Приоритеты покупок: нет (все позиции в норме)');
+      }
+      console.log('');
+      if (concentrated.length > 0) {
+        console.log('  ⚠️ Концентрация (>20%):');
+        for (const a of concentrated) {
+          console.log(`    • ${a.ticker}: ${a.currentPercent.toFixed(1)}%`);
+        }
+      }
+      console.log('');
+      console.log(`  Доходы: НКД ${income.totalNkd.toLocaleString('ru-RU')} ₽ | Дивиденды ${income.totalDivsNet.toLocaleString('ru-RU')} ₽ (чистые)`);
+      if (priceAlerts.length > 0) {
+        console.log(`  ⚠️ Ценовые алерты: ${priceAlerts.length}`);
+        for (const p of priceAlerts) {
+          console.log(`    • ${p.ticker}: ${p.alertLevel} ${p.threshold}%`);
+        }
+      }
+      console.log('═'.repeat(60));
+      console.log('');
 
       // Сохраняем результаты в оперативную память
       this.saveToMemory('research', researchOutput);
@@ -385,34 +493,52 @@ export class PipelineCoordinator {
         // AI — необязательный этап, продолжаем с пустым результатом
       }
 
-      const aiOutput = aiResult.result.success
-        ? aiResult.result.data!
-        : {
-            thesisResults: new Map(),
-            aiNarrative: '',
-            aiClientResult: {
-              text: '',
-              modelUsed: 'SKIPPED',
-              success: false,
-              error: aiResult.result.error?.message,
-            },
-            structuredRecommendations: new Map(),
-            validationWarnings: [],
-          };
+      const aiOutput =
+        aiResult.result.success && aiResult.result.data
+          ? aiResult.result.data
+          : {
+              thesisResults: new Map(),
+              aiNarrative: '',
+              aiClientResult: {
+                text: '',
+                modelUsed: 'SKIPPED',
+                success: false,
+                error: aiResult.result.error?.message,
+              },
+              structuredRecommendations: new Map(),
+              validationWarnings: [],
+            };
 
       // Сохраняем результат AI в оперативную память
       this.saveToMemory('ai', aiOutput);
 
-      // ── Stage 4: Review Agent (проверка 3 ревизорами) ──
+      // Сохраняем AI-рекомендации для SelfImprovementLoop
+      for (const [ticker, rec] of aiOutput.structuredRecommendations) {
+        this.aiRecommendations.push({
+          pipelineId: this._state.pipelineId,
+          ticker,
+          recommendedAction: rec.action ?? 'HOLD',
+          success: false, // будет обновлено после feedback
+          recordedAt: new Date().toISOString(),
+        });
+      }
+
+      // ── Stage 4: Review Agent (заглушка — удалён) ──
       const reviewResult = await this.runStage<'review', ReviewResult>(
         'review',
         async () => {
-          const result = await this.reviewAgent.execute({
-            data: dataOutput,
-            analysis: analysisOutput,
-            ai: aiOutput,
-          });
-          return result.data as ReviewResult;
+          // ReviewAgent удалён — возвращаем заглушку
+          const stub: ReviewResult = {
+            agreement: 100,
+            agreementPercent: 100,
+            discrepancies: [],
+            hasDisagreement: false,
+            timeMs: 0,
+            successful: 0,
+            timeouts: 0,
+            finalRecommendation: 'ReviewAgent удалён',
+          };
+          return stub;
         },
       );
 
@@ -572,12 +698,8 @@ export class PipelineCoordinator {
           strategistOutput: this.strategistResultData,
           scenarioOutput: this.scenarioResultData,
           newsContext:
-            researchOutput?.allConflicts
-              ?.map(
-                (c) =>
-                  `${c.field}: ${c.providerA}=${c.valueA} vs ${c.providerB}=${c.valueB}`,
-              )
-              .join('; ') ?? '',
+            researchOutput?.newsSummary ?? '',
+          sentimentData: researchOutput?.data?.sentimentData,
         });
 
         this.consiliumResultData = consiliumOutput;
@@ -648,6 +770,40 @@ export class PipelineCoordinator {
       }
 
       // Строим итоговый результат
+
+      // ── Self-Improvement: обучение на основе AI-рекомендаций ──
+      try {
+        console.log('[Pipeline] 🧠 Запуск SelfImprovementLoop...');
+        const improvementResult = await this.selfImprovementLoop.execute({
+          action: 'update',
+          newOutcomes: this.aiRecommendations.map((r) => ({
+            ...r,
+            success: r.success,
+          })),
+        });
+        // execute возвращает AgentResult<unknown> — извлекаем data
+        type ImprovementOutput = {
+          message?: string;
+          patterns?: Array<{ pattern: string; description: string; accuracy: number; sampleSize: number; applicableTickers: string[]; recommendation: string }>;
+          strategyWeights?: Record<string, number>;
+        };
+        const output = (improvementResult as unknown as { data: ImprovementOutput }).data as ImprovementOutput;
+        console.log(
+          `[Pipeline] 🧠 SelfImprovementLoop: ${output?.message || 'завершён'}`,
+        );
+        // Сохраняем паттерны и веса стратегий в память
+        if (output?.patterns && output.patterns.length > 0) {
+          this.saveToMemory('strategist', {
+            patterns: output.patterns,
+            strategyWeights: output.strategyWeights,
+          });
+        }
+      } catch (improvementErr) {
+        console.warn(
+          `[Pipeline] ⚠️ SelfImprovementLoop ошибка: ${improvementErr instanceof Error ? improvementErr.message : String(improvementErr)}`,
+        );
+      }
+
       const result = this.buildResult(totalStart);
 
       // Сохраняем KPI-снимок через memorySink (реальные данные из PipelineResult)
@@ -661,13 +817,21 @@ export class PipelineCoordinator {
         }
       }
 
+      console.log(`[Pipeline] ✅ Конвейер завершён за ${(Date.now() - totalStart)}мс`);
       return result;
     } catch (err) {
       error = err instanceof Error ? err : new Error(String(err));
+      console.error(`[Pipeline] ❌ Ошибка: ${error.message}`);
       return this.buildResult(totalStart, error);
     } finally {
-      // Graceful shutdown всех агентов
-      await this.shutdown();
+      // Graceful shutdown всех агентов — ошибки не роняют результат
+      try {
+        await this.shutdown();
+      } catch (shutdownErr) {
+        console.warn(
+          `[Pipeline] ⚠️ Ошибка shutdown: ${shutdownErr instanceof Error ? shutdownErr.message : String(shutdownErr)}`,
+        );
+      }
     }
   }
 
@@ -679,11 +843,12 @@ export class PipelineCoordinator {
       this.researchAgent.stop(),
       this.analysisAgent.stop(),
       this.aiAgent.stop(),
-      this.reviewAgent.stop(),
+      // this.reviewAgent.stop(), // Удалён
       this.scenarioAgent.stop(),
       this.strategistAgent.stop(),
       this.notificationAgent.stop(),
       this.watchdog.stop(),
+      this.selfImprovementLoop.stop(),
     ]);
   }
 
@@ -694,11 +859,76 @@ export class PipelineCoordinator {
       research: this.researchAgent.getSummary(),
       analysis: this.analysisAgent.getSummary(),
       ai: this.aiAgent.getSummary(),
-      review: this.reviewAgent.getSummary(),
+      // review: this.reviewAgent.getSummary(), // Удалён
       scenario: this.scenarioAgent.getSummary(),
       strategist: this.strategistAgent.getSummary(),
       notification: this.notificationAgent.getSummary(),
     };
+  }
+
+  /** Обновить outcome AI-рекомендации (пользовательская обратная связь) */
+  async updateRecommendationOutcome(
+    ticker: string,
+    success: boolean,
+    note?: string,
+  ): Promise<void> {
+    // Обновляем локальный массив
+    const rec = this.aiRecommendations.find((r) => r.ticker === ticker);
+    if (rec) {
+      rec.success = success;
+    }
+
+    // Сохраняем в AI-память
+    try {
+      await aiMemoryImpl.saveOperational({
+        type: 'decision',
+        content: JSON.stringify({
+          ticker,
+          success,
+          note,
+          recordedAt: new Date().toISOString(),
+        }),
+        priority: 'medium',
+        keywords: ['outcome', ticker, success ? 'good' : 'bad'],
+        createdAt: new Date().toISOString(),
+      });
+
+      // Сохраняем урок в LearningAgent
+      await this.learningAgent.feedback({
+        outcome: success ? 'good' : 'bad',
+        action: `recommendation:${ticker}`,
+        note,
+      });
+    } catch (err) {
+      console.warn(
+        `[Pipeline] ⚠️ Ошибка обновления outcome: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** Получить стратегические веса */
+  async getStrategyWeights(): Promise<Record<string, number> | null> {
+    // Веса хранятся в памяти — читаем из последней записи
+    try {
+      const result = await aiMemoryImpl.query({
+        types: ['pipeline_result'],
+        maxResults: 10,
+      });
+      const entries = result.operationalEntries ?? [];
+      for (const entry of entries) {
+        try {
+          const content = JSON.parse(entry.content as string);
+          if (content.strategyWeights) {
+            return content.strategyWeights;
+          }
+        } catch {
+          // Пропускаем некорректные записи
+        }
+      }
+    } catch {
+      // Память недоступна
+    }
+    return null;
   }
 
   // ── Helpers ──

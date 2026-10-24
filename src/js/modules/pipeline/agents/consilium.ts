@@ -64,8 +64,16 @@ export interface ConsiliumInput {
   strategistOutput: StrategistAgentOutput;
   /** Сценарии агента «что если» */
   scenarioOutput: ScenarioAgentOutput;
-  /** Новостной фон (опционально) */
+  /** Новостной фон (строка для обратной совместимости) */
   newsContext?: string;
+  /** Структурированные данные о сентименте по тикерам */
+  sentimentData?: Record<string, {
+    score: number;
+    label: 'bullish' | 'bearish' | 'neutral';
+    keyPhrases: string[];
+    sourceCount: number;
+    newsSummary?: string;
+  }>;
 }
 
 /** Результат консилиума */
@@ -117,9 +125,59 @@ function researchVote(
   proposedAction: AiAction,
   catalysts: string[],
   newsContext: string | undefined,
+  sentimentData?: Record<string, {
+    score: number;
+    label: 'bullish' | 'bearish' | 'neutral';
+    keyPhrases: string[];
+    sourceCount: number;
+    newsSummary?: string;
+  }>,
 ): ConsiliumVote {
   const text = (newsContext ?? '').toLowerCase();
   const hasCatalyst = catalysts.length > 0;
+
+  // Используем структурированные данные о сентименте, если доступны
+  if (sentimentData && Object.keys(sentimentData).length > 0) {
+    const tickers = Object.keys(sentimentData);
+    if (tickers.length === 1) {
+      const sentiment = sentimentData[tickers[0]!]!;
+      if (sentiment.score < -0.2) {
+        return {
+          agent: 'research',
+          action: 'HOLD',
+          note: `Негативный сентимент (${sentiment.score.toFixed(2)}): ${sentiment.keyPhrases.slice(0, 3).join(', ')}.`,
+        };
+      }
+      if (sentiment.score > 0.2) {
+        return {
+          agent: 'research',
+          action: proposedAction,
+          note: `Позитивный сентимент (${sentiment.score.toFixed(2)}): ${sentiment.keyPhrases.slice(0, 3).join(', ')}.`,
+        };
+      }
+      return {
+        agent: 'research',
+        action: proposedAction,
+        note: `Нейтральный сентимент (${sentiment.score.toFixed(2)}).`,
+      };
+    }
+    // Несколько тикеров — агрегируем
+    const avgScore = tickers.reduce((sum, t) => sum + (sentimentData[t]!.score ?? 0), 0) / tickers.length;
+    if (avgScore < -0.2) {
+      return {
+        agent: 'research',
+        action: 'HOLD',
+        note: `Средний сентимент по портфелю негативный (${avgScore.toFixed(2)}).`,
+      };
+    }
+    if (avgScore > 0.2) {
+      return {
+        agent: 'research',
+        action: proposedAction,
+        note: `Средний сентимент по портфелю позитивный (${avgScore.toFixed(2)}).`,
+      };
+    }
+  }
 
   if (!text) {
     return {
@@ -170,6 +228,7 @@ export function runConsilium(input: ConsiliumInput): ConsiliumOutput {
   const strategist = input?.strategistOutput;
   const scenarios = input?.scenarioOutput;
   const newsContext = input?.newsContext;
+  const sentimentData = input?.sentimentData;
 
   const assetByTicker = new Map<string, AssetAnalysis>();
   for (const asset of assetsAnalysis) {
@@ -230,6 +289,7 @@ export function runConsilium(input: ConsiliumInput): ConsiliumOutput {
       proposal.action ?? 'HOLD',
       proposal.keyCatalysts ?? [],
       newsContext,
+      sentimentData,
     );
 
     const votes: ConsiliumVote[] = [

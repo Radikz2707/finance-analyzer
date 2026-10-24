@@ -9,9 +9,6 @@ import type {
   DirectorAuditEvent,
   DirectorTask,
 } from '../src/js/modules/pipeline/director/director-types.js';
-import type { AgentActivityEvent } from '../src/js/modules/pipeline/agent-activity/types.js';
-import type { AgentPanelState } from '../src/js/modules/pipeline/visualization/agent-panel-model.js';
-import type { HarnessDashboardPayload } from '../src/js/modules/harness-integration/types.js';
 import type {
   AskResult,
   AutonomousBridgeStatusInfo,
@@ -26,6 +23,26 @@ import type {
   PipelineReportInfo,
   PortfolioReloadResult,
 } from './ipc-core.js';
+
+/** Событие живого потока шагов агентов (локальный тип — agent-activity удалён) */
+export interface AgentActivityEvent {
+  id: string;
+  taskId?: string;
+  role: string;
+  phase: 'started' | 'step' | 'completed' | 'failed';
+  message: string;
+  durationMs?: number;
+}
+
+/** Состояние панели агентов (локальный тип — visualization удалён) */
+export type AgentPanelState = Record<string, unknown> | null;
+
+/** Payload гибридного диспетчера (локальный тип — harness-integration удалён) */
+export interface HarnessDashboardPayload {
+  scheduler: unknown | null;
+  anomalies: unknown[];
+  quikNews: unknown[];
+}
 
 export type {
   DirectorAuditEvent,
@@ -171,6 +188,11 @@ export interface FinanceDesktopApi {
   runPipelineReport(): Promise<PipelineReportInfo>;
   /** Последний отчёт полного конвейера (null — ещё не запускался) */
   getLastPipelineReport(): Promise<PipelineReportInfo | null>;
+  /** Отправить обратную связь по AI-рекомендации (👍/👎) */
+  sendRecommendationFeedback(
+    ticker: string,
+    feedback: 'good' | 'bad',
+  ): Promise<{ ok: boolean; message: string }>;
   /** Подписка на живой поток событий аудита (стриминг) */
   onDirectorEvent(callback: (event: DirectorAuditEvent) => void): () => void;
   /** Подписка на живой поток шагов агентов (стриминг) */

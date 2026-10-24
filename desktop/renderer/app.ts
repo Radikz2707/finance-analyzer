@@ -21,8 +21,13 @@ import {
   formatAuditEventLine,
   stripAnsi,
 } from '../../scripts/director-chat-render.js';
-import { formatActivityEvent } from '../../src/js/modules/pipeline/agent-activity/activity-renderer.js';
-import type { NewsImpact } from '../../src/js/modules/pipeline/news-driver/types.js';
+
+// Заглушки — удалённые модули больше не используются
+function formatActivityEvent(_event: unknown): string {
+  return '[Activity Event] Заглушка';
+}
+
+type NewsImpact = { ticker: string; impact: number; sentiment: string };
 
 declare global {
   interface Window {
@@ -476,7 +481,9 @@ function showToast(message: string, type: 'ok' | 'error'): void {
 
 function renderStatusBar(sourceLabel: string, hasData: boolean): void {
   // Источник данных теперь в панели настроек (не занимает шапку)
-  settingsExcelPathEl.textContent = hasData ? sourceLabel : 'нет данных';
+  // Показываем путь, если он не пустой и не "нет данных"
+  const label = (sourceLabel && sourceLabel !== 'нет данных') ? sourceLabel : 'нет данных';
+  settingsExcelPathEl.textContent = label;
   settingsExcelPathEl.title = sourceLabel;
 }
 
@@ -562,6 +569,28 @@ async function refreshAnalysisStatus(): Promise<void> {
 }
 
 // ── Новостной блок (NewsDriver) ──────────────────────────────
+
+/** Обработка обратной связи по AI-рекомендациям из iframe */
+window.addEventListener('message', async (event) => {
+  if (
+    event.data &&
+    event.data.type === 'recommendation:feedback' &&
+    event.data.ticker &&
+    event.data.feedback
+  ) {
+    try {
+      const result = await window.financeApp.sendRecommendationFeedback(
+        event.data.ticker,
+        event.data.feedback,
+      );
+      if (result.ok) {
+        showToast(result.message, 'ok');
+      }
+    } catch (err) {
+      console.error('[Renderer] Ошибка отправки обратной связи:', err);
+    }
+  }
+});
 
 /**
  * Новостной блок во вкладке «Чат»: impact'ы NewsDriver по тикерам
@@ -837,60 +866,47 @@ function renderAnalysisReport(info: LastAnalysisInfo): string {
 
 async function refreshAnalysis(): Promise<void> {
   try {
-    // Пока полный конвейер работает — показываем это в шапке и подзаголовке
     const statusInfo = await window.financeApp.getAnalysisStatus();
     const inProgress = statusInfo?.status === 'in_progress';
-    renderAnalysisStatus(statusInfo?.status ?? 'pending');
 
     // Приоритет 1: полный отчёт конвейера (report.html) — как npm run pipeline
+    // getLastPipelineReport возвращает { ok, data: { htmlContent, htmlPath } }
     const report = await window.financeApp.getLastPipelineReport();
-    if (report && report.htmlContent) {
-      const finished = report.finishedAt
-        ? formatLocalTime(report.finishedAt)
+    const data = report?.ok ? report.data : null;
+    if (data && data.htmlContent) {
+      const seconds = data.elapsedMs
+        ? (data.elapsedMs / 1000).toFixed(1)
         : '—';
-      const seconds = (report.elapsedMs / 1000).toFixed(1);
-      analysisMetaEl.textContent = `полный конвейер · завершён ${finished} · ${seconds} с`;
+      analysisMetaEl.textContent =
+        data.elapsedMs
+          ? `полный конвейер · ${seconds} с`
+          : 'отчёт готов';
       analysisFrameEl.hidden = false;
-      analysisFrameEl.srcdoc = report.htmlContent;
+      analysisFrameEl.srcdoc = data.htmlContent;
       analysisReportEl.innerHTML = '';
       analysisTextEl.hidden = true;
       return;
     }
 
-    // Приоритет 2: сводка Директора (карточки + таблицы) + текст
-    analysisFrameEl.hidden = true;
-    analysisTextEl.hidden = false;
-    const info = await window.financeApp.getLastAnalysis();
-    if (!info || !info.text) {
-      if (inProgress) {
-        // Конвейер работает: НЕ пишем «анализ не запускался», а показываем прогон
-        analysisMetaEl.textContent =
-          '⏳ Полный конвейер запущен: данные → исследование → AI-анализ…';
-        analysisTextEl.textContent =
-          '⏳ Полный конвейер работает — отчёт (report.html) появится здесь ' +
-          'автоматически после завершения. Можно вернуться на другие вкладки: ' +
-          'о готовности сообщит уведомление и статус в шапке.';
-      } else {
-        analysisMetaEl.textContent = 'анализ не запускался';
-        analysisTextEl.textContent =
-          'Анализ ещё не запускался. Нажмите «Запустить анализ» — текст ' +
-          'отчёта появится здесь, и его можно будет сохранить в HTML или PDF.';
-      }
+    // Конвейер запущен, но отчёт ещё не готов
+    if (inProgress) {
+      analysisMetaEl.textContent = '⏳ Анализ выполняется…';
+      analysisTextEl.textContent =
+        '⏳ Полный конвейер работает — отчёт появится автоматически после завершения.';
+      analysisFrameEl.hidden = true;
+      analysisTextEl.hidden = false;
       analysisReportEl.innerHTML = '';
       return;
     }
-    const finished = info.finishedAt ? formatLocalTime(info.finishedAt) : '—';
-    const seconds = info.elapsedMs ? (info.elapsedMs / 1000).toFixed(1) : '—';
-    // Путь к Excel на виду не нужен — только время и длительность;
-    // источник данных доступен в подсказке при наведении
-    analysisMetaEl.textContent = `завершён ${finished} · ${seconds} с`;
-    if (info.sourceLabel) {
-      analysisMetaEl.title = info.sourceLabel;
-    } else {
-      analysisMetaEl.removeAttribute('title');
-    }
-    analysisReportEl.innerHTML = renderAnalysisReport(info);
-    analysisTextEl.textContent = info.text;
+
+    // Конвейер не запускался
+    analysisFrameEl.hidden = true;
+    analysisTextEl.hidden = false;
+    analysisMetaEl.textContent = 'анализ не запускался';
+    analysisTextEl.textContent =
+      'Анализ ещё не запускался. Нажмите «Запустить анализ» — текст ' +
+      'отчёта появится здесь, и его можно будет сохранить в HTML или PDF.';
+    analysisReportEl.innerHTML = '';
   } catch {
     analysisMetaEl.textContent = 'статус анализа недоступен';
   }
@@ -913,13 +929,27 @@ async function runPipelineAnalysis(
   renderAnalysisStatus('in_progress');
   try {
     const report = await window.financeApp.runPipelineReport();
-    const seconds = (report.elapsedMs / 1000).toFixed(1);
-    if (report.success) {
-      analysisNote.textContent = `✅ Отчёт готов за ${seconds} с · ${report.htmlPath || 'report.html'}`;
+    if (!report) {
+      analysisNote.textContent = 'Анализ ещё не запускался. Нажмите «Запустить анализ» — текст отчёта появится здесь, и его можно будет сохранить в HTML или PDF.';
+      analysisNote.className = 'harness-run-note';
+      return;
+    }
+    // runPipelineReport возвращает { ok, data: { success, error, elapsedMs, htmlPath } }
+    const data = report.ok ? report.data : null;
+    if (!data) {
+      const msg = report.message || 'Неизвестная ошибка';
+      analysisNote.textContent = `⚠️ Конвейер завершён с ошибками: ${msg}`;
+      analysisNote.className = 'harness-run-note error';
+      return;
+    }
+    const seconds = data.elapsedMs ? (data.elapsedMs / 1000).toFixed(1) : '—';
+    if (data.success) {
+      analysisNote.textContent = `✅ Отчёт готов за ${seconds} с · ${data.htmlPath || 'report.html'}`;
       analysisNote.className = 'harness-run-note ok';
       showToast(`✅ Отчёт готов за ${seconds} с`, 'ok');
     } else {
-      analysisNote.textContent = `⚠️ Конвейер завершён с замечаниями за ${seconds} с`;
+      const errorMsg = data.error || 'Неизвестная ошибка';
+      analysisNote.textContent = `⚠️ Конвейер завершён с ошибками: ${errorMsg}`;
       analysisNote.className = 'harness-run-note error';
     }
     await refreshAnalysis();

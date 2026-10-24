@@ -10,11 +10,11 @@ import type { IpcRendererEvent } from 'electron';
 
 import type {
   AskResult,
+  AgentActivityEvent,
   AutonomousIterationEvent,
   DirectorAuditEvent,
   FinanceDesktopApi,
 } from './api-types.js';
-import type { AgentActivityEvent } from '../src/js/modules/pipeline/agent-activity/types.js';
 
 const api: FinanceDesktopApi = {
   ask: (question) => ipcRenderer.invoke('director:ask', question),
@@ -54,6 +54,10 @@ const api: FinanceDesktopApi = {
   getProactiveIdeas: () => ipcRenderer.invoke('director:proactive'),
   runPipelineReport: () => ipcRenderer.invoke('pipeline:run'),
   getLastPipelineReport: () => ipcRenderer.invoke('pipeline:last'),
+  sendRecommendationFeedback: (
+    ticker: string,
+    feedback: 'good' | 'bad',
+  ) => ipcRenderer.invoke('recommendation:feedback', { ticker, feedback }),
 
   onAutonomousUpdate: (callback) => {
     const listener = (

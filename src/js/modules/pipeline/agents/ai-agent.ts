@@ -1,5 +1,6 @@
 import type { DataAgentOutput } from './data-agent.js';
-import type { ResearchAgentOutput } from './research-agent.js';
+// research-agent.ts удалён — используем research-agent-v2
+import type { ResearchV1Output } from './research-agent-v2/types.js';
 import type { AnalysisAgentOutput } from './analysis-agent.js';
 import type {
   AssetAnalysis,
@@ -151,29 +152,43 @@ export class AiAgent extends AgentBase {
 
   protected async executeInternal(input: {
     data: DataAgentOutput;
-    research: ResearchAgentOutput;
+    research: ResearchV1Output;
     analysis: AnalysisAgentOutput;
   }): Promise<AiAgentOutput> {
     this.log.info('[AiAgent] >>> Начало AI-анализа');
 
     // Загружаем контекст из памяти ИИ
+    console.log('[AiAgent] >>> Начало AI-анализа');
     const memoryContext = await this.loadMemoryContext();
     if (memoryContext) {
-      this.log.info(
+      console.log(
         '[AiAgent] Контекст из памяти:',
         memoryContext.substring(0, 200),
       );
     }
 
+    console.log('[AiAgent] DEBUG: контекст памяти загружен, деструктуризация input');
+    console.log('[AiAgent] DEBUG: input.keys=' + Object.keys(input).join(','));
+    console.log('[AiAgent] DEBUG: analysis=' + (input.analysis ? 'exists' : 'null'));
     const { data, research, analysis } = input;
     const { macroGoals } = data;
-    const { snapshots } = research;
+    const { snapshots = new Map() } = research;
     const { portfolioAnalysis, riskValidation, income } = analysis;
 
+    console.log(
+      '[AiAgent] DEBUG: активов=' +
+        portfolioAnalysis.assetsAnalysis.length +
+        ', snapshots.size=' +
+        snapshots.size,
+    );
+    process.stdout.write('[AiAgent] DEBUG: после console.log активов\n');
+
     if (portfolioAnalysis.assetsAnalysis.length === 0) {
-      this.log.warn('[AiAgent] Нет активов для AI-анализа');
+      console.warn('[AiAgent] Нет активов для AI-анализа');
       return this.emptyResult();
     }
+
+    console.log('[AiAgent] DEBUG: проверка активов пройдена, начинаем thesis');
 
     // Шаг 2: Генерация InvestmentThesis для каждого актива
     const thesisEngine = new InvestmentThesisEngine();
@@ -218,7 +233,7 @@ export class AiAgent extends AgentBase {
       }
     }
 
-    this.log.info(
+    console.log(
       '[AiAgent] Сформировано thesis для ' +
         thesisResults.size +
         ' из ' +
@@ -226,7 +241,10 @@ export class AiAgent extends AgentBase {
         ' активов',
     );
 
+    console.log('[AiAgent] DEBUG: thesis готово, Guardrails');
+
     // Шаг 3: Guardrails — проверка RECOVERY_ONLY
+    console.log('[AiAgent] DEBUG: начало Guardrails');
     const recoveryTickers = getRecoveryOnlyTickers(positionsRepo);
     const guardrailsContext = buildGuardrailsContext(
       recoveryTickers,
@@ -239,7 +257,10 @@ export class AiAgent extends AgentBase {
       );
     }
 
+    console.log('[AiAgent] DEBUG: Guardrails готово, подготовка к AiClient');
+
     // Шаг 3: Вызов AiClient (GigaChat)
+    console.log('[AiAgent] DEBUG: начало вызова AiClient');
     const portfolioReportData: PortfolioReportData = {
       macro: data.macroGoals,
       assetsAnalysis: portfolioAnalysis.assetsAnalysis,

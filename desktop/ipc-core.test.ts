@@ -30,8 +30,7 @@ import {
   type DirectorState,
   type PipelineCoordinatorLike,
 } from './ipc-core.js';
-import type { HarnessHandle } from '../src/js/modules/harness-integration/harness-bootstrap.js';
-import type { HarnessDashboardPayload } from '../src/js/modules/harness-integration/types.js';
+import type { HarnessDashboardPayload } from './api-types.js';
 import type { PipelineResult } from '../src/js/modules/pipeline/pipeline-coordinator.js';
 
 /** Умеренный таймаут: директор гоняет реальных агентов (детерминированных) */

@@ -111,16 +111,38 @@ export interface HistoricalParams {
   periodDays?: number;
 }
 
+/** Текстовый источник для анализа настроений */
+export interface TextSentimentSource {
+  /** Заголовок или название источника */
+  title: string;
+  /** Полный текст */
+  text: string;
+  /** Источник (news, social, report и т.д.) */
+  sourceType: 'news' | 'social' | 'report' | 'blog' | 'unknown';
+  /** Дата (ISO string) */
+  date?: string;
+}
+
 /** Вход для sentiment-analysis */
 export interface SentimentParams {
   ticker: string;
-  sources?: string[];
+  sources?: TextSentimentSource[];
 }
 
 /** Вход для export-research */
 export interface ExportParams {
   tickers?: string[];
   format: 'json' | 'markdown' | 'csv';
+}
+
+/** Входные данные для V1-совместимости */
+export interface V1FactsParams {
+  /** Тикеры для анализа (пустой список = весь портфель) */
+  tickers?: string[];
+  /** Факты портфеля (копия, не мутация) */
+  facts: DirectorFactsContext;
+  /** Новостные воздействия (NewsDriver) */
+  newsImpacts?: NewsImpact[];
 }
 
 /** Вход ResearchAgentV2 */
@@ -130,6 +152,7 @@ export type ResearchAgentV2Input =
   | { action: 'historical-analysis'; params: HistoricalParams }
   | { action: 'sentiment-analysis'; params: SentimentParams }
   | { action: 'export-research'; params: ExportParams }
+  | { action: 'facts'; params: V1FactsParams }
   | { action: 'get-cache'; params?: Record<string, never> }
   | { action: 'clear-cache'; params?: Record<string, never> };
 
@@ -162,3 +185,51 @@ export interface ExportResult {
 
 /** Выход ResearchAgentV2 */
 export type ResearchAgentV2Output = ResearchOperationResult;
+
+// ──────────────────────────────────────────────
+// 4. V1-совместимость: факты, новости, алерты
+// ──────────────────────────────────────────────
+
+// NewsDriver удалён — используем заглушку
+type NewsImpact = { ticker: string; impact: number; sentiment: 'positive' | 'negative' | 'neutral' };
+import type { DirectorFactsContext } from '../../director/director-types.js';
+
+/** Действие для V1-совместимости */
+export type ResearchAction = 'facts' | 'news' | 'alerts';
+
+/** Выходные данные для action 'facts' (V1-совместимость) */
+export interface ResearchV1Output {
+  action: ResearchAction;
+  success: boolean;
+  /** Снимки исследований по тикерам */
+  snapshots?: Map<string, { snapshot: unknown }>;
+  /** Мнение агента для Consilium */
+  opinion?: {
+    role: string;
+    position: string;
+    action: string | null;
+    confidence: number;
+    arguments: string[];
+  };
+  /** Проверенные алерты */
+  priceAlerts?: number;
+  /** Проверенные новости */
+  newsImpacts?: number;
+  /** Новостная сводка */
+  newsSummary?: string;
+  message?: string;
+  /** Дополнительные данные */
+  data?: {
+    opinion?: ResearchV1Output['opinion'];
+    priceAlerts?: number;
+    newsImpacts?: number;
+    newsSummary?: string;
+    sentimentData?: Record<string, {
+      score: number;
+      label: 'bullish' | 'bearish' | 'neutral';
+      keyPhrases: string[];
+      sourceCount: number;
+      newsSummary?: string;
+    }>;
+  };
+}

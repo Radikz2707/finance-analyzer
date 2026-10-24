@@ -24,11 +24,6 @@ import type {
   DirectorResponse,
   ChatMessage,
 } from '../pipeline/director/director-types.js';
-import {
-  mountDirectorChat,
-  directorChatStyles,
-} from '../pipeline/director/director-chat-widget.js';
-import { createBrowserChatResponder } from '../pipeline/director/browser-chat-responder.js';
 
 // ──────────────────────────────────────────────
 // Типы данных для dashboard
@@ -1087,38 +1082,62 @@ function initDirectorChat(dashboardData: DashboardData): void {
   if (!document.getElementById(styleId)) {
     const styleEl = document.createElement('style');
     styleEl.id = styleId;
-    styleEl.textContent = directorChatStyles();
+    styleEl.textContent = `
+      .director-chat-container { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 20px; margin: 20px auto; max-width: 640px; }
+      .director-chat-container h3 { color: #58a6ff; margin: 0 0 15px 0; font-size: 16px; }
+      .director-chat-messages { max-height: 400px; overflow-y: auto; margin-bottom: 15px; padding: 10px; background: #0d1117; border-radius: 8px; }
+      .dc-msg { padding: 8px 10px; border-radius: 8px; margin-bottom: 8px; }
+      .dc-msg-user { background: #2d5aa0; align-self: flex-end; }
+      .dc-msg-director { background: #3a3a4c; }
+      .director-chat-input-container { display: flex; gap: 8px; }
+      .director-chat-input { flex: 1; padding: 8px 10px; border-radius: 8px; border: 1px solid #555; background: #14141f; color: #eee; font-size: 14px; }
+      .director-chat-send { padding: 8px 16px; border-radius: 8px; border: none; background: #2d5aa0; color: #fff; cursor: pointer; }
+    `;
     document.head.appendChild(styleEl);
   }
 
   try {
     // Формируем факты портфеля из загруженных данных
     const facts: DirectorFactsContext = {
-      assetsAnalysis: dashboardData.portfolioPositions.map((p) => {
-        const total = dashboardData.kpi.totalBalance || 1;
-        return {
-          ticker: p.ticker,
-          name: p.name,
-          currentPercent: ((p.currentMarketValue || 0) / total) * 100,
-          targetPercent: 0,
-          deficitRub: 0,
-          status: 'active',
-          quantity: p.quantity,
-          balancePrice: p.avgPrice,
-          currentPrice: p.currentPrice || 0,
-          unrealizedProfitRub: (p.currentMarketValue ?? 0) - p.totalCost,
-        };
-      }),
+      assets: dashboardData.portfolioPositions.map((p) => ({
+        ticker: p.ticker,
+        name: p.name,
+        quantity: p.quantity,
+        currentPrice: p.currentPrice || 0,
+        balancePrice: p.avgPrice,
+        currentPercent: ((p.currentMarketValue || 0) / (dashboardData.kpi.totalBalance || 1)) * 100,
+        targetPercent: 0,
+        deficitRub: 0,
+        status: 'active',
+      })),
+      assetsAnalysis: dashboardData.portfolioPositions.map((p) => ({
+        ticker: p.ticker,
+        name: p.name,
+        assetType: 'А',
+        currentPercent: ((p.currentMarketValue || 0) / (dashboardData.kpi.totalBalance || 1)) * 100,
+        targetPercent: 0,
+        deficitRub: 0,
+        status: 'active',
+        balancePrice: p.avgPrice,
+        currentPrice: p.currentPrice || 0,
+        quantity: p.quantity,
+        nkdRub: 0,
+        unrealizedProfitRub: (p.currentMarketValue ?? 0) - p.totalCost,
+        dynamicsPercent: 0,
+      })),
+      macro: {
+        totalBalance: dashboardData.kpi.totalBalance,
+        freeCash: 0,
+        stocksPercent: 0,
+        bondsPercent: 0,
+      },
       totalPortfolioValue: dashboardData.kpi.totalBalance,
       freeCashRub: 0,
     };
 
-    // Создаём DirectorAgent. chatResponder даёт осмысленные ответы по фактам
-    // портфеля даже без локального LLM (вместо фиксированной отмазки).
+    // Создаём DirectorAgent
     directorAgent = new DirectorAgent(undefined, {
       userName: 'Радик',
-      includeAgentDetails: true,
-      chatResponder: createBrowserChatResponder(),
     });
     directorAgent.setFacts(facts);
     directorAgent.createSession();
@@ -1138,8 +1157,8 @@ function initDirectorChat(dashboardData: DashboardData): void {
       },
     };
 
-    // Монтируем чат-виджет
-    mountDirectorChat(api);
+    // Монтируем чат-виджет (простая реализация)
+    mountDirectorChatSimple(api);
     console.log('🎯 Director: чат инициализирован');
   } catch (err) {
     console.warn('[Dashboard] Ошибка инициализации Director:', err);
@@ -1190,4 +1209,75 @@ if (typeof document !== 'undefined') {
   } else {
     init();
   }
+}
+
+/**
+ * Простая реализация mountDirectorChat — создаёт UI чата.
+ */
+function mountDirectorChatSimple(
+  api: {
+    processUserMessage: (msg: string) => Promise<DirectorResponse>;
+    getChatHistory: () => ChatMessage[];
+    getProactiveMessages: () => string[];
+  },
+): void {
+  const container = document.getElementById('directorChat');
+  if (!container) return;
+
+  const messagesEl = container.querySelector('#directorChatMessages');
+  const inputEl = container.querySelector('#directorChatInput') as HTMLInputElement;
+  const sendBtn = container.querySelector('#directorChatSend') as HTMLButtonElement;
+
+  if (!messagesEl || !inputEl || !sendBtn) return;
+
+  // Восстановить историю
+  for (const msg of api.getChatHistory()) {
+    const div = document.createElement('div');
+    div.className = `dc-msg dc-msg-${msg.role === 'user' ? 'user' : 'director'}`;
+    div.innerHTML = `<div class="dc-role">${msg.role === 'user' ? 'Вы' : 'Director'}</div><div class="dc-text">${msg.content}</div>`;
+    messagesEl.appendChild(div);
+  }
+
+  // Отправить сообщение
+  const sendMessage = async () => {
+    const text = inputEl.value.trim();
+    if (!text) return;
+
+    // Добавить сообщение пользователя
+    const userDiv = document.createElement('div');
+    userDiv.className = 'dc-msg dc-msg-user';
+    userDiv.innerHTML = `<div class="dc-role">Вы</div><div class="dc-text">${text}</div>`;
+    messagesEl.appendChild(userDiv);
+    inputEl.value = '';
+
+    // Индикатор загрузки
+    const loadingDiv = document.createElement('div');
+    loadingDiv.className = 'dc-msg dc-msg-director';
+    loadingDiv.innerHTML = '<div class="dc-text">Думаю...</div>';
+    messagesEl.appendChild(loadingDiv);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    try {
+      const response = await api.processUserMessage(text);
+      messagesEl.removeChild(loadingDiv);
+
+      const respDiv = document.createElement('div');
+      respDiv.className = 'dc-msg dc-msg-director';
+      respDiv.innerHTML = `<div class="dc-role">Director</div><div class="dc-text">${response.text}</div>`;
+      messagesEl.appendChild(respDiv);
+    } catch (err) {
+      messagesEl.removeChild(loadingDiv);
+      const errDiv = document.createElement('div');
+      errDiv.className = 'dc-msg dc-msg-director';
+      errDiv.innerHTML = `<div class="dc-text">Ошибка: ${err instanceof Error ? err.message : String(err)}</div>`;
+      messagesEl.appendChild(errDiv);
+    }
+
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  };
+
+  sendBtn.addEventListener('click', sendMessage);
+  inputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendMessage();
+  });
 }

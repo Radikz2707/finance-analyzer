@@ -70,7 +70,16 @@ export interface AnomalyDetectorConfig {
 
 /** Команды Python-движка */
 export type PythonCommand =
-  'detect_anomalies' | 'get_candles' | 'get_quotes' | 'health';
+  | 'detect_anomalies'
+  | 'get_candles'
+  | 'get_quotes'
+  | 'health'
+  | 'backtest_recommendation'
+  | 'forecast_prices'
+  | 'update_model_weights'
+  | 'optimize_portfolio'
+  | 'generate_keywords'
+  | 'analyze_sentiment';
 
 /** Запрос к Python-мосту */
 export interface PythonRequest {

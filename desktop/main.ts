@@ -117,7 +117,7 @@ async function initAppState(): Promise<void> {
     director,
     harness,
     autonomous: null,
-    pipelineReport: null,
+    lastPipelineReport: null,
     pipelineRunning: false,
   };
 
@@ -141,7 +141,6 @@ async function initAppState(): Promise<void> {
     unknown
   >;
   directorAsRecord.config = {
-    ...((directorAsRecord.config as Record<string, unknown> | undefined) ?? {}),
     goalIntake: {
       addGoal: async (text: string) => {
         const goal = await autonomousBridge.addGoal(text);
@@ -151,12 +150,15 @@ async function initAppState(): Promise<void> {
   };
 
   // Живой стриминг всех событий аудита в renderer
-  unsubscribeDirector = subscribeEvents(director, (event) => {
-    sendToRenderer('director:event', event);
-  });
+  unsubscribeDirector = subscribeEvents(
+    appState.director.director.agent,
+    (event) => {
+      sendToRenderer('director:event', event);
+    },
+  );
 
   // Живой стриминг шагов агентов (started/step/completed/failed) в renderer
-  subscribeActivity(director, (event) => {
+  subscribeActivity(appState.director.director.agent, (event) => {
     sendToRenderer('director:activity', event);
   });
 
@@ -168,10 +170,10 @@ async function initAppState(): Promise<void> {
 
   // Сбрасываем кэш анализа — Director должен работать со свежими данными
   // из Excel, а не использовать кэшированные результаты предыдущих сессий
-  appState.director.director.resetAnalysisCache();
+  appState.director.director.agent.resetAnalysisCache();
 
   // Загружаем последний отчёт report.html с диска (если был запущен npm run pipeline)
-  // Отчёт сохраняется в памяти (state.pipelineReport) и доступен даже при удалении файла
+  // Отчёт сохраняется в памяти (state.lastPipelineReport) и доступен даже при удалении файла
   loadLastPipelineReport(appState);
 }
 
@@ -260,7 +262,7 @@ function startExcelWatcher(excelPath: string): void {
             // Перезагружаем портфель
             if (appState) {
               // Сбрасываем кэш анализа — нужно провести новый анализ
-              appState.director.director.resetAnalysisCache();
+  appState.director.director.agent.resetAnalysisCache();
               log('info', 'Кэш анализа сброшен (Excel изменён)');
 
               reloadPortfolio(appState.director, excelPath).then((result) => {
@@ -367,7 +369,7 @@ function registerIpc(): void {
 
   // ── Анализ портфеля: результат и экспорт ──
   ipcMain.handle('analysis:last', () =>
-    appState ? handleLastAnalysis(appState.director) : null,
+    appState ? handleLastAnalysis(appState) : null,
   );
 
   // ── Полный конвейер (как npm run pipeline) внутри приложения ──
@@ -389,6 +391,13 @@ function registerIpc(): void {
   });
   ipcMain.handle('pipeline:last', () =>
     appState ? handleLastPipelineReport(appState) : null,
+  );
+
+  // ── Обратная связь по AI-рекомендациям ──
+  ipcMain.handle(
+    'recommendation:feedback',
+    (_event, input: { ticker: string; feedback: 'good' | 'bad' }) =>
+      appState ? handleRecommendationFeedback(appState, input) : { ok: false, message: 'Приложение не инициализировано' },
   );
 
   ipcMain.handle('analysis:export-html', async () => {
@@ -517,7 +526,7 @@ function registerIpc(): void {
       return { success: false, message: 'Приложение не инициализировано' };
     }
     try {
-      const result = await appState.director.director.runLazyAnalysis();
+      const result = await appState.director.director.agent.runLazyAnalysis();
       return { success: true, message: result };
     } catch (err) {
       return {
@@ -532,7 +541,7 @@ function registerIpc(): void {
     if (!appState) {
       return { success: false, message: 'Приложение не инициализировано' };
     }
-    appState.director.director.resetAnalysisCache();
+  appState.director.director.agent.resetAnalysisCache();
     return { success: true };
   });
 

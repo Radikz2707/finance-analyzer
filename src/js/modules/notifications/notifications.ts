@@ -18,7 +18,30 @@
  */
 
 import type { PipelineResult } from '../pipeline/pipeline-coordinator.js';
-import type { ReviewResult } from '../pipeline/review/review-agent.js';
+import type { ReviewResult } from '../pipeline/pipeline-coordinator.js';
+
+/** Тип для reviewers map */
+interface ReviewerInfo {
+  warnings: Array<{
+    ticker?: string;
+    message: string;
+    severity: string;
+    category?: string;
+  }>;
+}
+
+/** Расширенный тип ReviewResult с reviewers */
+interface ReviewResultExtended {
+  agreement: number;
+  agreementPercent: number;
+  discrepancies: string[];
+  hasDisagreement: boolean;
+  timeMs: number;
+  successful: number;
+  timeouts: number;
+  reviewers?: Map<string, ReviewerInfo>;
+  finalRecommendation?: string;
+}
 
 // ──────────────────────────────────────────────
 // 1. Notification types
@@ -121,14 +144,15 @@ export class NotificationEngine {
   }
 
   /**
-   * Проверить алерты из review-результатов.
-   */
+    * Проверить алерты из review-результатов.
+    */
   private checkReviewAlerts(review: ReviewResult): Notification[] {
     const alerts: Notification[] = [];
-    const reviewers = review.reviewers;
+    const rr = review as unknown as ReviewResultExtended;
+    const reviewers = rr.reviewers;
 
     // Проверяем консервативного ревизора
-    const conservative = reviewers.get('conservative');
+    const conservative = reviewers?.get('conservative');
     if (conservative) {
       for (const warning of conservative.warnings) {
         if (warning.severity === 'high') {
@@ -147,7 +171,7 @@ export class NotificationEngine {
     }
 
     // Проверяем Risk Manager
-    const riskManager = reviewers.get('risk_manager');
+    const riskManager = reviewers?.get('risk_manager');
     if (riskManager) {
       for (const warning of riskManager.warnings) {
         if (warning.severity === 'high') {
@@ -165,13 +189,13 @@ export class NotificationEngine {
     }
 
     // Проверяем согласие
-    if (review.agreementPercent < 60) {
+    if ((rr.agreementPercent ?? 0) < 60) {
       alerts.push({
         id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         type: 'alert',
         severity: 'medium',
         title: '📊 Низкое согласие ревизоров',
-        message: `Согласие: ${review.agreementPercent}% — рекомендации расходятся`,
+        message: `Согласие: ${rr.agreementPercent ?? 0}% — рекомендации расходятся`,
         timestamp: new Date().toISOString(),
         sent: false,
       });
@@ -181,16 +205,17 @@ export class NotificationEngine {
   }
 
   /**
-   * Сгенерировать утренний дайджест.
-   */
+    * Сгенерировать утренний дайджест.
+    */
   generateMorningDigest(pipelineResult: PipelineResult): Notification {
     const totalBalance = pipelineResult.reviewResult
       ? this.extractTotalBalance(pipelineResult)
       : 0;
 
     const review = pipelineResult.reviewResult;
-    const agreementPercent = review?.agreementPercent ?? 0;
-    const hasDisagreement = review?.hasDisagreement ?? false;
+    const rr = review as unknown as ReviewResultExtended;
+    const agreementPercent = rr?.agreementPercent ?? 0;
+    const hasDisagreement = rr?.hasDisagreement ?? false;
 
     let message = '<b>🌅 Утренний дайджест</b>\n\n';
     message += '<b>📊 Портфель:</b> ' + totalBalance.toFixed(0) + ' RUB\n';
@@ -205,7 +230,7 @@ export class NotificationEngine {
 
     // Добавляем топ-риски
     if (review) {
-      const conservative = review.reviewers.get('conservative');
+      const conservative = rr?.reviewers?.get('conservative');
       if (
         conservative &&
         conservative.warnings &&
@@ -230,24 +255,25 @@ export class NotificationEngine {
   }
 
   /**
-   * Сгенерировать вечерний дайджест.
-   */
+    * Сгенерировать вечерний дайджест.
+    */
   generateEveningDigest(pipelineResult: PipelineResult): Notification {
     const review = pipelineResult.reviewResult;
-    const agreementPercent = review?.agreementPercent ?? 0;
+    const rr = review as unknown as ReviewResultExtended;
+    const agreementPercent = rr?.agreementPercent ?? 0;
 
     let message = '<b>🌆 Вечерний дайджест</b>\n\n';
     message += '<b>📊 Итоги дня:</b>\n';
     message += 'Согласие AI: ' + agreementPercent + '%\n';
 
-    if (review?.hasDisagreement) {
+    if (rr?.hasDisagreement) {
       message += '⚠️ Расхождения между ревизорами\n';
     } else {
       message += '✅ Рекомендации стабильны\n';
     }
 
     // Добавляем summary
-    message += '\n' + (review?.finalRecommendation || 'Нет данных');
+    message += '\n' + (rr?.finalRecommendation || 'Нет данных');
 
     return {
       id: 'digest-evening-' + Date.now(),

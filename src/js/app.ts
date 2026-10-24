@@ -1,5 +1,5 @@
-/** Проверка поддержки WebP */
-function isWebp(): void {
+﻿/** Проверка поддержки WebP */
+function isWebP(): void {
   function testWebP(callback: (support: boolean) => void): void {
     const webP = new Image();
     webP.onload = webP.onerror = function (): void {
@@ -20,179 +20,19 @@ function isWebp(): void {
 // ==========================================
 import { dbManager } from './modules/db-manager/db-manager.js';
 import { memoryLayer } from './modules/memory-layer/memory-layer.js';
-import { DirectorAgent } from './modules/pipeline/director/director.js';
-import type {
-  DirectorFactsContext,
-  DirectorResponse,
-  ChatMessage,
-} from './modules/pipeline/director/director-types.js';
-import {
-  mountDirectorChat,
-  directorChatStyles,
-} from './modules/pipeline/director/director-chat-widget.js';
-import { createBrowserChatResponder } from './modules/pipeline/director/browser-chat-responder.js';
-
-// 🛰 HARNESS INTEGRATION — гибридный фоновый анализ.
-// В браузерный бандл попадают ТОЛЬКО лёгкие классы (type-only импорты
-// Node-классов); Node-зависимая сборка (os/fs/child_process) загружается
-// динамически через harness-bootstrap при наличии Node-рантайма.
-import { HarnessBridge } from './modules/harness-integration/harness-bridge.js';
-import { mountDashboardBlock } from './modules/harness-integration/mount-dashboard-block.js';
-import type { AdaptiveScheduler } from './modules/adaptive-scheduler/adaptive-scheduler.js';
-import type { TelegramNotifier } from './modules/harness-integration/telegram-notifier.js';
-import type { HarnessDashboardPayload } from './modules/harness-integration/types.js';
+import { initDirectorChat } from './modules/pipeline/director/director-init.js';
 
 // ──────────────────────────────────────────────
-// 🛰 Harness: состояние подсистемы (синглтоны)
+// 🧠 Director Agent — интеграция чата
 // ──────────────────────────────────────────────
-
-/** Диспетчер фонового анализа (null, если активация не удалась) */
-let harnessScheduler: AdaptiveScheduler | null = null;
-
-/** Мост состояния для дашборда/бота */
-let harnessBridge: HarnessBridge | null = null;
-
-/** Адаптер Telegram-уведомлений (отправитель регистрируется внешне) */
-let telegramNotifier: TelegramNotifier | null = null;
-
-/** Агент Director для чата */
-let directorAgent: DirectorAgent | null = null;
-
-/** Публичное API для дашборда (window.__FINANCE_HARNESS__) */
-interface HarnessWindowApi {
-  /** Получить текущий payload для рендеринга блока «🛰 Harness» */
-  getPayload(): Promise<HarnessDashboardPayload | null>;
-  /** Ручной запуск фонового анализа (кнопка дашборда) */
-  manualRun(): Promise<void>;
-  /** Адаптер уведомлений (для регистрации отправителя извне) */
-  notifier: TelegramNotifier | null;
-}
 
 /**
- * Активация гибридного фонового анализа.
- *
- * Диспетчер зависит от Node-API (os, fs, child_process, Python-мост),
- * поэтому в браузере активация — no-op, а приложение работает как раньше.
- * В Node-среде bootstrap загружается динамически; все его сбои (нет
- * данных, выключена Ollama и т.п.) перехватываются try/catch.
+ * Инициализация приложения.
+ * Загружает все модули и инициализирует Director Chat.
  */
-function initHarness(): void {
-  // Мост для дашборда доступен всегда: в браузерном режиме payload
-  // будет со scheduler: null (диспетчер не запущен).
-  if (typeof window !== 'undefined') {
-    const api: HarnessWindowApi = {
-      getPayload: async () => harnessBridge?.getDashboardPayload() ?? null,
-      manualRun: async () => {
-        if (harnessScheduler) {
-          await harnessScheduler.manualRun();
-        }
-      },
-      notifier: telegramNotifier,
-    };
-    (
-      window as unknown as {
-        __FINANCE_HARNESS__?: HarnessWindowApi;
-      }
-    ).__FINANCE_HARNESS__ = api;
-  }
-
-  // Браузер не имеет Node API — фоновый анализ невозможен.
-  const isNode =
-    typeof process !== 'undefined' &&
-    typeof (process as { versions?: { node?: string } }).versions?.node ===
-      'string';
-  if (!isNode) {
-    return;
-  }
-
-  void (async () => {
-    try {
-      const spec = './modules/harness-integration/harness-bootstrap.js';
-      const bootstrap = await import(/* webpackIgnore: true */ spec);
-      const handle = bootstrap.initHarness();
-      if (!handle) {
-        return;
-      }
-      harnessBridge = handle.bridge;
-      harnessScheduler = handle.scheduler;
-      telegramNotifier = handle.notifier;
-    } catch (err) {
-      console.warn(
-        '[Harness] Диспетчер не активирован (приложение продолжает работу):',
-        err,
-      );
-    }
-  })();
-}
-
-// ──────────────────────────────────────────────
-// 🎯 Director Agent — интеграция чата
-// ──────────────────────────────────────────────
-
-function initDirectorChat(): void {
-  // Проверяем наличие контейнера
-  const container = document.getElementById('directorChat');
-  if (!container) return;
-
-  // Применяем стили чата (если ещё не добавлены)
-  const styleId = 'director-chat-styles';
-  if (!document.getElementById(styleId)) {
-    const styleEl = document.createElement('style');
-    styleEl.id = styleId;
-    styleEl.textContent = directorChatStyles();
-    document.head.appendChild(styleEl);
-  }
-
-  try {
-    // Формируем факты портфеля из localStorage (если есть)
-    const savedFacts = localStorage.getItem('portfolioFacts');
-    const facts: DirectorFactsContext = savedFacts
-      ? JSON.parse(savedFacts)
-      : {
-          assetsAnalysis: [],
-          totalPortfolioValue: 0,
-          freeCashRub: 0,
-        };
-
-    // Создаём DirectorAgent. chatResponder даёт осмысленные ответы по фактам
-    // портфеля даже без локального LLM (вместо фиксированной отмазки).
-    directorAgent = new DirectorAgent(undefined, {
-      userName: 'Радик',
-      includeAgentDetails: true,
-      chatResponder: createBrowserChatResponder(),
-    });
-    directorAgent.setFacts(facts);
-    directorAgent.createSession();
-
-    // API для чат-виджета
-    const api = {
-      processUserMessage: async (
-        message: string,
-      ): Promise<DirectorResponse> => {
-        return directorAgent!.processUserMessage(message);
-      },
-      getChatHistory: (): ChatMessage[] => {
-        return directorAgent!.getChatHistory();
-      },
-      getProactiveMessages: () => {
-        return directorAgent!.getProactiveMessages();
-      },
-    };
-
-    // Монтируем чат-виджет
-    mountDirectorChat(api);
-    console.log('🎯 Director: чат инициализирован');
-  } catch (err) {
-    console.warn('[Director] Ошибка инициализации:', err);
-    container.innerHTML =
-      '<p style="color:#8b949e;text-align:center;padding:20px;">Не удалось загрузить Director. Проверьте консоль.</p>';
-  }
-}
-
-// Инициализация компонентов
 const initApp = () => {
   document.body.classList.add('_js-ready');
-  isWebp();
+  isWebP();
 
   // [ДИНАМИЧЕСКИЕ МОДУЛИ]
   dbManager();
@@ -201,15 +41,8 @@ const initApp = () => {
   void importTelegramBot();
   memoryLayer();
 
-  // 🎯 Director: чат-интерфейс с инвестиционным координатором
+  // 🧠 Director: чат-интерфейс с инвестиционным координатором
   initDirectorChat();
-
-  // 🛰 Harness: фоновый анализ стартует независимо от остальных модулей
-  initHarness();
-
-  // Рендер блока «🛰 Harness»: контейнер #harnessBlock (если есть),
-  // автобновление каждые 60 с. Без контейнера/API — тихий no-op.
-  mountDashboardBlock('#harnessBlock');
 };
 
 /** Ленивая загрузка Telegram-бота (асинхронно, ошибки не роняют приложение) */
@@ -229,4 +62,4 @@ if (document.readyState === 'loading') {
   initApp();
 }
 
-console.log('🚀 Radik.Dev: TypeScript успешно инициализирован');
+console.log('🚀 Finance Analyzer: TypeScript успешно инициирован');

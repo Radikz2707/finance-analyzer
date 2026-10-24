@@ -1,16 +1,8 @@
 /**
- * Director Agent — типы и интерфейсы.
- *
- * Director — главный интеллектуальный координатор инвестиционной системы.
- * Это НЕ простой chatbot и НЕ ещё один аналитик акций.
- * Director понимает контекст, формулирует вопросы, делегирует агентам,
- * организует многораундовый Consilium, формирует стратегический вывод.
+ * Director Agent — типы и интерфейсы (упрощённые).
  */
 
-import type { AiAction } from '../../research/types.js';
 import type { AgentState } from '../agent/types.js';
-import type { AgentActivityEvent } from '../agent-activity/types.js';
-import type { NewsImpact } from '../news-driver/types.js';
 
 // ──────────────────────────────────────────────
 // 1. Типы вопросов пользователя
@@ -18,625 +10,334 @@ import type { NewsImpact } from '../news-driver/types.js';
 
 /** Категория вопроса пользователя */
 export type UserQuestionCategory =
-  | 'asset' // Вопрос по одному активу
-  | 'portfolio' // Вопрос по портфелю
-  | 'comparison' // Сравнение активов
-  | 'scenario' // Сценарный вопрос
-  | 'market' // Вопрос по рынку
-  | 'news' // Вопрос по новости
-  | 'strategy' // Вопрос по стратегии
-  | 'plan' // Вопрос по будущему плану
-  | 'past-decision' // Вопрос о прошлых решениях
-  | 'system-quality' // Вопрос о качестве работы AI-системы
-  | 'general'; // Общий вопрос
+  | 'asset'
+  | 'portfolio'
+  | 'comparison'
+  | 'scenario'
+  | 'market'
+  | 'news'
+  | 'strategy'
+  | 'plan'
+  | 'past-decision'
+  | 'system-quality'
+  | 'general';
 
-/** Интерпретированный вопрос пользователя */
+/** Интерпретированный вопрос */
 export interface InterpretedQuestion {
-  /** Категория вопроса */
   category: UserQuestionCategory;
-  /** Тикеры, упомянутые в вопросе */
-  tickers: string[];
-  /** Название вопроса/темы */
-  topic: string;
-  /** Полное содержание вопроса */
-  text: string;
-  /** Какие агенты нужны для ответа */
-  requiredAgents: AgentRole[];
-  /** Нужен ли Consilium */
-  needsConsilium: boolean;
-  /** Сложность вопроса (1-5) */
-  complexity: number;
-  /** Контекст предыдущего разговора (если есть) */
-  contextReference?: string;
-  /** Интенция пользователя */
-  intent: UserIntent;
+  entities: string[];
+  intent: string;
+  confidence: number;
+  tickers?: string[];
+  complexity?: number;
+  requiredAgents?: AgentRole[];
+  topic?: string;
+  text?: string;
+  needsConsilium?: boolean;
 }
 
-/** Интенция пользователя */
+/** Намерение пользователя */
 export type UserIntent =
-  | 'understand' // Понять ситуацию
-  | 'decide-action' // Принять решение о действии
-  | 'compare-options' // Сравнить варианты
-  | 'explore-scenario' // Исследовать сценарий
-  | 'review-past' // Пересмотреть прошлое
-  | 'plan-future' // Запланировать будущее
-  | 'critique-system' // Критиковать систему
-  | 'general-inquiry'; // Общий запрос
+  | 'analyze'
+  | 'compare'
+  | 'recommend'
+  | 'explain'
+  | 'general'
+  | 'decide-action'
+  | 'compare-options'
+  | 'explore-scenario'
+  | 'review-past'
+  | 'plan-future'
+  | 'critique-system'
+  | 'understand'
+  | 'general-inquiry';
+
+/** Ввод для многораундового Consilium */
+export interface ConsiliumDiscussionInput {
+  question: string;
+  facts: DirectorFactsContext;
+  agentOpinions: AgentOpinion[];
+}
+
+/** Раунд Consilium */
+export interface ConsiliumRound {
+  round: number;
+  opinions: AgentOpinion[];
+  consensus: boolean;
+}
 
 // ──────────────────────────────────────────────
 // 2. Роли агентов
 // ──────────────────────────────────────────────
 
-/** Роль агента в системе Director */
+/** Роли агентов, которые может использовать Director */
 export type AgentRole =
-  | 'ai' // AI Agent — основной инвестиционный reasoning
-  | 'research' // ResearchAgent — факты, фундаментал, новости
-  | 'strategist' // StrategistAgent — стратегический анализ и риски
-  | 'scenario' // ScenarioAgent — «что если»
-  | 'review' // ReviewAgent — проверка качества решений
-  | 'analysis' // AnalysisAgent — детерминированный анализ портфеля
-  | 'file' // FileAgent — файловые операции (чтение/запись/поиск)
-  | 'terminal' // TerminalAgent — безопасное выполнение команд
-  | 'package' // PackageAgent — управление зависимостями (npm/pip)
-  | 'process' // ProcessAgent — запуск/остановка/перезапуск процессов
-  | 'automation' // AutomationAgent — workflow-автоматизация задач
-  | 'system' // SystemResourceAgent — мониторинг системных ресурсов (CPU/RAM)
-  | 'code' // CodingWorkflow — конвейер разработки: write → test → repair → report
-  | 'self-improve'; // SelfImprovementLoop — замкнутый цикл самоулучшения (diagnose → plan → execute → verify → learn)
+  | 'ai'
+  | 'research'
+  | 'strategist'
+  | 'scenario'
+  | 'review'
+  | 'analysis'
+  | 'terminal'
+  | 'file'
+  | 'package'
+  | 'process'
+  | 'system'
+  | 'automation'
+  | 'code'
+  | 'self-improve'
+  | 'gigacode';
 
-/** Описание задачи для агента */
-export interface AgentTask {
-  /** Уникальный ID задачи */
-  taskId: string;
-  /** Роль агента */
+// ──────────────────────────────────────────────
+// 3. Мнения и результаты агентов
+// ──────────────────────────────────────────────
+
+/** Мнение одного агента */
+export interface AgentOpinion {
   role: AgentRole;
-  /** Описание задачи */
-  description: string;
-  /** Входные данные */
-  inputData: Record<string, unknown>;
-  /** Какие данные ожидаются в результате */
-  expectedOutput: string[];
-  /** Приоритет задачи */
-  priority: 'high' | 'normal' | 'low';
-  /** Нужен ли результат для Consilium */
-  forConsilium: boolean;
+  opinion: string;
+  reasoning: string;
+  confidence: number;
+  tickers?: string[];
+  position?: string;
+  action?: string;
+  arguments?: string;
 }
 
-// ──────────────────────────────────────────────
-// 3. Director Task / Plan
-// ──────────────────────────────────────────────
-
-/** Статус задачи Director */
-export type DirectorTaskStatus =
-  | 'pending'
-  | 'delegating'
-  | 'running'
-  | 'collecting'
-  | 'consilium'
-  | 'synthesizing'
-  | 'completed'
-  | 'cancelled'
-  | 'failed';
-
-/** Результат работы одного агента в рамках задачи Director */
+/** Результат выполнения агента */
 export interface AgentResultEntry {
-  /** Роль агента */
   role: AgentRole;
-  /** Уникальный ID задачи */
-  taskId: string;
-  /** Успешно ли выполнен */
   success: boolean;
-  /** Данные результата */
-  data?: Record<string, unknown>;
-  /** Ошибка */
+  data?: unknown;
   error?: string;
-  /** Время выполнения */
-  durationMs: number;
-  /** Метка времени */
-  completedAt: string;
 }
 
-/** Раунд многораундового Consilium */
-export interface ConsiliumRound {
-  /** Номер раунда */
-  roundNumber: number;
-  /** Тип раунда */
-  roundType: 'initial' | 'response' | 'rebuttal' | 'final';
-  /** Мнения агентов */
-  agentOpinions: Array<{
-    role: AgentRole;
-    position: string;
-    action: AiAction | null;
-    confidence: number; // 0-1
-    arguments: string[];
-    counterArguments?: string[];
-    agreedWith?: string[]; // роли, с которыми согласен
-    disagreedWith?: string[]; // роли, с которыми не согласен
-  }>;
-  /** Точки согласия */
-  pointsOfAgreement: string[];
-  /** Точки разногласия */
-  pointsOfDisagreement: string[];
-  /** Изменённые позиции (если были) */
-  positionChanges: Array<{
-    role: AgentRole;
-    previousAction: AiAction | null;
-    newAction: AiAction | null;
-    reason: string;
-  }>;
-}
+// ──────────────────────────────────────────────
+// 4. Контекст фактов
+// ──────────────────────────────────────────────
 
-/** Результат многораундового Consilium */
-export interface MultiRoundConsiliumOutput {
-  /** Все раунды */
-  rounds: ConsiliumRound[];
-  /** Ключевые аргументы */
-  keyArguments: string[];
-  /** Контраргументы */
-  counterArguments: string[];
-  /** Точки согласия */
-  pointsOfAgreement: string[];
-  /** Точки разногласия */
-  pointsOfDisagreement: string[];
-  /** Итоговая рекомендация */
-  finalRecommendation: {
-    action: AiAction;
-    confidence: number; // 0-1
-    reasoning: string;
+/** Контекст фактов для Director */
+export interface DirectorFactsContext {
+  /** Активы портфеля (упрощённый формат) */
+  assets: Array<{
+    ticker: string;
+    name: string;
+    quantity: number;
+    currentPrice: number;
+    balancePrice: number;
+    currentPercent: number;
+    targetPercent?: number;
+    deficitRub: number;
+    status: string;
+  }>;
+  /** Полный анализ активов (из AnalysisAgent) */
+  assetsAnalysis?: Array<{
+    ticker: string;
+    name: string;
+    assetType: string;
+    currentPercent: number;
+    targetPercent?: number;
+    deficitRub: number;
+    status: string;
+    balancePrice: number;
+    currentPrice: number;
+    quantity: number;
+    nkdRub: number;
+    unrealizedProfitRub: number;
+    dynamicsPercent: number;
+    holdOnly?: boolean;
+  }>;
+  /** Макро-данные */
+  macro: {
+    totalBalance: number;
+    freeCash: number;
+    stocksPercent: number;
+    bondsPercent: number;
   };
-  /** Почему Director принимает/не принимает вывод */
-  directorReasoning: string;
-  /** Степень уверенности Director */
-  directorConfidence: number; // 0-1
+  /** Общее значение портфеля */
+  totalPortfolioValue?: number;
+  /** Свободный кэш в рублях */
+  freeCashRub?: number;
+  /** Ценовые алерты */
+  priceAlerts?: Array<{ ticker: string; alertLevel: string; threshold: number }>;
+  /** Новостной контекст (строка для обратной совместимости) */
+  newsContext?: string;
+  /** Структурированные данные о сентименте по тикерам */
+  sentimentData?: Record<string, {
+    score: number; // -1 to 1
+    label: 'bullish' | 'bearish' | 'neutral';
+    keyPhrases: string[];
+    sourceCount: number;
+    newsSummary?: string;
+  }>;
+  /** Котировки */
+  quotes?: Record<string, { currentPrice: number; dailyDynamicsPercent: number }>;
+}
+
+// ──────────────────────────────────────────────
+// 5. Ответ Director
+// ──────────────────────────────────────────────
+
+/** Ответ Director */
+export interface DirectorResponse {
+  text: string;
+  agentsUsed: AgentRole[];
+  consiliumRounds?: Array<{
+    round: number;
+    opinions: AgentOpinion[];
+    consensus: boolean;
+  }>;
+  pipelineId?: string;
+}
+
+// ──────────────────────────────────────────────
+// 6. Сессия чата
+// ──────────────────────────────────────────────
+
+/** Сообщение в чате */
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+  pipelineId?: string;
+}
+
+/** Сессия чата */
+export interface ChatSession {
+  id: string;
+  messages: ChatMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ──────────────────────────────────────────────
+// 7. Состояние Director
+// ──────────────────────────────────────────────
+
+/** Состояние Director */
+export interface DirectorState {
+  state: AgentState;
+  currentSession?: string;
+  lastPipelineId?: string;
+}
+
+// ──────────────────────────────────────────────
+// 8. Конфигурация и планы Director
+// ──────────────────────────────────────────────
+
+/** Конфигурация Director */
+export interface DirectorConfig {
+  userName?: string;
+  includeAgentDetails?: boolean;
+}
+
+/** План Director */
+export interface DirectorPlan {
+  goal: string;
+  steps: Array<{ description: string }>;
+}
+
+/** Многораундовый Consilium */
+export interface MultiRoundConsiliumOutput {
+  rounds: unknown[];
+  consensus: boolean;
+  keyArguments?: string;
+}
+
+/** Проактивное сообщение */
+export interface ProactiveMessage {
+  id?: string;
+  type?: string;
+  title?: string;
+  text: string;
+  reason: string;
+  ticker?: string;
+  priority?: string;
+  createdAt?: string;
+}
+
+/** Тип проактивного сообщения */
+export type ProactiveMessageType = string;
+
+/** Интерфейс Director Agent */
+export interface IDirectorAgent {
+  processUserMessage: (msg: string) => Promise<DirectorResponse>;
+}
+
+// ──────────────────────────────────────────────
+// 8. Аудит Director
+// ──────────────────────────────────────────────
+
+/** Тип события аудита */
+export type DirectorAuditEventType =
+  | 'question'
+  | 'delegate'
+  | 'consilium'
+  | 'response'
+  | 'pipeline'
+  | 'error';
+
+/** Событие аудита Director */
+export interface DirectorAuditEvent {
+  id: string;
+  type: DirectorAuditEventType;
+  timestamp: string;
+  pipelineId?: string;
+  sessionId?: string;
+  taskId?: string;
+  question?: string;
+  agents?: AgentRole[];
+  outcome?: string;
+  error?: string;
+  trace?: string;
 }
 
 /** Задача Director */
 export interface DirectorTask {
-  /** Уникальный ID задачи */
-  taskId: string;
-  /** Исходный вопрос пользователя */
-  userQuestion: string;
-  /** Интерпретированный вопрос */
-  interpretedQuestion: InterpretedQuestion;
-  /** Цель задачи */
-  goal: string;
-  /** Статус */
-  status: DirectorTaskStatus;
-  /** Назначенные агенты */
-  agents: AgentTask[];
-  /** Результаты агентов */
-  agentResults: AgentResultEntry[];
-  /** Нужен ли Consilium */
-  needsConsilium: boolean;
-  /** Многораундовый Consilium (если нужен) */
-  consilium?: MultiRoundConsiliumOutput;
-  /** Номер раунда Consilium */
-  consiliumRounds: number;
-  /** Итоговый вывод Director */
-  finalSynthesis: string;
-  /** Рекомендация Director */
-  recommendation: {
-    action: AiAction | null;
-    confidence: number;
-    reasoning: string;
-  };
-  /** Сохранено ли в память */
-  savedToMemory: boolean;
-  /** Метки времени */
+  id: string;
+  type: string;
+  description: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
   createdAt: string;
   completedAt?: string;
-}
-
-/** План задачи Director */
-export interface DirectorPlan {
-  /** ID задачи */
-  taskId: string;
-  /** Исходный вопрос */
-  userQuestion: string;
-  /** Цель */
-  goal: string;
-  /** Какие агенты подключены */
-  connectedAgents: AgentRole[];
-  /** Задачи для каждого агента */
-  agentAssignments: Array<{
-    role: AgentRole;
-    task: string;
-    inputData: string;
-    /** Почему Director подключает этого агента (явное обоснование) */
-    rationale: string;
-  }>;
-  /** Какие вопросы требуют обсуждения */
-  discussionTopics: string[];
-  /** Нужен ли Consilium */
-  needsConsilium: boolean;
-  /** Итоговый вывод Director */
-  directorSynthesis: string;
+  result?: string;
+  userQuestion?: string;
+  interpretedQuestion?: unknown;
+  agents?: AgentRole[];
+  consiliumRounds?: unknown[];
+  finalSynthesis?: string;
+  recommendation?: string;
+  agentResults?: unknown[];
 }
 
 // ──────────────────────────────────────────────
-// 4. Стратегическая память Director
+// 9. Стратегическая память Director
 // ──────────────────────────────────────────────
 
-/** Тип записи стратегической памяти Director */
+/** Тип стратегической памяти */
 export type StrategicMemoryType =
-  | 'user-goal' // Важная пользовательская цель
-  | 'strategic-decision' // Принятое стратегическое решение
-  | 'pending-decision' // Отложенное решение
-  | 'observed-asset' // Наблюдаемый актив
-  | 'active-thesis' // Активный инвестиционный тезис
-  | 'unresolved-question' // Нерешённый вопрос
-  | 'future-task' // Будущая задача
-  | 'agreement' // Договорённость с пользователем
-  | 'consilium-result' // Результат Consilium
-  | 'past-mistake' // Ошибка прошлых решений
-  | 'system-insight'; // Инсайт о работе системы
+  | 'investment_lesson'
+  | 'pattern'
+  | 'preference'
+  | 'kpi_snapshot'
+  | 'strategy_weights'
+  | 'strategic_decision'
+  | 'pending-decision'
+  | 'unresolved-question'
+  | 'future-task'
+  | 'pending-review';
 
-/** Запись стратегической памяти Director */
+/** Запись стратегической памяти */
 export interface DirectorStrategicMemory {
-  /** Уникальный ID */
   id: string;
-  /** Тип записи */
   type: StrategicMemoryType;
-  /** Тикер (если применимо) */
-  ticker?: string;
-  /** Содержание */
   content: string;
-  /** Причина (почему запись создана) */
-  reason: string;
-  /** Статус (active / resolved / archived) */
-  status: 'active' | 'resolved' | 'archived';
-  /** Приоритет */
-  priority: 'critical' | 'high' | 'normal' | 'low';
-  /** Создана */
+  metadata?: Record<string, unknown>;
   createdAt: string;
-  /** Обновлена */
-  updatedAt: string;
-  /** Решена */
-  resolvedAt?: string;
-}
-
-// ──────────────────────────────────────────────
-// 5. Промпты
-// ──────────────────────────────────────────────
-
-/** Тип проактивного сообщения */
-export type ProactiveMessageType =
-  | 'market-change' // Существенное изменение рынка
-  | 'important-news' // Важная новость по активу
-  | 'thesis-change' // Изменение инвестиционного тезиса
-  | 'structure-deviation' // Сильное отклонение структуры
-  | 'new-risk' // Новый риск
-  | 'opportunity' // Возможность для пересмотра позиции
-  | 'pending-review' // Необходимость проверить отложенный вопрос
-  | 'contradiction' // Обнаружено противоречие между решениями
-  | 'new-topic' // Новая тема для обсуждения
-  | 'project-improvement'; // Идея по развитию/совершенствованию проекта
-
-/** Промптное сообщение Director */
-export interface ProactiveMessage {
-  /** Уникальный ID */
-  id: string;
-  /** Тип сообщения */
-  type: ProactiveMessageType;
-  /** Заголовок (короткий) */
-  title: string;
-  /** Содержание */
-  content: string;
-  /** Тикер (если применимо) */
+  updatedAt?: string;
   ticker?: string;
-  /** Приоритет */
-  priority: 'high' | 'normal' | 'low';
-  /** Создана */
-  createdAt: string;
-  /** Прочитана пользователем */
-  read: boolean;
-}
-
-// ──────────────────────────────────────────────
-// 6. Чат Director
-// ──────────────────────────────────────────────
-
-/** Роль сообщения в чате Director */
-export type ChatMessageRole = 'user' | 'director' | 'system';
-
-/** Сообщение чата Director */
-export interface ChatMessage {
-  /** Уникальный ID */
-  id: string;
-  /** Роль отправителя */
-  role: ChatMessageRole;
-  /** Текст сообщения */
-  text: string;
-  /** Связанная задача Director (если есть) */
-  taskId?: string;
-  /** Подключённые агенты (для сообщений Director) */
-  connectedAgents?: AgentRole[];
-  /** Индикатор работы Director */
-  isWorking: boolean;
-  /** Метка времени */
-  timestamp: string;
-}
-
-/** Сессия чата Director */
-export interface DirectorChatSession {
-  /** Уникальный ID сессии */
-  sessionId: string;
-  /** История сообщений */
-  messages: ChatMessage[];
-  /** Текущая задача Director (если есть) */
-  activeTaskId?: string;
-  /** Контекст предыдущих разговоров */
-  context: string;
-  /** Создана */
-  createdAt: string;
-  /** Последняя активность */
-  lastActivityAt: string;
-}
-
-// ──────────────────────────────────────────────
-// 7. Audit Log Director
-// ──────────────────────────────────────────────
-
-/** Тип события audit Director */
-export type DirectorAuditEventType =
-  | 'director.question_received'
-  | 'director.question_interpreted'
-  | 'director.task_extracted'
-  | 'director.plan_created'
-  | 'director.task_delegated'
-  | 'director.agent_result_received'
-  | 'director.consilium_started'
-  | 'director.consilium_round_completed'
-  | 'director.consilium_completed'
-  | 'director.synthesis_created'
-  | 'director.recommendation_formed'
-  | 'director.memory_saved'
-  | 'director.proactive_message_sent'
-  | 'director.chat_message_sent'
-  | 'director.greeting_answered'
-  | 'director.status_answered'
-  | 'director.goal_created'
-  | 'director.offtopic_answered';
-
-/** Событие audit Director */
-export interface DirectorAuditEvent {
-  /** Уникальный ID */
-  id: string;
-  /** Метка времени */
-  timestamp: string;
-  /** Тип события */
-  type: DirectorAuditEventType;
-  /** ID задачи Director */
-  taskId?: string;
-  /** Актор */
-  actor: 'director' | string;
-  /** Описание */
-  message: string;
-  /** Метаданные */
-  metadata: Record<string, unknown>;
-  /** Полный путь решения (trace) */
-  trace?: {
-    userQuestion: string;
-    directorInterpretation: string;
-    delegatedTasks: string[];
-    agentResultsSummary: string;
-    consiliumRounds: number;
-    directorSynthesis: string;
-    finalRecommendation: string;
-  };
-}
-
-// ──────────────────────────────────────────────
-// 8. Director Agent Interface
-// ──────────────────────────────────────────────
-
-/** Интерфейс Director Agent */
-export interface IDirectorAgent {
-  /** Имя */
-  readonly name: string;
-  /** Состояние */
-  readonly state: AgentState;
-  /** Текущая сессия чата */
-  readonly currentSession: DirectorChatSession | null;
-
-  /** Обработать сообщение пользователя */
-  processUserMessage(message: string): Promise<DirectorResponse>;
-
-  /** Получить историю чата */
-  getChatHistory(sessionId?: string): ChatMessage[];
-
-  /** Создать новую сессию чата */
-  createSession(): DirectorChatSession;
-
-  /** Получить стратегическую память */
-  getStrategicMemory(): DirectorStrategicMemory[];
-
-  /** Добавить запись в стратегическую память */
-  saveToStrategicMemory(
-    entry: Omit<DirectorStrategicMemory, 'id' | 'createdAt' | 'updatedAt'>,
-  ): void;
-
-  /** Получить проактивные сообщения */
-  getProactiveMessages(): ProactiveMessage[];
-
-  /** Создать проактивное сообщение */
-  createProactiveMessage(
-    params: Omit<ProactiveMessage, 'id' | 'createdAt' | 'read'>,
-  ): void;
-
-  /** Остановить Director */
-  stop(): Promise<void>;
-}
-
-/** Ответ Director */
-export interface DirectorResponse {
-  /** Текст ответа */
-  text: string;
-  /** Задача Director (если создана) */
-  task?: DirectorTask;
-  /** План Director */
-  plan?: DirectorPlan;
-  /** Подключённые агенты */
-  connectedAgents: AgentRole[];
-  /** Нужен ли Consilium */
-  needsConsilium: boolean;
-  /** Рекомендация */
-  recommendation?: {
-    action: AiAction | null;
-    confidence: number;
-    reasoning: string;
-  };
-  /** Промптное сообщение (если есть) */
-  proactiveMessage?: ProactiveMessage;
-  /** События активности агентов за время обработки (живые шаги) */
-  activity?: AgentActivityEvent[];
-  /** Новостные impact'ы по портфелю (NewsDriver), если подключён кэш новостей */
-  news?: NewsImpact[];
-}
-
-// ──────────────────────────────────────────────
-// 9. Многораундовое обсуждение (Consilium)
-// ──────────────────────────────────────────────
-
-/**
- * Первичное мнение агента по обсуждаемому вопросу.
- * Формируется из результата работы агента (без LLM-художеств —
- * только интерпретация собранных фактов и позиция агента).
- */
-export interface AgentOpinion {
-  /** Роль агента */
-  role: AgentRole;
-  /** Позиция в человекочитаемой форме */
-  position: string;
-  /** Предлагаемое действие */
-  action: AiAction | null;
-  /** Уверенность агента (0..1) */
-  confidence: number;
-  /** Аргументы в поддержку позиции */
-  arguments: string[];
-}
-
-/** Входные данные многораундового обсуждения */
-export interface ConsiliumDiscussionInput {
-  /** Тема обсуждения */
-  topic: string;
-  /** Тикеры, к которым относится обсуждение */
-  tickers: string[];
-  /** Первичные мнения агентов (раунд 1) */
-  initialOpinions: AgentOpinion[];
-  /** Вопросы, требующие обсуждения */
-  discussionTopics: string[];
-  /** Максимальное число раундов (по умолчанию 3) */
-  maxRounds?: number;
-  /**
-   * Может ли Director при равенстве голосов выбрать позицию AI.
-   * По умолчанию true — это право Director, а не безусловный veto агента.
-   */
-  aiTieBreak?: boolean;
-}
-
-// ──────────────────────────────────────────────
-// 10. Факты портфеля (неизменяемые входные данные Director)
-// ──────────────────────────────────────────────
-
-/**
- * Снимок фактических данных портфеля, передаваемый Director.
- *
- * ⚠️ IMMUTABLE: Director и агенты НЕ могут менять эти значения.
- * Они могут только интерпретировать их и делать инвестиционные выводы.
- * Проверяется тестом «все факты остаются неизменными».
- */
-export interface DirectorFactsContext {
-  /** Математический анализ активов (из PortfolioMath / AnalysisAgent) */
-  assetsAnalysis: readonly AssetAnalysisLike[];
-  /** Общая стоимость портфеля, руб */
-  totalPortfolioValue: number;
-  /** Свободные средства, руб */
-  freeCashRub: number;
-  /** Целевые доли пользователя (USER_TARGET_PERCENT), если известны */
-  userTargetPercent?: readonly { ticker: string; targetPercent: number }[];
-  /** Статус математики портфеля (PORTFOLIO_MATH_STATUS), если известен */
-  portfolioMathStatus?: string;
-  /** Новостной контекст (из research/gatekeeper) */
-  newsContext?: string;
-  /** Ценовые алерты pipeline */
-  priceAlerts?: readonly PriceAlertLike[];
-  /** Предложения AI из последнего pipeline (для strategist/scenario) */
-  proposals?: readonly { ticker: string; action: AiAction | null }[];
-}
-
-/** Упрощённое описание актива (без жёсткой привязки к PortfolioMath) */
-export interface AssetAnalysisLike {
-  ticker: string;
-  name: string;
-  currentPercent: number;
-  targetPercent: number;
-  deficitRub: number;
-  status: string;
-  quantity?: number;
-  balancePrice?: number;
-  currentPrice?: number;
-  unrealizedProfitRub?: number;
-  isConcentrated?: boolean;
-}
-
-/** Упрощённый ценовой алерт */
-export interface PriceAlertLike {
-  ticker: string;
-  name?: string;
-  currentPrice?: number;
-  alertLevel?: string;
-  threshold?: number;
-}
-
-// ──────────────────────────────────────────────
-// 11. Конфигурация Director Agent
-// ──────────────────────────────────────────────
-
-/** Контекст свободного диалога с пользователем */
-export interface ChatDialogueContext {
-  /** Вопрос/реплика пользователя */
-  question: string;
-  /** Факты портфеля (для LLM-контекста) */
-  facts: DirectorFactsContext;
-  /** Короткая история чата (роль: текст) */
-  history: string;
-}
-
-/** Исполнитель свободного диалога: возвращает ответ или null (нет LLM) */
-export type ChatResponder = (
-  input: ChatDialogueContext,
-) => Promise<string | null>;
-
-/** Конфигурация DirectorAgent */
-export interface DirectorConfig {
-  /** Имя пользователя (для обращений в проактивных сообщениях) */
-  userName?: string;
-  /** Максимум агентов, подключаемых к одной задаче (0 = без лимита) */
-  maxAgentsPerTask?: number;
-  /** Порог сложности для созыва Consilium (0-5, по умолчанию 3) */
-  consiliumComplexityThreshold?: number;
-  /** Максимальное число раундов Consilium (по умолчанию 3) */
-  maxConsiliumRounds?: number;
-  /** Разрешить Director выбирать позицию AI при равенстве голосов */
-  aiTieBreak?: boolean;
-  /** Включать результаты агентов в текст ответа */
-  includeAgentDetails?: boolean;
-  /** Свободный диалог (нефинансовые темы) через LLM с контекстом портфеля */
-  chatResponder?: ChatResponder;
-  /**
-   * Порог уверенности извлечённой задачи (TaskExtractor), при котором
-   * Director строит план напрямую, минуя категорийную маршрутизацию.
-   * По умолчанию 0.7.
-   */
-  taskExtractionThreshold?: number;
-  /**
-   * Приём задач из свободного текста: если задан, реплики-задачи/идеи
-   * («давай добавим…», «хочу, чтобы…») не запускают агентов сразу,
-   * а превращаются в цель автономного цикла (goalIntake.addGoal).
-   * Не задан (терминальный chat без цикла) — реплики обрабатываются как раньше.
-   */
-  goalIntake?: {
-    addGoal(text: string): Promise<{ id: string; name: string }>;
-  };
+  reason?: string;
+  status?: string;
+  priority?: string;
 }

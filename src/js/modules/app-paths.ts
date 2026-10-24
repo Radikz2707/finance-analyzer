@@ -54,13 +54,13 @@ export function resolveAppDataDir(context: AppPathContext = {}): string {
 /**
  * Каталог для файловых отчётов (report.html/report.md, экспорт дашбордов).
  * - Упакованное приложение: %APPDATA%/finance-analyzer/reports;
- * - Dev/CLI: <cwd> (прежнее поведение — отчёт рядом с проектом).
+ * - Dev/CLI: <cwd>/reports (отчёты в поддиректории, не в корне проекта).
  */
 export function resolveReportsDir(
   isPackaged: boolean = isPackagedApp(),
   cwd: string = process.cwd(),
 ): string {
-  if (!isPackaged) return cwd;
+  if (!isPackaged) return path.join(cwd, 'reports');
   const base =
     process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
   return path.join(base, 'finance-analyzer', 'reports');

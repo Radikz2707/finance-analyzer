@@ -17,7 +17,18 @@ import { resolveReportsDir } from '../../app-paths.js';
 import type { DataAgentOutput } from './data-agent.js';
 import type { AnalysisAgentOutput } from './analysis-agent.js';
 import type { AiAgentOutput } from './ai-agent.js';
-import type { ReviewResult } from '../review/review-agent.js';
+// ReviewAgent удалён — используем заглушку
+export interface ReviewResult {
+  agreement: number;
+  agreementPercent: number;
+  discrepancies: string[];
+  hasDisagreement: boolean;
+  timeMs: number;
+  successful: number;
+  timeouts: number;
+  reviewers?: Array<{ role: string; opinion: string }>;
+  finalRecommendation?: string;
+}
 import type { ScenarioAgentOutput } from '../agents/scenario-agent.js';
 import type { StrategistAgentOutput } from '../agents/strategist-agent.js';
 import type { ConsiliumOutput } from '../agents/consilium.js';
@@ -269,6 +280,58 @@ export class NotificationAgent extends AgentBase {
       html += strategistHtml;
     }
 
+    // ── Скрипт для обработки кнопок обратной связи ──
+    html += `
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.feedback-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var ticker = this.getAttribute('data-ticker');
+      var action = this.getAttribute('data-action');
+      // Отправляем сообщение в parent window
+      window.parent.postMessage({
+        type: 'recommendation:feedback',
+        ticker: ticker,
+        feedback: action
+      }, '*');
+      
+      // Визуальная обратная связь — показываем выбор
+      var item = this.closest('.recommendation-item');
+      var buttons = item.querySelectorAll('.feedback-btn');
+      
+      // Сбросить все кнопки
+      buttons.forEach(function(b) {
+        b.style.opacity = '0.3';
+        b.style.transform = 'scale(0.95)';
+        b.disabled = true;
+      });
+      
+      // Выбранная кнопка — яркая
+      this.style.opacity = '1';
+      this.style.transform = 'scale(1.15)';
+      this.style.boxShadow = '0 0 12px rgba(86, 211, 100, 0.5)';
+      
+      // Показать текстовую метку
+      var feedbackLabel = item.querySelector('.feedback-label');
+      if (!feedbackLabel) {
+        feedbackLabel = document.createElement('div');
+        feedbackLabel.className = 'feedback-label';
+        feedbackLabel.style.cssText = 'font-size: 11px; margin-top: 6px; color: #8b949e; font-style: italic;';
+        item.appendChild(feedbackLabel);
+      }
+      
+      if (action === 'good') {
+        feedbackLabel.textContent = '✅ Спасибо! Рекомендация отмечена как верная.';
+        feedbackLabel.style.color = '#56d364';
+      } else {
+        feedbackLabel.textContent = '✅ Спасибо! Рекомендация отмечена как неверная.';
+        feedbackLabel.style.color = '#ff7b72';
+      }
+    });
+  });
+});
+</script>`;
+
     return html;
   }
 
@@ -441,10 +504,59 @@ export class NotificationAgent extends AgentBase {
     return html;
   }
 
+  /**
+   * Построить секцию структурированных рекомендаций с кнопками обратной связи.
+   */
+  private buildRecommendationsWithFeedback(ai: AiAgentOutput): string {
+    const recs = ai.structuredRecommendations;
+    if (!recs || recs.size === 0) {
+      return '';
+    }
+
+    let html = '<div class="recommendations-section" style="margin-top: 20px; padding: 15px; background: rgba(86, 211, 100, 0.05); border: 1px solid rgba(86, 211, 100, 0.3); border-radius: 8px;">\n';
+    html += '<h3 style="margin: 0 0 15px 0; color: #56d364; font-size: 16px;">📊 Рекомендации ИИ-советника</h3>\n';
+    html += '<div class="recommendations-list" style="display: flex; flex-direction: column; gap: 10px;">\n';
+
+    for (const [ticker, rec] of recs) {
+      const action = rec.recommendedAction ?? 'HOLD';
+      const confidence = rec.confidence ?? 0;
+      const actionColor = action === 'BUY' ? '#56d364' : action === 'SELL' || action === 'REDUCE' ? '#ff7b72' : '#ffd166';
+      const actionLabel = action === 'BUY' ? '🟢 Покупать' : action === 'SELL' || action === 'REDUCE' ? '🔴 Продавать' : '🟡 Держать';
+
+      html += '<div class="recommendation-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 6px; border-left: 3px solid ' + actionColor + ';">\n';
+      html += '<div style="flex: 1;">\n';
+      html += '<div style="font-weight: bold; color: #e6edf3; font-size: 14px;">' + ticker + (rec.name ? ' — ' + rec.name : '') + '</div>\n';
+      html += '<div style="color: ' + actionColor + '; font-size: 13px; margin-top: 4px;">' + actionLabel + '</div>\n';
+      html += '<div style="color: #8b949e; font-size: 12px; margin-top: 2px;">Уверенность: ' + Math.round(confidence * 100) + '%</div>\n';
+      if (rec.rationale) {
+        html += '<div style="color: #8b949e; font-size: 11px; margin-top: 4px; font-style: italic;">' + rec.rationale + '</div>\n';
+      }
+      html += '</div>\n';
+      html += '<div class="feedback-buttons" style="display: flex; gap: 8px; margin-left: 15px;">\n';
+      html += '<button class="feedback-btn feedback-good" data-ticker="' + ticker + '" data-action="good" style="background: rgba(86, 211, 100, 0.1); border: 1px solid rgba(86, 211, 100, 0.4); color: #56d364; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px;">👍</button>\n';
+      html += '<button class="feedback-btn feedback-bad" data-ticker="' + ticker + '" data-action="bad" style="background: rgba(255, 123, 114, 0.1); border: 1px solid rgba(255, 123, 114, 0.4); color: #ff7b72; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px;">👎</button>\n';
+      html += '</div>\n';
+      html += '</div>\n';
+    }
+
+    html += '</div>\n';
+    html += '<div style="margin-top: 10px; font-size: 11px; color: #8b949e;">Оцените рекомендации: 👍 если рекомендация верна, 👎 если нет. Это поможет улучшить анализ в будущем.</div>\n';
+    html += '</div>\n';
+
+    return html;
+  }
+
   private buildAiBoxHtml(
     analysis: AnalysisAgentOutput,
     ai: AiAgentOutput,
   ): string {
+    const generatedAt = new Date().toLocaleString('ru-RU', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
     const currentMonth = new Date().toLocaleDateString('ru-RU', {
       month: 'long',
       year: 'numeric',
@@ -454,6 +566,7 @@ export class NotificationAgent extends AgentBase {
       '<div class="ai-box-styled">' +
       this.buildIncomeWidgetHtml(analysis.income) +
       `📋 Экспертное заключение ИИ-советника (${currentMonth.charAt(0).toUpperCase() + currentMonth.slice(1)})\n` +
+      `🕒 Сформировано: ${generatedAt}\n` +
       `🤖 Использована модель: ${ai.aiClientResult.modelUsed}\n\n`;
 
     // Предупреждение о новых активах
@@ -485,6 +598,9 @@ export class NotificationAgent extends AgentBase {
       }
       html += '\n';
     }
+
+    // ── Структурированные рекомендации с кнопками обратной связи ──
+    html += this.buildRecommendationsWithFeedback(ai);
 
     // AI-текст (raw structured JSON никогда не должен попадать в дашборд —
     // stripJsonBlockFromAiText удаляет ```json / {"ticker": ...} блоки)
