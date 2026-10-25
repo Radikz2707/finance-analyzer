@@ -30,22 +30,6 @@ export function scripts() {
     performance: { hints: false },
     entry: {
       app: path.resolve(config.paths.scripts.src),
-      'director-chat-init': path.resolve(
-        'src',
-        'js',
-        'modules',
-        'pipeline',
-        'director',
-        'director-chat-simple.ts',
-      ),
-      'dashboard-init': path.resolve(
-        'src',
-        'js',
-        'modules',
-        'pipeline',
-        'director',
-        'dashboard-init.ts',
-      ),
     },
     output: {
       filename: '[name].min.js',

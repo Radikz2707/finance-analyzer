@@ -27,7 +27,13 @@ describe('buildSystemPrompt', () => {
   });
 
   it('contains macro context with rate', () => {
-    expect(basePrompt).toContain('Ставка ЦБ: 18%');
+    const p = buildSystemPrompt(18, undefined, undefined, {
+      keyRate: 18,
+      source: 'CBR',
+      asOf: '2026-10-01',
+      isFresh: true,
+    });
+    expect(p).toContain('Ставка ЦБ: 18%');
   });
 
   it('contains tickers when provided', () => {

@@ -40,8 +40,8 @@ describe('isPackagedApp', () => {
 });
 
 describe('resolveReportsDir', () => {
-  it('dev/CLI: отчёты рядом с cwd (прежнее поведение)', () => {
-    expect(resolveReportsDir(false, 'C:\\project')).toBe('C:\\project');
+  it('dev/CLI: отчёты рядом с cwd в поддиректории reports', () => {
+    expect(resolveReportsDir(false, 'C:\\project')).toBe('C:\\project\\reports');
   });
 
   it('упакованное приложение: %APPDATA%/finance-analyzer/reports', () => {

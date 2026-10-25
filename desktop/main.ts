@@ -50,6 +50,7 @@ import {
   handleAutonomousStatus,
   handleAutonomousStop,
   handleProactiveIdeas,
+  handleRecommendationFeedback,
   handleLastPipelineReport,
   loadLastPipelineReport,
   resolveAnalysisStatus,
@@ -119,6 +120,7 @@ async function initAppState(): Promise<void> {
     autonomous: null,
     lastPipelineReport: null,
     pipelineRunning: false,
+    recommendationFeedback: new Map(),
   };
 
   // Автономный цикл: цели + фоновый watch (один организм с чатом и диспетчером)
@@ -408,7 +410,7 @@ function registerIpc(): void {
     const now = new Date();
     // Приоритет: полный отчёт конвейера (report.html) → иначе сводка Директора
     const html =
-      handleLastPipelineReport(appState)?.htmlContent ||
+      (await handleLastPipelineReport(appState))?.data?.htmlContent ||
       (info.text ? buildAnalysisHtml(info, now) : '');
     if (!html) {
       return { ok: false, message: 'Анализ ещё не запускался' };
@@ -447,7 +449,7 @@ function registerIpc(): void {
     const info = handleLastAnalysis(appState.director);
     const now = new Date();
     const html =
-      handleLastPipelineReport(appState)?.htmlContent ||
+      (await handleLastPipelineReport(appState))?.data?.htmlContent ||
       (info.text ? buildAnalysisHtml(info, now) : '');
     if (!html) {
       return { ok: false, message: 'Анализ ещё не запускался' };
@@ -756,6 +758,8 @@ function createWindow(): BrowserWindow {
   void win.loadFile(RENDERER_INDEX);
   win.once('ready-to-show', () => {
     win.show();
+    // Временно включите devTools для отладки
+    // win.webContents.openDevTools();
   });
   win.on('closed', () => {
     if (mainWindow === win) {

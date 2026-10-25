@@ -178,6 +178,27 @@ export class AiClient {
   /** Логгер модуля */
   private readonly log = getLogger('ai-client');
 
+  /**
+   * Формирует отображение ставки ЦБ со статусом источника.
+   */
+  private formatCbrRate(macroData?: MacroDataContext): {
+    display: string;
+    value: number;
+    hasData: boolean;
+  } {
+    const rateValue = macroData?.keyRate ?? 0;
+    const isFresh = macroData?.isFresh ?? false;
+    const hasData = macroData != null && rateValue > 0;
+
+    const display = hasData
+      ? rateValue + '%' + (!isFresh
+          ? ' (\u26a0\ufe0f \u0434\u0430\u043d\u043d\u044b\u0435 \u0443\u0441\u0442\u0430\u0440\u0435\u043b\u0438, \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a: ' + (macroData.source || 'unknown') + ')'
+          : ' (cbr.ru)')
+      : '\u2014 (\u0434\u0430\u043d\u043d\u044b\u0435 \u043d\u0435 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u044b)';
+
+    return { display, value: rateValue, hasData };
+  }
+
   constructor() {
     this.openRouterKey = process.env.OPENROUTER_API_KEY || '';
     // Приоритет: прямой ключ GigaChat > ProxyAPI (прокси-обёртка).
@@ -292,8 +313,7 @@ export class AiClient {
     }
 
     const currentDate = new Date().toLocaleDateString('ru-RU');
-    const rateValue = macroData?.keyRate ?? 0;
-    const isFresh = macroData?.isFresh ?? false;
+    const { display: rateDisplay } = this.formatCbrRate(macroData);
 
     let ctx =
       '=== \u0414\u0410\u041d\u041d\u042b\u0415 \u041f\u041e\u0420\u0422\u0424\u0415\u041b\u042f ===\n';
@@ -306,7 +326,7 @@ export class AiClient {
     ctx +=
       '\u0412\u043b\u043e\u0436\u0435\u043d\u043e: ' +
       contributedCapital.toLocaleString('ru-RU') +
-      ' \u20bd | \u0418\u043d\u0432\u0435\u0441\u0442-\u0440\u0435\u0437\u0443\u043b\u044c\u0442\u0430\u0442: ' +
+      ' \u20bd | \u0418\u043d\u0432\u0435\u0441\u0442-\u0440\u0435\u0437\u0443\u043b\u044c\u0442: ' +
       (totalNetProfit >= 0 ? '+' : '') +
       totalNetProfit.toFixed(2) +
       ' \u20bd (' +
@@ -316,13 +336,8 @@ export class AiClient {
       '\u0421\u0432\u043e\u0431\u043e\u0434\u043d\u044b\u0439 \u043a\u044d\u0448: ' +
       macro.freeCash.toLocaleString('ru-RU') +
       ' \u20bd | \u0421\u0442\u0430\u0432\u043a\u0430 \u0426\u0411: ' +
-      rateValue +
-      '%\n';
-    if (!isFresh)
-      ctx +=
-        '⚠️ DATA_STATUS=STALE (\u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a: ' +
-        (macroData?.source || 'unknown') +
-        ')\n';
+      rateDisplay +
+      '\n';
     if (snapshotFinancial) {
       ctx +=
         '\u0414\u0435\u0444\u0438\u0446\u0438\u0442 \u0434\u043e\u043b\u0438: ' +
@@ -453,7 +468,9 @@ export class AiClient {
    */
   private buildUserPrompt(
     context: string,
-    cbrRate: number,
+    rateDisplay: string,
+    hasData: boolean,
+    rateValue: number,
     newsContext?: string,
     macroPercentages?: { stocks: number; bonds: number },
     _historicalData?: {
@@ -481,13 +498,17 @@ export class AiClient {
 
     prompt += '=== ЗАДАЧА ===\n';
     prompt += 'Проанализируй портфель:\n';
-    prompt += '- Ставка ЦБ: ' + cbrRate + '%\n';
+    prompt += '- Ставка ЦБ: ' + rateDisplay + '\n';
     prompt +=
       '- Структура: Акции ' + stocksPct + '%, Облигации ' + bondsPct + '%\n';
     prompt += '- Дата: ' + currentMonth + '\n\n';
 
     prompt += '=== ОТВЕТ ===\n';
-    prompt += '1. Макро: соответствие структуры ставке ' + cbrRate + '%\n';
+    if (hasData) {
+      prompt += '1. Макро: соответствие структуры ставке ' + rateValue + '%\n';
+    } else {
+      prompt += '1. Макро: данные о ставке ЦБ отсутствуют — укажи "нет данных"\n';
+    }
     prompt +=
       '2. Каждый актив: статус (BUY/STABLE/REDUCE/EXIT/NO_TARGET) + аргументация\n';
     prompt += '   - targetPercent = 0% → EXIT\n';
@@ -1223,6 +1244,9 @@ export class AiClient {
     // Извлекаем тикеры активов для валидации
     const assetTickers = analysis.assetsAnalysis.map((a) => a.ticker);
 
+    // Формируем отображение ставки ЦБ со статусом
+    const { display: rateDisplay, value: rateValue, hasData } = this.formatCbrRate(macroData);
+
     const context = this.buildPortfolioContext(
       analysis,
       inc,
@@ -1252,9 +1276,12 @@ export class AiClient {
       stocks: Math.round(macroPercentages.stocks * 100) / 100,
       bonds: Math.round(macroPercentages.bonds * 100) / 100,
     };
+
     const userPrompt = this.buildUserPrompt(
       context,
-      macroData.keyRate,
+      rateDisplay,
+      hasData,
+      rateValue,
       newsContext,
       roundedMacros,
       {

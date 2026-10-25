@@ -21,6 +21,12 @@ import {
   formatAuditEventLine,
   stripAnsi,
 } from '../../scripts/director-chat-render.js';
+import {
+  escapeHtmlReport,
+  renderAnalysisReport,
+  activityCssClass,
+  formatLocalTime,
+} from './utils.js';
 
 // Заглушки — удалённые модули больше не используются
 function formatActivityEvent(_event: unknown): string {
@@ -112,13 +118,7 @@ function nowTime(): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-/** Локальное время из ISO-метки (для «Последнего запуска» диспетчера) */
-function formatLocalTime(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  const pad = (n: number): string => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
+
 
 /** Длительность прогона в формате MM:SS */
 function formatElapsed(startedAtMs: number): string {
@@ -179,24 +179,6 @@ function appendActivityLine(
     activityEl.removeChild(activityEl.firstChild as Node);
   }
   scrollToBottom(activityEl);
-}
-
-function activityCssClass(event: DirectorAuditEvent): string {
-  switch (event.type) {
-    case 'director.plan_created':
-      return 'type-plan';
-    case 'director.consilium_started':
-    case 'director.consilium_round_completed':
-    case 'director.consilium_completed':
-      return 'type-consilium';
-    case 'director.agent_result_received':
-    case 'director.task_delegated':
-      return 'type-agent';
-    case 'director.recommendation_formed':
-      return 'type-error';
-    default:
-      return '';
-  }
 }
 
 function onDirectorEvent(event: DirectorAuditEvent): void {
@@ -405,10 +387,10 @@ function renderHarness(payload: HarnessDashboardPayload | null): void {
       ),
     );
     dispatchStatusEl.appendChild(
-      statCell('CPU', `${sched.cpuUsagePct.toFixed(1)}%`),
+      statCell('CPU', `${(sched.cpuUsagePct ?? 0).toFixed(1)}%`),
     );
     dispatchStatusEl.appendChild(
-      statCell('RAM', `${sched.memoryUsagePct.toFixed(1)}%`),
+      statCell('RAM', `${(sched.memoryUsagePct ?? 0).toFixed(1)}%`),
     );
     dispatchStatusEl.appendChild(
       statCell('Пропущено циклов', String(sched.skippedCycles)),
@@ -420,12 +402,13 @@ function renderHarness(payload: HarnessDashboardPayload | null): void {
   }
 
   anomaliesListEl.textContent = '';
-  if (payload.anomalies.length === 0) {
+  const anomalies = payload.anomalies ?? [];
+  if (anomalies.length === 0) {
     anomaliesListEl.appendChild(
       makeEl('div', 'empty-note', 'Аномалий нет (или данные недоступны)'),
     );
   }
-  for (const a of payload.anomalies) {
+  for (const a of anomalies) {
     const item = makeEl('div', 'anomaly-item');
     const head = makeEl('div', '');
     head.appendChild(makeEl('span', 'ticker', a.ticker));
@@ -445,10 +428,11 @@ function renderHarness(payload: HarnessDashboardPayload | null): void {
   }
 
   quikNewsEl.textContent = '';
-  if (payload.quikNews.length === 0) {
+  const quikNews = payload.quikNews ?? [];
+  if (quikNews.length === 0) {
     quikNewsEl.appendChild(makeEl('div', 'empty-note', 'Новостей QUIK нет'));
   }
-  for (const n of payload.quikNews.slice(0, 10)) {
+  for (const n of quikNews.slice(0, 10)) {
     const item = makeEl('div', 'news-item');
     item.appendChild(makeEl('div', 'news-time', `${n.time} · ${n.sourceName}`));
     item.appendChild(makeEl('div', 'news-text', n.text));
@@ -459,22 +443,25 @@ function renderHarness(payload: HarnessDashboardPayload | null): void {
 // ── Toast-уведомления ────────────────────────────────────────
 
 function showToast(message: string, type: 'ok' | 'error'): void {
-  // Стили toast — в styles.scss (.toast): карточка в теме приложения
-  // с акцентной полосой слева (зелёная ok / красная error).
+  // Убедимся, что предыдущий toast удалён
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
   toast.setAttribute('role', 'status');
   toast.textContent = message;
   document.body.appendChild(toast);
 
-  const dismiss = (): void => {
+  const timer = window.setTimeout(() => {
+    toast.style.animation = 'toast-out 0.2s ease forwards';
+    setTimeout(() => toast.remove(), 200);
+  }, 3000);
+  toast.addEventListener('click', () => {
     clearTimeout(timer);
     toast.style.animation = 'toast-out 0.2s ease forwards';
     setTimeout(() => toast.remove(), 200);
-  };
-  const timer = window.setTimeout(dismiss, 5000);
-  // Клик по уведомлению закрывает его
-  toast.addEventListener('click', dismiss);
+  });
 }
 
 // ── Статус-бар ───────────────────────────────────────────────
@@ -570,25 +557,60 @@ async function refreshAnalysisStatus(): Promise<void> {
 
 // ── Новостной блок (NewsDriver) ──────────────────────────────
 
-/** Обработка обратной связи по AI-рекомендациям из iframe */
-window.addEventListener('message', async (event) => {
-  if (
-    event.data &&
-    event.data.type === 'recommendation:feedback' &&
-    event.data.ticker &&
-    event.data.feedback
-  ) {
-    try {
-      const result = await window.financeApp.sendRecommendationFeedback(
-        event.data.ticker,
-        event.data.feedback,
-      );
-      if (result.ok) {
-        showToast(result.message, 'ok');
+/** Делегирование кликов по реакциям в iframe анализа */
+analysisFrameEl.addEventListener('load', () => {
+  try {
+    const iframeDoc = analysisFrameEl.contentDocument || analysisFrameEl.contentWindow?.document;
+    if (!iframeDoc) return;
+    iframeDoc.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (!target || !target.classList.contains('feedback-btn')) return;
+      const ticker = target.getAttribute('data-ticker');
+      const action = target.getAttribute('data-action');
+      if (!ticker || !action) return;
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // Визуальная обратная связь — подсветить выбранную кнопку
+      const item = target.closest('.recommendation-item');
+      if (item) {
+        const buttons = item.querySelectorAll('.feedback-btn');
+        buttons.forEach((b) => {
+          (b as HTMLElement).style.opacity = '0.3';
+          (b as HTMLElement).style.transform = 'scale(0.95)';
+          (b as HTMLElement).disabled = true;
+        });
+        target.style.opacity = '1';
+        target.style.transform = 'scale(1.15)';
+        target.style.boxShadow = '0 0 12px rgba(86, 211, 100, 0.5)';
+        
+        // Показать текстовую метку
+        let feedbackLabel = item.querySelector('.feedback-label');
+        if (!feedbackLabel) {
+          feedbackLabel = document.createElement('div');
+          feedbackLabel.className = 'feedback-label';
+          feedbackLabel.style.cssText = 'font-size: 11px; margin-top: 6px; color: #8b949e; font-style: italic;';
+          item.appendChild(feedbackLabel);
+        }
+        feedbackLabel.textContent = action === 'good'
+          ? '✅ Спасибо! Рекомендация учтена.'
+          : '✅ Спасибо! Учтём для улучшения.';
+        feedbackLabel.style.color = action === 'good' ? '#56d364' : '#ff7b72';
       }
-    } catch (err) {
-      console.error('[Renderer] Ошибка отправки обратной связи:', err);
-    }
+      
+      // Отправить данные на сервер
+      window.financeApp.sendRecommendationFeedback(ticker, action as 'good' | 'bad')
+        .then((result) => {
+          if (result.ok) {
+            // Сообщение уже показано в iframe — не дублируем
+          }
+        })
+        .catch((err) => {
+          console.error('[Renderer] Ошибка отправки обратной связи:', err);
+        });
+    });
+  } catch {
+    // iframe ещё не готов — игнорируем
   }
 });
 
@@ -960,7 +982,7 @@ async function runPipelineAnalysis(
     analysisNote.className = 'harness-run-note error';
   } finally {
     // Сводный статус с сервера: готов / падение / статус Директора —
-    // refreshAnalysisStatus синхронизирует и кнопку (текст + блокировка)
+    // refreshAnalysisStatus синхронизирует и кнопку (текст + блокировку)
     await refreshAnalysisStatus();
   }
 }

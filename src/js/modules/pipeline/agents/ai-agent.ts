@@ -193,12 +193,24 @@ export class AiAgent extends AgentBase {
     // Шаг 2: Генерация InvestmentThesis для каждого актива
     const thesisEngine = new InvestmentThesisEngine();
     const thesisResults = new Map<string, InvestmentThesisResult>();
+
+    // Ключевая ставка: приоритет — data-agent (надёжный источник), fallback — research snapshot
+    const dataKeyRate = data.keyRate ?? 0;
     let freshMacroData: {
       keyRate: number;
       source: string;
       asOf: string;
       isFresh: boolean;
     } | null = null;
+
+    if (dataKeyRate > 0) {
+      freshMacroData = {
+        keyRate: dataKeyRate,
+        source: data.cbrRateData?.source ?? 'CBR (из data-agent)',
+        asOf: data.cbrRateData?.date ?? new Date().toLocaleDateString('ru-RU'),
+        isFresh: data.cbrRateData?.isFresh ?? true,
+      };
+    }
 
     for (const asset of portfolioAnalysis.assetsAnalysis) {
       const snapshot = snapshots.get(asset.ticker);

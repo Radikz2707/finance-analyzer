@@ -735,22 +735,22 @@ describe('StructuredAIRecommendation', () => {
 
   // Test 30: USER_TARGET остаётся фактом, AI не меняет
   describe('Regression: USER_TARGET_PERCENT is user fact, AI cannot change', () => {
-    it('userTargetPercent = 10 остаётся 10, AI не меняет', () => {
+    it('userTargetPercent = 10 остаётся 10, AI рекомендует свою долю', () => {
       const det = createDet({ userTargetPercent: 10 });
       const aiJson: RawAIJson = {
         ...createValidAIJson(),
         ticker: 'PLZL',
-        recommendedTargetPercent: 999,
-        rationale: 'AI предлагает 999%',
-        targetReason: 'Абсурдная рекомендация',
-        agreementWithPortfolioMath: 'DISAGREE',
+        recommendedTargetPercent: 15,
+        rationale: 'AI предлагает 15%',
+        targetReason: 'Увеличение доли',
+        agreementWithPortfolioMath: 'AGREE',
       };
       const validation = validateStructuredAIJson(aiJson, ['PLZL']);
       const result = buildStructuredAIRecommendation(det, aiJson, validation);
 
       expect(result.userTargetPercent).toBe(10);
-      // AI target может быть любым — это рекомендация
-      expect(result.recommendedTargetPercent).toBe(999);
+      // AI рекомендует свою целевую долю (должна быть <= 100)
+      expect(result.recommendedTargetPercent).toBe(15);
     });
   });
 

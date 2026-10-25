@@ -87,6 +87,14 @@ export interface NotificationAgentOutput {
 export class NotificationAgent extends AgentBase {
   private htmlPath: string;
   private mdPath: string;
+  private feedbackStats?: {
+    total: number;
+    userGood: number;
+    userBad: number;
+    factualCorrect: number;
+    factualIncorrect: number;
+    pending: number;
+  };
 
   constructor(config?: AgentConfig) {
     super(config ?? { name: 'NotificationAgent' });
@@ -105,12 +113,24 @@ export class NotificationAgent extends AgentBase {
     scenario?: ScenarioAgentOutput;
     strategist?: StrategistAgentOutput;
     consilium?: ConsiliumOutput;
+    /** Статистика обратной связи по рекомендациям */
+    feedbackStats?: {
+      total: number;
+      userGood: number;
+      userBad: number;
+      factualCorrect: number;
+      factualIncorrect: number;
+      pending: number;
+    };
   }): Promise<NotificationAgentOutput> {
     // silent — отчёт генерируется в файлы, не в консоль
 
-    const { data, analysis, ai } = input;
+    const { data, analysis, ai, feedbackStats } = input;
     const { activeOrders, quotes } = data;
     const { portfolioAnalysis } = analysis;
+
+    // Сохраняем статистику для использования в buildRecommendationsWithFeedback
+    this.feedbackStats = feedbackStats;
 
     console.log(
       '[NotificationAgent] Starting buildHtmlReport with scenario=' +
@@ -279,58 +299,6 @@ export class NotificationAgent extends AgentBase {
       );
       html += strategistHtml;
     }
-
-    // ── Скрипт для обработки кнопок обратной связи ──
-    html += `
-<script>
-document.addEventListener('DOMContentLoaded', function() {
-  document.querySelectorAll('.feedback-btn').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      var ticker = this.getAttribute('data-ticker');
-      var action = this.getAttribute('data-action');
-      // Отправляем сообщение в parent window
-      window.parent.postMessage({
-        type: 'recommendation:feedback',
-        ticker: ticker,
-        feedback: action
-      }, '*');
-      
-      // Визуальная обратная связь — показываем выбор
-      var item = this.closest('.recommendation-item');
-      var buttons = item.querySelectorAll('.feedback-btn');
-      
-      // Сбросить все кнопки
-      buttons.forEach(function(b) {
-        b.style.opacity = '0.3';
-        b.style.transform = 'scale(0.95)';
-        b.disabled = true;
-      });
-      
-      // Выбранная кнопка — яркая
-      this.style.opacity = '1';
-      this.style.transform = 'scale(1.15)';
-      this.style.boxShadow = '0 0 12px rgba(86, 211, 100, 0.5)';
-      
-      // Показать текстовую метку
-      var feedbackLabel = item.querySelector('.feedback-label');
-      if (!feedbackLabel) {
-        feedbackLabel = document.createElement('div');
-        feedbackLabel.className = 'feedback-label';
-        feedbackLabel.style.cssText = 'font-size: 11px; margin-top: 6px; color: #8b949e; font-style: italic;';
-        item.appendChild(feedbackLabel);
-      }
-      
-      if (action === 'good') {
-        feedbackLabel.textContent = '✅ Спасибо! Рекомендация отмечена как верная.';
-        feedbackLabel.style.color = '#56d364';
-      } else {
-        feedbackLabel.textContent = '✅ Спасибо! Рекомендация отмечена как неверная.';
-        feedbackLabel.style.color = '#ff7b72';
-      }
-    });
-  });
-});
-</script>`;
 
     return html;
   }
@@ -513,8 +481,22 @@ document.addEventListener('DOMContentLoaded', function() {
       return '';
     }
 
+    const stats = this.feedbackStats;
+
     let html = '<div class="recommendations-section" style="margin-top: 20px; padding: 15px; background: rgba(86, 211, 100, 0.05); border: 1px solid rgba(86, 211, 100, 0.3); border-radius: 8px;">\n';
     html += '<h3 style="margin: 0 0 15px 0; color: #56d364; font-size: 16px;">📊 Рекомендации ИИ-советника</h3>\n';
+
+    // Статистика обратной связи
+    if (stats && stats.total > 0) {
+      html += '<div style="margin-bottom: 15px; padding: 10px; background: rgba(56, 139, 255, 0.08); border: 1px solid rgba(56, 139, 255, 0.2); border-radius: 6px; font-size: 12px;">\n';
+      html += '<div style="font-weight: bold; color: #58a6ff; margin-bottom: 6px;">📈 Статистика рекомендаций:</div>\n';
+      html += '<div style="display: flex; gap: 15px; flex-wrap: wrap;">\n';
+      html += `<div>👍 <b>${stats.userGood}</b> 👎 <b>${stats.userBad}</b> <span style="color: #8b949e;">(субъективно)</span></div>\n`;
+      html += `<div>✅ <b>${stats.factualCorrect}</b> ❌ <b>${stats.factualIncorrect}</b> ⏳ <b>${stats.pending}</b> <span style="color: #8b949e;">(по факту через 30 дней)</span></div>\n`;
+      html += '</div>\n';
+      html += '</div>\n';
+    }
+
     html += '<div class="recommendations-list" style="display: flex; flex-direction: column; gap: 10px;">\n';
 
     for (const [ticker, rec] of recs) {

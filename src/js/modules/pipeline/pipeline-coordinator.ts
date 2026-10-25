@@ -50,6 +50,7 @@ import {
 import type { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
 import { SelfImprovementLoop } from './self-improvement/self-improvement-loop.js';
 import { LearningAgent } from './agents/learning-agent.js';
+import { fetchHistoricalBatch } from '../data-fetcher/index.js';
 
 // ──────────────────────────────────────────────
 // 1. Pipeline stage definitions
@@ -214,8 +215,12 @@ export class PipelineCoordinator {
     pipelineId: string;
     ticker: string;
     recommendedAction: string;
-    success: boolean;
+    /** Субъективная оценка пользователя (👍/👎) — только для статистики */
+    userFeedback?: 'good' | 'bad';
+    /** Фактический результат (проверяется PostFactumCheck через 30 дней) */
+    factualResult?: 'correct' | 'incorrect' | 'pending';
     recordedAt: string;
+    checkedAt?: string;
   }> = [];
 
   /** Подписаться на завершение стадии конвейера */
@@ -518,7 +523,7 @@ export class PipelineCoordinator {
           pipelineId: this._state.pipelineId,
           ticker,
           recommendedAction: rec.action ?? 'HOLD',
-          success: false, // будет обновлено после feedback
+          factualResult: 'pending', // будет проверено PostFactumCheck
           recordedAt: new Date().toISOString(),
         });
       }
@@ -706,6 +711,9 @@ export class PipelineCoordinator {
       }
 
       // ── Stage 5: Notification Agent (ждёт data + analysis + ai + review + consilium) ──
+      // Вычисляем статистику обратной связи
+      const feedbackStats = this.computeFeedbackStats();
+
       const notificationResult = await this.runStage<
         'notification',
         NotificationAgentOutput
@@ -718,6 +726,7 @@ export class PipelineCoordinator {
           scenario: this.scenarioResultData ?? undefined,
           strategist: this.strategistResultData ?? undefined,
           consilium: this.consiliumResultData ?? undefined,
+          feedbackStats,
         });
         return result.data as NotificationAgentOutput;
       });
@@ -778,7 +787,7 @@ export class PipelineCoordinator {
           action: 'update',
           newOutcomes: this.aiRecommendations.map((r) => ({
             ...r,
-            success: r.success,
+            success: r.factualResult === 'correct',
           })),
         });
         // execute возвращает AgentResult<unknown> — извлекаем data
@@ -867,41 +876,22 @@ export class PipelineCoordinator {
   }
 
   /** Обновить outcome AI-рекомендации (пользовательская обратная связь) */
+  /**
+   * Обновить субъективную оценку пользователя (👍/👎).
+   * ТОЛЬКО для статистики — не влияет на обучение ИИ.
+   * Обучение происходит через PostFactumCheck по фактическим результатам.
+   */
   async updateRecommendationOutcome(
     ticker: string,
-    success: boolean,
-    note?: string,
+    feedback: 'good' | 'bad',
+    _note?: string,
   ): Promise<void> {
-    // Обновляем локальный массив
+    // Обновляем локальный массив (только для статистики)
     const rec = this.aiRecommendations.find((r) => r.ticker === ticker);
     if (rec) {
-      rec.success = success;
-    }
-
-    // Сохраняем в AI-память
-    try {
-      await aiMemoryImpl.saveOperational({
-        type: 'decision',
-        content: JSON.stringify({
-          ticker,
-          success,
-          note,
-          recordedAt: new Date().toISOString(),
-        }),
-        priority: 'medium',
-        keywords: ['outcome', ticker, success ? 'good' : 'bad'],
-        createdAt: new Date().toISOString(),
-      });
-
-      // Сохраняем урок в LearningAgent
-      await this.learningAgent.feedback({
-        outcome: success ? 'good' : 'bad',
-        action: `recommendation:${ticker}`,
-        note,
-      });
-    } catch (err) {
-      console.warn(
-        `[Pipeline] ⚠️ Ошибка обновления outcome: ${err instanceof Error ? err.message : String(err)}`,
+      rec.userFeedback = feedback;
+      console.log(
+        `[Pipeline] 👍/👎 по ${ticker}: ${feedback} (только статистика)`,
       );
     }
   }
@@ -931,7 +921,180 @@ export class PipelineCoordinator {
     return null;
   }
 
+  /**
+   * PostFactumCheck — проверка рекомендаций через 30 дней.
+   * Проверяет, были ли рекомендации ИИ верными, сравнивая цену
+   * на дату рекомендации и через 30 дней.
+   * Фактические результаты идут в обучение, а не субъективные 👍/👎.
+   */
+  async runPostFactumCheck(): Promise<void> {
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const NOW = Date.now();
+
+    // Находим рекомендации старше 30 дней, которые ещё не проверены
+    const pendingRecs = this.aiRecommendations.filter((r) => {
+      const recordedMs = new Date(r.recordedAt).getTime();
+      return (
+        (NOW - recordedMs) > THIRTY_DAYS_MS &&
+        r.factualResult === 'pending'
+      );
+    });
+
+    if (pendingRecs.length === 0) {
+      console.log('[Pipeline] PostFactumCheck: нет рекомендаций для проверки');
+      return;
+    }
+
+    console.log(
+      `[Pipeline] PostFactumCheck: проверяем ${pendingRecs.length} рекомендаций`,
+    );
+
+    // Собираем уникальные тикеры для пакетной загрузки
+    const uniqueTickers = [...new Set(pendingRecs.map((r) => r.ticker))];
+    console.log(
+      `[PostFactum] Загружаю исторические данные для ${uniqueTickers.length} тикеров...`,
+    );
+
+    // Пакетная загрузка исторических данных
+    const allBars = await fetchHistoricalBatch(
+      uniqueTickers,
+      '2020-01-01',
+      new Date().toISOString().split('T')[0]!,
+      'D',
+    );
+
+    for (const rec of pendingRecs) {
+      try {
+        const bars = allBars.get(rec.ticker);
+        if (!bars || bars.length === 0) {
+          console.warn(
+            `[PostFactum] Нет данных для ${rec.ticker} — пропуск`,
+          );
+          continue;
+        }
+
+        // Определяем, была ли рекомендация верной
+        // BUY → цена выросла → correct
+        // SELL/REDUCE → цена упала → correct
+        // HOLD → цена не изменилась существенно → correct
+        const recDate = new Date(rec.recordedAt);
+        const endDate = new Date(recDate);
+        endDate.setDate(endDate.getDate() + 30);
+
+        const recDateStr = rec.recordedAt.split('T')[0]!;
+        const endDateStr = endDate.toISOString().split('T')[0]!;
+
+        // Находим свечу на дату рекомендации
+        const startBar = bars.find((b) => b.date >= recDateStr);
+        if (!startBar) {
+          console.warn(
+            `[PostFactum] Не найдена цена на дату для ${rec.ticker} — пропуск`,
+          );
+          continue;
+        }
+
+        // Находим свечу через 30 дней
+        const endBar = bars
+          .filter((b) => b.date <= endDateStr)
+          .pop();
+        if (!endBar) {
+          console.warn(
+            `[PostFactum] Не найдена цена через 30 дней для ${rec.ticker} — пропуск`,
+          );
+          continue;
+        }
+
+        const priceAtRecommendation = startBar.close;
+        const priceAfter30Days = endBar.close;
+        const changePct =
+          ((priceAfter30Days - priceAtRecommendation) / priceAtRecommendation) *
+          100;
+
+        let isCorrect = false;
+        if (rec.recommendedAction === 'BUY') {
+          isCorrect = changePct > 0;
+        } else if (rec.recommendedAction === 'SELL' || rec.recommendedAction === 'REDUCE') {
+          isCorrect = changePct < 0;
+        } else {
+          // HOLD — цена не изменилась существенно (±5%)
+          isCorrect = Math.abs(changePct) <= 5;
+        }
+
+        rec.factualResult = isCorrect ? 'correct' : 'incorrect';
+        rec.checkedAt = new Date().toISOString();
+
+        // Фактический результат идёт в обучение
+        await this.learningAgent.feedback({
+          outcome: isCorrect ? 'good' : 'bad',
+          action: `postfactum:recommendation:${rec.ticker}:${rec.recommendedAction}`,
+          note: `Рекомендация ${rec.recommendedAction} по ${rec.ticker} (${recDateStr}) → ${isCorrect ? 'верна' : 'неверна'} (изменение: ${changePct.toFixed(1)}%)`,
+          agent: 'postfactum-check',
+        });
+
+        console.log(
+          `[PostFactum] ${rec.ticker}: ${rec.recommendedAction} → ` +
+            `${priceAtRecommendation} → ${priceAfter30Days} (${changePct.toFixed(1)}%) → ` +
+            `${isCorrect ? '✅ верно' : '❌ неверно'}`,
+        );
+      } catch (err) {
+        console.warn(
+          `[Pipeline] PostFactumCheck ошибка для ${rec.ticker}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Очистка устаревших данных:
+   * - Рекомендации старше 60 дней (30 дней на проверку + 30 дней на хранение)
+   */
+  async cleanupOldData(): Promise<void> {
+    const SIXTY_DAYS_MS = 60 * 24 * 60 * 60 * 1000;
+    const NOW = Date.now();
+
+    // Удаляем рекомендации старше 60 дней
+    const beforeCount = this.aiRecommendations.length;
+    this.aiRecommendations = this.aiRecommendations.filter((r) => {
+      const recordedMs = new Date(r.recordedAt).getTime();
+      return (NOW - recordedMs) <= SIXTY_DAYS_MS;
+    });
+    const removed = beforeCount - this.aiRecommendations.length;
+
+    if (removed > 0) {
+      console.log(`[Pipeline] Cleanup: удалено ${removed} устаревших рекомендаций`);
+    }
+  }
+
   // ── Helpers ──
+
+  /** Вычислить статистику обратной связи по рекомендациям */
+  private computeFeedbackStats(): {
+    total: number;
+    userGood: number;
+    userBad: number;
+    factualCorrect: number;
+    factualIncorrect: number;
+    pending: number;
+  } {
+    const stats = {
+      total: this.aiRecommendations.length,
+      userGood: 0,
+      userBad: 0,
+      factualCorrect: 0,
+      factualIncorrect: 0,
+      pending: 0,
+    };
+
+    for (const rec of this.aiRecommendations) {
+      if (rec.userFeedback === 'good') stats.userGood++;
+      if (rec.userFeedback === 'bad') stats.userBad++;
+      if (rec.factualResult === 'correct') stats.factualCorrect++;
+      if (rec.factualResult === 'incorrect') stats.factualIncorrect++;
+      if (rec.factualResult === 'pending' || !rec.factualResult) stats.pending++;
+    }
+
+    return stats;
+  }
 
   private async runStage<TStage extends PipelineStage, TData>(
     stage: TStage,

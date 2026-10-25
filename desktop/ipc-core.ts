@@ -54,6 +54,8 @@ export interface AppState {
     htmlPath: string;
     completedAt?: string;
   } | null;
+  /** Хранилище обратной связи по рекомендациям */
+  recommendationFeedback: Map<string, Array<{ ticker: string; feedback: string; timestamp: string }>>;
 }
 
 export interface IpcRequest {
@@ -261,70 +263,68 @@ export async function handleLastPipelineReport(
     };
   }
 
-  // Приоритет 2: чтение с диска (старый отчёт)
-  const candidates = [
-    path.join(process.cwd(), 'report.html'),
-    path.join(process.cwd(), 'reports', 'report.html'),
-    path.join(resolveReportsDir(), 'report.html'),
-  ];
-  for (const reportPath of candidates) {
-    if (fs.existsSync(reportPath)) {
-      const htmlContent = fs.readFileSync(reportPath, 'utf-8');
-      // Читаем duration из metadata файла
-      const reportsDir = path.dirname(reportPath);
-      const metaPath = path.join(reportsDir, 'report-meta.json');
-      let elapsedMs = 0;
-      try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-        elapsedMs = meta.totalDurationMs || 0;
-      } catch {
-        // metadata не найден
-      }
-      return {
-        ok: true,
-        data: {
-          htmlContent,
-          elapsedMs,
-          success: true,
-          htmlPath: reportPath,
-        },
-      };
+  // Приоритет 2: чтение с диска — ТОЛЬКО из reports/ (туда же пишет NotificationAgent)
+  const reportsDir = path.join(process.cwd(), 'reports');
+  const reportPath = path.join(reportsDir, 'report.html');
+  
+  if (fs.existsSync(reportPath)) {
+    const htmlContent = fs.readFileSync(reportPath, 'utf-8');
+    const metaPath = path.join(reportsDir, 'report-meta.json');
+    let elapsedMs = 0;
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      elapsedMs = meta.totalDurationMs || 0;
+    } catch {
+      // metadata не найден
     }
+    return {
+      ok: true,
+      data: {
+        htmlContent,
+        elapsedMs,
+        success: true,
+        htmlPath: reportPath,
+      },
+    };
   }
   return { ok: true, data: null };
 }
 
-export function loadLastPipelineReport(_state: AppState): unknown {
-  const candidates = [
-    path.join(process.cwd(), 'report.html'),
-    path.join(process.cwd(), 'reports', 'report.html'),
-    path.join(resolveReportsDir(), 'report.html'),
-  ];
-  for (const reportPath of candidates) {
-    if (fs.existsSync(reportPath)) {
-      const stats = fs.statSync(reportPath);
-      return {
-        htmlContent: fs.readFileSync(reportPath, 'utf-8'),
-        elapsedMs: stats.mtimeMs,
-        finishedAt: new Date(stats.mtimeMs).toISOString(),
-        htmlPath: reportPath,
-      };
+export function loadLastPipelineReport(state: AppState): void {
+  // Ищем ТОЛЬКО в директории reports — туда же пишет NotificationAgent
+  const reportsDir = path.join(process.cwd(), 'reports');
+  const reportPath = path.join(reportsDir, 'report.html');
+  
+  if (fs.existsSync(reportPath)) {
+    const stats = fs.statSync(reportPath);
+    const htmlContent = fs.readFileSync(reportPath, 'utf-8');
+    // Читаем duration из metadata файла
+    const metaPath = path.join(reportsDir, 'report-meta.json');
+    let elapsedMs = 0;
+    try {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+      elapsedMs = meta.totalDurationMs || 0;
+    } catch {
+      // metadata не найден
     }
+    state.lastPipelineReport = {
+      htmlContent,
+      elapsedMs,
+      success: true,
+      htmlPath: reportPath,
+      completedAt: new Date(stats.mtimeMs).toISOString(),
+    };
+    return;
   }
-  return null;
+  state.lastPipelineReport = null;
 }
 
 export function resolveAnalysisStatus(state: AppState): string {
   if (state.pipelineRunning) return 'in_progress';
   // Проверяем наличие отчёта конвейера (report.html)
-  const candidates = [
-    path.join(process.cwd(), 'report.html'),
-    path.join(process.cwd(), 'reports', 'report.html'),
-    path.join(resolveReportsDir(), 'report.html'),
-  ];
-  for (const reportPath of candidates) {
-    if (fs.existsSync(reportPath)) return 'ready';
-  }
+  const reportsDir = path.join(process.cwd(), 'reports');
+  const reportPath = path.join(reportsDir, 'report.html');
+  if (fs.existsSync(reportPath)) return 'ready';
   return 'pending';
 }
 
@@ -384,6 +384,15 @@ export async function runPipelineReport(state: AppState): Promise<Record<string,
       htmlPath: reportPath,
       completedAt: result.completedAt,
     };
+
+    // Запускаем PostFactumCheck и очистку устаревших данных
+    try {
+      await coordinator.runPostFactumCheck();
+      await coordinator.cleanupOldData();
+    } catch (err) {
+      console.warn('[IPC] PostFactumCheck ошибка:', err);
+    }
+
     return {
       ok: true,
       data: {
@@ -415,18 +424,17 @@ export async function handleRecommendationFeedback(
 ): Promise<Record<string, unknown>> {
   try {
     const { ticker, feedback } = input;
-    const success = feedback === 'good';
 
-    // Обновляем outcome в pipeline coordinator
+    // Обновляем субъективную оценку (только для статистики, не для обучения)
     if (_state?.pipeline) {
-      await _state.pipeline.updateRecommendationOutcome(ticker, success);
+      await _state.pipeline.updateRecommendationOutcome(ticker, feedback);
     }
 
     return {
       ok: true,
       data: {
         success: true,
-        message: success ? 'Спасибо! Рекомендация отмечена как верная.' : 'Спасибо! Рекомендация отмечена как неверная.',
+        message: feedback === 'good' ? '👍 Рекомендация учтена.' : '👎 Учтём для улучшения.',
       },
     };
   } catch (err) {
@@ -458,25 +466,21 @@ export async function handleLastAnalysis(
   _state: AppState,
 ): Promise<Record<string, unknown> | null> {
   // Приоритет: report.html (полный конвейер)
-  const candidates = [
-    path.join(process.cwd(), 'report.html'),
-    path.join(process.cwd(), 'reports', 'report.html'),
-    path.join(resolveReportsDir(), 'report.html'),
-  ];
-  for (const reportPath of candidates) {
-    if (fs.existsSync(reportPath)) {
-      const stats = fs.statSync(reportPath);
-      const htmlContent = fs.readFileSync(reportPath, 'utf-8');
-      return {
-        text: htmlContent,
-        finishedAt: new Date(stats.mtimeMs).toISOString(),
-        elapsedMs: stats.mtimeMs,
-        sourceLabel: reportPath,
-        totalValue: 0,
-        assets: [],
-        alerts: [],
-      };
-    }
+  const reportsDir = path.join(process.cwd(), 'reports');
+  const reportPath = path.join(reportsDir, 'report.html');
+  
+  if (fs.existsSync(reportPath)) {
+    const stats = fs.statSync(reportPath);
+    const htmlContent = fs.readFileSync(reportPath, 'utf-8');
+    return {
+      text: htmlContent,
+      finishedAt: new Date(stats.mtimeMs).toISOString(),
+      elapsedMs: stats.mtimeMs,
+      sourceLabel: reportPath,
+      totalValue: 0,
+      assets: [],
+      alerts: [],
+    };
   }
   return null;
 }
@@ -612,6 +616,13 @@ export async function handleIpcRequest(
           message: err instanceof Error ? err.message : String(err),
         };
       }
+    }
+
+    case 'send-recommendation-feedback': {
+      const ticker = (params?.ticker ?? '') as string;
+      const feedback = (params?.feedback ?? 'good') as 'good' | 'bad';
+      const result = await handleRecommendationFeedback(state, { ticker, feedback });
+      return result;
     }
 
     case 'get-state': {

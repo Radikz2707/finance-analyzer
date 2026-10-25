@@ -42,15 +42,20 @@ export function buildSystemPrompt(
   // Макро-контекст
   const macroLines: string[] = [];
   if (macroData) {
-    macroLines.push(
-      'Ставка ЦБ: ' +
-        macroData.keyRate +
-        '% (источник: ' +
-        (macroData.source || 'CBR') +
-        ', ' +
-        (macroData.isFresh ? 'актуально' : 'требует проверки') +
-        ')',
-    );
+    const hasData = macroData.keyRate > 0;
+    if (hasData) {
+      macroLines.push(
+        'Ставка ЦБ: ' +
+          macroData.keyRate +
+          '% (источник: ' +
+          (macroData.source || 'CBR') +
+          ', ' +
+          (macroData.isFresh ? 'актуально' : '⚠️ требует проверки') +
+          ')',
+      );
+    } else {
+      macroLines.push('Ставка ЦБ: — (данные не получены)');
+    }
     if (macroData.inflation !== undefined)
       macroLines.push('Инфляция: ' + macroData.inflation + '%');
     if (macroData.currency !== undefined)
@@ -58,7 +63,7 @@ export function buildSystemPrompt(
     if (macroData.oil !== undefined)
       macroLines.push('Нефть Brent: $' + macroData.oil);
   } else {
-    macroLines.push('Ставка ЦБ: ' + cbrRate + '% (макро-данные не переданы)');
+    macroLines.push('Ставка ЦБ: — (данные не получены)');
   }
 
   const prompt =

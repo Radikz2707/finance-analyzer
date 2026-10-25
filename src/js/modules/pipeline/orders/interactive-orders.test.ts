@@ -175,14 +175,14 @@ describe('InteractiveOrders: дедупликация по тикеру и сч�
 
   it('одинаковая заявка на одном счёте не дублируется', () => {
     const existingOrders = [
-      { ticker: 'SBER', operation: 'SELL' as const, status: 'NEW', accountId: 'S04J3LB' },
+      { ticker: 'SBER', operation: 'BUY' as const, status: 'NEW', accountId: 'S04J3LB' },
     ];
 
     const assets = [
       makeAsset({
         ticker: 'SBER',
         accountId: 'S04J3LB',
-        status: 'REDUCE',
+        status: 'BUY',
       }),
     ];
 
@@ -190,7 +190,7 @@ describe('InteractiveOrders: дедупликация по тикеру и сч�
 
     const orders = buildInteractiveOrders(assets, existingOrders, agreements);
 
-    // Заявка уже есть → новая не создаётся
+    // Заявка уже есть с таким же действием → новая не создаётся
     expect(orders.length).toBe(0);
   });
 
