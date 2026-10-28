@@ -44,6 +44,8 @@ export class DirectorAgent {
   private sessions: Map<string, { messages: ChatMessage[] }> = new Map();
   private currentSessionId: string | null = null;
   private readonly _userName: string;
+  private readonly maxSessions = 50;
+  private readonly sessionMaxAgeMs = 24 * 3600_000; // 24 часа
 
   constructor(_config?: unknown, deps?: DirectorAgentDeps) {
     this.facts = deps?.initialFacts ?? emptyFacts();
@@ -65,7 +67,36 @@ export class DirectorAgent {
     const id = `session_${Date.now()}`;
     this.sessions.set(id, { messages: [] });
     this.currentSessionId = id;
+    this.cleanupOldSessions();
     return id;
+  }
+
+  /** Удалить сессию по ID */
+  deleteSession(id: string): void {
+    this.sessions.delete(id);
+    if (this.currentSessionId === id) {
+      this.currentSessionId = null;
+    }
+  }
+
+  /** Очистить старые сессии */
+  private cleanupOldSessions(): void {
+    const cutoff = Date.now() - this.sessionMaxAgeMs;
+    for (const [id, session] of this.sessions) {
+      const lastMsg = session.messages[session.messages.length - 1];
+      if (lastMsg && new Date(lastMsg.timestamp).getTime() < cutoff) {
+        this.sessions.delete(id);
+      }
+    }
+    // Если сессий больше лимита — удаляем самые старые
+    while (this.sessions.size > this.maxSessions) {
+      const oldest = Array.from(this.sessions.entries()).sort(
+        (a, b) =>
+          new Date(a[1].messages[0]?.timestamp ?? '').getTime() -
+          new Date(b[1].messages[0]?.timestamp ?? '').getTime(),
+      )[0];
+      if (oldest) this.sessions.delete(oldest[0]);
+    }
   }
 
   /** Получить историю чата */

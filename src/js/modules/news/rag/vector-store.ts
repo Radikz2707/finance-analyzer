@@ -146,6 +146,8 @@ function cosineSimilarity(
 export interface VectorStoreOptions {
   /** Максимальное количество результатов поиска */
   maxResults?: number;
+  /** Максимальное количество документов в индексе */
+  maxEntries?: number;
 }
 
 export class VectorStore {
@@ -153,9 +155,11 @@ export class VectorStore {
   private documents: string[][] = []; // токенизированные документы
   private idf: Map<string, number> = new Map();
   private readonly maxResults: number;
+  private readonly maxEntries: number;
 
   constructor(options: VectorStoreOptions = {}) {
     this.maxResults = options.maxResults ?? 10;
+    this.maxEntries = options.maxEntries ?? 10000;
   }
 
   /** Добавить документ в индекс */
@@ -163,6 +167,17 @@ export class VectorStore {
     this.entries.push(entry);
     this.documents.push(tokenize(entry.text));
     // Перестраиваем IDF
+    this.idf = computeIDF(this.documents);
+    // Автоочистка старых документов
+    if (this.entries.length > this.maxEntries) {
+      this.trimOldEntries();
+    }
+  }
+
+  /** Удалить старые записи, оставляя только новые */
+  private trimOldEntries(): void {
+    const removed = this.entries.splice(0, this.entries.length - this.maxEntries);
+    this.documents.splice(0, removed.length);
     this.idf = computeIDF(this.documents);
   }
 

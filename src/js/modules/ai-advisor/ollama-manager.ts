@@ -207,6 +207,7 @@ export async function pullModel(
           `[Ollama] ❌ Ошибка установки модели ${modelName}:`,
           err.message,
         );
+        response.data.destroy();
         resolve(false);
       });
     });

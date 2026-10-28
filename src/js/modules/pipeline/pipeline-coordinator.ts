@@ -222,6 +222,7 @@ export class PipelineCoordinator {
     recordedAt: string;
     checkedAt?: string;
   }> = [];
+  private readonly maxAiRecommendations = 5000;
 
   /** Подписаться на завершение стадии конвейера */
   onStageComplete(
@@ -258,6 +259,18 @@ export class PipelineCoordinator {
       });
     } catch (err) {
       console.warn('[Pipeline] Ошибка записи в память:', err);
+    }
+  }
+
+  /** Очистить старые AI-рекомендации (старше 30 дней) */
+  private cleanupAiRecommendations(): void {
+    const cutoff = Date.now() - 30 * 24 * 3600_000;
+    this.aiRecommendations = this.aiRecommendations.filter(
+      (r) => new Date(r.recordedAt).getTime() >= cutoff,
+    );
+    // Дополнительная защита: обрезаем по лимиту
+    while (this.aiRecommendations.length > this.maxAiRecommendations) {
+      this.aiRecommendations.shift();
     }
   }
 
@@ -527,6 +540,7 @@ export class PipelineCoordinator {
           recordedAt: new Date().toISOString(),
         });
       }
+      this.cleanupAiRecommendations();
 
       // ── Stage 4: Review Agent (заглушка — удалён) ──
       const reviewResult = await this.runStage<'review', ReviewResult>(
