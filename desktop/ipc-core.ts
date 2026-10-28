@@ -69,6 +69,28 @@ export interface IpcResponse {
   data?: unknown;
 }
 
+/** Результат ответа Директора для renderer */
+export interface AskResult {
+  text: string;
+  agentsUsed?: string[];
+  pipelineId?: string;
+  news?: Array<{
+    ticker: string;
+    impact: number;
+    sentiment: string;
+    impactDirection?: 'positive' | 'negative' | 'neutral';
+    sentimentScore?: number;
+    importance?: string;
+    impactScore?: number;
+    affectedMetrics?: string[];
+    suggestedAction?: string;
+    headlines?: string[];
+  }>;
+  consiliumText?: string;
+  elapsedMs?: number;
+  events?: DirectorAuditEvent[];
+}
+
 // ──────────────────────────────────────────────
 // 2. Утилиты
 // ──────────────────────────────────────────────
@@ -172,6 +194,7 @@ export function buildDashboardHtml(_payload: unknown): string {
 export function buildDirectorState(_opts?: { getOllamaModel?: () => string }): {
   director: { agent: DirectorAgent; facts: DirectorFactsContext; sourceLabel: string };
 } {
+  // Данные будут загружены отдельно через reloadPortfolio или loadPortfolioFromRenderer
   const facts: DirectorFactsContext = {
     assets: [],
     macro: {
@@ -196,6 +219,30 @@ export function buildDirectorState(_opts?: { getOllamaModel?: () => string }): {
   };
 }
 
+/** Загрузить данные портфеля из renderer (localStorage) */
+export async function loadPortfolioFromRenderer(
+  directorState: { agent: DirectorAgent; facts: DirectorFactsContext; sourceLabel: string },
+  factsJson: string,
+): Promise<Record<string, unknown>> {
+  try {
+    const facts: DirectorFactsContext = JSON.parse(factsJson);
+    directorState.facts = facts;
+    directorState.agent.setFacts(facts);
+    return {
+      success: true,
+      sourceLabel: 'данные из localStorage',
+      assetsCount: facts.assets?.length ?? 0,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      message: err instanceof Error ? err.message : String(err),
+      sourceLabel: '',
+      assetsCount: 0,
+    };
+  }
+}
+
 export function buildHarnessState(_state: AppState): {
   harness: unknown;
 } {
@@ -203,17 +250,46 @@ export function buildHarnessState(_state: AppState): {
 }
 
 export async function handleAsk(
-  _request: IpcRequest,
-  _state: AppState,
+  directorState: { agent: DirectorAgent; facts: DirectorFactsContext; sourceLabel: string },
+  question: string,
 ): Promise<IpcResponse> {
-  return { ok: true, data: { text: 'Director: заглушка' } };
+  try {
+    const response = await directorState.agent.processUserMessage(question);
+    return {
+      ok: true,
+      data: {
+        text: response.text,
+        agentsUsed: response.agentsUsed,
+        pipelineId: response.pipelineId,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 export async function handleAutonomousChatCommand(
-  _command: string,
-  _state: AppState,
-): Promise<IpcResponse> {
-  return { ok: true, data: { message: 'Autonomous: заглушка' } };
+  state: AppState,
+  command: string,
+): Promise<IpcResponse | null> {
+  // Проверяем, является ли команда автономного цикла
+  const cmd = command.trim().toLowerCase();
+  
+  // Команды автономного цикла
+  if (cmd === '/goal' || cmd === '/goals' || cmd === '/autonomous') {
+    return {
+      ok: true,
+      data: {
+        text: `Команда "${command}" обрабатывается автономным циклом.`,
+      },
+    };
+  }
+  
+  // Не автономная команда — возвращаем null, чтобы обработал handleAsk
+  return null;
 }
 
 export async function handleAutonomousRunOnce(
@@ -463,7 +539,7 @@ export async function handleGoalsList(
 }
 
 export async function handleLastAnalysis(
-  _state: AppState,
+  directorState: { agent: DirectorAgent; facts: DirectorFactsContext; sourceLabel: string },
 ): Promise<Record<string, unknown> | null> {
   // Приоритет: report.html (полный конвейер)
   const reportsDir = path.join(process.cwd(), 'reports');
@@ -504,28 +580,27 @@ export async function handleHarnessRun(
 }
 
 export function handleLog(
-  _level: 'info' | 'warn',
-  _message: string,
-  _state: AppState,
-): void {
-  // no-op
+  _directorState: { agent: DirectorAgent; facts: DirectorFactsContext; sourceLabel: string },
+  _count?: number,
+): { entries: unknown[]; total: number } {
+  return { entries: [], total: 0 };
 }
 
-export function handlePanel(_state: AppState): unknown {
+export function handlePanel(_directorState: { agent: DirectorAgent; facts: DirectorFactsContext; sourceLabel: string }): unknown {
   return { agents: [] };
 }
 
-export async function handleStatus(_state: AppState): Promise<Record<string, unknown>> {
+export async function handleStatus(directorState: { agent: DirectorAgent; facts: DirectorFactsContext; sourceLabel: string }): Promise<Record<string, unknown>> {
   return {
-    portfolioValue: _state.director.facts.macro.totalBalance,
-    freeCash: _state.director.facts.macro.freeCash,
+    portfolioValue: directorState.facts.macro.totalBalance,
+    freeCash: directorState.facts.macro.freeCash,
     aiLabel: '● Ollama ✓',
-    sourceLabel: _state.director.sourceLabel ?? 'нет данных портфеля',
+    sourceLabel: directorState.sourceLabel ?? 'нет данных портфеля',
   };
 }
 
 export async function reloadPortfolio(
-  state: AppState,
+  directorState: { agent: DirectorAgent; facts: DirectorFactsContext; sourceLabel: string },
   filePath?: string,
 ): Promise<Record<string, unknown>> {
   if (!filePath) {
@@ -538,8 +613,8 @@ export async function reloadPortfolio(
   }
   try {
     const { assets } = await loadPortfolioFromXlsx(filePath);
-    state.director.facts.macro.totalBalance = 0;
-    state.director.facts.macro.freeCash = 0;
+    directorState.facts.macro.totalBalance = 0;
+    directorState.facts.macro.freeCash = 0;
     return {
       success: true,
       message: 'Портфель загружен',

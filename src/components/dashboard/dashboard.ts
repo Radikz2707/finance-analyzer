@@ -365,7 +365,7 @@ export class DashboardReportBuilder {
       "<div class='block-box'>" +
       '<h2>Портфель: состав и приоритеты</h2>' +
       '<table id="portfolio-table">' +
-      '<thead><tr><th>Инструмент</th><th>Текущая доля</th><th>Целевая доля</th><th>Дефицит/Профицит</th><th>Статус</th><th class="price-info">Цена входа /<br>Текущая</th><th class="pnl-th" onclick="sortPortfolioTable()" id="pnl-header">P&L <span class="pnl-sub">от цены входа</span> <span id="sort-indicator">↕</span></th></tr></thead>' +
+      '<thead><tr><th>Инструмент</th><th>Текущая доля</th><th>Целевая доля</th><th>Дефицит/Профицит</th><th>Статус</th><th class="price-info">Цена входа /<br>Текущая</th><th class="pnl-th" id="pnl-header" data-sort="pnl">P&L <span class="pnl-sub">от цены входа</span> <span id="sort-indicator">↕</span></th></tr></thead>' +
       '<tbody id="portfolio-tbody">' +
       tableRows +
       '</tbody>' +
@@ -536,6 +536,8 @@ export class DashboardReportBuilder {
       '_sortDir=_sortDir==="desc"?"asc":"desc";' +
       'if(indicator)indicator.textContent=_sortDir==="desc"?"↓":"↑";' +
       '}' +
+      'var header=document.getElementById("pnl-header");' +
+      'if(header)header.addEventListener("click",sortPortfolioTable);' +
       '</script>' +
       '<script>' +
       // Embed Director Chat widget inline (works with file:// protocol)

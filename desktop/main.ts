@@ -49,6 +49,8 @@ import {
   handleAutonomousStart,
   handleAutonomousStatus,
   handleAutonomousStop,
+  loadPortfolioFromRenderer,
+  loadPortfolioFromXlsx,
   handleProactiveIdeas,
   handleRecommendationFeedback,
   handleLastPipelineReport,
@@ -167,6 +169,21 @@ async function initAppState(): Promise<void> {
   // Запускаем файловый воркер на Excel-файл
   const excelPath = process.env.EXCEL_FILE_PATH;
   if (excelPath) {
+    // Загружаем данные из Excel при старте
+    log('info', `Загрузка данных из Excel: ${excelPath}`);
+    try {
+      const { assets, macro } = await loadPortfolioFromXlsx(excelPath);
+      appState.director.director.facts.assets = assets;
+      appState.director.director.facts.macro = macro;
+      appState.director.director.agent.setFacts(appState.director.director.facts);
+      appState.director.director.sourceLabel = excelPath;
+      log('info', `Загружено ${assets.length} активов из Excel`);
+      // Уведомляем renderer о загрузке
+      sendToRenderer('portfolio:loaded', { assetsCount: assets.length, sourceLabel: excelPath });
+    } catch (err) {
+      log('warn', `Ошибка загрузки Excel: ${err}`);
+    }
+    
     startExcelWatcher(excelPath);
   }
 
@@ -267,7 +284,7 @@ function startExcelWatcher(excelPath: string): void {
   appState.director.director.agent.resetAnalysisCache();
               log('info', 'Кэш анализа сброшен (Excel изменён)');
 
-              reloadPortfolio(appState.director, excelPath).then((result) => {
+              reloadPortfolio(appState.director.director, excelPath).then((result) => {
                 if (result.success) {
                   log(
                     'info',
@@ -310,6 +327,14 @@ function stopExcelWatcher(): void {
 
 /** Регистрация IPC-хендлеров (вызывается после готовности состояния) */
 function registerIpc(): void {
+  // ── Загрузка данных портфеля из localStorage renderer ──
+  ipcMain.handle('portfolio:load-from-renderer', async (_event, factsJson: string) => {
+    if (!appState) {
+      return { success: false, message: 'Приложение не инициализировано' };
+    }
+    return await loadPortfolioFromRenderer(appState.director.director, factsJson);
+  });
+
   ipcMain.handle('director:ask', async (_event, question: string) => {
     if (!appState) {
       throw new Error('Состояние приложения не инициализировано');
@@ -317,9 +342,9 @@ function registerIpc(): void {
     const q = typeof question === 'string' ? question : String(question ?? '');
     // Чат-команды автономного цикла (/goal, /goals, /autonomous) — без LLM
     const autonomousResult = await handleAutonomousChatCommand(appState, q);
-    const result = autonomousResult ?? (await handleAsk(appState.director, q));
+    const result = autonomousResult ?? (await handleAsk(appState.director.director, q));
     // Дублируем ответ потоком (в дополнение к возврату invoke)
-    sendToRenderer('director:reply', result);
+    sendToRenderer('director:reply', result.data);
     return result;
   });
 
@@ -406,7 +431,7 @@ function registerIpc(): void {
     if (!appState) {
       return { ok: false, message: 'Приложение не инициализировано' };
     }
-    const info = handleLastAnalysis(appState.director);
+    const info = handleLastAnalysis(appState.director.director);
     const now = new Date();
     // Приоритет: полный отчёт конвейера (report.html) → иначе сводка Директора
     const html =
@@ -446,7 +471,7 @@ function registerIpc(): void {
     if (!appState) {
       return { ok: false, message: 'Приложение не инициализировано' };
     }
-    const info = handleLastAnalysis(appState.director);
+    const info = handleLastAnalysis(appState.director.director);
     const now = new Date();
     const html =
       (await handleLastPipelineReport(appState))?.data?.htmlContent ||
@@ -483,15 +508,15 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('director:status', () =>
-    appState ? handleStatus(appState.director) : null,
+    appState ? handleStatus(appState.director.director) : null,
   );
 
   ipcMain.handle('director:log', (_event, count?: number) =>
-    appState ? handleLog(appState.director, count) : { entries: [], total: 0 },
+    appState ? handleLog(appState.director.director, count) : { entries: [], total: 0 },
   );
 
   ipcMain.handle('director:panel', () =>
-    appState ? handlePanel(appState.director) : null,
+    appState ? handlePanel(appState.director.director) : null,
   );
 
   // Переподключение Ollama из UI
@@ -519,7 +544,7 @@ function registerIpc(): void {
         message: 'Приложение не инициализировано',
       };
     }
-    return await reloadPortfolio(appState.director, excelPath);
+    return await reloadPortfolio(appState.director.director, excelPath);
   });
 
   // Запуск ленивого анализа портфеля
@@ -604,7 +629,7 @@ function registerIpc(): void {
     // Перезагружаем портфель без перезапуска
     if (appState) {
       try {
-        const reloadResult = await reloadPortfolio(appState.director, filePath);
+        const reloadResult = await reloadPortfolio(appState.director.director, filePath);
         if (reloadResult.success) {
           log(
             'info',

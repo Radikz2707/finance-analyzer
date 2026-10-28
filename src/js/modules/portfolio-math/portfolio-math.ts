@@ -50,9 +50,49 @@ export function isBondAsset(asset: CurrentAsset): boolean {
   return classifyAsset(asset) === 'BOND';
 }
 
+/**
+ * Генерирует короткое название для актива.
+ * Для акций — берёт name, для облигаций — извлекает суффикс из ticker.
+ */
+export function generateShortName(asset: CurrentAsset): string {
+  const type = classifyAsset(asset);
+  const name = asset.name || '';
+  const ticker = asset.ticker || '';
+
+  // Для акций — используем name (уже короткое из Excel)
+  if (type === 'STOCK' && name) {
+    return name;
+  }
+
+  // Для облигаций — извлекаем суффикс из ticker (RU000A10EVJ7 → A10EVJ7)
+  if (type === 'BOND' && ticker) {
+    // RU000XXXXX → XXXXX
+    const match = ticker.match(/^RU000([A-Z0-9]+)$/i);
+    if (match) {
+      const suffix = match[1]!;
+      // Если name содержит "ОФЗ" — используем его
+      if (/ОФЗ/i.test(name)) {
+        return name;
+      }
+      return suffix;
+    }
+    return ticker;
+  }
+
+  // Для ETF/фондов — name
+  if ((type === 'ETF' || type === 'OTHER') && name) {
+    return name;
+  }
+
+  // Fallback — ticker
+  return ticker;
+}
+
 export interface AssetAnalysis {
   name: string;
   ticker: string;
+  /** Короткое название для отображения (из name или сгенерированное из ticker) */
+  shortName?: string;
   assetType: string;
   currentPercent: number;
   targetPercent?: number;
@@ -269,6 +309,7 @@ export class PortfolioMathModule {
       assetsAnalysis.push({
         name: asset.name,
         ticker: asset.ticker,
+        shortName: generateShortName(asset),
         assetType: asset.assetType,
         currentPercent: asset.liquidationPercent,
         targetPercent: targetPercent,

@@ -22,6 +22,8 @@ const api: FinanceDesktopApi = {
   getLog: (count) => ipcRenderer.invoke('director:log', count),
   getPanel: () => ipcRenderer.invoke('director:panel'),
   loadPortfolio: () => ipcRenderer.invoke('portfolio:status'),
+  loadPortfolioFromRenderer: (factsJson) =>
+    ipcRenderer.invoke('portfolio:load-from-renderer', factsJson),
   getHarnessPayload: () => ipcRenderer.invoke('harness:payload'),
   runHarnessAnalysis: () => ipcRenderer.invoke('harness:run'),
   exportDashboard: () => ipcRenderer.invoke('harness:export-report'),
@@ -95,6 +97,19 @@ const api: FinanceDesktopApi = {
     ipcRenderer.on('director:activity', listener);
     return () => {
       ipcRenderer.removeListener('director:activity', listener);
+    };
+  },
+
+  onPortfolioLoaded: (callback) => {
+    const listener = (
+      _event: IpcRendererEvent,
+      payload: { assetsCount: number; sourceLabel: string },
+    ): void => {
+      callback(payload);
+    };
+    ipcRenderer.on('portfolio:loaded', listener);
+    return () => {
+      ipcRenderer.removeListener('portfolio:loaded', listener);
     };
   },
 

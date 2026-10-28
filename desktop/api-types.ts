@@ -123,6 +123,8 @@ export interface FinanceDesktopApi {
   getPanel(): Promise<AgentPanelState | null>;
   /** Статус данных портфеля */
   loadPortfolio(): Promise<PortfolioStatusInfo>;
+  /** Загрузить данные портфеля из localStorage renderer */
+  loadPortfolioFromRenderer(factsJson: string): Promise<PortfolioReloadResult>;
   /** Payload «Гибридного диспетчера» (scheduler/аномалии/QUIK) */
   getHarnessPayload(): Promise<HarnessDashboardPayload | null>;
   /** Ручной запуск фонового анализа */

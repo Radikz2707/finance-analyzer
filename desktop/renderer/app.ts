@@ -614,6 +614,45 @@ analysisFrameEl.addEventListener('load', () => {
   }
 });
 
+/** Делегирование клика по заголовку P&L для сортировки таблицы в iframe анализа */
+analysisFrameEl.addEventListener('load', () => {
+  try {
+    const iframeDoc = analysisFrameEl.contentDocument || analysisFrameEl.contentWindow?.document;
+    if (!iframeDoc) return;
+    const header = iframeDoc.getElementById('pnl-header');
+    if (!header) return;
+    let _sortDir = 'desc';
+    header.addEventListener('click', () => {
+      const tbody = iframeDoc.getElementById('portfolio-tbody');
+      if (!tbody) return;
+      const rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort((a, b) => {
+        const aCell = a.querySelectorAll('td')[6];
+        const bCell = b.querySelectorAll('td')[6];
+        const aSpan = aCell ? aCell.querySelector('.pnl-pct') : null;
+        const bSpan = bCell ? bCell.querySelector('.pnl-pct') : null;
+        const aText = aSpan ? aSpan.textContent.trim() : '';
+        const bText = bSpan ? bSpan.textContent.trim() : '';
+        const parsePnl = (t: string) => {
+          if (!t || t === '—') return 0;
+          const m = String(t).match(/[-+]?\d+\.?\d*/);
+          return m ? parseFloat(m[0]) : 0;
+        };
+        return _sortDir === 'desc'
+          ? parsePnl(bText) - parsePnl(aText)
+          : parsePnl(aText) - parsePnl(bText);
+      });
+      while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+      rows.forEach((row) => tbody.appendChild(row));
+      _sortDir = _sortDir === 'desc' ? 'asc' : 'desc';
+      const indicator = iframeDoc.getElementById('sort-indicator');
+      if (indicator) indicator.textContent = _sortDir === 'desc' ? '↓' : '↑';
+    });
+  } catch {
+    // iframe ещё не готов — игнорируем
+  }
+});
+
 /**
  * Новостной блок во вкладке «Чат»: impact'ы NewsDriver по тикерам
  * портфеля (сентимент, важность, влияние, источники). Показывается
@@ -1527,6 +1566,14 @@ async function init(): Promise<void> {
   // Живой стриминг шагов агентов (started/step/completed/failed)
   window.financeApp.onDirectorActivity(onDirectorActivity);
   window.financeApp.onDirectorReply(onDirectorReply);
+  // Загрузка портфеля из Excel
+  window.financeApp.onPortfolioLoaded((payload) => {
+    appendActivityLine(
+      `📁 Портфель загружен: ${payload.assetsCount} активов из ${payload.sourceLabel}`,
+      'type-agent',
+    );
+    showToast(`✅ Загружено ${payload.assetsCount} активов`, 'ok');
+  });
 
   // Начальное состояние
   try {

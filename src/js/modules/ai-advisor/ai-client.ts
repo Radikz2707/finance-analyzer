@@ -378,7 +378,7 @@ export class AiClient {
 
     ctx += '\n=== \u0410\u041a\u0422\u0418\u0412\u042b ===\n';
     ctx +=
-      '\u0424\u043e\u0440\u043c\u0430\u0442: [\u0422\u0418\u041f] \u0422\u0438\u043a\u0435\u0440 | \u0414\u043e\u043b\u044f% | \u0426\u0435\u043d\u0430 | \u0412\u0445\u043e\u0434 | P&L% | \u041a\u043e\u043b-\u0432\u043e | \u041b\u0438\u043a\u0432 | \u0414\u0435\u0444\u0438\u0446\u0438\u0442 | \u0421\u0442\u0430\u0442\u0443\u0441 | target% | Thesis\n';
+      '\u0424\u043e\u0440\u043c\u0430\u0442: [\u0422\u0418\u041f] \u0422\u0438\u043a\u0435\u0440 (назв) | \u0414\u043e\u043b\u044f% | \u0426\u0435\u043d\u0430 | \u0412\u0445\u043e\u0434 | P&L% | \u041a\u043e\u043b-\u0432\u043e | \u041b\u0438\u043a\u0432 | \u0414\u0435\u0444\u0438\u0446\u0438\u0442 | \u0421\u0442\u0430\u0442\u0443\u0441 | target% | Thesis\n';
 
     for (const a of assetsAnalysis) {
       if (a.currentPercent === 0 && a.targetPercent === 0) continue;
@@ -431,6 +431,7 @@ export class AiClient {
         type +
         ' ' +
         a.ticker +
+        (a.shortName ? ' (' + a.shortName + ')' : '') +
         ' | ' +
         a.currentPercent.toFixed(1) +
         '% | ' +
