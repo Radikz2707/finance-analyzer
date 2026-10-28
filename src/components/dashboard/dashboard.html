@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Finance Analyzer — Dashboard</title>
+  <link rel="stylesheet" href="../../css/app.min.css">
+</head>
+<body class="dashboard">
+  <div class="dashboard__container">
+    <h1 class="dashboard__title">📊 Finance Analyzer — Dashboard</h1>
+    
+    <!-- Portfolio Overview - Combined KPI + Financial -->
+    <div class="dashboard__overview" id="overviewPanel">
+      <div class="dashboard__overview__header">
+        <h2 class="dashboard__overview__heading">📈 Обзор портфеля</h2>
+        <span class="dashboard__overview__badge">Dashboard</span>
+      </div>
+      <div class="dashboard__overview__grid" id="overviewGrid"></div>
+      <div class="dashboard__overview__divider"></div>
+      <div class="dashboard__overview__section-title">Ключевые показатели</div>
+      <div class="dashboard__overview__grid" id="kpiGrid"></div>
+      
+      <div class="dashboard__overview__divider"></div>
+      <div class="dashboard__overview__section-title">💰 Взносы и средства</div>
+      <div class="dashboard__overview__grid" id="funds-grid"></div>
+    </div>
+
+    <!-- Quotes Table -->
+    <div class="dashboard__quotes" id="quotesPanel" style="display: none;">
+      <h2 class="dashboard__quotes__heading">📊 Котировки акций</h2>
+      <table class="dashboard__quotes__table" id="quotesTable">
+        <thead>
+          <tr>
+            <th>Тикер</th>
+            <th>Название</th>
+            <th>Цена</th>
+            <th>Динамика %</th>
+          </tr>
+        </thead>
+        <tbody id="quotesBody"></tbody>
+      </table>
+    </div>
+
+    <!-- Portfolio Weights -->
+    <div class="dashboard__weights" id="weightsPanel" style="display: none;">
+      <h2 class="dashboard__weights__heading">⚖️ Доли в портфеле</h2>
+      <div id="weightsContainer"></div>
+    </div>
+
+    <!-- Top Movers -->
+    <div class="dashboard__movers" id="moversGrid" style="display: none;">
+      <div class="dashboard__movers__panel dashboard__movers__panel--gainers">
+        <h2 class="dashboard__movers__heading">🚀 Топ-5 в росте</h2>
+        <div id="gainersContainer"></div>
+      </div>
+      <div class="dashboard__movers__panel dashboard__movers__panel--losers">
+        <h2 class="dashboard__movers__heading">📉 Топ-5 в падении</h2>
+        <div id="losersContainer"></div>
+      </div>
+    </div>
+
+    <!-- AI Analysis Block -->
+    <div class="dashboard__ai" id="aiAnalysis">
+      <h2 class="dashboard__ai__heading">🤖 AI-рекомендации</h2>
+      <div class="dashboard__ai__loading" id="aiLoading">Загрузка данных...</div>
+      <div class="dashboard__ai__recommendations" id="aiRecommendations" style="display: none;"></div>
+    </div>
+
+    <!-- Director Chat Block -->
+    <div class="dashboard__chat" id="directorChat">
+      <h2 class="dashboard__chat__heading">🎯 Director — инвестиционный координатор</h2>
+      <div class="dashboard__chat__messages" id="directorChatMessages"></div>
+      <div class="dashboard__chat__input-container">
+        <input type="text" class="dashboard__chat__input" id="directorChatInput" placeholder="Спросите Director о портфеле...">
+        <button class="dashboard__chat__send" id="directorChatSend">Отправить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Director Agent (compiled) -->
+  <script src="../../js/dashboard-init.min.js?v=2"></script>
+  
+  <!-- AI Analysis + Chat Logic -->
+  <script>
+    async function loadDashboard() {
+      let result = null;
+      let loadError = null;
+      
+      // 1. Пробуем загрузить из pipeline-result.json (live data)
+      try {
+        const response = await fetch('/pipeline-result.json');
+        if (response.ok) {
+          result = await response.json();
+        }
+      } catch (err) {
+        loadError = err;
+      }
+      
+      // 2. Если не удалось — пробуем загрузить из оперативной памяти
+      if (!result) {
+        try {
+          const memoryResponse = await fetch('/api/memory/operational?type=pipeline_result&limit=1');
+          if (memoryResponse.ok) {
+            const memoryData = await memoryResponse.json();
+            if (memoryData.data && memoryData.data.length > 0) {
+              const lastEntry = memoryData.data[0];
+              result = JSON.parse(lastEntry.content);
+              console.log('[Dashboard] ✅ Загружен последний результат из памяти');
+            }
+          }
+        } catch (err) {
+          console.warn('[Dashboard] Ошибка загрузки из памяти:', err);
+        }
+      }
+      
+      // 3. Если ничего не найдено — показываем сообщение
+      if (!result) {
+        document.getElementById('aiLoading').textContent = 'Анализ ещё не запускался. Нажмите «Запустить анализ» — текст отчёта появится здесь, и его можно будет сохранить в HTML или PDF.';
+        if (loadError) {
+          console.warn('[Dashboard] Ошибка загрузки:', loadError);
+        }
+        return;
+      }
+      
+      displayKpi(result);
+      displayQuotes(result);
+      displayWeights(result);
+      displayMovers(result);
+      displayAiAnalysis(result);
+    }
+
+    function displayKpi(result) {
+      const dataStage = result.stages?.data;
+      if (!dataStage?.result?.data) return;
+      
+      const data = dataStage.result.data;
+      const aggregated = data.aggregated || [];
+      const investedFunds = data.investedFunds || {};
+      const macroGoals = data.macroGoals || {};
+      const keyRate = data.keyRate || 0;
+      const keyRateDate = data.keyRateDate || '—';
+      
+      // Основные метрики
+      const totalValue = aggregated.reduce((sum, a) => sum + (a.totalLiquidationValue || 0), 0);
+      const freeCash = macroGoals.freeCash || 0;
+      const currentAssets = macroGoals.totalBalance || 0;
+      
+      // Fallback: если totalPurchases=0 (лист «Средства» не найден), используем totalNet
+      const totalPurchases = investedFunds.totalPurchases || investedFunds.totalNet || 0;
+      const totalSales = investedFunds.totalSales || 0;
+      const investedNet = investedFunds.totalNet || totalPurchases;
+      const averageMonthlyDeposit = investedFunds.averageMonthlyDeposit || 0;
+      const anomalousTotal = investedFunds.anomalousDepositsTotal || 0;
+      
+      // P&L пересчитываем
+      let totalPnl = 0;
+      let totalNkd = 0;
+      let stocksValue = 0;
+      let bondsValue = 0;
+      let stocksCount = 0;
+      let bondsCount = 0;
+      
+      for (const asset of aggregated) {
+        const pnl = (asset.currentPrice - asset.balancePrice) * asset.totalQuantity;
+        totalPnl += pnl;
+        
+        // НКД по облигациям
+        if (asset.nkdRub && asset.nkdRub > 0) {
+          totalNkd += asset.nkdRub;
+        }
+        
+        // Доли по типам активов
+        const isStock = asset.assetType === 'Акция' || asset.assetType === 'STOCK';
+        const isBond = asset.assetType === 'Облигация' || asset.assetType === 'BOND';
+        
+        if (isStock) {
+          stocksValue += asset.totalLiquidationValue || 0;
+          stocksCount++;
+        } else if (isBond) {
+          bondsValue += asset.totalLiquidationValue || 0;
+          bondsCount++;
+        }
+      }
+      
+      const pnlPercent = investedNet > 0 ? ((totalPnl / investedNet) * 100).toFixed(2) : '0.00';
+      const pnlClass = totalPnl >= 0 ? 'positive' : 'negative';
+      
+      // Процент кэша от портфеля (стоимость активов + кэш)
+      const totalPortfolio = totalValue + freeCash;
+      const cashPercent = totalPortfolio > 0 ? ((freeCash / totalPortfolio) * 100).toFixed(2) : '0.00';
+      
+      // Реальные доли акций и облигаций
+      const stocksPercent = totalValue > 0 ? ((stocksValue / totalValue) * 100).toFixed(1) : '0.0';
+      const bondsPercent = totalValue > 0 ? ((bondsValue / totalValue) * 100).toFixed(1) : '0.0';
+      
+      // C10 — рыночная стоимость + кэш - вложения
+      const marketResult = (totalValue + freeCash) - investedNet;
+      // C11 — балансовая стоимость - вложения (как было)
+      const netResult = currentAssets - investedNet;
+      const netResultPercent = investedNet > 0 ? ((netResult / investedNet) * 100) : 0;
+      
+      let percentColorClass = 'positive';
+      if (netResultPercent >= 10) {
+        percentColorClass = 'glow';
+      } else if (netResultPercent < -15) {
+        percentColorClass = 'danger';
+      } else if (netResultPercent < -5) {
+        percentColorClass = 'orange';
+      } else if (netResultPercent < 0) {
+        percentColorClass = 'warning';
+      }
+      
+      // Top gainer/loser
+      let topGainer = { ticker: '-', percent: 0 };
+      let topLoser = { ticker: '-', percent: 0 };
+      
+      for (const asset of aggregated) {
+        const balance = asset.balancePrice || 0;
+        const current = asset.currentPrice || 0;
+        if (balance > 0) {
+          const percent = ((current - balance) / balance * 100);
+          if (percent > topGainer.percent) {
+            topGainer = { ticker: asset.ticker, percent: percent.toFixed(2) };
+          }
+          if (percent < topLoser.percent) {
+            topLoser = { ticker: asset.ticker, percent: percent.toFixed(2) };
+          }
+        }
+      }
+      
+      // Overview grid (финансовые метрики)
+      const overviewGrid = document.getElementById('overviewGrid');
+      overviewGrid.innerHTML = `
+        <div class="dashboard__card dashboard__card--highlight">
+          <div class="dashboard__card__label">Стоимость портфеля</div>
+          <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(totalValue))} ₽</div>
+          <div class="dashboard__card__sub">${aggregated.length} активов</div>
+        </div>
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">Свободный кэш</div>
+          <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(freeCash))} ₽</div>
+          <div class="dashboard__card__percent dashboard__card__percent--positive" style="font-size: 18px;">${cashPercent}% портфеля</div>
+          <div class="dashboard__card__sub">Доступно для покупок</div>
+        </div>
+        <div class="dashboard__card dashboard__card--rate">
+          <div class="dashboard__card__label">Ключевая ставка ЦБ</div>
+          <div class="dashboard__card__rate">${keyRate}%</div>
+          <div class="dashboard__card__sub">от ${keyRateDate}</div>
+        </div>
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">Доля акций</div>
+          <div class="dashboard__card__value dashboard__card__value--neutral">${stocksPercent}%</div>
+          <div class="dashboard__card__sub">${stocksCount} позиций · ${new Intl.NumberFormat('ru-RU').format(Math.round(stocksValue))} ₽</div>
+        </div>
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">Доля облигаций</div>
+          <div class="dashboard__card__value dashboard__card__value--neutral">${bondsPercent}%</div>
+          <div class="dashboard__card__sub">${bondsCount} позиций · ${new Intl.NumberFormat('ru-RU').format(Math.round(bondsValue))} ₽</div>
+        </div>
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">НКД по облигациям</div>
+          <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(totalNkd))} ₽</div>
+          <div class="dashboard__card__sub">накопленный купонный доход</div>
+        </div>
+      `;
+      
+      // KPI grid (ключевые показатели)
+      const kpiGrid = document.getElementById('kpiGrid');
+      
+      let avgDepositHtml = '';
+      if (averageMonthlyDeposit > 0) {
+        avgDepositHtml = `
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">Средний взнос / мес</div>
+          <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(averageMonthlyDeposit))} ₽</div>
+          <div class="dashboard__card__sub">Без аномальных взносов${anomalousTotal > 0 ? ' (исключено ' + new Intl.NumberFormat('ru-RU').format(Math.round(anomalousTotal)) + ' ₽)' : ''}</div>
+        </div>`;
+      }
+      
+      kpiGrid.innerHTML = `
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">Текущие активы (C9)</div>
+          <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(currentAssets))} ₽</div>
+          <div class="dashboard__card__sub">Балансовая стоимость</div>
+        </div>
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">Всего внесено</div>
+          <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(totalPurchases))} ₽</div>
+          <div class="dashboard__card__sub">За весь период</div>
+        </div>
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">Всего выведено</div>
+          <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(totalSales))} ₽</div>
+          <div class="dashboard__card__sub">За весь период</div>
+        </div>
+        ${avgDepositHtml}
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">Результат рынка (C10)</div>
+          <div class="dashboard__card__value dashboard__card__value--${marketResult >= 0 ? 'positive' : 'negative'}">${new Intl.NumberFormat('ru-RU').format(Math.round(marketResult))} ₽</div>
+          <div class="dashboard__card__sub">Спекуляции + портфель</div>
+        </div>
+        <div class="dashboard__card ${netResultPercent >= 10 ? 'dashboard__card--highlight' : ''}">
+          <div class="dashboard__card__label">Чистый итог (C11)</div>
+          <div class="dashboard__card__value dashboard__card__value--${netResult >= 0 ? 'positive' : 'negative'}">${new Intl.NumberFormat('ru-RU').format(Math.round(netResult))} ₽</div>
+          <div class="dashboard__card__percent dashboard__card__percent--${percentColorClass}">${netResultPercent >= 0 ? '+' : ''}${netResultPercent.toFixed(2)}%</div>
+          <div class="dashboard__card__sub">Реальный инвест-профит</div>
+        </div>
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">Лучший актив</div>
+          <div class="dashboard__card__value dashboard__card__value--positive">${topGainer.ticker}</div>
+          <div class="dashboard__card__percent dashboard__card__percent--positive">+${topGainer.percent}%</div>
+          <div class="dashboard__card__sub">Прирост к себестоимости</div>
+        </div>
+        <div class="dashboard__card">
+          <div class="dashboard__card__label">Худший актив</div>
+          <div class="dashboard__card__value dashboard__card__value--negative">${topLoser.ticker}</div>
+          <div class="dashboard__card__percent dashboard__card__percent--negative">${topLoser.percent}%</div>
+          <div class="dashboard__card__sub">Убыток к себестоимости</div>
+        </div>
+      `;
+      
+      // Блок "Взносы и средства"
+      const fundsGrid = document.getElementById('funds-grid');
+      if (fundsGrid) {
+        const now = new Date();
+        const currentYear = now.getFullYear();
+        const currentMonth = now.getMonth();
+        const currentMonthKey = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
+        
+        let lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+        let lastMonthNum = currentMonth === 0 ? 12 : currentMonth;
+        const lastMonthKey = `${lastMonthYear}-${String(lastMonthNum).padStart(2, '0')}`;
+        
+        // Рассчитываем взносы по периодам (нужны данные из xlsx)
+        const currentMonthDeposits = 0;
+        const lastMonthDeposits = 0;
+        const currentYearDeposits = 0;
+        const lastYearDeposits = 0;
+        
+        fundsGrid.innerHTML = `
+          <div class="dashboard__card">
+            <div class="dashboard__card__label">Всего внесено</div>
+            <div class="dashboard__card__value">${new Intl.NumberFormat('ru-RU').format(Math.round(totalPurchases))} ₽</div>
+            <div class="dashboard__card__sub">За весь период (включая аномальные)</div>
+          </div>
+          <div class="dashboard__card">
+            <div class="dashboard__card__label">Всего выведено</div>
+            <div class="dashboard__card__value">${new Intl.NumberFormat('ru-RU').format(Math.round(totalSales))} ₽</div>
+            <div class="dashboard__card__sub">За весь период</div>
+          </div>
+          <div class="dashboard__card">
+            <div class="dashboard__card__label">Всего за текущий месяц</div>
+            <div class="dashboard__card__value">${new Intl.NumberFormat('ru-RU').format(Math.round(currentMonthDeposits))} ₽</div>
+            <div class="dashboard__card__sub">${now.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</div>
+          </div>
+          <div class="dashboard__card">
+            <div class="dashboard__card__label">Среднее в месяц</div>
+            <div class="dashboard__card__value">${new Intl.NumberFormat('ru-RU').format(Math.round(averageMonthlyDeposit))} ₽</div>
+            <div class="dashboard__card__sub">Без аномальных взносов</div>
+          </div>
+          <div class="dashboard__card">
+            <div class="dashboard__card__label">Прошлый месяц</div>
+            <div class="dashboard__card__value">${new Intl.NumberFormat('ru-RU').format(Math.round(lastMonthDeposits))} ₽</div>
+            <div class="dashboard__card__sub">Прошлый месяц</div>
+          </div>
+          <div class="dashboard__card">
+            <div class="dashboard__card__label">Текущий год</div>
+            <div class="dashboard__card__value">${new Intl.NumberFormat('ru-RU').format(Math.round(currentYearDeposits))} ₽</div>
+            <div class="dashboard__card__sub">За текущий год</div>
+          </div>
+          <div class="dashboard__card">
+            <div class="dashboard__card__label">Прошлый год</div>
+            <div class="dashboard__card__value">${new Intl.NumberFormat('ru-RU').format(Math.round(lastYearDeposits))} ₽</div>
+            <div class="dashboard__card__sub">За прошлый год</div>
+          </div>
+        `;
+      }
+    }
+
+    let sortColumn = 'ticker';
+    let sortAsc = true;
+    let quotesResult = null;
+    
+    function renderQuotes(quoteEntries) {
+      if (quoteEntries.length === 0) return;
+      
+      const panel = document.getElementById('quotesPanel');
+      const tbody = document.getElementById('quotesBody');
+      
+      const rows = [];
+      for (const [ticker, quote] of quoteEntries) {
+        const name = quote.shortName || ticker;
+        const price = quote.currentPrice;
+        const dailyPercent = quote.dailyDynamicsPercent || 0;
+        
+        let percentClass = 'zero';
+        let icon = '→';
+        
+        if (dailyPercent > 0.1) {
+          percentClass = 'positive';
+          icon = '▲';
+        } else if (dailyPercent < -0.1) {
+          percentClass = 'negative';
+          icon = '▼';
+        }
+        
+        const percentSign = dailyPercent > 0 ? '+' : '';
+        
+        rows.push(`
+          <tr>
+            <td class="dashboard__quotes__table__ticker">${ticker}</td>
+            <td class="dashboard__quotes__table__name" title="${name}">${name}</td>
+            <td class="dashboard__quotes__table__price">${price.toFixed(2)} ₽</td>
+            <td>
+              <div class="dashboard__quotes__table__dynamics">
+                <span class="dashboard__quotes__table__dynamics__icon">${icon}</span>
+                <span class="dashboard__quotes__table__dynamics__value dashboard__quotes__table__dynamics__value--${percentClass}">${percentSign}${dailyPercent.toFixed(2)}%</span>
+              </div>
+            </td>
+          </tr>
+        `);
+      }
+      
+      tbody.innerHTML = rows.join('');
+      panel.style.display = 'block';
+    }
+
+    function displayQuotes(result) {
+      quotesResult = result;
+      const dataStage = result.stages?.data;
+      if (!dataStage?.result?.data) return;
+      
+      const data = dataStage.result.data;
+      const quotes = data.quotes || {};
+      
+      let quoteEntries = Object.entries(quotes).filter(([_, q]) => q.currentPrice > 0);
+      if (quoteEntries.length === 0) return;
+      
+      // Сортировка
+      quoteEntries.sort((a, b) => {
+        let valA, valB;
+        if (sortColumn === 'ticker') {
+          valA = a[0]; valB = b[0];
+          return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        } else if (sortColumn === 'name') {
+          valA = a[1].shortName || a[0]; valB = b[1].shortName || b[0];
+          return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+        } else if (sortColumn === 'price') {
+          valA = a[1].currentPrice || 0; valB = b[1].currentPrice || 0;
+          return sortAsc ? valA - valB : valB - valA;
+        } else if (sortColumn === 'dynamics') {
+          valA = a[1].dailyDynamicsPercent || 0; valB = b[1].dailyDynamicsPercent || 0;
+          return sortAsc ? valA - valB : valB - valA;
+        }
+        return 0;
+      });
+      
+      renderQuotes(quoteEntries);
+      
+      // Вешаем обработчики кликов один раз на thead
+      const thead = document.querySelector('.dashboard__quotes__table thead');
+      if (thead && !thead.dataset.bound) {
+        thead.dataset.bound = 'true';
+        const ths = thead.querySelectorAll('th');
+        const columns = ['ticker', 'name', 'price', 'dynamics'];
+        ths.forEach((th, i) => {
+          th.style.cursor = 'pointer';
+          th.addEventListener('click', () => {
+            const col = columns[i];
+            if (sortColumn === col) {
+              sortAsc = !sortAsc;
+            } else {
+              sortColumn = col;
+              sortAsc = true;
+            }
+            displayQuotes(quotesResult);
+          });
+        });
+      }
+    }
+
+    function displayWeights(result) {
+      const dataStage = result.stages?.data;
+      if (!dataStage?.result?.data) return;
+      
+      const data = dataStage.result.data;
+      const aggregated = data.aggregated || [];
+      
+      if (aggregated.length === 0) return;
+      
+      const panel = document.getElementById('weightsPanel');
+      const container = document.getElementById('weightsContainer');
+      
+      const totalValue = aggregated.reduce((sum, a) => sum + (a.totalLiquidationValue || 0), 0);
+      if (totalValue === 0) return;
+      
+      // Сортируем по убыванию веса
+      const sorted = [...aggregated].sort((a, b) => (b.totalLiquidationPercent || 0) - (a.totalLiquidationPercent || 0));
+      
+      const colors = ['#2563eb', '#16a34a', '#f59e0b', '#dc2626', '#7c3aed', '#0891b2', '#c026d3', '#ea580c', '#4f46e5', '#15803d'];
+      
+      const bars = sorted.map((asset, i) => {
+        const weight = asset.totalLiquidationPercent || 0;
+        const value = asset.totalLiquidationValue || 0;
+        const color = colors[i % colors.length];
+        
+        return `
+          <div class="dashboard__weights__item">
+            <div class="dashboard__weights__header">
+              <div class="dashboard__weights__info">
+                <span class="dashboard__weights__ticker">${asset.ticker}</span>
+                <span class="dashboard__weights__percent">${weight.toFixed(1)}%</span>
+              </div>
+              <span class="dashboard__weights__value">${new Intl.NumberFormat('ru-RU').format(Math.round(value))} ₽</span>
+            </div>
+            <div class="dashboard__weights__track">
+              <div class="dashboard__weights__fill" style="width: ${weight}%; background: linear-gradient(90deg, ${color}, ${color}dd);"></div>
+            </div>
+          </div>
+        `;
+      });
+      
+      container.innerHTML = bars.join('');
+      panel.style.display = 'block';
+    }
+
+    function displayMovers(result) {
+      const dataStage = result.stages?.data;
+      if (!dataStage?.result?.data) return;
+      
+      const data = dataStage.result.data;
+      const quotes = data.quotes || {};
+      
+      if (Object.keys(quotes).length === 0) return;
+      
+      const grid = document.getElementById('moversGrid');
+      const gainersContainer = document.getElementById('gainersContainer');
+      const losersContainer = document.getElementById('losersContainer');
+      
+      // Превращаем quotes в массив и сортируем по dailyDynamicsPercent
+      const allQuotes = Object.values(quotes);
+      const sorted = allQuotes.sort((a, b) => (b.dailyDynamicsPercent || 0) - (a.dailyDynamicsPercent || 0));
+      
+      const top5Gainers = sorted.filter(q => (q.dailyDynamicsPercent || 0) > 0).slice(0, 5);
+      const top5Losers = sorted.filter(q => (q.dailyDynamicsPercent || 0) < 0).reverse().slice(0, 5);
+      
+      function getMoverColorClass(percent, isGainer) {
+        if (isGainer) {
+          if (percent >= 5) return 'positive';
+          if (percent >= 1) return 'positive';
+          return 'positive';
+        } else {
+          if (percent < -2) return 'danger';
+          if (percent < -1) return 'orange';
+          if (percent < -0.5) return 'warning';
+          return 'warning';
+        }
+      }
+      
+      const gainersHtml = top5Gainers.map((quote, i) => {
+        const percent = quote.dailyDynamicsPercent || 0;
+        const name = quote.shortName || quote.ticker;
+        const colorClass = getMoverColorClass(percent, true);
+        return `
+          <div class="dashboard__movers__item">
+            <span class="dashboard__movers__rank">${i + 1}.</span>
+            <span class="dashboard__movers__ticker">${name}</span>
+            <span class="dashboard__movers__value dashboard__movers__value--${colorClass}">+${percent.toFixed(2)}%</span>
+          </div>
+        `;
+      });
+      
+      const losersHtml = top5Losers.map((quote, i) => {
+        const percent = quote.dailyDynamicsPercent || 0;
+        const name = quote.shortName || quote.ticker;
+        const colorClass = getMoverColorClass(percent, false);
+        return `
+          <div class="dashboard__movers__item">
+            <span class="dashboard__movers__rank">${i + 1}.</span>
+            <span class="dashboard__movers__ticker">${name}</span>
+            <span class="dashboard__movers__value dashboard__movers__value--${colorClass}">${percent.toFixed(2)}%</span>
+          </div>
+        `;
+      });
+      
+      gainersContainer.innerHTML = gainersHtml.length > 0 ? gainersHtml.join('') : '<p style="color: #8b949e; text-align: center;">Нет данных</p>';
+      losersContainer.innerHTML = losersHtml.length > 0 ? losersHtml.join('') : '<p style="color: #8b949e; text-align: center;">Нет данных</p>';
+      grid.style.display = 'grid';
+    }
+
+    function displayAiAnalysis(result) {
+      const container = document.getElementById('aiRecommendations');
+      const loading = document.getElementById('aiLoading');
+      
+      const aiStage = result.stages?.ai;
+      if (!aiStage || !aiStage.result?.success) {
+        loading.textContent = '⚠️ AI-анализ не выполнен';
+        return;
+      }
+
+      const aiData = aiStage.result.data;
+      if (!aiData) {
+        loading.textContent = '⚠️ Данные AI отсутствуют';
+        return;
+      }
+
+      // Получаем narrative
+      const narrative = aiData.aiNarrative || '';
+      if (!narrative) {
+        loading.textContent = '⚠️ Рекомендации отсутствуют';
+        return;
+      }
+
+      // Парсим markdown-таблицу из narrative
+      const rows = parseAiTable(narrative);
+      
+      if (rows.length > 0) {
+        loading.style.display = 'none';
+        container.style.display = 'block';
+        
+        // Создаём таблицу
+        const tableWrapper = document.createElement('div');
+        tableWrapper.className = 'dashboard__ai__table-wrapper';
+        
+        const table = document.createElement('table');
+        table.className = 'dashboard__ai__table';
+        
+        // Заголовок
+        const thead = document.createElement('thead');
+        thead.innerHTML = `
+          <tr>
+            <th>Тикер</th>
+            <th>Тип</th>
+            <th>Доля</th>
+            <th>Статус</th>
+            <th>Рекомендация</th>
+            <th>Целевая</th>
+            <th>Аргументация</th>
+          </tr>
+        `;
+        table.appendChild(thead);
+        
+        // Тело таблицы
+        const tbody = document.createElement('tbody');
+        
+        for (const row of rows) {
+          const ticker = row.ticker || '';
+          const assetType = row.type || '';
+          const currentPercent = row.currentPercent || '';
+          const status = row.status || '';
+          const recommendation = row.recommendation || 'HOLD';
+          const targetText = row.target || '';
+          const rationale = row.rationale || '';
+          
+          // Определяем класс для бейджа рекомендации
+          let actionClass = 'hold';
+          let actionIcon = '➤';
+          if (recommendation.includes('BUY') || recommendation.includes('Увеличить')) {
+            actionClass = 'buy';
+            actionIcon = '▲';
+          } else if (recommendation.includes('SELL') || recommendation.includes('Продать') || recommendation.includes('EXIT')) {
+            actionClass = 'sell';
+            actionIcon = '▼';
+          } else if (recommendation.includes('REDUCE') || recommendation.includes('Снизить') || recommendation.includes('Закрыть')) {
+            actionClass = 'reduce';
+            actionIcon = '▼';
+          } else if (recommendation.includes('AVERAGE') || recommendation.includes('Усреднить')) {
+            actionClass = 'average';
+            actionIcon = '⟳';
+          }
+          
+          // Определяем статус
+          let statusClass = 'neutral';
+          let statusText = status;
+          if (status.includes('BUY') || status.includes('Недооценен')) {
+            statusClass = 'success';
+            statusText = '▲';
+          } else if (status.includes('SELL') || status.includes('OVERVALUED') || status.includes('Переоценен')) {
+            statusClass = 'danger';
+            statusText = '▼';
+          } else if (status.includes('NEUTRAL') || status.includes('Справедлив')) {
+            statusClass = 'warning';
+            statusText = '→';
+          }
+          
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td class="dashboard__ai__table__ticker">${ticker}</td>
+            <td class="dashboard__ai__table__name" title="${assetType}">${assetType}</td>
+            <td class="dashboard__ai__table__percent">${currentPercent}</td>
+            <td><span class="dashboard__ai__table__status dashboard__ai__table__status--${statusClass}">${statusText}</span></td>
+            <td><span class="dashboard__ai__table__badge dashboard__ai__table__badge--${actionClass}">${actionIcon} ${recommendation}</span></td>
+            <td class="dashboard__ai__table__percent">${targetText}</td>
+            <td class="dashboard__ai__table__rationale" title="${rationale}">${rationale || '—'}</td>
+          `;
+          tbody.appendChild(tr);
+        }
+        
+        table.appendChild(tbody);
+        tableWrapper.appendChild(table);
+        container.appendChild(tableWrapper);
+      } else {
+        // Fallback: показываем narrative как текст
+        loading.style.display = 'none';
+        container.style.display = 'block';
+        const narrativeDiv = document.createElement('div');
+        narrativeDiv.className = 'dashboard__ai__item';
+        narrativeDiv.innerHTML = `
+          <div class="dashboard__ai__text" style="white-space: pre-wrap;">${narrative.replace(/<br>/g, '\n').replace(/<\/?[^>]+(>|$)/g, '')}</div>
+        `;
+        container.appendChild(narrativeDiv);
+      }
+    }
+
+    function parseAiTable(narrative) {
+      const rows = [];
+      const lines = narrative.split('\n');
+      
+      // Ищем строку заголовка таблицы
+      let headerLineIndex = -1;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (line.includes('| Тикер |') || line.includes('| Тикер|')) {
+          headerLineIndex = i;
+          break;
+        }
+      }
+      
+      if (headerLineIndex === -1) return rows;
+      
+      // Парсим строки данных (начиная со строки после разделителя)
+      let dataStartIndex = headerLineIndex + 1;
+      // Пропускаем строку с разделителями (| :--- | :--- | ...)
+      if (dataStartIndex < lines.length && lines[dataStartIndex].includes(':---')) {
+        dataStartIndex++;
+      }
+      
+      for (let i = dataStartIndex; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line.startsWith('|') || line.includes(':---')) continue;
+        
+        // Разбираем колонки
+        const cells = line.split('|').map(c => c.trim()).filter(c => c.length > 0);
+        
+        if (cells.length < 6) continue;
+        
+        // Формат: [префикс] | тикер | тип | доля | статус | рекомендация | целевая | аргументация
+        let cellIndex = 0;
+        let ticker = '';
+        let type = '';
+        let currentPercent = '';
+        let status = '';
+        let recommendation = '';
+        let target = '';
+        let rationale = '';
+        
+        // Проверяем, есть ли префикс перед тикером (например, "▲ [НЕ ПОДТВЕРЖДЕНО] |")
+        if (cells[0].includes('НЕ ПОДТВЕРЖДЕНО') || cells[0].includes('▲') || cells[0].includes('▼')) {
+          cellIndex = 1; // пропускаем префикс
+        }
+        
+        ticker = cells[cellIndex] || '';
+        type = cells[cellIndex + 1] || '';
+        currentPercent = cells[cellIndex + 2] || '';
+        status = cells[cellIndex + 3] || '';
+        recommendation = cells[cellIndex + 4] || '';
+        target = cells[cellIndex + 5] || '';
+        
+        // Аргументация — всё, что осталось после целевой
+        if (cellIndex + 6 < cells.length) {
+          rationale = cells.slice(cellIndex + 6).join(' | ');
+        }
+        
+        // Извлекаем числовое значение целевой доли из текста "Увеличить | 15.0%"
+        const targetMatch = target.match(/([\d.]+)%/);
+        if (targetMatch) {
+          target = targetMatch[1] + '%';
+        }
+        
+        // Убираем лишние маркеры из тикера
+        ticker = ticker.replace(/[▲▼⚠️\[\]]/g, '').trim();
+        
+        rows.push({ ticker, type, currentPercent, status, recommendation, target, rationale });
+      }
+      
+      return rows;
+    }
+
+    loadDashboard();
+  </script>
+</body>
+</html>

@@ -80,6 +80,13 @@ $dashboard-radius-sm: 8px;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 15px;
     margin-bottom: 20px;
+    
+    // Для блока "Взносы и средства" — не более 4 карточек в ряд
+    &:has(#funds-grid) {
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      max-width: 1200px;
+      margin: 0 auto 20px;
+    }
   }
 
   &__divider {
@@ -501,6 +508,9 @@ $dashboard-radius-sm: 8px;
 
   &__recommendations {
     margin-top: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
 
   &__item {
@@ -509,6 +519,13 @@ $dashboard-radius-sm: 8px;
     border-radius: $dashboard-radius-sm;
     padding: 12px;
     margin-bottom: 10px;
+    display: block;
+    width: 100%;
+    
+    &:hover {
+      border-color: $dashboard-primary;
+      background: $dashboard-primary-bg-hover;
+    }
   }
 
   &__ticker {
@@ -548,7 +565,6 @@ $dashboard-radius-sm: 8px;
   // ── AI Recommendations Table ──
   &__table-wrapper {
     margin-top: 15px;
-    overflow-x: auto;
     border-radius: $dashboard-radius-sm;
     border: 1px solid $dashboard-border;
   }
@@ -558,7 +574,6 @@ $dashboard-radius-sm: 8px;
     border-collapse: separate;
     border-spacing: 0;
     font-size: 13px;
-    min-width: 900px;
 
     thead {
       th {
