@@ -19,6 +19,14 @@ export interface MacroGoals {
 /** Единица текущей цены: рубль, процент от номинала или неизвестно */
 export type PriceUnit = 'RUB' | 'PERCENT_OF_NOMINAL' | 'UNKNOWN';
 
+/** Параметры инвестора */
+export interface InvestorParams {
+  horizon: 'short' | 'medium' | 'long';
+  goal: 'income' | 'growth' | 'preservation';
+  riskProfile: 'conservative' | 'moderate' | 'aggressive';
+  maxDrawdown: number;
+}
+
 /** Детерминированные справочные данные по облигациям из листа «Облигации» */
 export interface BondReferenceData {
   isin: string;
@@ -37,6 +45,8 @@ export interface CurrentAsset {
   dynamicsPercent: number;
   dailyDynamicsPercent?: number; // Дневная динамика из листа "Акции"
   nkdRub?: number;
+  /** Купонная ставка в рублях (для облигаций) */
+  couponRub?: number;
   nominal?: number;
   quantity?: number;
   balancePrice?: number;
@@ -356,6 +366,7 @@ export class XlsxParserModule {
       }
 
       const nkd = this.parseValue(row['НКД'] || row['Накопленный купон']);
+      const couponRate = this.parseValue(row['Купон, %'] || row['Ставка купона']);
 
       // Парсим цены входа и текущие цены из Excel
       // КЛЮЧЕВОЕ ПРАВИЛО:
@@ -471,6 +482,7 @@ export class XlsxParserModule {
         dynamicsPercent: dynamicsPercent,
         dailyDynamicsPercent,
         nkdRub: nkd,
+        couponRub: couponRate,
         nominal,
         priceUnit,
         quantity: quantity,
@@ -782,8 +794,10 @@ export class XlsxParserModule {
         liquidationPrice: number;
         dynamicsPercent: number;
         dailyDynamicsPercent?: number;
-        nkdRub?: number;
-        nominal?: number;
+  nkdRub?: number;
+  /** Купонная ставка в рублях (для облигаций) */
+  couponRub?: number;
+  nominal?: number;
         priceUnit?: PriceUnit;
         targetPercentValues: Set<number | undefined>;
         holdOnly: boolean;
@@ -1275,7 +1289,78 @@ export class XlsxParserModule {
   }
 
   /**
-   * Парсинг листа «Облигации» — справочник ISIN → номинал.
+    * Парсинг листа «Параметры» — инвестиционный профиль пользователя.
+    *
+    * Структура таблицы:
+    *   - Инвестиционный горизонт: short / medium / long
+    *   - Цель портфеля: income / growth / preservation
+    *   - Риск-профиль: conservative / moderate / aggressive
+    *   - Максимальная просадка, %: число
+    *
+    * Возвращает InvestorParams | null (если лист не найден)
+    */
+  public async parseInvestorParams(): Promise<InvestorParams | null> {
+    await this.loadWorkbook();
+
+    const sheetName = this.workbook?.SheetNames.find(
+      (name) => name === config.PARAMS_SHEET_NAME,
+    );
+    if (!sheetName || !this.workbook) {
+      console.warn(
+        '⚠️ [INVESTOR_PARAMS] Лист «' + config.PARAMS_SHEET_NAME + '» не найден — используются параметры по умолчанию',
+      );
+      return null;
+    }
+
+    const sheet = this.workbook.Sheets[sheetName];
+    if (!sheet || !sheet['!ref']) {
+      console.warn('⚠️ [INVESTOR_PARAMS] Лист пуст');
+      return null;
+    }
+
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+    const params: Record<string, unknown> = {};
+
+    for (const row of rows) {
+      const key = String(row['__EMPTY'] ?? '').trim();
+      const value = row['__EMPTY_1'];
+      if (key && value !== undefined) {
+        params[key] = value;
+      }
+    }
+
+    // Парсим горизонт
+    const horizonRaw = String(params[config.PARAM_KEY_HORIZON] ?? '').toLowerCase();
+    let horizon: 'short' | 'medium' | 'long' = 'medium';
+    if (horizonRaw.includes('short') || horizonRaw.includes('краткосрочн')) horizon = 'short';
+    else if (horizonRaw.includes('long') || horizonRaw.includes('долгосрочн')) horizon = 'long';
+
+    // Парсим цель
+    const goalRaw = String(params[config.PARAM_KEY_GOAL] ?? '').toLowerCase();
+    let goal: 'income' | 'growth' | 'preservation' = 'growth';
+    if (goalRaw.includes('income') || goalRaw.includes('доход') || goalRaw.includes('купо')) goal = 'income';
+    else if (goalRaw.includes('preservation') || goalRaw.includes('сохранен') || goalRaw.includes('защит')) goal = 'preservation';
+
+    // Парсим риск-профиль
+    const riskRaw = String(params[config.PARAM_KEY_RISK] ?? '').toLowerCase();
+    let riskProfile: 'conservative' | 'moderate' | 'aggressive' = 'moderate';
+    if (riskRaw.includes('conservative') || riskRaw.includes('консервативн') || riskRaw.includes('низк')) riskProfile = 'conservative';
+    else if (riskRaw.includes('aggressive') || riskRaw.includes('агрессивн') || riskRaw.includes('высок')) riskProfile = 'aggressive';
+
+    // Парсим макс. просадку
+    const maxDdRaw = params[config.PARAM_KEY_MAX_DD];
+    let maxDrawdown = 20; // default
+    if (typeof maxDdRaw === 'number') maxDrawdown = maxDdRaw;
+    else if (typeof maxDdRaw === 'string') {
+      const parsed = parseFloat(maxDdRaw.replace(',', '.'));
+      if (!isNaN(parsed)) maxDrawdown = parsed;
+    }
+
+    return { horizon, goal, riskProfile, maxDrawdown };
+  }
+
+  /**
+    * Парсинг листа «Облигации» — справочник ISIN → номинал.
    *
    * Структура таблицы (динамический поиск заголовков):
    *   - ISIN / ISIN-код / Код ISIN / ISIN код

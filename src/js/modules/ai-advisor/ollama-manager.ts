@@ -604,9 +604,8 @@ function validateAssetReferences(text: string, knownTickers: string[]): string {
         (kt) => kt.toUpperCase() === ticker.toUpperCase(),
       );
       if (!isKnown) {
-        // Помечаем строку как подозрительную
-        validatedLines.push(`⚠️ [НЕ ПОДТВЕРЖДЕНО] ${line}`);
-        continue;
+        // Тикер не найден — это может быть название облигации, а не тикер
+        // Не помечаем как подозрительный, просто добавляем строку
       }
     }
     validatedLines.push(line);

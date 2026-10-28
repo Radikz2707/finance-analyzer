@@ -2,6 +2,7 @@ import type {
   CurrentAsset,
   MacroGoals,
   AggregatedAsset,
+  InvestorParams,
 } from '../../xlsx-parser/xlsx-parser.js';
 import type { QuikOrder } from '../../xlsx-parser/quik-orders-parser.js';
 import { XlsxParserModule } from '../../xlsx-parser/xlsx-parser.js';
@@ -143,6 +144,8 @@ export interface DataAgentOutput {
   keyRateDate: string;
   /** Полные данные о ключевой ставке ЦБ (включая source, isFresh) */
   cbrRateData: CbrRateData | null;
+  /** Параметры инвестора (горизонт, цель, риск) */
+  investorParams?: InvestorParams;
 }
 
 // ──────────────────────────────────────────────
@@ -430,6 +433,14 @@ export class DataAgent extends AgentBase {
       keyRateDate,
       cbrRateData: cbrRateDataResult,
     };
+
+    // Парсим параметры инвестора (опционально)
+    try {
+      const params = await this.parser.parseInvestorParams();
+      if (params) output.investorParams = params;
+    } catch (e) {
+      this.log.warn('[DataAgent] ⚠️ Не удалось прочитать параметры инвестора:', e);
+    }
 
     this.log.info(
       `[DataAgent] ✅ Парсинг завершён: ${assets.length} активов, ` +

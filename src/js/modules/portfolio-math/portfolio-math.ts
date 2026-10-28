@@ -52,19 +52,61 @@ export function isBondAsset(asset: CurrentAsset): boolean {
 
 /**
  * Генерирует короткое название для актива.
- * Для акций — берёт name, для облигаций — извлекает суффикс из ticker.
+ * Сначала пытается использовать name из Excel, если он не ISIN.
  */
 export function generateShortName(asset: CurrentAsset): string {
   const name = asset.name || '';
   const ticker = asset.ticker || '';
+  const assetType = asset.assetType || '';
 
-  // Для всех типов — используем name, если оно есть и не пусто
+  // Если name не пустой и не ISIN — используем его
+  if (name && !name.match(/^RU000/i)) {
+    return name;
+  }
+
+  // Если name — это ISIN (начинается с RU000) — извлекаем суффикс из ticker
+  if (assetType === 'О' || assetType === 'Облигация') {
+    const match = ticker.match(/^RU000([A-Z0-9]+)$/i);
+    if (match) {
+      return match[1]!;
+    }
+    return ticker;
+  }
+
+  // Для всех остальных типов — используем name или ticker
   if (name) {
     return name;
   }
 
-  // Fallback — ticker
   return ticker;
+}
+
+/**
+ * Проверяет, является ли актив «Ядром» портфеля (Core).
+ * Ядро — это стабильные, ликвидные активы с низкой волатильностью.
+ */
+export function isCoreAsset(ticker: string): boolean {
+  const coreTickers = [
+    'SBER', 'GAZP', 'LKOH', 'ROSN', 'VTBR', 'MGNT', 'TATN',
+    'ALRS', 'GMKN', 'SNGS', 'FESK', 'MTLR', 'CHMF', 'NLMK',
+    'MAGN', 'PHOR', 'RSTI', 'AFLT', 'HYES', 'MOEX', 'SBGB',
+    'TCSG', 'BRSB', 'EAST', 'SBERP', 'GAZPM', 'ROSNP', 'VTBRP', 'TATNP',
+  ];
+  return coreTickers.includes(ticker.toUpperCase());
+}
+
+/**
+ * Классифицирует актив как «Ядро» (Core) или «Спутник» (Satellite).
+ * Ядро — стабильные активы, Спутники — рискованные.
+ */
+export function classifyAssetRole(asset: CurrentAsset): 'core' | 'satellite' {
+  // Облигации — всегда ядро
+  if (asset.assetType === 'О' || asset.assetType === 'Облигация') return 'core';
+
+  // Акции/ETF — проверяем по списку core ticker
+  if (isCoreAsset(asset.ticker)) return 'core';
+
+  return 'satellite';
 }
 
 export interface AssetAnalysis {
@@ -73,6 +115,8 @@ export interface AssetAnalysis {
   /** Короткое название для отображения (из name или сгенерированное из ticker) */
   shortName?: string;
   assetType: string;
+  /** Роль актива: «Ядро» (стабильные) или «Спутник» (рискованные) */
+  coreRole?: 'core' | 'satellite';
   currentPercent: number;
   targetPercent?: number;
   deficitRub: number;
@@ -80,6 +124,8 @@ export interface AssetAnalysis {
   dynamicsPercent: number;
   dailyDynamicsPercent?: number; // Дневная динамика из листа "Акции"
   nkdRub: number;
+  /** Купонная ставка в рублях (для облигаций) */
+  couponRub?: number;
   nominal: number;
   quantity: number;
   balancePrice: number;
@@ -178,6 +224,7 @@ export class PortfolioMathModule {
           name: asset.name,
           ticker: asset.ticker,
           assetType: asset.assetType,
+          coreRole: classifyAssetRole(asset),
           currentPercent: asset.liquidationPercent,
           targetPercent: undefined,
           deficitRub: 0,
@@ -185,6 +232,7 @@ export class PortfolioMathModule {
           dynamicsPercent: asset.dynamicsPercent,
           dailyDynamicsPercent: asset.dailyDynamicsPercent,
           nkdRub: asset.nkdRub || 0,
+          couponRub: asset.couponRub,
           nominal: asset.nominal ?? 0,
           quantity: asset.quantity || 0,
           balancePrice: asset.balancePrice ?? 0,
@@ -203,6 +251,7 @@ export class PortfolioMathModule {
           name: asset.name,
           ticker: asset.ticker,
           assetType: asset.assetType,
+          coreRole: classifyAssetRole(asset),
           currentPercent: asset.liquidationPercent,
           targetPercent: undefined,
           deficitRub: 0,
@@ -210,6 +259,7 @@ export class PortfolioMathModule {
           dynamicsPercent: asset.dynamicsPercent,
           dailyDynamicsPercent: asset.dailyDynamicsPercent,
           nkdRub: asset.nkdRub || 0,
+          couponRub: asset.couponRub,
           nominal: asset.nominal ?? 0,
           quantity: asset.quantity || 0,
           balancePrice: asset.balancePrice ?? 0,
@@ -222,8 +272,9 @@ export class PortfolioMathModule {
         return;
       }
 
-      let targetPercent: number;
-      let status: 'HOLD' | 'BUY' | 'STABLE' | 'REDUCE' | 'NEW' | 'EXIT';
+      // ─── TARGET SET: targetPercent есть в Excel ───
+      let status: AssetAnalysis['status'];
+      let targetPercent: number | undefined;
       let deficitRub: number;
 
       // ─── КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: holdOnly проверяется ДО присвоения EXIT/REDUCE/SELL ───

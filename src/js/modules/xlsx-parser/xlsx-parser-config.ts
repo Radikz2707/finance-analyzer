@@ -26,6 +26,9 @@ export const QUOTES_SHEET_NAME = 'Акции';
 /** Имя листа Excel со справочником облигаций (ISIN + номинал) */
 export const BONDS_SHEET_NAME = 'Облигации';
 
+/** Имя листа Excel с параметрами инвестора */
+export const PARAMS_SHEET_NAME = 'Параметры';
+
 /** Варианты имён колонки ISIN в листе «Облигации» */
 export const BONDS_COLUMN_ISIN = 'ISIN';
 export const BONDS_COLUMN_ISIN_ALT1 = 'ISIN-код';
@@ -126,6 +129,8 @@ export const QUIK_COLUMN_TARGET_PCT = 'Target Percent';
 export const QUIK_COLUMN_TARGET_PCT_ALT1 = 'Целевая доля, %';
 export const QUIK_COLUMN_NKD = 'НКД';
 export const QUIK_COLUMN_NKD_ALT = 'Накопленный купон';
+export const QUIK_COLUMN_COUPON_RATE = 'Купон, %';
+export const QUIK_COLUMN_COUPON_RATE_ALT = 'Ставка купона';
 export const QUIK_COLUMN_BALANCE_PRICE = 'Балансовая цена';
 export const QUIK_COLUMN_LIQ_PRICE = 'Ликвидационная цена';
 export const QUIK_COLUMN_DYNAMICS = 'Динамика актива';
@@ -133,6 +138,45 @@ export const QUIK_COLUMN_UNREALIZED_PROFIT = 'Нереализованная п�
 export const QUIK_COLUMN_COST = 'Стоимость';
 export const QUIK_COLUMN_LIQ_COST = 'Ликвидационная стоимость';
 export const QUIK_COLUMN_BAL_COST = 'Балансовая стоимость';
+
+// Ключи столбцов параметров инвестора (лист «Параметры»)
+export const PARAM_KEY_HORIZON = 'Инвестиционный горизонт';
+export const PARAM_KEY_GOAL = 'Цель портфеля';
+export const PARAM_KEY_RISK = 'Риск-профиль';
+export const PARAM_KEY_MAX_DD = 'Максимальная просадка, %';
+
+// Тикеры, которые считаются «Ядром» портфеля (Core)
+export const CORE_TICKERS: string[] = [
+  'SBER',
+  'GAZP',
+  'LKOH',
+  'ROSN',
+  'VTBR',
+  'MGNT',
+  'TATN',
+  'ALRS',
+  'GMKN',
+  'SNGS',
+  'FESK',
+  'MTLR',
+  'CHMF',
+  'NLMK',
+  'MAGN',
+  'PHOR',
+  'RSTI',
+  'AFLT',
+  'HYES',
+  'MOEX',
+  'SBGB',
+  'TCSG',
+  'BRSB',
+  'EAST',
+  'SBERP',
+  'GAZPM',
+  'ROSNP',
+  'VTBRP',
+  'TATNP',
+];
 
 // Столбцы для флагов позиций (опциональные)
 export const QUIK_COLUMN_HOLD_ONLY = 'Hold Only';

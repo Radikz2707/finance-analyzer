@@ -451,6 +451,7 @@ export class AiClient {
         marketStatus +
         ' | ' +
         targetPctStr +
+        (a.couponRub !== undefined ? ' | Купон: ' + a.couponRub + '₽' : '') +
         ' | ' +
         thesisShort +
         '\n';
@@ -1241,6 +1242,12 @@ export class AiClient {
     accountsInfo?: Array<{ name: string; value: number }>,
     memoryContext?: string,
     guardrailsContext?: string,
+    investorParams?: {
+      horizon: string;
+      goal: string;
+      riskProfile: string;
+      maxDrawdown: number;
+    },
   ): Promise<AiResponseResult> {
     // Извлекаем тикеры активов для валидации
     const assetTickers = analysis.assetsAnalysis.map((a) => a.ticker);
@@ -1268,6 +1275,7 @@ export class AiClient {
       macroData,
       memoryContext,
       guardrailsContext,
+      investorParams,
     );
     const macroPercentages = actualMacroPercentages || {
       stocks: analysis.macro.stocksPercent,
