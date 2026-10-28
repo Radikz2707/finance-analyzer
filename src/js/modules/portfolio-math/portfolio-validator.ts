@@ -55,7 +55,7 @@ export class PortfolioValidator {
     // 🛡️ Контроль соответствия суммарных долей макро-сплиту с листа "Цели"
     if (totalStocksPercent > macro.stocksPercent) {
       errors.push(
-        'Превышение лимита группы АКЦИИ: Сумма долей в столбце S составляет ' +
+        'Превышение лимита группы АКЦИИ: Сумма долей в столбце "Целевая доля, %" составляет ' +
           totalStocksPercent +
           '%, что превышает глобальную цель стратегии в ' +
           macro.stocksPercent +
@@ -65,7 +65,7 @@ export class PortfolioValidator {
 
     if (totalBondsPercent > macro.bondsPercent) {
       errors.push(
-        'Превышение лимита группы ОБЛИГАЦИИ: Сумма долей в столбце S составляет ' +
+        'Превышение лимита группы ОБЛИГАЦИИ: Сумма долей в столбце "Целевая доля, %" составляет ' +
           totalBondsPercent +
           '%, что превышает глобальную цель стратегии в ' +
           macro.bondsPercent +

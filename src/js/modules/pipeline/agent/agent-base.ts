@@ -87,6 +87,34 @@ export abstract class AgentBase implements IAgent {
       try {
         const data = await this.executeInternal(input);
         const durationMs = Date.now() - startTime;
+
+        // Если executeInternal вернул undefined/null — это ошибка
+        if (data === undefined || data === null) {
+          const emptyError = new Error(
+            `${this.name} returned undefined/null instead of a result`,
+          );
+          lastError = emptyError;
+          if (attempt <= this.retries) {
+            const delay = this.retryDelayMs * attempt;
+            if (this.verbose) {
+              console.log(
+                `[AGENT:${this.name}] Пустой результат (попытка ${attempt}/${this.retries + 1}). Повтор через ${delay}ms...`,
+              );
+            }
+            await this.sleep(delay);
+            continue;
+          }
+          this._state = 'error';
+          this.totalFailures++;
+          this.lastResult = this.makeResult(false, emptyError, startTime, '');
+          if (this.verbose) {
+            console.error(
+              `[AGENT:${this.name}] Все попытки исчерпаны: пустой результат`,
+            );
+          }
+          return this.lastResult;
+        }
+
         this.lastResult = this.makeResult(true, data, startTime, startedAt);
         this._state = 'idle';
         this.totalSuccesses++;

@@ -39,7 +39,7 @@ import {
   type StrategistProposal,
 } from './agents/strategist-agent.js';
 import { runConsilium, type ConsiliumOutput } from './agents/consilium.js';
-import { aiMemoryImpl } from './ai-memory/index.js';
+import { aiMemoryImpl, getByType } from './ai-memory/index.js';
 import { Watchdog } from './watchdog/watchdog.js';
 import type { AgentHealthReport } from './watchdog/types.js';
 import { DEFAULT_THRESHOLDS } from './watchdog/types.js';
@@ -414,7 +414,21 @@ export class PipelineCoordinator {
             message: 'ResearchAgentV2: fallback',
             newsSummary: '',
           };
-      const analysisOutput = analysisResult.result.data!;
+      const analysisOutput = analysisResult.result.data;
+      if (!analysisOutput) {
+        error = new Error(
+          'Analysis Agent returned no data (success=' +
+            analysisResult.result.success +
+            ', error=' +
+            (analysisResult.result.error?.message ?? 'none') +
+            ')',
+        );
+        console.error('[Pipeline] ❌ Analysis Agent: output is undefined', {
+          success: analysisResult.result.success,
+          error: analysisResult.result.error?.message,
+        });
+        return this.buildResult(totalStart, error);
+      }
 
       // ── Детальный лог анализа портфеля ──
       const { portfolioAnalysis, income, priceAlerts } = analysisOutput;
@@ -858,6 +872,28 @@ export class PipelineCoordinator {
     }
   }
 
+  /**
+    * Загрузить последний результат pipeline из оперативной памяти.
+    * Возвращает null, если результат не найден.
+    */
+  static async loadLastPipelineResult(): Promise<PipelineResult | null> {
+    try {
+      const entries = getByType('pipeline_result', 1);
+      if (entries.length === 0) {
+        return null;
+      }
+      const lastEntry = entries[0];
+      if (!lastEntry) {
+        return null;
+      }
+      const data = JSON.parse(lastEntry.content);
+      return data;
+    } catch (err) {
+      console.error('[Pipeline] Ошибка загрузки последнего результата:', err);
+      return null;
+    }
+  }
+
   /** Остановить конвейер */
   async shutdown(): Promise<void> {
     this._state.stopped = true;
@@ -1127,6 +1163,27 @@ export class PipelineCoordinator {
 
     try {
       const data = await execute();
+      if (data === undefined || data === null) {
+        const emptyError = new Error(`Stage ${stage} completed but returned no data`);
+        console.error(`[Pipeline] ❌ Stage ${stage}: empty result`, {
+          stage,
+          agentName,
+        });
+        const durationMs = Date.now() - stageStart;
+        const result: PipelineStageResult<TData> = {
+          stage,
+          result: {
+            success: false,
+            data: undefined,
+            error: emptyError,
+            durationMs,
+            completedAt: new Date().toISOString(),
+          },
+          durationMs,
+        };
+        this.stageResults[stage] = result;
+        return result;
+      }
       const durationMs = Date.now() - stageStart;
 
       // После выполнения — проверка здоровья (регистрация остаётся в отчёте)

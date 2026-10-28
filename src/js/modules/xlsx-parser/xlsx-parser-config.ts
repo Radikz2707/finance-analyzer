@@ -124,7 +124,6 @@ export const QUIK_COLUMN_LIQ_PERCENT_ALT = 'Доля';
 export const QUIK_COLUMN_BAL_PERCENT = '%, активов, по балансовой стоимости';
 export const QUIK_COLUMN_TARGET_PCT = 'Target Percent';
 export const QUIK_COLUMN_TARGET_PCT_ALT1 = 'Целевая доля, %';
-export const QUIK_COLUMN_TARGET_PCT_ALT2 = 'S';
 export const QUIK_COLUMN_NKD = 'НКД';
 export const QUIK_COLUMN_NKD_ALT = 'Накопленный купон';
 export const QUIK_COLUMN_BALANCE_PRICE = 'Балансовая цена';

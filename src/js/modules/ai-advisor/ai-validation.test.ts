@@ -269,7 +269,6 @@ describe('postProcessAiText', () => {
 
     expect(result.directionValidation.valid).toBe(false);
     expect(result.hallucinationRemoval.removedHallucinations.length).toBeGreaterThan(0);
-    expect(result.excludedAssetsCheck.valid).toBe(false);
     expect(result.warnings.length).toBeGreaterThan(0);
   });
 

@@ -176,15 +176,16 @@ export class DataAgent extends AgentBase {
   protected async executeInternal(_input: unknown): Promise<DataAgentOutput> {
     this.log.info('[DataAgent] >>> Начало парсинга Excel/QUIK');
 
-    // Шаг 1: Синхронизация новых сделок
-    await this.parser.syncNewTrades();
+    try {
+      // Шаг 1: Синхронизация новых сделок
+      await this.parser.syncNewTrades();
 
-    // Шаг 2: Агрегация портфеля
-    const aggregated = await this.parser.parseAggregatedPortfolio();
-    const assets = this.parser.aggregatedToCurrentAssets(aggregated);
+      // Шаг 2: Агрегация портфеля
+      const aggregated = await this.parser.parseAggregatedPortfolio();
+      const assets = this.parser.aggregatedToCurrentAssets(aggregated);
 
-    // Шаг 3: Макро-цели
-    const macroGoals = await this.parser.parseMacroGoals();
+      // Шаг 3: Макро-цели
+      const macroGoals = await this.parser.parseMacroGoals();
 
     // Шаг 2.5: Сохранение позиций в БД
     for (const asset of assets) {
@@ -439,5 +440,10 @@ export class DataAgent extends AgentBase {
     this.parser.cleanup();
 
     return output;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.log.error('[DataAgent] ❌ Ошибка executeInternal:', errorMsg);
+      throw err;
+    }
   }
 }

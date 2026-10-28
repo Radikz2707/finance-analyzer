@@ -340,7 +340,7 @@ export class NotificationAgent extends AgentBase {
       newAssetsWarningMd =
         '\n⚠️ ВНИМАНИЕ: Обнаружены новые активы без указанной цели в Excel:\n' +
         newAssets
-          .map((item) => `* ${item.name} (Укажите целевой % в столбце S)`)
+          .map((item) => `* ${item.name} (Укажите целевой % в столбце "Целевая доля, %")`)
           .join('\n') +
         '\n';
     }
@@ -560,7 +560,7 @@ export class NotificationAgent extends AgentBase {
         '<div class="warning-box" style="padding: 15px; background: rgba(163, 113, 247, 0.1); border: 1px solid #a371f7; border-radius: 6px; margin-bottom: 15px;">' +
         '⚠️ Внимание: В вашем портфеле обнаружены новые инструменты без установленной целевой доли: ' +
         newAssets.map((item) => item.name).join(', ') +
-        '. Пожалуйста, пропишите желаемый процент в столбце S вашей Excel-таблицы.</div>\n\n';
+        '. Пожалуйста, пропишите желаемый процент в столбце "Целевая доля, %" вашей Excel-таблицы.</div>\n\n';
     }
 
     // Ценовые алерты

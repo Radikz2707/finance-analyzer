@@ -60,8 +60,6 @@ export interface PostProcessResult {
   directionValidation: DirectionValidationResult;
   /** Результаты удаления галлюцинаций */
   hallucinationRemoval: HallucinationRemovalResult;
-  /** Результаты проверки исключённых активов */
-  excludedAssetsCheck: ExcludedAssetsCheckResult;
   /** Общие предупреждения */
   warnings: string[];
 }
@@ -575,21 +573,10 @@ export function postProcessAiText(
     );
   }
 
-  // 3. Проверка исключённых активов
-  const excludedAssetsCheck = checkExcludedAssets(hallucinationRemoval.cleanedText);
-  if (!excludedAssetsCheck.valid) {
-    for (const m of excludedAssetsCheck.foundMentions) {
-      warnings.push(
-        `[EXCLUDED_ASSET] Найдено упоминание исключённого актива: "${m.assetName}"`,
-      );
-    }
-  }
-
   return {
     cleanedText: hallucinationRemoval.cleanedText,
     directionValidation,
     hallucinationRemoval,
-    excludedAssetsCheck,
     warnings,
   };
 }

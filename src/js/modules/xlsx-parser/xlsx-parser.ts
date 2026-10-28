@@ -344,7 +344,10 @@ export class XlsxParserModule {
       }
 
       let targetPct = this.parseOptionalTargetPercent(
-        row['Target Percent'] ?? row['Целевая доля, %'] ?? row['S'],
+        this.findColumnValue(row, [
+          config.QUIK_COLUMN_TARGET_PCT_ALT1,
+          config.QUIK_COLUMN_TARGET_PCT,
+        ]),
       );
       // Excel хранит дроби (0.30), конвертируем в проценты (30)
       // 0 остаётся 0 (EXIT), undefined остаётся undefined
@@ -505,11 +508,56 @@ export class XlsxParserModule {
     const sheet = this.workbook.Sheets[sheetName];
     if (!sheet || !sheet['!ref']) return {};
 
+    // Читаем как массив массивов для точного позиционирования по столбцам
+    const rowsRaw = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1 });
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
     const targetMap: Record<string, number | undefined> = {};
 
-    for (const row of rows) {
-      const name = String(row['Инструмент'] || '').trim();
+    // Находим индексы столбцов из первой строки (заголовки)
+    let targetColIndex = -1;
+    let instrumentColIndex = -1;
+    let tickerColIndex = -1;
+
+    if (rowsRaw.length > 0) {
+      const headerRow = rowsRaw[0] as unknown[] | undefined;
+      if (headerRow) {
+        for (let i = 0; i < headerRow.length; i++) {
+          const h = String(headerRow[i] ?? '').toLowerCase().trim();
+          if (h.includes('целевая доля') || h.includes('доля, %')) {
+            targetColIndex = i;
+          }
+          if (h.includes('инструмент')) {
+            instrumentColIndex = i;
+          }
+          if (h.includes('код') && !h.includes('инструмент')) {
+            tickerColIndex = i;
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row) continue;
+
+      // Получаем name и ticker
+      let name = String(row['Инструмент'] || '').trim();
+      let ticker = String(row['Код инструмента'] || row['Код'] || '').trim().toUpperCase();
+
+      // Fallback: используем индексы столбцов из rowsRaw
+      if (!name && instrumentColIndex >= 0) {
+        const rawRow = rowsRaw[i + 1]; // +1 т.к. rowsRaw[0] — заголовок
+        if (rawRow) {
+          name = String(rawRow[instrumentColIndex] || '').trim();
+        }
+      }
+      if (!ticker && tickerColIndex >= 0) {
+        const rawRow = rowsRaw[i + 1];
+        if (rawRow) {
+          ticker = String(rawRow[tickerColIndex] || '').trim().toUpperCase();
+        }
+      }
+
       if (
         !name ||
         config.EXCLUDED_ROW_KEYWORDS.some((kw) =>
@@ -520,16 +568,22 @@ export class XlsxParserModule {
       if (name.startsWith('-') || !isNaN(Number(name)) || name.length > 30)
         continue;
       if (config.FREE_CASH_ROW_KEYWORDS.some((kw) => name === kw)) continue;
-
-      const ticker = String(row['Код инструмента'] || row['Код'] || '')
-        .trim()
-        .toUpperCase();
       if (!ticker) continue;
 
-      // Читаем ТОЛЬКО из колонки "Целевая доля, %" — не используем parseValue
-      // чтобы различать 0 и undefined
-      const targetRaw =
-        row['Целевая доля, %'] ?? row['Target Percent'] ?? row['S'];
+      // Читаем целевую долю
+      let targetRaw = this.findColumnValue(row, [
+        config.QUIK_COLUMN_TARGET_PCT_ALT1,
+        config.QUIK_COLUMN_TARGET_PCT,
+      ]);
+
+      // Fallback: используем индекс столбца
+      if (targetRaw === undefined && targetColIndex >= 0) {
+        const rawRow = rowsRaw[i + 1];
+        if (rawRow) {
+          targetRaw = rawRow[targetColIndex];
+        }
+      }
+
       let targetPct = this.parseOptionalTargetPercent(targetRaw);
 
       // Excel хранит дроби (0.15), конвертируем в проценты (15)
@@ -800,7 +854,10 @@ export class XlsxParserModule {
         balPercent = Math.round(balPercent * 100 * 100) / 100;
 
       const targetPct = this.parseOptionalTargetPercent(
-        row['Target Percent'] || row['Целевая доля, %'] || row['S'],
+        this.findColumnValue(row, [
+          config.QUIK_COLUMN_TARGET_PCT_ALT1,
+          config.QUIK_COLUMN_TARGET_PCT,
+        ]),
       );
 
       const nkd = this.parseValue(row['НКД'] || row['Накопленный купон']);
@@ -847,9 +904,10 @@ export class XlsxParserModule {
               sheetRow['Доля'],
           );
           const sheetTargetPct = this.parseOptionalTargetPercent(
-            sheetRow['Target Percent'] ||
-              sheetRow['Целевая доля, %'] ||
-              sheetRow['S'],
+            this.findColumnValue(sheetRow, [
+              config.QUIK_COLUMN_TARGET_PCT_ALT1,
+              config.QUIK_COLUMN_TARGET_PCT,
+            ]),
           );
           const sheetHoldOnly = this.parseBooleanColumn(sheetRow, [
             config.QUIK_COLUMN_HOLD_ONLY,
@@ -1321,36 +1379,121 @@ export class XlsxParserModule {
     if (goalsSheet) {
       const rows =
         XLSX.utils.sheet_to_json<Record<string, unknown>>(goalsSheet);
-      for (const row of rows) {
-        const key = String(
-          row['Группа инструментов'] || row['Тип'] || '',
-        ).toUpperCase();
-        const targetKey = Object.keys(row).find(
-          (k) => k.includes('доля') || k.includes('Процент') || k === 'S',
-        );
-        const val = targetKey ? this.parseValue(row[targetKey]) : 0;
-        if (val === 0) continue;
 
-        if (key.includes('АКЦИ')) {
-          stocksPercent = val > 1 ? val : val * 100;
+      // Структура листа «Цели» — таблица с __EMPTY ключами
+      // Нужно найти:
+      // - Строку заголовков (где есть 'Акции', 'Облигации')
+      // - Строку «Целевая доля активов, в %»
+      let headerRowIndex = -1;
+      let targetRowIndex = -1;
+      let headerRow: Record<string, unknown> | undefined;
+
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row) continue;
+        const rowStr = Object.values(row)
+          .map((v) => String(v ?? ''))
+          .join(' ');
+
+        // Ищем строку заголовков
+        if (
+          rowStr.includes('Акции') &&
+          rowStr.includes('Облигации') &&
+          headerRowIndex === -1
+        ) {
+          headerRowIndex = i;
+          headerRow = row;
         }
-        if (key.includes('ОБЛИГ')) {
-          bondsPercent = val > 1 ? val : val * 100;
+
+        // Ищем строку «Целевая доля активов, в %»
+        if (
+          String(row['__EMPTY'] ?? '')
+            .toLowerCase()
+            .includes('целевая доля активов, в %')
+        ) {
+          targetRowIndex = i;
+        }
+      }
+
+      // Если нашли целевую долю — парсим по индексам заголовков
+      if (targetRowIndex >= 0 && headerRow) {
+        const targetRow = rows[targetRowIndex];
+        if (targetRow) {
+          const headerKeys = Object.keys(headerRow);
+
+          for (const key of headerKeys) {
+            const headerVal = String(headerRow[key] ?? '').toLowerCase();
+            if (headerVal.includes('акции') && key !== '__EMPTY') {
+              const val = this.parseValue(targetRow[key]);
+              if (val > 0 && val <= 1) {
+                stocksPercent = val * 100;
+              } else if (val > 1) {
+                stocksPercent = val;
+              }
+            }
+            if (headerVal.includes('облиг') && key !== '__EMPTY') {
+              const val = this.parseValue(targetRow[key]);
+              if (val > 0 && val <= 1) {
+                bondsPercent = val * 100;
+              } else if (val > 1) {
+                bondsPercent = val;
+              }
+            }
+          }
+        }
+      }
+
+      // Fallback: старый поиск по строкам
+      if (stocksPercent === undefined || bondsPercent === undefined) {
+        for (const row of rows) {
+          const key = String(
+            row['Группа инструментов'] || row['Тип'] || '',
+          ).toUpperCase();
+
+          const val = this.parseValue(
+            this.findColumnValue(row, [
+              'Целевая доля',
+              'Процент',
+              'Доля',
+            ]),
+          );
+          if (val === 0) continue;
+
+          if (key.includes('АКЦИ')) {
+            stocksPercent = val > 1 ? val : val * 100;
+          }
+          if (key.includes('ОБЛИГ')) {
+            bondsPercent = val > 1 ? val : val * 100;
+          }
         }
       }
 
       // Альтернативный поиск по строке «Целевая доля»
       if (stocksPercent === undefined || bondsPercent === undefined) {
         const targetRow = rows.find((row) => {
-          const emptyVal = row['__EMPTY'];
+          const nameVal = this.findColumnValue(row, [
+            'Группа инструментов',
+            'Тип',
+            'Наименование',
+          ]);
           return (
-            typeof emptyVal === 'string' && emptyVal.includes('Целевая доля')
+            typeof nameVal === 'string' && nameVal.includes('Целевая доля')
           );
         });
 
         if (targetRow) {
-          const bondsVal = this.parseValue(targetRow['__EMPTY_5']);
-          const stocksVal = this.parseValue(targetRow['__EMPTY_6']);
+          const bondsVal = this.parseValue(
+            this.findColumnValue(targetRow, [
+              'Облигации',
+              'Bonds',
+            ]),
+          );
+          const stocksVal = this.parseValue(
+            this.findColumnValue(targetRow, [
+              'Акции',
+              'Stocks',
+            ]),
+          );
 
           if (stocksVal > 0 && stocksPercent === undefined) {
             stocksPercent = stocksVal > 1 ? stocksVal : stocksVal * 100;
@@ -1370,12 +1513,26 @@ export class XlsxParserModule {
     if (reportSheet && reportSheet['!ref']) {
       const reportRows =
         XLSX.utils.sheet_to_json<Record<string, unknown>>(reportSheet);
+
+      // Пробуем найти по заголовкам
       for (const row of reportRows) {
-        // Новая структура: столбец A — название, столбец B — значение
-        const name = String(row['__EMPTY'] || row['A'] || '')
-          .trim()
-          .toUpperCase();
-        const value = this.parseValue(row['__EMPTY_1'] || row['B']);
+        const name = String(
+          this.findColumnValue(row, [
+            'Наименование',
+            'Название',
+            'Наименование операции',
+            'Инструмент',
+          ]),
+        ).trim().toUpperCase();
+        const value = this.parseValue(
+          this.findColumnValue(row, [
+            'Сумма',
+            'Значение',
+            'Стоимость',
+            'Сумма, руб',
+            'Сумма руб',
+          ]),
+        );
 
         if (name.includes('ЛИКВИДН') && name.includes('СРЕДСТВ')) {
           freeCash = value;
@@ -1383,6 +1540,29 @@ export class XlsxParserModule {
           totalBalance = value;
         } else if (name.includes('ВНЕШ') || name.includes('ВЛОЖЕН')) {
           this.cachedInvestedFunds = value;
+        }
+      }
+
+      // Fallback: ищем по __EMPTY ключам (без заголовков)
+      if ((freeCash === undefined || freeCash === 0) && totalBalance === undefined) {
+        for (const row of reportRows) {
+          if (!row) continue;
+          const rowKeys = Object.keys(row);
+          // Ищем строку с __EMPTY содержащим "ЛИКВИДН" или "ИТОГО"
+          for (const key of rowKeys) {
+            const valStr = String(row[key] ?? '').toUpperCase();
+            if (valStr.includes('ЛИКВИДН') && valStr.includes('СРЕДСТВ')) {
+              // Ищем значение в соседнем столбце
+              const idx = rowKeys.indexOf(key);
+              const valKey = rowKeys[idx + 1];
+              if (valKey) freeCash = this.parseValue(row[valKey as keyof typeof row]);
+            }
+            if (valStr.includes('ИТОГО АКТИВ') || valStr.includes('ВСЕГО АКТИВ')) {
+              const idx = rowKeys.indexOf(key);
+              const valKey = rowKeys[idx + 1];
+              if (valKey) totalBalance = this.parseValue(row[valKey as keyof typeof row]);
+            }
+          }
         }
       }
     }
@@ -1484,15 +1664,40 @@ export class XlsxParserModule {
       const reportRows =
         XLSX.utils.sheet_to_json<Record<string, unknown>>(reportSheet);
       for (const row of reportRows) {
-        // Новая структура: столбец A — название, столбец B — значение
-        const name = String(row['__EMPTY'] || row['A'] || '')
-          .trim()
-          .toUpperCase();
-        const value = this.parseValue(row['__EMPTY_1'] || row['B']);
+        const name = String(
+          this.findColumnValue(row, [
+            'Наименование',
+            'Название',
+            'Наименование операции',
+            'Инструмент',
+          ]),
+        ).trim().toUpperCase();
+        const value = this.parseValue(
+          this.findColumnValue(row, [
+            'Сумма',
+            'Значение',
+            'Стоимость',
+            'Сумма, руб',
+            'Сумма руб',
+          ]),
+        );
 
         if (name.includes('ВНЕС') && name.includes('СРЕДСТВ')) {
           if (value > 0) {
             return { totalNet: value };
+          }
+        }
+      }
+
+      // Fallback: ищем по __EMPTY ключам
+      for (const row of reportRows) {
+        const parsed = this.parseEmptyRow(row);
+        if (!parsed) continue;
+        const nameStr = parsed.name.toUpperCase();
+
+        if (nameStr.includes('ВНЕС') && nameStr.includes('СРЕДСТВ')) {
+          if (parsed.value > 0) {
+            return { totalNet: parsed.value };
           }
         }
       }
@@ -1598,11 +1803,23 @@ export class XlsxParserModule {
       const reportRows =
         XLSX.utils.sheet_to_json<Record<string, unknown>>(reportSheet);
       for (const row of reportRows) {
-        // Новая структура: столбец A — название, столбец B — значение
-        const name = String(row['__EMPTY'] || row['A'] || '')
-          .trim()
-          .toUpperCase();
-        const value = this.parseValue(row['__EMPTY_1'] || row['B']);
+        const name = String(
+          this.findColumnValue(row, [
+            'Наименование',
+            'Название',
+            'Наименование операции',
+            'Инструмент',
+          ]),
+        ).trim().toUpperCase();
+        const value = this.parseValue(
+          this.findColumnValue(row, [
+            'Сумма',
+            'Значение',
+            'Стоимость',
+            'Сумма, руб',
+            'Сумма руб',
+          ]),
+        );
 
         if (name.includes('КУПЛЯ') || name.includes('ПОКУПК')) {
           totalPurchasesSum = value;
@@ -1621,6 +1838,32 @@ export class XlsxParserModule {
           config.TRADES_COUNT_KEYWORDS.some((kw) => name.includes(kw))
         ) {
           tradesCount = value;
+        }
+      }
+
+      // Fallback: ищем по __EMPTY ключам
+      for (const row of reportRows) {
+        const parsed = this.parseEmptyRow(row);
+        if (!parsed) continue;
+        const nameStr = parsed.name.toUpperCase();
+
+        if (nameStr.includes('КУПЛЯ') || nameStr.includes('ПОКУПК')) {
+          totalPurchasesSum = parsed.value;
+        } else if (nameStr.includes('ПРОДАЖ')) {
+          totalSalesSum = parsed.value;
+        } else if (nameStr.includes('КОМИССИ')) {
+          totalHistoricalCommission = parsed.value;
+        } else if (
+          nameStr.includes('ТЕКУЩАЯ') &&
+          (nameStr.includes('ПРИБЫЛЬ') || nameStr.includes('УБЫТОК'))
+        ) {
+          profitC10 = parsed.value;
+        } else if (nameStr.includes('ПРИБЫЛЬ/УБЫТОК')) {
+          profitC11 = parsed.value;
+        } else if (
+          config.TRADES_COUNT_KEYWORDS.some((kw) => nameStr.includes(kw))
+        ) {
+          tradesCount = parsed.value;
         }
       }
     }
@@ -1738,9 +1981,11 @@ export class XlsxParserModule {
   }
 
   /**
-   * Поиск значения в строке Excel по нескольким возможным именам столбцов.
-   * Возвращает значение первого найденного столбца или undefined.
-   */
+    * Поиск значения в строке Excel по нескольким возможным именам столбцов.
+    * Возвращает значение первого найденного столбца или undefined.
+    * Поддерживает case-insensitive поиск.
+    * НЕ использует __EMPTY fallback — это для реальных заголовков.
+    */
   private findColumnValue(
     row: Record<string, unknown>,
     columnNames: string[],
@@ -1750,7 +1995,7 @@ export class XlsxParserModule {
         return row[name];
       }
     }
-    // Fallback: case-insensitive поиск
+    // Case-insensitive поиск по ключам
     const rowKeys = Object.keys(row);
     for (const name of columnNames) {
       const found = rowKeys.find(
@@ -1760,7 +2005,42 @@ export class XlsxParserModule {
         return row[found];
       }
     }
+    // Частичное совпадение: ищем ключ, содержащий name
+    for (const name of columnNames) {
+      const found = rowKeys.find((k) =>
+        k.toLowerCase().includes(name.toLowerCase()),
+      );
+      if (found && row[found] !== undefined && row[found] !== null) {
+        return row[found];
+      }
+    }
+    // Больше нет fallback — возвращаем undefined если заголовки не найдены
     return undefined;
+  }
+
+  /**
+    * Универсальный поиск по __EMPTY ключам в строке.
+    * Возвращает { name: string, value: number } для каждой строки.
+    */
+  private parseEmptyRow(row: Record<string, unknown>): {
+    name: string;
+    value: number;
+  } | null {
+    if (!row) return null;
+    const rowKeys = Object.keys(row);
+    const emptyKey = rowKeys.find((k) => k.toLowerCase() === '__empty');
+    if (!emptyKey) return null;
+
+    const nameVal = String(row[emptyKey as keyof typeof row] ?? '').trim();
+    // Ищем первое значение в другом __EMPTY_ ключах
+    const valueKey = rowKeys.find(
+      (k) => k.toLowerCase().startsWith('__empty') && k !== emptyKey,
+    );
+    const value = valueKey
+      ? this.parseValue(row[valueKey as keyof typeof row])
+      : 0;
+
+    return { name: nameVal, value };
   }
 
   /**
