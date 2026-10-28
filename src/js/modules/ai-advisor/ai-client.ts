@@ -232,6 +232,8 @@ export class AiClient {
       totalPurchases: number;
       totalSales: number;
       commission: number;
+      averageMonthlyDeposit?: number;
+      anomalousDepositsTotal?: number;
     },
     accountsInfo?: Array<{ name: string; value: number }>,
     macroData?: MacroDataContext,
@@ -243,6 +245,7 @@ export class AiClient {
     const contributedCapital = snapshotFinancial?.contributedCapital ?? 0;
     const currentEquityGap = snapshotFinancial?.currentEquityGap ?? 0;
     const currentEquityGapPct = snapshotFinancial?.currentEquityGapPct ?? 0;
+    const freeCash = macro.freeCash ?? 0;
 
     const totalNetProfit = snapshotFinancial
       ? snapshotFinancial.currentAssets +
@@ -354,7 +357,24 @@ export class AiClient {
       bondsPct +
       '% | \u0424\u043e\u043d\u0434\u044b(ETF) ' +
       etfPct +
-      '%\n\n';
+      '%\n';
+
+    // Добавляем информацию о регулярных взносах
+    const averageMonthlyDeposit = _historicalData?.averageMonthlyDeposit ?? 0;
+    if (averageMonthlyDeposit > 0) {
+      ctx +=
+        '\u0421\u0440\u0435\u0434\u043d\u0438\u0439 \u0435\u0436\u0435\u043c\u0435\u0441\u044f\u0447\u043d\u044b\u0439 \u0432\u0437\u043d\u043e\u0441: ' +
+        averageMonthlyDeposit.toLocaleString('ru-RU') +
+        ' \u20bd (без \u0430\u043d\u043e\u043c\u0430\u043b\u044c\u043d\u044b\u0445 \u0432\u0437\u043d\u043e\u0441\u043e\u0432)\n';
+      ctx +=
+        '\u26a0\ufe0f \u0412\u0430\u0436\u043d\u043e: \u043a\u044d\u0448 \u043f\u043e\u043f\u043e\u043b\u043d\u044f\u0435\u0442\u0441\u044f \u043d\u0435 \u0442\u043e\u043b\u044c\u043a\u043e \u0438\u0437 \u043a\u0443\u043f\u043e\u043d\u043e\u0432/\u0434\u0438\u0432\u0438\u0434\u0435\u043d\u0434\u043e\u0432, \u043d\u043e \u0438 \u0438\u0437 \u0440\u0435\u0433\u0443\u043b\u044f\u0440\u043d\u044b\u0445 \u0432\u0437\u043d\u043e\u0441\u043e\u0432 \u0438\u0437 \u0437\u0430\u0440\u043f\u043b\u0430\u0442\u044b.\n';
+      ctx +=
+        '\u2705 \u0414\u043e\u0441\u0442\u0443\u043f\u043d\u044b\u0439 \u0431\u044e\u0434\u0436\u0435\u0442 \u0434\u043b\u044f \u043f\u043e\u043a\u0443\u043f\u043e\u043a: \u043a\u0440\u043e\u043c\u0435 \u0441\u0432\u043e\u0431\u043e\u0434\u043d\u043e\u0433\u043e \u043a\u044d\u0448\u0430 (' +
+        freeCash.toLocaleString('ru-RU') +
+        ' \u20bd), \u0435\u0436\u0435\u043c\u0435\u0441\u044f\u0447\u043d\u043e \u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d ' +
+        averageMonthlyDeposit.toLocaleString('ru-RU') +
+        ' \u20bd \u0434\u043b\u044f \u043f\u043e\u043a\u0443\u043f\u043a\u0438 \u0430\u043a\u0442\u0438\u0432\u043e\u0432 \u0441 \u0434\u0435\u0444\u0438\u0446\u0438\u0442\u043e\u043c \u0434\u043e\u043b\u0438.\n';
+    }
 
     if (snapshot && snapshot.accounts.length > 0) {
       ctx += '\u0421\u0447\u0435\u0442\u0430:';
@@ -1245,6 +1265,8 @@ export class AiClient {
       totalPurchases: number;
       totalSales: number;
       commission: number;
+      averageMonthlyDeposit?: number;
+      anomalousDepositsTotal?: number;
     },
     accountsInfo?: Array<{ name: string; value: number }>,
     memoryContext?: string,

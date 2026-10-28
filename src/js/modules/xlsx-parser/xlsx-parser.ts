@@ -143,6 +143,7 @@ export class XlsxParserModule {
   private cachedInvestedFunds: number = 0;
   public parsedActiveOrders: QuikOrder[] = [];
   private nameToTickerMap: Record<string, string> = {};
+  private startDate: Date = new Date();
   /** Кэш справочных данных по облигациям (ISIN → nominal) */
   private bondReferenceData: Map<string, BondReferenceData> = new Map();
 
@@ -1872,6 +1873,8 @@ export class XlsxParserModule {
     totalHistoricalCommission: number;
     profitC10: number;
     profitC11: number;
+    averageMonthlyDeposit: number;
+    anomalousDepositsTotal: number;
   }> {
     await this.loadWorkbook();
 
@@ -1883,6 +1886,8 @@ export class XlsxParserModule {
     let profitC10: number | undefined;
     let profitC11: number | undefined;
     let tradesCount: number | undefined;
+    let anomalousDepositsTotal: number = 0;
+    const depositsThreshold = 100000; // взнос > 100к считаем аномальным
 
     if (reportSheet && reportSheet['!ref']) {
       const reportRows =
@@ -1912,6 +1917,11 @@ export class XlsxParserModule {
           totalSalesSum = value;
         } else if (name.includes('КОМИССИ')) {
           totalHistoricalCommission = value;
+        } else if (name.includes('ПОПОЛН') || name.includes('ВЗНОС') || name.includes('ПЕРЕВОД')) {
+          // Считаем аномальные взносы
+          if (value > depositsThreshold) {
+            anomalousDepositsTotal += value;
+          }
         } else if (
           name.includes('ТЕКУЩАЯ') &&
           (name.includes('ПРИБЫЛЬ') || name.includes('УБЫТОК'))
@@ -1949,6 +1959,22 @@ export class XlsxParserModule {
           config.TRADES_COUNT_KEYWORDS.some((kw) => nameStr.includes(kw))
         ) {
           tradesCount = parsed.value;
+        }
+      }
+    }
+
+    // Определяем startDate — первая дата в Excel
+    const tradesSheet = this.workbook?.Sheets[config.TRADES_SHEET_NAME];
+    if (tradesSheet && tradesSheet['!ref']) {
+      const tradesRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(tradesSheet);
+      for (const row of tradesRows) {
+        const dateVal = row['Дата'] || row['дата'] || row['Date'] || row['date'];
+        if (dateVal) {
+          const parsedDate = new Date(String(dateVal));
+          if (!isNaN(parsedDate.getTime())) {
+            this.startDate = parsedDate;
+            break;
+          }
         }
       }
     }
@@ -2015,6 +2041,12 @@ export class XlsxParserModule {
       profitC10 = totalSalesSum - totalPurchasesSum;
     }
 
+    // Рассчитываем averageMonthlyDeposit и anomalousDepositsTotal
+    // averageMonthlyDeposit = (totalPurchasesSum - anomalousDepositsTotal) / months
+    const monthsSinceStart = Math.max(1, Math.floor((Date.now() - this.startDate.getTime()) / (30 * 24 * 60 * 60 * 1000)));
+    const nonAnomalousPurchases = totalPurchasesSum - anomalousDepositsTotal;
+    const averageMonthlyDeposit = nonAnomalousPurchases / monthsSinceStart;
+
     return {
       tradesCount: tradesCount || 0,
       totalPurchasesSum,
@@ -2022,6 +2054,8 @@ export class XlsxParserModule {
       totalHistoricalCommission: totalHistoricalCommission || 0,
       profitC10,
       profitC11: profitC11 || 0,
+      averageMonthlyDeposit: Math.round(averageMonthlyDeposit),
+      anomalousDepositsTotal,
     };
   }
 

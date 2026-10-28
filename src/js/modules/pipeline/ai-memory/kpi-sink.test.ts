@@ -62,15 +62,17 @@ function makeDataOutput(
       },
     },
     activeOrders: [],
-    historicalTrades: {
-      tradesCount: 0,
-      totalPurchasesSum: 0,
-      totalSalesSum: 0,
-      profitC10: 15000,
-      profitC11: 0,
-      totalHistoricalCommission: 0,
-    },
-    investedFunds: { totalNet: 500000, totalPurchases: 0, totalSales: 0 },
+      historicalTrades: {
+        tradesCount: 0,
+        totalPurchasesSum: 0,
+        totalSalesSum: 0,
+        profitC10: 0,
+        profitC11: 0,
+        totalHistoricalCommission: 0,
+        averageMonthlyDeposit: 0,
+        anomalousDepositsTotal: 0,
+      },
+    investedFunds: { totalNet: 500000, totalPurchases: 0, totalSales: 0, averageMonthlyDeposit: 0, anomalousDepositsTotal: 0 },
     news: null,
     anomalies: [
       {

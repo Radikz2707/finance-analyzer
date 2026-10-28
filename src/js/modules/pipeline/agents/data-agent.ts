@@ -101,6 +101,8 @@ export interface InvestedFundsData {
   totalNet: number;
   totalPurchases: number;
   totalSales: number;
+  averageMonthlyDeposit: number;
+  anomalousDepositsTotal: number;
 }
 
 /** Данные о исторических сделках */
@@ -111,6 +113,8 @@ export interface HistoricalTradesData {
   profitC10: number;
   profitC11: number;
   totalHistoricalCommission: number;
+  averageMonthlyDeposit: number;
+  anomalousDepositsTotal: number;
 }
 
 /**
@@ -421,11 +425,15 @@ export class DataAgent extends AgentBase {
         profitC10: historicalTrades.profitC10,
         profitC11: historicalTrades.profitC11,
         totalHistoricalCommission: historicalTrades.totalHistoricalCommission,
+        averageMonthlyDeposit: historicalTrades.averageMonthlyDeposit || 0,
+        anomalousDepositsTotal: historicalTrades.anomalousDepositsTotal || 0,
       },
       investedFunds: {
         totalNet: investedFunds.totalNet,
         totalPurchases: historicalTrades.totalPurchasesSum,
         totalSales: historicalTrades.totalSalesSum,
+        averageMonthlyDeposit: historicalTrades.averageMonthlyDeposit || 0,
+        anomalousDepositsTotal: historicalTrades.anomalousDepositsTotal || 0,
       },
       news: newsResult,
       anomalies,
