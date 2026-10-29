@@ -269,6 +269,17 @@ export class NotificationAgent extends AgentBase {
         dateStr: new Date().toLocaleDateString('ru-RU'),
         timeStr: new Date().toLocaleTimeString('ru-RU'),
         aiBoxHtml,
+        // Данные о взносах
+        averageMonthlyDeposit: data.investedFunds.averageMonthlyDeposit,
+        anomalousDepositsTotal: data.investedFunds.anomalousDepositsTotal,
+        currentMonthDeposits: data.investedFunds.currentMonthDeposits,
+        lastMonthDeposits: data.investedFunds.lastMonthDeposits,
+        currentYearDeposits: data.investedFunds.currentYearDeposits,
+        lastYearDeposits: data.investedFunds.lastYearDeposits,
+        totalPurchases: data.investedFunds.totalPurchases,
+        totalSales: data.investedFunds.totalSales,
+        totalWithdrawals: data.investedFunds.totalWithdrawals,
+        totalDeposits: data.investedFunds.totalDeposits,
       },
     );
 
@@ -497,7 +508,7 @@ export class NotificationAgent extends AgentBase {
       html += '</div>\n';
     }
 
-    html += '<div class="recommendations-list" style="display: flex; flex-direction: column; gap: 10px;">\n';
+    html += '<div class="recommendations-list" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px;">\n';
 
     for (const [ticker, rec] of recs) {
       const action = rec.recommendedAction ?? 'HOLD';

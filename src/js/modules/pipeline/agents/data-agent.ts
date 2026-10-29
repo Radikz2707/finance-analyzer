@@ -101,8 +101,14 @@ export interface InvestedFundsData {
   totalNet: number;
   totalPurchases: number;
   totalSales: number;
+  totalWithdrawals: number;
+  totalDeposits: number;
   averageMonthlyDeposit: number;
   anomalousDepositsTotal: number;
+  currentMonthDeposits: number;
+  lastMonthDeposits: number;
+  currentYearDeposits: number;
+  lastYearDeposits: number;
 }
 
 /** Данные о исторических сделках */
@@ -110,11 +116,17 @@ export interface HistoricalTradesData {
   tradesCount: number;
   totalPurchasesSum: number;
   totalSalesSum: number;
+  totalWithdrawalsSum: number;
+  totalDepositsSum: number;
   profitC10: number;
   profitC11: number;
   totalHistoricalCommission: number;
   averageMonthlyDeposit: number;
   anomalousDepositsTotal: number;
+  currentMonthDeposits: number;
+  lastMonthDeposits: number;
+  currentYearDeposits: number;
+  lastYearDeposits: number;
 }
 
 /**
@@ -293,6 +305,12 @@ export class DataAgent extends AgentBase {
 
     // Шаг 8: Вложенные средства
     const investedFunds = await this.parser.parseInvestedFunds();
+    
+    // Пересчитываем averageMonthlyDeposit: (всего внесено - аномальные) / месяцы
+    const monthsSinceStart = Math.max(1, Math.floor((Date.now() - this.parser['startDate'].getTime()) / (30 * 24 * 60 * 60 * 1000)));
+    const totalDepositsSum = historicalTrades.totalDepositsSum || 0;
+    const anomalousDepositsTotal = historicalTrades.anomalousDepositsTotal || 0;
+    const recalculatedAverageMonthlyDeposit = Math.round((totalDepositsSum - anomalousDepositsTotal) / monthsSinceStart);
 
     // Шаг 9: Gatekeeper — фильтрация новостей (RSS + MOEX + QUIK)
     let newsResult: GatekeeperResult | null = null;
@@ -422,18 +440,30 @@ export class DataAgent extends AgentBase {
         tradesCount: historicalTrades.tradesCount,
         totalPurchasesSum: historicalTrades.totalPurchasesSum,
         totalSalesSum: historicalTrades.totalSalesSum,
+        totalWithdrawalsSum: historicalTrades.totalWithdrawalsSum || 0,
+        totalDepositsSum: historicalTrades.totalDepositsSum || 0,
         profitC10: historicalTrades.profitC10,
         profitC11: historicalTrades.profitC11,
         totalHistoricalCommission: historicalTrades.totalHistoricalCommission,
-        averageMonthlyDeposit: historicalTrades.averageMonthlyDeposit || 0,
+        averageMonthlyDeposit: recalculatedAverageMonthlyDeposit,
         anomalousDepositsTotal: historicalTrades.anomalousDepositsTotal || 0,
+        currentMonthDeposits: historicalTrades.currentMonthDeposits || 0,
+        lastMonthDeposits: historicalTrades.lastMonthDeposits || 0,
+        currentYearDeposits: historicalTrades.currentYearDeposits || 0,
+        lastYearDeposits: historicalTrades.lastYearDeposits || 0,
       },
       investedFunds: {
         totalNet: investedFunds.totalNet,
         totalPurchases: historicalTrades.totalPurchasesSum,
         totalSales: historicalTrades.totalSalesSum,
-        averageMonthlyDeposit: historicalTrades.averageMonthlyDeposit || 0,
+        totalWithdrawals: historicalTrades.totalWithdrawalsSum || 0,
+        totalDeposits: historicalTrades.totalDepositsSum || 0,
+        averageMonthlyDeposit: recalculatedAverageMonthlyDeposit,
         anomalousDepositsTotal: historicalTrades.anomalousDepositsTotal || 0,
+        currentMonthDeposits: historicalTrades.currentMonthDeposits || 0,
+        lastMonthDeposits: historicalTrades.lastMonthDeposits || 0,
+        currentYearDeposits: historicalTrades.currentYearDeposits || 0,
+        lastYearDeposits: historicalTrades.lastYearDeposits || 0,
       },
       news: newsResult,
       anomalies,

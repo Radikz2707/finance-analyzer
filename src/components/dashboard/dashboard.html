@@ -323,19 +323,11 @@
       const fundsGrid = document.getElementById('funds-grid');
       if (fundsGrid) {
         const now = new Date();
-        const currentYear = now.getFullYear();
-        const currentMonth = now.getMonth();
-        const currentMonthKey = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
-        
-        let lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
-        let lastMonthNum = currentMonth === 0 ? 12 : currentMonth;
-        const lastMonthKey = `${lastMonthYear}-${String(lastMonthNum).padStart(2, '0')}`;
-        
-        // Рассчитываем взносы по периодам (нужны данные из xlsx)
-        const currentMonthDeposits = 0;
-        const lastMonthDeposits = 0;
-        const currentYearDeposits = 0;
-        const lastYearDeposits = 0;
+        // Данные о взносах из investedFunds и historicalTrades
+        const currentMonthDeposits = investedFunds.currentMonthDeposits || 0;
+        const lastMonthDeposits = investedFunds.lastMonthDeposits || 0;
+        const currentYearDeposits = investedFunds.currentYearDeposits || 0;
+        const lastYearDeposits = investedFunds.lastYearDeposits || 0;
         
         fundsGrid.innerHTML = `
           <div class="dashboard__card">
@@ -618,30 +610,9 @@
         loading.style.display = 'none';
         container.style.display = 'block';
         
-        // Создаём таблицу
-        const tableWrapper = document.createElement('div');
-        tableWrapper.className = 'dashboard__ai__table-wrapper';
-        
-        const table = document.createElement('table');
-        table.className = 'dashboard__ai__table';
-        
-        // Заголовок
-        const thead = document.createElement('thead');
-        thead.innerHTML = `
-          <tr>
-            <th>Тикер</th>
-            <th>Тип</th>
-            <th>Доля</th>
-            <th>Статус</th>
-            <th>Рекомендация</th>
-            <th>Целевая</th>
-            <th>Аргументация</th>
-          </tr>
-        `;
-        table.appendChild(thead);
-        
-        // Тело таблицы
-        const tbody = document.createElement('tbody');
+        // Создаём grid для карточек рекомендаций
+        const grid = document.createElement('div');
+        grid.className = 'dashboard__ai__recommendations-grid';
         
         for (const row of rows) {
           const ticker = row.ticker || '';
@@ -683,22 +654,39 @@
             statusText = '→';
           }
           
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td class="dashboard__ai__table__ticker">${ticker}</td>
-            <td class="dashboard__ai__table__name" title="${assetType}">${assetType}</td>
-            <td class="dashboard__ai__table__percent">${currentPercent}</td>
-            <td><span class="dashboard__ai__table__status dashboard__ai__table__status--${statusClass}">${statusText}</span></td>
-            <td><span class="dashboard__ai__table__badge dashboard__ai__table__badge--${actionClass}">${actionIcon} ${recommendation}</span></td>
-            <td class="dashboard__ai__table__percent">${targetText}</td>
-            <td class="dashboard__ai__table__rationale" title="${rationale}">${rationale || '—'}</td>
+          const card = document.createElement('div');
+          card.className = 'dashboard__ai__card';
+          card.innerHTML = `
+            <div class="dashboard__ai__card__header">
+              <span class="dashboard__ai__card__ticker">${ticker}</span>
+              <span class="dashboard__ai__card__badge dashboard__ai__card__badge--${actionClass}">${actionIcon} ${recommendation}</span>
+            </div>
+            <div class="dashboard__ai__card__body">
+              <div class="dashboard__ai__card__row">
+                <span class="dashboard__ai__card__label">Тип:</span>
+                <span>${assetType}</span>
+              </div>
+              <div class="dashboard__ai__card__row">
+                <span class="dashboard__ai__card__label">Доля:</span>
+                <span>${currentPercent}</span>
+              </div>
+              <div class="dashboard__ai__card__row">
+                <span class="dashboard__ai__card__label">Цель:</span>
+                <span>${targetText}</span>
+              </div>
+              <div class="dashboard__ai__card__row">
+                <span class="dashboard__ai__card__label">Статус:</span>
+                <span class="dashboard__ai__card__status dashboard__ai__card__status--${statusClass}">${statusText}</span>
+              </div>
+              <div class="dashboard__ai__card__rationale">
+                ${rationale || '—'}
+              </div>
+            </div>
           `;
-          tbody.appendChild(tr);
+          grid.appendChild(card);
         }
         
-        table.appendChild(tbody);
-        tableWrapper.appendChild(table);
-        container.appendChild(tableWrapper);
+        container.appendChild(grid);
       } else {
         // Fallback: показываем narrative как текст
         loading.style.display = 'none';

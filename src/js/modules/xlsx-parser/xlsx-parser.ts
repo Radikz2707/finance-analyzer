@@ -1171,7 +1171,7 @@ export class XlsxParserModule {
           Math.round((agg.totalBalanceValue / totalQty) * 100) / 100;
       }
 
-      return {
+    return {
         name: agg.name,
         ticker: agg.ticker,
         assetType: agg.assetType,
@@ -1870,11 +1870,17 @@ export class XlsxParserModule {
     tradesCount: number;
     totalPurchasesSum: number;
     totalSalesSum: number;
+    totalWithdrawalsSum: number;
+    totalDepositsSum: number;
     totalHistoricalCommission: number;
     profitC10: number;
     profitC11: number;
     averageMonthlyDeposit: number;
     anomalousDepositsTotal: number;
+    currentMonthDeposits: number;
+    lastMonthDeposits: number;
+    currentYearDeposits: number;
+    lastYearDeposits: number;
   }> {
     await this.loadWorkbook();
 
@@ -1882,12 +1888,28 @@ export class XlsxParserModule {
     const reportSheet = this.workbook?.Sheets[config.TRADES_SHEET_NAME];
     let totalPurchasesSum: number | undefined;
     let totalSalesSum: number | undefined;
+    let totalWithdrawalsSum: number = 0;
+    let totalDepositsSum: number = 0;
     let totalHistoricalCommission: number | undefined;
     let profitC10: number | undefined;
     let profitC11: number | undefined;
     let tradesCount: number | undefined;
     let anomalousDepositsTotal: number = 0;
-    const depositsThreshold = 100000; // взнос > 100к считаем аномальным
+    
+    // Парсим таблицу "Денежные средства" для получения точных сумм ввода/вывода и всех взносов
+    const cashFlow = await this.parseCashFlowSheet();
+    const currentMonthDeposits = cashFlow.currentMonthDeposits;
+    const lastMonthDeposits = cashFlow.lastMonthDeposits;
+    const currentYearDeposits = cashFlow.currentYearDeposits;
+    const lastYearDeposits = cashFlow.lastYearDeposits;
+    const allDeposits = cashFlow.allDeposits;
+    
+    if (cashFlow.totalWithdrawals > 0) {
+      totalWithdrawalsSum = cashFlow.totalWithdrawals;
+    }
+    if (cashFlow.totalDeposits > 0) {
+      totalDepositsSum = cashFlow.totalDeposits;
+    }
 
     if (reportSheet && reportSheet['!ref']) {
       const reportRows =
@@ -1915,13 +1937,10 @@ export class XlsxParserModule {
           totalPurchasesSum = value;
         } else if (name.includes('ПРОДАЖ')) {
           totalSalesSum = value;
+        } else if (name.includes('ВЫВЕД') || name.includes('СНЯТИЕ') || name.includes('ВЫВОД')) {
+          totalWithdrawalsSum += value;
         } else if (name.includes('КОМИССИ')) {
           totalHistoricalCommission = value;
-        } else if (name.includes('ПОПОЛН') || name.includes('ВЗНОС') || name.includes('ПЕРЕВОД')) {
-          // Считаем аномальные взносы
-          if (value > depositsThreshold) {
-            anomalousDepositsTotal += value;
-          }
         } else if (
           name.includes('ТЕКУЩАЯ') &&
           (name.includes('ПРИБЫЛЬ') || name.includes('УБЫТОК'))
@@ -1963,20 +1982,14 @@ export class XlsxParserModule {
       }
     }
 
-    // Определяем startDate — первая дата в Excel
-    const tradesSheet = this.workbook?.Sheets[config.TRADES_SHEET_NAME];
-    if (tradesSheet && tradesSheet['!ref']) {
-      const tradesRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(tradesSheet);
-      for (const row of tradesRows) {
-        const dateVal = row['Дата'] || row['дата'] || row['Date'] || row['date'];
-        if (dateVal) {
-          const parsedDate = new Date(String(dateVal));
-          if (!isNaN(parsedDate.getTime())) {
-            this.startDate = parsedDate;
-            break;
-          }
-        }
-      }
+    // Определяем startDate — первый новый взнос после 23.12.2021
+    // 23.12.2021 — это перенос из старой таблицы, не учитываем
+    const firstValidDepositDate = allDeposits.find(d => d.date > new Date(2021, 11, 23));
+    if (firstValidDepositDate) {
+      this.startDate = firstValidDepositDate.date;
+    } else {
+      // Fallback: если нет новых взносов, используем текущую дату
+      this.startDate = new Date();
     }
 
     // Если не нашли в «Отчете по сделкам» — считаем из QUIK
@@ -2042,20 +2055,46 @@ export class XlsxParserModule {
     }
 
     // Рассчитываем averageMonthlyDeposit и anomalousDepositsTotal
-    // averageMonthlyDeposit = (totalPurchasesSum - anomalousDepositsTotal) / months
+    // averageMonthlyDeposit = (totalDepositsSum - anomalousDepositsTotal) / months
     const monthsSinceStart = Math.max(1, Math.floor((Date.now() - this.startDate.getTime()) / (30 * 24 * 60 * 60 * 1000)));
-    const nonAnomalousPurchases = totalPurchasesSum - anomalousDepositsTotal;
-    const averageMonthlyDeposit = nonAnomalousPurchases / monthsSinceStart;
+    
+    // Считаем аномальные взносы: отклонение от среднего больше 2 стандартных отклонений
+    if (allDeposits.length > 0) {
+      const values = allDeposits.map(d => d.value);
+      const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
+      const variance = values.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / values.length;
+      const stdDev = Math.sqrt(variance);
+      const threshold = mean + 2 * stdDev; // Аномальные — те, что больше среднего + 2σ
+      
+      for (const deposit of allDeposits) {
+        if (deposit.value > threshold) {
+          anomalousDepositsTotal += deposit.value;
+        }
+      }
+    }
+    
+    const nonAnomalousDeposits = totalDepositsSum - anomalousDepositsTotal;
+    const averageMonthlyDeposit = nonAnomalousDeposits / monthsSinceStart;
+
+    // Если totalWithdrawalsSum не найден — считаем как 0
+    if (totalWithdrawalsSum === undefined) totalWithdrawalsSum = 0;
+    if (totalDepositsSum === undefined) totalDepositsSum = 0;
 
     return {
       tradesCount: tradesCount || 0,
       totalPurchasesSum,
       totalSalesSum,
+      totalWithdrawalsSum,
+      totalDepositsSum,
       totalHistoricalCommission: totalHistoricalCommission || 0,
       profitC10,
       profitC11: profitC11 || 0,
       averageMonthlyDeposit: Math.round(averageMonthlyDeposit),
       anomalousDepositsTotal,
+      currentMonthDeposits,
+      lastMonthDeposits,
+      currentYearDeposits,
+      lastYearDeposits,
     };
   }
 
@@ -2073,6 +2112,112 @@ export class XlsxParserModule {
       return isNaN(parsed) ? 0 : parsed;
     }
     return 0;
+  }
+
+  /**
+    * Парсинг таблицы "Денежные средства" из Excel
+    * Возвращает суммы по периодам + массив всех взносов для расчёта среднего
+    * Таблица: строка 4 - заголовок, строка 5+ - данные
+    * Столбцы: A=№, B=Дата, C=начальный, D=ввод, E=вывод, F=конечный
+    */
+  private async parseCashFlowSheet(): Promise<{
+    totalDeposits: number;
+    totalWithdrawals: number;
+    currentMonthDeposits: number;
+    lastMonthDeposits: number;
+    currentYearDeposits: number;
+    lastYearDeposits: number;
+    allDeposits: Array<{ value: number; date: Date }>;
+  }> {
+    await this.loadWorkbook();
+    if (!this.workbook) return { totalDeposits: 0, totalWithdrawals: 0, currentMonthDeposits: 0, lastMonthDeposits: 0, currentYearDeposits: 0, lastYearDeposits: 0, allDeposits: [] };
+    
+    // Ищем лист "Средства"
+    const sheetName = this.workbook.SheetNames.find(name => 
+      name.toLowerCase() === 'средства'
+    );
+    
+    if (!sheetName) return { totalDeposits: 0, totalWithdrawals: 0, currentMonthDeposits: 0, lastMonthDeposits: 0, currentYearDeposits: 0, lastYearDeposits: 0, allDeposits: [] };
+    
+    const sheet = this.workbook.Sheets[sheetName];
+    if (!sheet || !sheet['!ref']) return { totalDeposits: 0, totalWithdrawals: 0, currentMonthDeposits: 0, lastMonthDeposits: 0, currentYearDeposits: 0, lastYearDeposits: 0, allDeposits: [] };
+    
+    const range = XLSX.utils.decode_range(sheet['!ref']);
+    
+    let totalDeposits = 0;
+    let totalWithdrawals = 0;
+    let currentMonthDeposits = 0;
+    let lastMonthDeposits = 0;
+    let currentYearDeposits = 0;
+    let lastYearDeposits = 0;
+    const allDeposits: Array<{ value: number; date: Date }> = [];
+    
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+    const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+    const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+    
+    // Сначала ищем строку "Итог" для общих сумм
+    for (let r = range.s.r; r <= range.e.r; r++) {
+      const cellA = sheet[XLSX.utils.encode_cell({r, c: 0})];
+      if (!cellA) continue;
+      
+      const cellText = String(cellA.v || '').trim().toLowerCase();
+      if (cellText === 'итог' || cellText === 'итого') {
+        const cellD = sheet[XLSX.utils.encode_cell({r, c: 3})]; // ввод средств
+        const cellE = sheet[XLSX.utils.encode_cell({r, c: 4})]; // вывод средств
+        totalDeposits = this.parseValue(cellD?.v || 0);
+        totalWithdrawals = this.parseValue(cellE?.v || 0);
+        break;
+      }
+    }
+    
+    // Суммируем по периодам из всех строк с 5-й (индекс 4)
+    for (let r = 4; r <= range.e.r; r++) {
+      const cellA = sheet[XLSX.utils.encode_cell({r, c: 0})]; // №
+      const cellB = sheet[XLSX.utils.encode_cell({r, c: 1})]; // Дата
+      const cellD = sheet[XLSX.utils.encode_cell({r, c: 3})]; // ввод средств
+      
+      if (!cellA || !cellB) continue;
+      
+      // Пропускаем заголовки (строки с текстом в столбце A)
+      const rowNum = cellA.v;
+      if (typeof rowNum !== 'number' || rowNum < 1) continue;
+      
+      const dateVal = cellB.v;
+      if (!dateVal) continue;
+      
+      let parsedDate: Date;
+      if (typeof dateVal === 'number') {
+        // Excel date serial number
+        parsedDate = new Date((dateVal - 25569) * 86400 * 1000);
+      } else {
+        parsedDate = new Date(String(dateVal));
+      }
+      
+      if (isNaN(parsedDate.getTime())) continue;
+      
+      const depositVal = this.parseValue(cellD?.v || 0);
+      
+      // Сохраняем все взносы для расчёта среднего и аномалий
+      if (depositVal > 0) {
+        allDeposits.push({ value: depositVal, date: parsedDate });
+      }
+      
+      if (parsedDate.getFullYear() === currentYear && parsedDate.getMonth() === currentMonth) {
+        currentMonthDeposits += depositVal;
+      } else if (parsedDate.getFullYear() === lastMonthYear && parsedDate.getMonth() === lastMonth) {
+        lastMonthDeposits += depositVal;
+      }
+      if (parsedDate.getFullYear() === currentYear) {
+        currentYearDeposits += depositVal;
+      } else if (parsedDate.getFullYear() === currentYear - 1) {
+        lastYearDeposits += depositVal;
+      }
+    }
+    
+    return { totalDeposits, totalWithdrawals, currentMonthDeposits, lastMonthDeposits, currentYearDeposits, lastYearDeposits, allDeposits };
   }
 
   /**

@@ -26,6 +26,17 @@ export interface DashboardKpiData {
   dateStr: string;
   timeStr: string;
   aiBoxHtml: string;
+  // Данные о взносах
+  averageMonthlyDeposit?: number;
+  anomalousDepositsTotal?: number;
+  currentMonthDeposits?: number;
+  lastMonthDeposits?: number;
+  currentYearDeposits?: number;
+  lastYearDeposits?: number;
+  totalPurchases?: number;
+  totalSales?: number;
+  totalWithdrawals?: number;
+  totalDeposits?: number; // Сумма всех пополнений из таблицы "Средства"
 }
 
 /**
@@ -84,6 +95,8 @@ export interface DashboardReportData {
   quotesTableRows: string;
   topGainers: string;
   topLosers: string;
+  fundsGridHtml?: string;
+  totalDeposits?: number;
 }
 
 export class DashboardReportBuilder {
@@ -117,6 +130,7 @@ export class DashboardReportBuilder {
       quotesTableRows,
       topGainers,
       topLosers,
+      fundsGridHtml,
     } = this.data;
 
     // Формирование отображения ставки ЦБ
@@ -357,6 +371,7 @@ export class DashboardReportBuilder {
       "<div class='card-sub'>Макро-контекст портфеля</div>" +
       '</div>' +
       '</div>' +
+      (fundsGridHtml || '') +
       "<div class='grid-main'>" +
       '<div>' +
       "<div class='block-box ai-box-styled'>" +
@@ -600,6 +615,74 @@ export class DashboardReportBuilder {
     const dateStr = kpiData?.dateStr ?? '';
     const timeStr = kpiData?.timeStr ?? '';
     const aiBoxHtml = kpiData?.aiBoxHtml ?? '';
+    
+    // Генерируем HTML для плиток взносов
+    let fundsGridHtml = '';
+    if (kpiData) {
+      const avgDeposit = kpiData.averageMonthlyDeposit || 0;
+      const currentMonthDeposits = kpiData.currentMonthDeposits || 0;
+      const lastMonthDeposits = kpiData.lastMonthDeposits || 0;
+      const currentYearDeposits = kpiData.currentYearDeposits || 0;
+      const lastYearDeposits = kpiData.lastYearDeposits || 0;
+      // totalDeposits — сумма всех пополнений из таблицы "Средства" (1 170 601)
+      const totalDeposits = kpiData.totalDeposits || kpiData.totalInvested || 0;
+      const totalWithdrawals = kpiData.totalWithdrawals || 0;
+      
+      // Если totalWithdrawals = 0 или аномально большое, считаем как 0
+      const validTotalWithdrawals = (totalWithdrawals > 0 && totalWithdrawals <= totalDeposits * 2) ? totalWithdrawals : 0;
+      
+      const fmt = (n: number) => {
+        const rounded = Math.round(n * 100) / 100;
+        const hasCopecks = rounded % 1 !== 0;
+        return rounded.toLocaleString('ru-RU', { 
+          minimumFractionDigits: hasCopecks ? 2 : 0, 
+          maximumFractionDigits: 2 
+        });
+      };
+      
+      fundsGridHtml = `
+        <div style="margin-bottom: 20px; padding: 15px; background: #161b22; border: 1px solid #30363d; border-radius: 6px;">
+          <h2 style="margin: 0 0 15px 0; font-size: 14px; color: #fff; border-bottom: 1px solid #30363d; padding-bottom: 8px;">💰 Взносы и средства</h2>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;">
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Всего внесено</div>
+              <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(totalDeposits)} ₽</div>
+              <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">За весь период (включая аномальные)</div>
+            </div>
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Всего выведено</div>
+              <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(validTotalWithdrawals)} ₽</div>
+              <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">За весь период</div>
+            </div>
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Всего за текущий месяц</div>
+              <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(currentMonthDeposits)} ₽</div>
+              <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">${new Date().toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</div>
+            </div>
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Среднее в месяц</div>
+              <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(avgDeposit)} ₽</div>
+              <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">Без аномальных взносов</div>
+            </div>
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Прошлый месяц</div>
+              <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(lastMonthDeposits)} ₽</div>
+              <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">Прошлый месяц</div>
+            </div>
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Текущий год</div>
+              <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(currentYearDeposits)} ₽</div>
+              <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">За текущий год</div>
+            </div>
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+              <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Прошлый год</div>
+              <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(lastYearDeposits)} ₽</div>
+              <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">За прошлый год</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
 
     return new DashboardReportBuilder({
       totalVal: totalValStr,
@@ -625,6 +708,8 @@ export class DashboardReportBuilder {
       quotesTableRows: quotesBlock.quotesTableRows,
       topGainers: quotesBlock.topGainers,
       topLosers: quotesBlock.topLosers,
+      fundsGridHtml,
+      totalDeposits: kpiData?.totalDeposits || 0,
     });
   }
 }

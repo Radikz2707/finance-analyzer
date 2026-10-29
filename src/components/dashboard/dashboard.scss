@@ -513,18 +513,122 @@ $dashboard-radius-sm: 8px;
     gap: 10px;
   }
 
-  &__item {
-    background: rgba(56, 139, 255, 0.08);
-    border: 1px solid rgba(56, 139, 255, 0.15);
+  // ── AI Recommendations Grid (карточки в 2 ряда) ──
+  &__recommendations-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: 15px;
+    margin-top: 15px;
+  }
+
+  &__card {
+    background: rgba(56, 139, 255, 0.05);
+    border: 1px solid $dashboard-border;
     border-radius: $dashboard-radius-sm;
-    padding: 12px;
-    margin-bottom: 10px;
-    display: block;
-    width: 100%;
-    
+    padding: 16px;
+    transition: all 0.2s ease;
+
     &:hover {
       border-color: $dashboard-primary;
       background: $dashboard-primary-bg-hover;
+      transform: translateY(-2px);
+    }
+
+    &__header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid $dashboard-border;
+    }
+
+    &__ticker {
+      font-weight: 700;
+      font-size: 16px;
+      color: $dashboard-primary;
+      font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    }
+
+    &__badge {
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+
+      &--buy {
+        background: rgba(35, 134, 54, 0.2);
+        color: $dashboard-success;
+      }
+
+      &--sell {
+        background: rgba(242, 81, 87, 0.2);
+        color: $dashboard-danger;
+      }
+
+      &--reduce {
+        background: rgba(242, 81, 87, 0.2);
+        color: $dashboard-danger;
+      }
+
+      &--average {
+        background: rgba(56, 139, 255, 0.2);
+        color: $dashboard-primary;
+      }
+
+      &--hold {
+        background: rgba(211, 160, 56, 0.2);
+        color: #d3a038;
+      }
+    }
+
+    &__body {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    &__row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
+
+    &__label {
+      color: $dashboard-text-secondary;
+      font-weight: 500;
+    }
+
+    &__status {
+      font-weight: 600;
+
+      &--success {
+        color: $dashboard-success;
+      }
+
+      &--danger {
+        color: $dashboard-danger;
+      }
+
+      &--warning {
+        color: #d3a038;
+      }
+
+      &--neutral {
+        color: $dashboard-text-secondary;
+      }
+    }
+
+    &__rationale {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(48, 54, 61, 0.5);
+      font-size: 13px;
+      line-height: 1.5;
+      color: $dashboard-text;
     }
   }
 
