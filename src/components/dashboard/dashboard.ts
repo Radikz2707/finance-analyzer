@@ -360,7 +360,7 @@ export class DashboardReportBuilder {
       c11Color +
       ";'>" +
       profitC11 +
-      ' ₽</div>' +
+      '</div>' +
       "<div class='card-sub'>Реальный инвест-профит</div>" +
       '</div>' +
       "<div class='card' style='border-color: #a371f7;'>" +

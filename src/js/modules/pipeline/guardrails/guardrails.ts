@@ -218,7 +218,8 @@ function buildRecoveryStrategy(
     );
   }
 
-  // Субсидирование от других позиций
+  // Субсидирование от других позиций — используем купонную ставку, а не НКД
+  // НКД — временная величина, начисляемая до выплаты купона; реальный доход = couponRub
   const stableAssets = assetsAnalysis.filter(
     (a) =>
       a.status === 'STABLE' ||
@@ -228,13 +229,14 @@ function buildRecoveryStrategy(
   );
 
   if (stableAssets.length > 0) {
-    const stableDividends = stableAssets
-      .filter((a) => a.nkdRub > 0)
-      .reduce((sum, a) => sum + a.nkdRub, 0);
+    // couponRub — реальная купонная ставка в рублях (не НКД)
+    const stableCoupons = stableAssets
+      .filter((a) => (a.couponRub ?? 0) > 0)
+      .reduce((sum, a) => sum + (a.couponRub ?? 0), 0);
 
-    if (stableDividends > 0) {
+    if (stableCoupons > 0) {
       strategyParts.push(
-        `💰 Субсидирование: стабильные позиции генерируют ${stableDividends.toFixed(2)} ₽ купонов/дивидендов. ` +
+        `💰 Субсидирование: стабильные позиции генерируют ${stableCoupons.toFixed(2)} ₽ купонов. ` +
         `Использовать для усреднения позиции ${ticker} без дополнительного кэша.`,
       );
     }

@@ -8,6 +8,7 @@ import type { AgentConfig } from '../../agent/types.js';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { AggressiveTokenizerRu } = require('natural');
+import type { AssetResearchSnapshot, AssetType } from '../../../research/types.js';
 import { RssNewsSource } from '../../gatekeeper/rss-source.js';
 import { SentimentAnalyzer } from '../../../news/nlp/sentiment-analyzer.js';
 import type {
@@ -714,10 +715,44 @@ export class ResearchAgentV2 extends AgentBase {
           ? `ResearchAgentV2: ${alertsText}. Новости: ${newsSummary}. Тикер: ${tickers[0]}.`
           : `ResearchAgentV2: ${alertsText}. Новости: ${newsSummary}. Факты переданы без изменения.`;
 
+      // Генерируем базовые snapshots для всех тикеров из assetsAnalysis
+      // assetsAnalysis содержит assetType, необходимый для InvestmentThesisEngine
+      const snapshots = new Map<string, { snapshot: unknown }>();
+      const assetsToAnalyze =
+        tickers.length > 0
+          ? facts.assetsAnalysis?.filter((a) =>
+              tickers.some((t) => a.ticker.toUpperCase() === t.toUpperCase()),
+            ) ?? []
+          : facts.assetsAnalysis ?? [];
+
+      for (const asset of assetsToAnalyze) {
+        const ticker = asset.ticker;
+        const name = asset.name;
+        const assetType = this.mapAssetTypeToResearch(asset.assetType ?? 'А');
+
+        // Создаём полноценный AssetResearchSnapshot, совместимый с InvestmentThesisEngine
+        const researchSnapshot: AssetResearchSnapshot = {
+          identity: {
+            ticker,
+            name,
+            assetType,
+            issuer: name,
+            currency: 'RUB',
+            market: 'MOEX',
+          },
+          evidence: {},
+        };
+
+        snapshots.set(ticker, {
+          snapshot: researchSnapshot,
+        });
+      }
+
       return {
         action: 'facts' as ResearchAction,
         success: true,
         message,
+        snapshots,
         data: {
           opinion,
           priceAlerts: priceAlertsCount,
@@ -805,11 +840,21 @@ export class ResearchAgentV2 extends AgentBase {
       action: null,
       confidence: 0.5,
       arguments: [
-        `Проверено алертов: ${priceAlertsCount}`,
-        `Проверено новостей: ${newsImpactsCount}`,
-        `Алерты: ${alertsText}`,
-        `Новости: ${newsSummary}`,
+        `Алерты: ${priceAlertsCount}`,
+        `Новости: ${newsImpactsCount}`,
       ],
     };
+  }
+
+  /**
+   * Преобразует тип актива из данных в AssetType для research.
+   */
+  private mapAssetTypeToResearch(assetType: string): AssetType {
+    const t = assetType.trim().toUpperCase();
+    if (t === 'А' || t === 'АКЦИЯ' || t === 'STOCK') return 'STOCK';
+    if (t === 'О' || t === 'ОБЛИГАЦИЯ' || t === 'BOND') return 'BOND';
+    if (t === 'Ф' || t === 'ФОНД' || t === 'ETF') return 'ETF';
+    if (t === 'CASH' || t === 'Д') return 'CASH';
+    return 'OTHER';
   }
 }

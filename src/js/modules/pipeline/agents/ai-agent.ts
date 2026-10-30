@@ -31,6 +31,7 @@ import { positionsRepo } from '../../db-manager/db-manager.js';
 import {
   getRecoveryOnlyTickers,
   buildGuardrailsContext,
+  checkGuardrails,
 } from '../guardrails/guardrails.js';
 import { getLogger } from '../../logger/index.js';
 import {
@@ -61,6 +62,8 @@ export interface AiClientResult {
   error?: string;
   /** Структурированный JSON (если модель вернула) */
   structuredJson?: unknown;
+  /** Массив структурированных JSON (один на каждый актив) */
+  structuredJsonArray?: unknown[];
   /** Валидация структурированного JSON */
   structuredValidation?: unknown;
 }
@@ -379,30 +382,19 @@ export class AiAgent extends AgentBase {
     >();
     const mathAiAgreements = new Map<string, MathAiAgreement>();
 
-    // Извлекаем тикер из AI JSON (если есть)
-    const rawAiJson = aiClientResult.structuredJson as RawAIJson | null;
-    const aiJsonTicker = rawAiJson?.ticker?.toUpperCase() ?? null;
+    // Извлекаем массив JSON от AI (один объект на каждый актив)
+    const aiJsonArray = (aiClientResult.structuredJsonArray as RawAIJson[]) ?? [];
+    const aiJsonMap = new Map<string, RawAIJson>();
+    for (const item of aiJsonArray) {
+      aiJsonMap.set(item.ticker?.toUpperCase() ?? '', item);
+    }
 
     for (const asset of portfolioAnalysis.assetsAnalysis) {
       const assetTicker = asset.ticker.toUpperCase();
 
       // ─── Изоляция по тикеру ───
-      // Если AI вернул JSON, проверяем, что тикер совпадает с текущим активом
-      let aiJsonForAsset: RawAIJson | null = null;
-
-      if (rawAiJson) {
-        // Проверяем точное совпадение тикера
-        if (aiJsonTicker === assetTicker) {
-          aiJsonForAsset = rawAiJson;
-        } else {
-          // Тикер не совпадает — используем детерминированные данные
-          // для генерации рекомендации (fallback)
-          this.log.debug(
-            `[AiAgent] [TIKER_ISOLATION] AI recommendation ticker=${aiJsonTicker} ` +
-              `does not match asset ticker=${assetTicker}, using deterministic fallback`,
-          );
-        }
-      }
+      // Ищем JSON для конкретного тикера в массиве
+      const aiJsonForAsset: RawAIJson | null = aiJsonMap.get(assetTicker) ?? null;
 
       const det = buildDeterministicAssetData(asset, []);
       const structured = buildStructuredAIRecommendation(
@@ -424,6 +416,35 @@ export class AiAgent extends AgentBase {
       }
 
       structuredRecommendations.set(asset.ticker, structured);
+
+      // ─── Guardrails — проверка на опасные действия ───
+      const guardrailResult = checkGuardrails(
+        structured.recommendedAction ?? 'HOLD',
+        asset.ticker,
+        positionsRepo,
+        portfolioAnalysis.assetsAnalysis,
+      );
+
+      if (guardrailResult.blockedActions.length > 0) {
+        for (const blocked of guardrailResult.blockedActions) {
+          this.log.warn(
+            `[AiAgent] [GUARDRAIL-BLOCK] ${asset.ticker}: ` +
+              `AI recommendation "${blocked.action}" blocked — ${blocked.reason}`,
+          );
+          // Заменяем опасную рекомендацию на HOLD
+          structured.recommendedAction = 'HOLD';
+          structured.confidence = 0.85;
+          structured.rationale = `Действие "${blocked.action}" заблокировано guardrails: ${blocked.reason}. Заменено на HOLD.`;
+        }
+      }
+
+      if (guardrailResult.warnings.length > 0) {
+        for (const warning of guardrailResult.warnings) {
+          this.log.info(
+            `[AiAgent] [GUARDRAIL-WARN] ${asset.ticker}: ${warning.message}`,
+          );
+        }
+      }
 
       // ─── Согласование PortfolioMath и ИИ ───
       const mathAction = asset.status; // PortfolioMathStatus
@@ -547,6 +568,8 @@ export class AiAgent extends AgentBase {
           totalPurchases: historicalTrades.totalPurchasesSum,
           totalSales: historicalTrades.totalSalesSum,
           commission: historicalTrades.totalHistoricalCommission,
+          averageMonthlyDeposit: historicalTrades.averageMonthlyDeposit ?? 0,
+          anomalousDepositsTotal: historicalTrades.anomalousDepositsTotal ?? 0,
         },
         accounts.map((a) => ({ name: a.name, value: a.value })),
         memoryContext,

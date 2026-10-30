@@ -75,6 +75,8 @@ interface AiResponseResult {
   error?: string;
   /** Структурированный JSON от AI (может быть null если не извлечён) */
   structuredJson?: RawAIJson | null;
+  /** Массив структурированных JSON-объектов от AI (по одному на каждый актив) */
+  structuredJsonArray?: RawAIJson[];
   /** Результат валидации structured JSON */
   structuredValidation?: StructuredValidationResult | null;
 }
@@ -139,6 +141,58 @@ export function extractJsonFromAiResponse(text: string): RawAIJson | null {
   }
 
   return null;
+}
+
+/**
+ * Извлекает массив JSON-объектов из AI-ответа.
+ * Ожидается формат: ```json [ {...}, {...}, ... ] ```
+ * Возвращает массив RawAIJson для всех активов.
+ */
+export function extractJsonArrayFromAiResponse(text: string): RawAIJson[] {
+  if (!text) return [];
+
+  // Паттерн 1: ```json [ ... ] ```
+  const jsonBlockPattern = /```json\s*([\s\S]*?)```/;
+  let match = text.match(jsonBlockPattern);
+  if (match) {
+    const jsonText = match[1];
+    if (jsonText) {
+      try {
+        const parsed = JSON.parse(jsonText.trim());
+        if (Array.isArray(parsed)) {
+          return parsed as RawAIJson[];
+        }
+        // Если пришёл одиночный объект — обернём в массив
+        if (parsed && typeof parsed === 'object' && 'ticker' in parsed) {
+          return [parsed as RawAIJson];
+        }
+      } catch {
+        // fall through
+      }
+    }
+  }
+
+  // Паттерн 2: ``` [ ... ] ```
+  const blockPattern = /```\s*([\s\S]*?)```/;
+  match = text.match(blockPattern);
+  if (match) {
+    const jsonText = match[1];
+    if (jsonText) {
+      try {
+        const parsed = JSON.parse(jsonText.trim());
+        if (Array.isArray(parsed)) {
+          return parsed as RawAIJson[];
+        }
+        if (parsed && typeof parsed === 'object' && 'ticker' in parsed) {
+          return [parsed as RawAIJson];
+        }
+      } catch {
+        // fall through
+      }
+    }
+  }
+
+  return [];
 }
 
 /**
@@ -1436,30 +1490,70 @@ export class AiClient {
 
     // Извлекаем структурированный JSON из AI-ответа
     let structuredJson: RawAIJson | null = null;
+    let structuredJsonArray: RawAIJson[] = [];
     let structuredValidation: StructuredValidationResult | null = null;
 
     try {
-      structuredJson = extractJsonFromAiResponse(aiText);
-      if (structuredJson) {
-        structuredValidation = validateStructuredAIJson(
-          structuredJson,
-          assetTickers,
-        );
+      // Сначала пробуем массив JSON (один объект на каждый актив)
+      structuredJsonArray = extractJsonArrayFromAiResponse(aiText);
+
+      if (structuredJsonArray.length > 0) {
+        // Валидируем каждый элемент массива
+        const validResults: RawAIJson[] = [];
+        for (const item of structuredJsonArray) {
+          const validation = validateStructuredAIJson(item, assetTickers);
+          if (validation.valid) {
+            validResults.push(item);
+          } else {
+            this.log.warn(
+              `[AI] ⚠️ JSON валидация не пройдена для ${item.ticker}:`,
+              validation.errors,
+            );
+          }
+        }
+        structuredJsonArray = validResults;
+        structuredJson = validResults.length > 0 ? (validResults[0] as RawAIJson) : null;
+
         this.log.info(
-          `[AI] JSON извлечён: ticker=${structuredJson.ticker}, ` +
-            `action=${structuredJson.recommendedAction}, ` +
-            `valid=${structuredValidation?.valid ?? 'N/A'}`,
+          `[AI] JSON-массив извлечён: ${structuredJsonArray.length} актив(ов) прошло валидацию`,
         );
-        if (structuredValidation && !structuredValidation.valid) {
-          this.log.warn(
-            '[AI] ⚠️ JSON валидация не пройдена:',
-            structuredValidation.errors,
+        for (const item of structuredJsonArray) {
+          this.log.info(
+            `[AI]   ${item.ticker}: ${item.recommendedAction}, confidence=${item.confidence}`,
           );
         }
       } else {
-        this.log.warn('[AI] JSON-блок не найден в ответе');
-        // Логгируем начало ответа для отладки
-        this.log.info('[AI] Начало ответа AI:', aiText.slice(0, 500));
+        // Fallback: одиночный JSON-объект
+        structuredJson = extractJsonFromAiResponse(aiText);
+        if (structuredJson) {
+          // Одиночный JSON — оборачиваем в массив, чтобы ai-agent мог
+          // обработать его наравне с другими активами
+          structuredJsonArray = [structuredJson as RawAIJson];
+          this.log.info(
+            `[AI] Одиночный JSON обернут в массив: ticker=${structuredJson.ticker}`,
+          );
+        }
+        if (structuredJson) {
+          structuredValidation = validateStructuredAIJson(
+            structuredJson,
+            assetTickers,
+          );
+          this.log.info(
+            `[AI] JSON извлечён: ticker=${structuredJson.ticker}, ` +
+              `action=${structuredJson.recommendedAction}, ` +
+              `valid=${structuredValidation?.valid ?? 'N/A'}`,
+          );
+          if (structuredValidation && !structuredValidation.valid) {
+            this.log.warn(
+              '[AI] ⚠️ JSON валидация не пройдена:',
+              structuredValidation.errors,
+            );
+          }
+        } else {
+          this.log.warn('[AI] JSON-блок не найден в ответе');
+          // Логгируем начало ответа AI для отладки
+          this.log.info('[AI] Начало ответа AI:', aiText.slice(0, 500));
+        }
       }
     } catch (err) {
       this.log.error('[AI] Ошибка парсинга JSON:', err);
@@ -1470,6 +1564,7 @@ export class AiClient {
       modelUsed: usedProviderName,
       success: true,
       structuredJson,
+      structuredJsonArray,
       structuredValidation,
     };
   }

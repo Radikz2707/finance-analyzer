@@ -150,6 +150,7 @@ $dashboard-radius-sm: 8px;
   }
 
   &__value {
+    display: block;
     font-size: 24px;
     font-weight: 700;
     color: #f0f6fc;
@@ -161,6 +162,7 @@ $dashboard-radius-sm: 8px;
   }
 
   &__percent {
+    display: block;
     font-size: 22px;
     font-weight: 700;
     margin-top: 4px;
