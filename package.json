@@ -62,7 +62,7 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/browser-sync": "^2.29.1",
     "@types/gulp": "^4.0.18",
-    "@types/node": "^26.6.5",
+    "@types/node": "^26.6.6",
     "ajv": "^8.20.0",
     "aos": "^2.3.4",
     "autoprefixer": "^10.6.2",
@@ -73,7 +73,7 @@
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
     "esbuild-loader": "^4.5.0",
-    "eslint": "^10.13.0",
+    "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
     "gh-pages": "^6.3.0",
     "globals": "^17.13.0",
@@ -100,7 +100,7 @@
     "postcss": "^8.5.32",
     "postcss-sort-media-queries": "^6.7.1",
     "prettier": "^3.9.10",
-    "sass": "^1.106.1",
+    "sass": "^1.107.0",
     "sharp": "^0.35.5",
     "stylelint": "^17.16.0",
     "stylelint-config-recess-order": "^7.9.0",
@@ -127,9 +127,9 @@
   "allowScripts": {
     "@parcel/watcher@2.6.0": true,
     "better-sqlite3@13.0.3": true,
-    "core-js@3.50.0": true,
     "esbuild@0.28.2": true,
-    "ttf2woff2@6.0.1": true
+    "ttf2woff2@6.0.1": true,
+    "core-js@3.51.0": true
   },
   "dependencies": {
     "axios": "^1.21.0",

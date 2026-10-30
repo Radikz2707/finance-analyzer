@@ -68,7 +68,7 @@ function makeDataOutput(
         totalSalesSum: 0,
         totalWithdrawalsSum: 0,
         totalDepositsSum: 0,
-        profitC10: 0,
+        profitC10: 15000,
         profitC11: 0,
         totalHistoricalCommission: 0,
         averageMonthlyDeposit: 0,

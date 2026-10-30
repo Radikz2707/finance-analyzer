@@ -17,12 +17,12 @@ describe('buildSystemPrompt', () => {
   });
 
   it('contains JSON-BLOCK format', () => {
-    expect(basePrompt).toContain('=== JSON-БЛОК');
+    expect(basePrompt).toContain('=== JSON-МАССИВ');
   });
 
   it('instructs model to output JSON block FIRST (before narrative)', () => {
     expect(basePrompt).toContain('ОБЯЗАТЕЛЬНО ПЕРВЫМ');
-    expect(basePrompt).toContain('СНАЧАЛА выведи JSON-блок');
+    expect(basePrompt).toContain('СНАЧАЛА выведи JSON-МАССИВ');
     expect(basePrompt).toContain('ТЕКСТОВЫЙ ОТВЕТ (7 секций, ПОСЛЕ JSON)');
   });
 
@@ -113,7 +113,7 @@ describe('buildSystemPrompt', () => {
     const reasoningIndex = basePrompt.indexOf(
       '=== ИНВЕСТИЦИОННЫЙ REASONING ===',
     );
-    const jsonIndex = basePrompt.indexOf('=== JSON-БЛОК');
+    const jsonIndex = basePrompt.indexOf('=== JSON-МАССИВ');
     expect(rulesIndex).toBeGreaterThanOrEqual(0);
     expect(reasoningIndex).toBeGreaterThanOrEqual(0);
     expect(jsonIndex).toBeGreaterThanOrEqual(0);
