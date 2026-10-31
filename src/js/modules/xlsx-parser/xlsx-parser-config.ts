@@ -41,6 +41,32 @@ export const BONDS_COLUMN_NOMINAL_ALT1 = 'Номинальная стоимос�
 export const BONDS_COLUMN_NOMINAL_ALT2 = 'Nominal';
 export const BONDS_COLUMN_NOMINAL_ALT3 = 'Номинал облигации';
 
+// ─── Столбцы листа «Облигации» A:M (рыночные данные) ────────────────────────
+// Столбец A
+export const BONDS_COLUMN_INSTRUMENT = 'Инструмент';
+// Столбец B (ISIN — уже определён выше)
+// Столбец C
+export const BONDS_COLUMN_LISTING = 'Листинг';
+// Столбец D
+export const BONDS_COLUMN_LAST_PRICE = 'Цена последняя';
+// Столбец E
+export const BONDS_COLUMN_YIELD = 'Доходность';
+// Столбец F
+export const BONDS_COLUMN_TURNOVER = 'Оборот';
+// Столбец G (Номинал — уже определён выше)
+// Столбец H
+export const BONDS_COLUMN_COUPON_AMOUNT = 'Размер купона';
+// Столбец I
+export const BONDS_COLUMN_COUPON_PERIOD = 'Длительность купона';
+// Столбец J
+export const BONDS_COLUMN_COUPON_DATE = 'Дата выплаты купона';
+// Столбец K
+export const BONDS_COLUMN_NKD = 'НКД';
+// Столбец L
+export const BONDS_COLUMN_MATURITY_DATE = 'Дата погашения';
+// Столбец M
+export const BONDS_COLUMN_DURATION = 'Дюрация';
+
 // Столбцы листа "Акции" — левая таблица (сырые данные из QUIK)
 export const QUOTES_COLUMN_INSTRUMENT = 'Инструмент';
 export const QUOTES_COLUMN_TICKER = 'Код инструмента';

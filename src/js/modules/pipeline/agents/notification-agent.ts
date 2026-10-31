@@ -512,7 +512,16 @@ export class NotificationAgent extends AgentBase {
 
     for (const [ticker, rec] of recs) {
       const action = rec.recommendedAction ?? 'HOLD';
-      const confidence = rec.confidence ?? 0;
+      // ИСПРАВЛЕНИЕ Этап 2: confidence=null → «Нет данных», не 0%.
+      // confidence=0 — действительное значение; confidence=null — оценка отсутствует.
+      const confidenceRaw = rec.confidence;
+      let confidenceDisplay: string;
+      if (confidenceRaw === null || confidenceRaw === undefined) {
+        confidenceDisplay = 'Нет данных';
+      } else {
+        const pct = Math.round(confidenceRaw * 100);
+        confidenceDisplay = pct + '%';
+      }
       const actionColor = action === 'BUY' ? '#56d364' : action === 'SELL' || action === 'REDUCE' ? '#ff7b72' : '#ffd166';
       const actionLabel = action === 'BUY' ? '🟢 Покупать' : action === 'SELL' || action === 'REDUCE' ? '🔴 Продавать' : '🟡 Держать';
 
@@ -520,9 +529,29 @@ export class NotificationAgent extends AgentBase {
       html += '<div style="flex: 1;">\n';
       html += '<div style="font-weight: bold; color: #e6edf3; font-size: 14px;">' + ticker + (rec.name ? ' — ' + rec.name : '') + '</div>\n';
       html += '<div style="color: ' + actionColor + '; font-size: 13px; margin-top: 4px;">' + actionLabel + '</div>\n';
-      html += '<div style="color: #8b949e; font-size: 12px; margin-top: 2px;">Уверенность: ' + Math.round(confidence * 100) + '%</div>\n';
+      html += '<div style="color: #8b949e; font-size: 12px; margin-top: 2px;">Уверенность: ' + confidenceDisplay + '</div>\n';
       if (rec.rationale) {
         html += '<div style="color: #8b949e; font-size: 11px; margin-top: 4px; font-style: italic;">' + rec.rationale + '</div>\n';
+      }
+
+      // ─── P1-3: Итоговое заключение (7 элементов) ───
+      const conclusion = (rec as { finalConclusion?: { action: string; reasons: string[]; risks: string[]; dataStatus: string; source: string; mathAiAgreement: string; executionLimitations: string[] } }).finalConclusion;
+      if (conclusion) {
+        html += '<div style="margin-top: 8px; padding: 8px; background: rgba(163, 113, 247, 0.05); border: 1px solid rgba(163, 113, 247, 0.2); border-radius: 4px; font-size: 11px;">\n';
+        html += '<div style="font-weight: bold; color: #a371f7; margin-bottom: 4px;">📝 Итоговое заключение:</div>\n';
+        html += '<div>Источник: ' + conclusion.source + '</div>\n';
+        html += '<div>Согласованность: ' + conclusion.mathAiAgreement + '</div>\n';
+        html += '<div>Данные: ' + conclusion.dataStatus + '</div>\n';
+        if (conclusion.reasons && conclusion.reasons.length > 0) {
+          html += '<div style="margin-top: 3px;">Причины: ' + conclusion.reasons.join('; ') + '</div>\n';
+        }
+        if (conclusion.risks && conclusion.risks.some((r) => !r.includes('Нет критических'))) {
+          html += '<div style="color: #ffd166; margin-top: 3px;">Риски: ' + conclusion.risks.filter((r) => !r.includes('Нет критических')).join('; ') + '</div>\n';
+        }
+        if (conclusion.executionLimitations && conclusion.executionLimitations.some((l) => !l.includes('Нет ограничений'))) {
+          html += '<div style="color: #ff7b72; margin-top: 3px;">⚠️ Ограничения: ' + conclusion.executionLimitations.filter((l) => !l.includes('Нет ограничений')).join('; ') + '</div>\n';
+        }
+        html += '</div>\n';
       }
       html += '</div>\n';
       html += '<div class="feedback-buttons" style="display: flex; gap: 8px; margin-left: 15px;">\n';
@@ -651,7 +680,19 @@ export class NotificationAgent extends AgentBase {
             ? 'УХУДШАЕТ'
             : 'НЕЙТРАЛЬНЫЙ';
 
-      md += `| ${s.title}${bestMarker} | ${verdictLabel} | ${fmtPct(s.structureDeviationPct)} | ${fmtRub(s.projectedUnrealizedPnL)} | ${fmtRub(s.realizedLossRub)} |\n`;
+      // ИСПРАВЛЕНИЕ Этап 2.1: показываем PARTIAL/INSUFFICIENT_DATA вместо 0
+      const isPnlNotCalculated = s.pnlCalculationStatus === 'INSUFFICIENT_DATA';
+      const isPnlPartial = s.pnlCalculationStatus === 'PARTIAL';
+      const pnlDisplay =
+        isPnlNotCalculated
+          ? 'Нет данных'
+          : fmtRub(s.projectedUnrealizedPnL);
+      const realizedDisplay =
+        isPnlNotCalculated
+          ? 'Нет данных'
+          : fmtRub(s.realizedPnLRub);
+
+      md += `| ${s.title}${bestMarker} | ${verdictLabel} | ${fmtPct(s.structureDeviationPct)} | ${pnlDisplay} | ${realizedDisplay}${isPnlPartial ? ' ⚠️' : ''} |\n`;
 
       if (s.rationale) {
         md += `| _${s.rationale}_ | | | | |\n`;
@@ -739,6 +780,14 @@ export class NotificationAgent extends AgentBase {
             ? 'УХУДШАЕТ'
             : 'НЕЙТРАЛЬНЫЙ';
 
+      // ИСПРАВЛЕНИЕ Этап 2.1: показываем PARTIAL/INSUFFICIENT_DATA вместо 0
+      const isPnlNotCalculated = s.pnlCalculationStatus === 'INSUFFICIENT_DATA';
+      const isPnlPartial = s.pnlCalculationStatus === 'PARTIAL';
+      const pnlDisplay = isPnlNotCalculated ? 'Нет данных' : fmtRub(s.projectedUnrealizedPnL);
+      const realizedDisplay = isPnlNotCalculated ? 'Нет данных' : fmtRub(s.realizedPnLRub);
+      const pnlColor = isPnlNotCalculated ? '#8b949e' : (s.projectedUnrealizedPnL >= 0 ? '#56d364' : '#ff7b72');
+      const realizedColor = isPnlNotCalculated ? '#8b949e' : (s.realizedPnLRub >= 0 ? '#56d364' : '#ff7b72');
+
       html +=
         '<tr style="border-bottom:1px solid #30363d;">' +
         `<td style="padding:8px;color:#c9d1d9;${rowStyle}"><strong>${s.title}</strong>${
@@ -746,8 +795,8 @@ export class NotificationAgent extends AgentBase {
         }</td>` +
         `<td style="padding:8px;color:${verdictColor};${rowStyle}"><strong>${verdictLabel}</strong></td>` +
         `<td style="padding:8px;text-align:right;color:#c9d1d9;${rowStyle}">${fmtPct(s.structureDeviationPct)}</td>` +
-        `<td style="padding:8px;text-align:right;color:${s.projectedUnrealizedPnL >= 0 ? '#56d364' : '#ff7b72'};${rowStyle}">${fmtRub(s.projectedUnrealizedPnL)}</td>` +
-        `<td style="padding:8px;text-align:right;color:${s.realizedLossRub > 0 ? '#ff7b72' : '#8b949e'};${rowStyle}">${fmtRub(s.realizedLossRub)}</td>` +
+        `<td style="padding:8px;text-align:right;color:${pnlColor};${rowStyle}">${pnlDisplay}</td>` +
+        `<td style="padding:8px;text-align:right;color:${realizedColor};${rowStyle}">${realizedDisplay}${isPnlPartial ? ' ⚠️' : ''}</td>` +
         '</tr>';
 
       // Rationale (если есть)
@@ -773,11 +822,14 @@ export class NotificationAgent extends AgentBase {
       '🛡️ Стратег — Правила защиты</h3>';
 
     // Сводка с долями сегментов
+    // ИСПРАВЛЕНИЕ Этап 2: REDUCE считается ТОЛЬКО как продажа/сокращение, НЕ как покупка.
+    // BUY, SELL, REDUCE, EXIT — каждая категория отдельно.
+    // STABLE не входит в тип AiAction finalAction, поэтому не проверяем его.
     const buyCount = strategist.decisions.filter(
-      (d) => d.finalAction === 'BUY' || d.finalAction === 'REDUCE',
+      (d) => d.finalAction === 'BUY',
     ).length;
     const sellCount = strategist.decisions.filter(
-      (d) => d.finalAction === 'SELL' || d.finalAction === 'REDUCE',
+      (d) => d.finalAction === 'SELL' || d.finalAction === 'REDUCE' || d.finalAction === 'EXIT',
     ).length;
     const holdCount = strategist.decisions.filter(
       (d) => d.finalAction === 'HOLD',

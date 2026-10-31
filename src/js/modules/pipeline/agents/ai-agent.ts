@@ -17,12 +17,14 @@ import { AiClient } from '../../ai-advisor/ai-client.js';
 import {
   buildDeterministicAssetData,
   buildStructuredAIRecommendation,
+  validateStructuredAIJson,
   type StructuredAIAssetRecommendation,
 } from '../../ai-advisor/structured-ai-recommendation.js';
 import { sanitizeAiNarrative } from '../../ai-advisor/ollama-manager.js';
 import { postProcessAiText } from '../../ai-advisor/ai-validation.js';
 import { stripJsonBlockFromAiText } from '../../ai-advisor/json-sanitizer.js';
 import { buildPortfolioAssetContext } from '../../ai-advisor/snapshot-builder.js';
+import { buildFinalConclusion } from '../../ai-advisor/report-builders.js';
 import { hasValue } from '../../research/helpers.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
@@ -389,6 +391,9 @@ export class AiAgent extends AgentBase {
       aiJsonMap.set(item.ticker?.toUpperCase() ?? '', item);
     }
 
+    // Создаём список тикеров для валидации
+    const assetTickers = portfolioAnalysis.assetsAnalysis.map(a => a.ticker.toUpperCase());
+
     for (const asset of portfolioAnalysis.assetsAnalysis) {
       const assetTicker = asset.ticker.toUpperCase();
 
@@ -397,22 +402,51 @@ export class AiAgent extends AgentBase {
       const aiJsonForAsset: RawAIJson | null = aiJsonMap.get(assetTicker) ?? null;
 
       const det = buildDeterministicAssetData(asset, []);
+
+      // ─── Валидируем JSON для КАЖДОГО тикера отдельно ───
+      let assetValidation: ValidationResult | null = null;
+      if (aiJsonForAsset) {
+        assetValidation = validateStructuredAIJson(aiJsonForAsset, assetTickers);
+      }
+
+      // Определяем причину fallback
+      let fallbackReason: 'NO_AI_JSON' | 'INVALID_JSON_PARSE' | 'MISSING_REQUIRED_FIELDS' = 'NO_AI_JSON';
+      if (aiJsonForAsset) {
+        if (assetValidation && !assetValidation.valid && assetValidation.errors.length > 0) {
+          const missingFields = assetValidation.errors.map(e => e.field);
+          if (missingFields.includes('recommendedAction') || missingFields.includes('confidence')) {
+            fallbackReason = 'MISSING_REQUIRED_FIELDS';
+          } else {
+            fallbackReason = 'INVALID_JSON_PARSE';
+          }
+        }
+      } else {
+        fallbackReason = 'NO_AI_JSON';
+      }
+
       const structured = buildStructuredAIRecommendation(
         det,
         aiJsonForAsset,
-        aiClientResult.structuredValidation as ValidationResult | null,
+        assetValidation,
+        fallbackReason,
       );
 
-      // Если AI не вернул рекомендацию для актива, используем детерминированную
+      // ИСПРАВЛЕНИЕ Этап 2: НЕ подставляем Math Recommendation вместо отсутствующего AI Recommendation.
+      // structured.recommendedAction остаётся null, когда AI не вернул рекомендацию.
+      // agreeMathAndAi() корректно определит статус MATH_ONLY при aiAction=null.
+      // buildFinalConclusion() корректно определит source='MATH_ONLY' при !aiAction.
       if (!structured.recommendedAction) {
         this.log.info(
-          `[AiAgent] [FALLBACK] ${asset.ticker}: AI не вернул рекомендацию, ` +
-            `используем PortfolioMath: ${asset.status}`,
+          `[AiAgent] [MATH_ONLY] ${asset.ticker}: AI не вернул рекомендацию, ` +
+            `используем PortfolioMath: ${asset.status} (источник=MATH_ONLY), причина=${fallbackReason}`,
         );
-        structured.recommendedAction =
-          asset.status as StructuredAIAssetRecommendation['recommendedAction'];
-        structured.confidence = 0.5;
-        structured.rationale = 'Рекомендация на основе PortfolioMath (AI не вернул рекомендацию)';
+        // confidence=null когда AI не вернул рекомендацию (не 0 и не null из fallback)
+        structured.confidence = null;
+        // rationale уже содержит fallback-объяснение из buildFallbackStructuredRecommendation
+        // НЕ перезаписываем его, если там уже есть подробное объяснение
+        if (!structured.rationale || structured.rationale === 'AI analysis unavailable') {
+          structured.rationale = 'Рекомендация на основе PortfolioMath (AI не вернул рекомендацию)';
+        }
       }
 
       structuredRecommendations.set(asset.ticker, structured);
@@ -487,6 +521,28 @@ export class AiAgent extends AgentBase {
       }
 
       mathAiAgreements.set(asset.ticker, agreement);
+
+      // ─── P1-3: Итоговое заключение (7 элементов) ───
+      const conclusion = buildFinalConclusion(
+        {
+          ticker: asset.ticker,
+          name: asset.name,
+          status: asset.status,
+          targetPercent: asset.targetPercent,
+          currentPercent: asset.currentPercent,
+          deficitRub: asset.deficitRub,
+          unrealizedProfitRub: asset.unrealizedProfitRub,
+          balancePrice: asset.balancePrice,
+          currentPrice: asset.currentPrice,
+          holdOnly: asset.holdOnly,
+          isConcentrated: asset.isConcentrated,
+          quantity: asset.quantity,
+        },
+        structured,
+      );
+
+      // Сохраняем заключение в structured recommendation
+      (structured as StructuredAIAssetRecommendation & { finalConclusion?: unknown }).finalConclusion = conclusion;
     }
 
     this.log.info(
@@ -582,6 +638,7 @@ export class AiAgent extends AgentBase {
         success: result.success,
         error: result.error,
         structuredJson: result.structuredJson,
+        structuredJsonArray: result.structuredJsonArray,
         structuredValidation: result.structuredValidation,
       };
     } catch (err) {

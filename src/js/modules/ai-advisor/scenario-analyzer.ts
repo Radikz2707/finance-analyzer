@@ -6,35 +6,34 @@
  * 2. Золото → $1800 (медвежий для золотодобывающих: Полюс, Алроса)
  * 3. Рубль → 80/$ (бычий для экспортеров, медвежий для импортеров)
  *
- * Метод: оценка impact на каждый актив на основе его sector + beta + exposure.
+ * Метод:
+ * - Для облигаций: duration-based расчёт вместо эвристики.
+ *   Использует реальные данные дюрации из BondMarketData.
+ * - Для акций: отраслевая чувствительность.
+ *
+ * P1: Заменена хардкод-эвристика "-3% для длинных облигаций" на
+ *      расчёт через duration × yieldChange.
  */
 
 import type { AssetAnalysis } from '../portfolio-math/portfolio-math.js';
+import type { BondReferenceData } from '../xlsx-parser/xlsx-parser.js';
+import { priceImpact, determineDurationType } from '../bond-analyzer/bond-duration-calculator.js';
 
 /** Результат моделирования одного сценария */
 export interface ScenarioResult {
-  /** Название сценария */
   name: string;
-  /** Описание сценария */
   description: string;
-  /** Ожидаемое изменение портфеля (%) */
   portfolioImpactPct: number;
-  /** Влияние на акции (%) */
   stocksImpactPct: number;
-  /** Влияние на облигации (%) */
   bondsImpactPct: number;
-  /** Влияние на конкретные тикеры */
   tickerImpact: Map<string, number>;
-  /** Ключевые риски */
   keyRisks: string[];
-  /** Краткое резюме для промпта */
   summaryText: string;
 }
 
 /** Все сценарии */
 export interface ScenarioAnalysis {
   scenarios: ScenarioResult[];
-  /** Текстовая сводка для промпта ИИ */
   summaryText: string;
 }
 
@@ -47,43 +46,64 @@ function getAssetSector(ticker: string): string {
   if (t === 'LKOH' || t === 'ROSN' || t === 'TATN' || t === 'ALRS')
     return 'oil_gas';
   if (t === 'GMKN') return 'metals';
-  if (
-    t.includes('OFS') ||
-    t.includes('Облигация') ||
-    t.includes('БРУС') ||
-    t.includes('ФОС')
-  )
-    return 'bonds';
   if (t === 'CHMF' || t === 'NLMK' || t === 'MGNT' || t === 'MAGN')
     return 'metals_minerals';
   return 'other';
 }
 
 /**
- * Оценивает влияние сценария на один актив.
+ * Оценка влияния сценария на один актив.
  * Возвращает ожидаемое изменение цены (%).
+ *
+ * P1: Для облигаций используется duration-based расчёт вместо эвристики.
  */
 function estimateTickerImpact(
   ticker: string,
   scenarioType: 'rate_16' | 'gold_1800' | 'ruble_80',
   sector: string,
   assetType: string,
+  bondData?: BondReferenceData,
 ): number {
   const t = ticker.toUpperCase();
 
+  // ─── Облигации: duration-based расчёт ───
+  const isBond = assetType === 'О' || assetType === 'Облигация' || sector === 'bonds';
+
+  if (isBond && bondData) {
+    switch (scenarioType) {
+      case 'rate_16': {
+        // Ставка 16%: предположим +2 п.п. к рыночной доходности
+        const durationChange = 2; // +2% к доходности
+        if (bondData.duration > 0) {
+          const durationType = determineDurationType(); // UNKNOWN по умолчанию
+          const impact = priceImpact(
+            bondData.duration,
+            durationType,
+            bondData.yield || 0,
+            durationChange,
+          );
+          return impact ?? -3; // fallback на эвристику если расчёт не удался
+        }
+        return -3; // fallback: длинные облигации падают
+      }
+
+      case 'gold_1800': {
+        // Золото не влияет на облигации напрямую
+        return 0;
+      }
+
+      case 'ruble_80': {
+        // Укрепление рубля: минимальное влияние на рублевые облигации
+        // Возможно +0.5% (снижение инфляционных ожиданий)
+        return bondData.duration > 0 ? 0.5 : 0;
+      }
+    }
+  }
+
+  // ─── Акции: отраслевая чувствительность ───
   switch (scenarioType) {
     case 'rate_16': {
       // Ставка 16%
-      if (
-        assetType === 'О' ||
-        assetType === 'Облигация' ||
-        sector === 'bonds'
-      ) {
-        // Облигации: короткие — выигрывают от переинвестирования, длинные — проигрывают
-        if (t.includes('QRPT') || t.includes('LQDT')) return +1;
-        return -3; // длинные облигации падают
-      }
-      // Акции: в целом негативный эффект (удорожание займов)
       if (sector === 'banks') return -8; // банки под давлением ставки
       if (sector === 'oil_gas') return -5; // удорожание добычи
       if (sector === 'gold') return +2; // золото — защитный актив
@@ -93,21 +113,20 @@ function estimateTickerImpact(
 
     case 'gold_1800': {
       // Золото $1800
-      if (t === 'GMKN' || t === 'NVTK') return -15; // Polymetal/Novatek — не золото, но metals
-      if (t === 'ALRS') return -12; // Алроса — алмазы, коррелируют с золотом
+      if (t === 'GMKN' || t === 'NVTK') return -15; // Polymetal/Novatek
+      if (t === 'ALRS') return -12; // Алроса
       if (sector === 'gold' || sector === 'metals') return -12;
-      if (sector === 'banks') return +2; // банки выигрывают от перетока в рубли
-      return -1; // минимальное влияние
+      if (sector === 'banks') return +2;
+      return -1;
     }
 
     case 'ruble_80': {
       // Рубль 80/$ (укрепление)
       if (sector === 'oil_gas') return +8; // экспортеры выигрывают
-      if (sector === 'gold') return +5; // золотодобытчики
-      if (sector === 'banks') return -3; // банки под давлением
+      if (sector === 'gold') return +5;
+      if (sector === 'banks') return -3;
       if (t === 'MTLR' || t === 'CHMF' || t === 'NLMK') return -5; // импортеры
-      if (assetType === 'О' || assetType === 'Облигация') return +2; // рублевые облигации
-      return -2; // среднее
+      return -2;
     }
   }
 }
@@ -161,8 +180,6 @@ function calculatePortfolioImpact(
  */
 function getKeyRisks(scenarioType: string, assets: AssetAnalysis[]): string[] {
   const risks: string[] = [];
-
-  // Определяем, какие активы наиболее уязвимы
   const tickers = assets.map((a) => a.ticker.toUpperCase());
 
   switch (scenarioType) {
@@ -175,7 +192,7 @@ function getKeyRisks(scenarioType: string, assets: AssetAnalysis[]): string[] {
       if (tickers.some((t) => t === 'TATN' || t === 'GMKN')) {
         risks.push('Металлурги — удорожание капитала снижает рентабельность');
       }
-      risks.push('Облигационный портфель: длинные ОФЗ могут упасть на 3-5%');
+      risks.push('Облигационный портфель: оценка через duration × 2%');
       risks.push('Ликвидность рынка снижается — спреды widen');
       break;
 
@@ -186,9 +203,6 @@ function getKeyRisks(scenarioType: string, assets: AssetAnalysis[]): string[] {
         );
       }
       risks.push('Переток капитала из сырьевых товаров в защитные активы');
-      risks.push(
-        'RUB может ослабнуть, что частично компенсирует падение экспортеров',
-      );
       break;
 
     case 'ruble_80':
@@ -230,11 +244,13 @@ function formatScenarioSummary(scenario: ScenarioResult): string {
  *
  * @param assets — текущие активы портфеля
  * @param totalValue — текущая стоимость портфеля (₽)
+ * @param bondMarketData — Map<ISIN, BondReferenceData> для duration-based расчёта облигаций
  * @returns ScenarioAnalysis с результатами всех сценариев
  */
 export function analyzeScenarios(
   assets: AssetAnalysis[],
   totalValue: number,
+  bondMarketData?: Map<string, BondReferenceData>,
 ): ScenarioAnalysis {
   const scenarioTypes: Array<'rate_16' | 'gold_1800' | 'ruble_80'> = [
     'rate_16',
@@ -271,12 +287,16 @@ export function analyzeScenarios(
 
     // Расчёт влияния на каждый актив
     for (const asset of assets) {
+      // Ищем bondData для облигаций
+      const bondData = bondMarketData?.get(asset.ticker.toUpperCase());
       const sector = getAssetSector(asset.ticker);
+
       const impact = estimateTickerImpact(
         asset.ticker,
         scenarioType,
         sector,
         asset.assetType,
+        bondData,
       );
       tickerImpact.set(asset.ticker, impact);
     }
@@ -300,7 +320,7 @@ export function analyzeScenarios(
     scenarios.push(scenario);
   }
 
-  // Ф'рмируем общую сводку'
+  // Формируем общую сводку
   const worstCase = scenarios.reduce((worst, s) =>
     s.portfolioImpactPct < worst.portfolioImpactPct ? s : worst,
   );

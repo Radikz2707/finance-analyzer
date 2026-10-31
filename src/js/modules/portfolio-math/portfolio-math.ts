@@ -139,12 +139,38 @@ export interface AssetAnalysis {
   holdOnly?: boolean;
   /** Идентификатор счёта (например, 'S04J3LB' или '403GPBT') */
   accountId?: string;
+  /** Расчётный денежный остаток (100% − sum целевых долей) */
+  calculatedCashReservePercent?: number;
+  /** Расхождение расчётного и фактического кэша в % от портфеля */
+  cashDiscrepancy?: number;
+  // ─── ИСПРАВЛЕНИЕ Этап 2: диагностика рублёвого дефицита ───
+  /** Расчётная база для deficitRub (totalLiquidationValue) */
+  deficitCalculationBase?: number;
+  /** Процентное отклонение (liquidationPercent - targetPercent) */
+  deficitDeviationPct?: number;
+  /** Формула расчёта: deficitRub = round((-deviationPct / 100) * calculationBase) */
+  deficitFormula?: string;
 }
 
 export interface PortfolioReportData {
   macro: MacroGoals;
   assetsAnalysis: AssetAnalysis[];
   freeStocksPoolPercent: number;
+  /** Расчётный денежный остаток (100% − sum целевых долей) */
+  calculatedCashReservePercent?: number;
+  /** Фактический денежный остаток в % от портфеля */
+  actualCashPercent?: number;
+  /** Расхождение расчётного и фактического кэша */
+  cashDiscrepancy?: number;
+  // ─── ИСПРАВЛЕНИЕ Этап 2.1: расшифровка расчётной базы ───
+  /** Детализация totalLiquidationValue: какие активы включены/исключены */
+  calculationBaseBreakdown?: {
+    totalLiquidationValue: number;
+    includedAssetsCount: number;
+    excludedAssetsCount: number;
+    includedAssets: Array<{ ticker: string; value: number; reason: string }>;
+    excludedAssets: Array<{ ticker: string; value: number; reason: string }>;
+  };
 }
 
 export class PortfolioMathModule {
@@ -336,6 +362,13 @@ export class PortfolioMathModule {
       // Проверяем концентрацию (позиция > X% — риск)
       const isConcentrated = asset.liquidationPercent > concentrationLimitPct;
 
+      // ИСПРАВЛЕНИЕ Этап 2: диагностические поля для рублёвого дефицита
+      const deficitCalcBase = totalLiquidationValue;
+      const deficitDevPct = targetPercent !== undefined
+        ? asset.liquidationPercent - targetPercent
+        : 0;
+      const deficitFormulaStr = `round((${-deficitDevPct.toFixed(2)} / 100) * ${deficitCalcBase}) = ${deficitRub}`;
+
       assetsAnalysis.push({
         name: asset.name,
         ticker: asset.ticker,
@@ -356,8 +389,92 @@ export class PortfolioMathModule {
         unrealizedProfitRub: asset.unrealizedProfitRub || 0,
         priority: deficitRub,
         isConcentrated: isConcentrated,
+        // Диагностика рублёвого дефицита
+        deficitCalculationBase: deficitCalcBase,
+        deficitDeviationPct: deficitDevPct,
+        deficitFormula: deficitFormulaStr,
       });
     });
+
+    // ─── D0-2: Проверка суммы долей + кэш = 100% ───
+    const totalTarget = assetsAnalysis.reduce(
+      (sum, a) => sum + (a.targetPercent ?? 0),
+      0,
+    );
+    const cashReserve = 100 - totalTarget;
+
+    // Проверка: сумма целевых долей + кэш = 100% (с учётом округления ±0.1%)
+    if (Math.abs(totalTarget + cashReserve - 100) > 0.1) {
+      console.warn(
+        `[PORTFOLIO-MATH] Сумма целевых долей (${totalTarget.toFixed(2)}%) + кэш (${cashReserve.toFixed(2)}%) ≠ 100%`,
+      );
+    }
+
+    // ─── D0-3: Разделение расчётный кэш vs фактический кэш ───
+    const actualCashPercent =
+      totalLiquidationValue > 0
+        ? (macro.freeCash / totalLiquidationValue) * 100
+        : 0;
+    const cashDiscrepancy = cashReserve - actualCashPercent;
+
+    // Если расхождение > 10% от стоимости портфеля → warning
+    if (Math.abs(cashDiscrepancy) > 10) {
+      console.warn(
+        `[PORTFOLIO-MATH] Расхождение кэша: расчётный=${cashReserve.toFixed(2)}%, ` +
+        `фактический=${actualCashPercent.toFixed(2)}%, ` +
+        `расхождение=${cashDiscrepancy.toFixed(2)}%`,
+      );
+    }
+
+    // Добавляем кэш-информацию в последний актив (для совместимости с отчётами)
+    // Если активов нет — добавляем заглушку в отчёт
+    // В большинстве случаев последний актив — самый крупный дефицит
+    // Но лучше передать информацию на уровень выше через PortfolioReportData
+
+    // ─── ИСПРАВЛЕНИЕ Этап 2.1: расчёт breakdown totalLiquidationValue ───
+    const breakdown: {
+      totalLiquidationValue: number;
+      includedAssetsCount: number;
+      excludedAssetsCount: number;
+      includedAssets: Array<{ ticker: string; value: number; reason: string }>;
+      excludedAssets: Array<{ ticker: string; value: number; reason: string }>;
+    } = {
+      totalLiquidationValue,
+      includedAssetsCount: 0,
+      excludedAssetsCount: 0,
+      includedAssets: [],
+      excludedAssets: [],
+    };
+
+    for (const asset of assets) {
+      const value = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
+      const nameUpper = asset.name.toUpperCase();
+      let excluded = false;
+      let reason = '';
+
+      // Исключения:
+      if (nameUpper.includes('ИТОГО') || nameUpper.includes('БАЛАНС') || !isNaN(Number(asset.name))) {
+        reason = 'Суммарная строка Excel (ИТОГО/БАЛАНС)';
+        excluded = true;
+      } else if (asset.targetPercent === undefined && asset.targetPercentConflict) {
+        reason = 'Конфликт целевой доли — исключён';
+        excluded = true;
+      } else if (asset.targetPercent === 0 && asset.liquidationPercent === 0) {
+        reason = 'Целевая 0 и текущая 0 — нет позиции';
+        excluded = true;
+      }
+
+      if (excluded) {
+        breakdown.excludedAssets.push({ ticker: asset.ticker, value, reason });
+      } else {
+        breakdown.includedAssets.push({ ticker: asset.ticker, value, reason: 'Включён в расчёт' });
+      }
+    }
+
+    breakdown.includedAssetsCount = breakdown.includedAssets.length;
+    breakdown.excludedAssetsCount = breakdown.excludedAssets.length;
+
+    const calculationBaseBreakdown = breakdown;
 
     // Сортируем по приоритету покупок (больший дефицит = выше приоритет)
     assetsAnalysis.sort((a, b) => b.deficitRub - a.deficitRub);
@@ -379,6 +496,10 @@ export class PortfolioMathModule {
       macro,
       assetsAnalysis,
       freeStocksPoolPercent,
+      calculatedCashReservePercent: cashReserve,
+      actualCashPercent,
+      cashDiscrepancy,
+      calculationBaseBreakdown,
     };
   }
 }

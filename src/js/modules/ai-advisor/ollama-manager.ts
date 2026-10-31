@@ -278,7 +278,33 @@ export async function copyModel(
 export function cleanAiResponse(text: string, assetTickers?: string[]): string {
   let cleaned = text;
 
-  // Удаляем артефакты типа "$1.", "$2." и т.д. — в начале строки или после переноса
+  // ─── СОХРАНЯЕМ JSON-блоки ДО любой обработки ───
+  // Используем надёжный подход: ищем ```json ... ``` и сохраняем содержимое
+  const jsonBlocks: string[] = [];
+  const jsonBlockStartRegex = /```json\s*/g;
+  let jsonStartMatch;
+  while ((jsonStartMatch = jsonBlockStartRegex.exec(cleaned)) !== null) {
+    const startPos = jsonStartMatch.index + jsonStartMatch[0].length;
+    // Ищем закрывающие ``` после начала блока
+    const closingIdx = cleaned.indexOf('```', startPos);
+    if (closingIdx > startPos) {
+      jsonBlocks.push(cleaned.substring(startPos, closingIdx).trim());
+    }
+  }
+
+  // ─── СОХРАНЯЕМ ОБЩИЕ CODE BLOCKS ───
+  const codeBlocks: string[] = [];
+  const codeBlockStartRegex = /```(\w*)\s*/g;
+  let codeStartMatch;
+  while ((codeStartMatch = codeBlockStartRegex.exec(cleaned)) !== null) {
+    const startPos = codeStartMatch.index + codeStartMatch[0].length;
+    const closingIdx = cleaned.indexOf('```', startPos);
+    if (closingIdx > startPos) {
+      codeBlocks.push(cleaned.substring(startPos, closingIdx).trim());
+    }
+  }
+
+  // Удаляем артефакты типа "$1.", "$2." и т.д.
   cleaned = cleaned.replace(/\$[\d]+\. /g, '');
   cleaned = cleaned.replace(/\$[\d]+.\n/g, '\n');
   cleaned = cleaned.replace(/\$\d+\./g, '');
@@ -292,8 +318,8 @@ export function cleanAiResponse(text: string, assetTickers?: string[]): string {
   // Удаляем markdown курсив
   cleaned = cleaned.replace(/\*(.*?)\*/g, '$1');
 
-  // Удаляем markdown код
-  cleaned = cleaned.replace(/`(.*?)`/g, '$1');
+  // Удаляем ОДИНОЧНЫЕ backticks (код в строке), НЕ задевая code blocks
+  cleaned = cleaned.replace(/`([^`\n]+)`/g, '$1');
 
   // Удаляем markdown ссылки, оставляем текст
   cleaned = cleaned.replace(/\[(.*?)\]\(.*?\)/g, '$1');
@@ -304,7 +330,6 @@ export function cleanAiResponse(text: string, assetTickers?: string[]): string {
   // Удаляем markdown списки
   cleaned = cleaned.replace(/^[\s]*[-*+]\s/gm, '• ');
   cleaned = cleaned.replace(/^[\s]*\d+\.\s/gm, (match) => {
-    // Сохраняем нумерацию для секций
     return match;
   });
 
@@ -315,6 +340,19 @@ export function cleanAiResponse(text: string, assetTickers?: string[]): string {
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
 
   cleaned = cleaned.trim();
+
+  // ─── ВОССТАНАВЛИВАЕМ JSON-блоки ───
+  if (jsonBlocks.length > 0) {
+    const jsonReconstructed = jsonBlocks
+      .map((j) => '```json\n' + j + '\n```')
+      .join('\n\n');
+    cleaned = jsonReconstructed + '\n\n' + cleaned;
+  } else if (codeBlocks.length > 0) {
+    const codeReconstructed = codeBlocks
+      .map((c) => '```\n' + c + '\n```')
+      .join('\n\n');
+    cleaned = codeReconstructed + '\n\n' + cleaned;
+  }
 
   // Валидация: проверяем что модель не упоминает неизвестные тикеры
   if (assetTickers && assetTickers.length > 0) {

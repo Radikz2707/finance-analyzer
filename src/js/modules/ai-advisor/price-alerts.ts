@@ -2,13 +2,19 @@ import { AssetAnalysis } from '../../modules/portfolio-math/portfolio-math.js';
 import { PriceAlertConfig, PriceAlert } from './types.js';
 
 /**
- * Модуль динамического мониторинга критических уровней котировок
- * 
+ * Модуль динамического мониторинга критических уровней котировок.
+ *
+ * ⚠️ ВАЖНО: Price Alerts — информационный модуль.
+ * - НЕ влияет на торговые решения (interactive-orders)
+ * - НЕ передаётся в AI-промпт напрямую
+ * - НЕ блокирует покупки/продажи
+ * - Используется ТОЛЬКО для отображения в отчёте (notification-agent)
+ *
  * Уровни НЕ зашиты в код — они должны приходить из данных:
  * - Excel (столбцы с уровнями stop-loss/take-profit)
  * - Внешний конфиг (PortfolioConfig.priceAlerts)
  * - Пользовательские настройки (customConfigs)
- * 
+ *
  * Если для актива нет уровней — alert не генерируется.
  */
 export class PriceAlertsModule {

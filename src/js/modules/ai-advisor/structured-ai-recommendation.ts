@@ -58,6 +58,36 @@ export interface DeterministicAssetData {
   executionBlocked: boolean;
   activeOrders: string[];
   activeOrderConflict: boolean;
+
+  // ─── Bond-specific fields (P0) ───
+
+  /** ISIN облигации — однозначная идентификация выпуска */
+  isin?: string;
+  /** Номинал облигации (RUB) */
+  nominal?: number;
+  /**
+   * Доходность из QUIK (столбец E).
+   * НЕ называть YTM без подтверждения семантики.
+   * Единица: %.
+   */
+  yield?: number;
+  /**
+   * Дюрация из QUIK (столбец M).
+   * НЕ называть модифицированной без подтверждения методики.
+   */
+  duration?: number;
+  /** Оборот из QUIK (столбец F) — оценка ликвидности */
+  turnover?: number;
+  /** Размер купона из QUIK (столбец H) */
+  couponAmount?: number;
+  /** Длительность купонного периода (дни) */
+  couponPeriodDays?: number;
+  /** Ближайшая дата выплаты купона */
+  nextCouponDate?: Date | null;
+  /** Дата погашения выпуска */
+  maturityDate?: Date | null;
+  /** НКД рыночный (столбец K листа «Облигации») */
+  marketNkd?: number;
 }
 
 // ──────────────────────────────────────────────
@@ -103,6 +133,18 @@ export interface StructuredAIAssetRecommendation {
   activeOrders: string[];
   activeOrderConflict: boolean;
 
+  // ─── Bond-specific fields (P0) ───
+  isin?: string;
+  nominal?: number;
+  yield?: number;
+  duration?: number;
+  turnover?: number;
+  couponAmount?: number;
+  couponPeriodDays?: number;
+  nextCouponDate?: Date | null;
+  maturityDate?: Date | null;
+  marketNkd?: number;
+
   // STRATEGIST (детерминированные правила защиты портфеля)
   /** Переопределение действия стратегом (если было применено) */
   strategistOverride: StrategistOverride | null;
@@ -116,15 +158,130 @@ export interface StructuredAIAssetRecommendation {
   keyRisks: string[];
   keyCatalysts: string[];
   agreementWithPortfolioMath: MathAgreement;
+
+  // ─── Fallback (заполняется ТОЛЬКО когда AI не ответил) ───
+  /** Причина fallback (для отладки и объяснений) */
+  _fallbackReason?: FallbackReason;
+  /** Подробное объяснение fallback */
+  _fallbackExplanation?: FallbackExplanation;
+  /** Рекомендация что делать при fallback */
+  _fallbackAction?: string;
 }
 
 // ──────────────────────────────────────────────
 // 4. Fallback — AI недоступен
 // ──────────────────────────────────────────────
 
+/** Причина fallback — почему AI не смог дать рекомендацию */
+export type FallbackReason =
+  | 'NO_AI_JSON'
+  | 'INVALID_JSON_PARSE'
+  | 'MISSING_REQUIRED_FIELDS'
+  | 'AI_TIMEOUT'
+  | 'AI_EMPTY_RESPONSE';
+
+/** Объяснение fallback — понятный текст для пользователя */
+export interface FallbackExplanation {
+  reason: FallbackReason;
+  /** Краткое объяснение на русском */
+  short: string;
+  /** Подробное объяснение с рекомендациями */
+  detailed: string;
+  /** Что делать: рекомендация пользователю */
+  action: string;
+}
+
+/** Карта объяснений для каждой причины fallback */
+const FALLBACK_EXPLANATIONS: Record<FallbackReason, FallbackExplanation> = {
+  NO_AI_JSON: {
+    reason: 'NO_AI_JSON',
+    short: 'AI не вернул JSON-ответ',
+    detailed:
+      'Нейросетевая модель не вернула структурированный JSON-ответ. ' +
+      'Возможные причины: модель была недоступна, ответ превысил лимит времени, ' +
+      'или промпт был слишком длинным и модель «заблокировалась».',
+    action:
+      'Решение принято по формуле: целевая доля - текущая доля = дефицит. ' +
+      'Рекомендуется: 1) Перезапустить анализ, 2) Проверить доступность AI-модели, ' +
+      '3) Упростить промпт для этого актива.',
+  },
+  INVALID_JSON_PARSE: {
+    reason: 'INVALID_JSON_PARSE',
+    short: 'AI вернул невалидный JSON',
+    detailed:
+      'AI вернул JSON, но он не прошёл валидацию. ' +
+      'Возможные причины: незакрытые скобки, неэкранированные кавычки в тексте, ' +
+      'или missing-поля (recommendedAction, confidence, rationale).',
+    action:
+      'Решение принято по формуле: целевая доля - текущая доля = дефицит. ' +
+      'Рекомендуется: 1) Перезапустить анализ, 2) Проверить промпт — ' +
+      'возможно, нужно добавить пример валидного JSON, ' +
+      '3) Уменьшить длину rationale в промпте.',
+  },
+  MISSING_REQUIRED_FIELDS: {
+    reason: 'MISSING_REQUIRED_FIELDS',
+    short: 'AI вернул JSON без обязательных полей',
+    detailed:
+      'AI вернул JSON, но в нём отсутствуют обязательные поля: ' +
+      'recommendedAction, confidence, rationale, keyRisks. ' +
+      'Это значит, что модель «забыла» заполнить часть полей.',
+    action:
+      'Решение принято по формуле: целевая доля - текущая доля = дефицит. ' +
+      'Рекомендуется: 1) Перезапустить анализ, ' +
+      '2) Добавить в промпт: «Обязательно заполните все поля, даже если данных мало».',
+  },
+  AI_TIMEOUT: {
+    reason: 'AI_TIMEOUT',
+    short: 'AI превысил лимит времени',
+    detailed:
+      'AI-модель не ответила в течение установленного лимита времени (обычно 30-60 сек). ' +
+      'Это может быть из-за перегрузки модели или длинного промпта.',
+    action:
+      'Решение принято по формуле: целевая доля - текущая доля = дефицит. ' +
+      'Рекомендуется: 1) Увеличить таймаут, 2) Уменьшить размер промпта, ' +
+      '3) Проверить производительность AI-модели.',
+  },
+  AI_EMPTY_RESPONSE: {
+    reason: 'AI_EMPTY_RESPONSE',
+    short: 'AI вернул пустой ответ',
+    detailed:
+      'AI вернул пустой ответ или ответ без данных. ' +
+      'Это может означать, что модель не смогла обработать запрос.',
+    action:
+      'Решение принято по формуле: целевая доля - текущая доля = дефицит. ' +
+      'Рекомендуется: 1) Перезапустить анализ, 2) Проверить входные данные.',
+  },
+};
+
+/** Получить объяснение для причины fallback */
+export function getFallbackExplanation(reason: FallbackReason): FallbackExplanation {
+  return FALLBACK_EXPLANATIONS[reason] ?? FALLBACK_EXPLANATIONS.NO_AI_JSON;
+}
+
+/**
+ * Строит fallback-рекомендацию с понятным объяснением.
+ *
+ * Вместо «AI analysis unavailable» — подробное объяснение:
+ * - ПОЧЕМУ AI не ответил
+ * - КАК принято решение (формула)
+ * - ЧТО ДЕЛАТЬ (рекомендации)
+ *
+ * @param det — детерминированные данные актива
+ * @param fallbackReason — причина fallback (типовое значение)
+ * @param reason — детальное объяснение причины (опционально, переопределяет стандартное)
+ */
 export function buildFallbackStructuredRecommendation(
   det: DeterministicAssetData,
+  fallbackReason: FallbackReason = 'NO_AI_JSON',
+  reason?: string,
 ): StructuredAIAssetRecommendation {
+  const explanation = getFallbackExplanation(fallbackReason);
+
+  // Если передано детальное объяснение — используем его
+  const detailedExplanation = reason
+    ? `${explanation.short}. ${reason}`
+    : `${explanation.short}. ${explanation.detailed}`;
+
   return {
     ticker: det.ticker,
     name: det.name,
@@ -146,6 +303,18 @@ export function buildFallbackStructuredRecommendation(
     activeOrders: det.activeOrders,
     activeOrderConflict: det.activeOrderConflict,
 
+    // Bond-specific
+    isin: det.isin,
+    nominal: det.nominal,
+    yield: det.yield,
+    duration: det.duration,
+    turnover: det.turnover,
+    couponAmount: det.couponAmount,
+    couponPeriodDays: det.couponPeriodDays,
+    nextCouponDate: det.nextCouponDate,
+    maturityDate: det.maturityDate,
+    marketNkd: det.marketNkd,
+
     // STRATEGIST: AI недоступен → action=null, вмешательство не требуется
     strategistOverride: null,
 
@@ -153,11 +322,24 @@ export function buildFallbackStructuredRecommendation(
     recommendedTargetPercent: null,
     recommendedAction: null,
     confidence: null,
-    rationale: 'AI analysis unavailable',
+    rationale: detailedExplanation,
     targetReason: null,
     keyRisks: [],
     keyCatalysts: [],
     agreementWithPortfolioMath: 'UNCERTAIN',
+
+    // ─── Новые поля для fallback ───
+    /** Причина fallback */
+    _fallbackReason: fallbackReason,
+    /** Подробное объяснение */
+    _fallbackExplanation: {
+      reason: fallbackReason,
+      short: explanation.short,
+      detailed: reason || explanation.detailed,
+      action: explanation.action,
+    },
+    /** Рекомендация что делать */
+    _fallbackAction: explanation.action,
   };
 }
 
@@ -232,6 +414,18 @@ export function buildDeterministicAssetData(
     executionBlocked,
     activeOrders,
     activeOrderConflict,
+
+    // Bond-specific fields
+    isin: asset.ticker.startsWith('RU000') ? asset.ticker : undefined,
+    nominal: asset.nominal,
+    yield: undefined, // Заполняется из BondMarketData в AI Agent
+    duration: undefined,
+    turnover: undefined,
+    couponAmount: undefined,
+    couponPeriodDays: undefined,
+    nextCouponDate: undefined,
+    maturityDate: undefined,
+    marketNkd: undefined,
   };
 }
 
@@ -275,6 +469,7 @@ export function validateStructuredAIJson(
     'BUY',
     'SELL',
     'HOLD',
+    'STABLE',
     'REDUCE',
     'EXIT',
     'AVOID',
@@ -407,10 +602,11 @@ export function buildStructuredAIRecommendation(
   det: DeterministicAssetData,
   aiJson: RawAIJson | null,
   validation: ValidationResult | null,
+  fallbackReason: FallbackReason = 'NO_AI_JSON',
 ): StructuredAIAssetRecommendation {
   // Если AI JSON невалиден или отсутствует — используем fallback
   if (!aiJson || !validation || !validation.valid) {
-    return buildFallbackStructuredRecommendation(det);
+    return buildFallbackStructuredRecommendation(det, fallbackReason);
   }
 
   // Преобразуем строковые значения в typed
@@ -469,6 +665,7 @@ function validAiAction(value: string | null): value is AiAction {
     'BUY',
     'SELL',
     'HOLD',
+    'STABLE',
     'REDUCE',
     'EXIT',
     'AVOID',

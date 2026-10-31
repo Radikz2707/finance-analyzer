@@ -23,10 +23,14 @@ export interface BenchmarkResult {
   imoexrReturnPct: number;
   /** Доходность депозита за период (%) */
   depositReturnPct: number;
+  /** Средняя взвешенная доходность облигаций портфеля (%) */
+  bondBenchmarkYield: number | null;
   /** Превышение/отставание от IMOEX (п.п.) */
   imoexAlpha: number;
   /** Превышение/отставание от депозита (п.п.) */
   depositAlpha: number;
+  /** Превышение/отставание от облигационного бенчмарка (п.п.) */
+  bondAlpha: number | null;
   /** Вердикт */
   verdict: 'BEAT_MARKET' | 'BEAT_DEPOSIT' | 'UNDERPERFORM';
   /** Текстовая сводка для промпта ИИ */
@@ -94,7 +98,7 @@ async function fetchIndexHistory(
 /**
  * Рассчитывает процентную доходность между первой и последней ценой.
  */
-function calculateReturnPct(prices: Array<{ close: number }>): number {
+export function calculateReturnPct(prices: Array<{ close: number }>): number {
   if (prices.length < 2) return 0;
   const first = prices[0]!.close;
   const last = prices[prices.length - 1]!.close;
@@ -104,19 +108,47 @@ function calculateReturnPct(prices: Array<{ close: number }>): number {
 
 /**
  * Рассчитывает доходность банковского депозита за период.
- * @param annualRate — годовая ставка (%)
- * @param days — количество дней
  */
-function calculateDepositReturn(annualRate: number, days: number): number {
+export function calculateDepositReturn(annualRate: number, days: number): number {
   if (days <= 0 || annualRate <= 0) return 0;
   // Простой процент: P * (rate/100) * (days/365)
   return (annualRate / 100) * (days / 365) * 100;
 }
 
 /**
+ * Рассчитывает средневзвешенную доходность облигаций портфеля.
+ *
+ * @param bondYields — массив доходностей облигаций (%)
+ * @param bondWeights — массив весов в портфеле (%)
+ * @returns средневзвешенная доходность или null
+ */
+export function calculateBondBenchmarkYield(
+  bondYields: number[],
+  bondWeights: number[],
+): number | null {
+  if (bondYields.length === 0) return null;
+
+  let totalWeight = 0;
+  let weightedYield = 0;
+
+  for (let i = 0; i < bondYields.length; i++) {
+    const weight = bondWeights[i] ?? 0;
+    const yield_ = bondYields[i] ?? 0;
+
+    if (yield_ > 0 && weight > 0) {
+      weightedYield += yield_ * weight;
+      totalWeight += weight;
+    }
+  }
+
+  if (totalWeight === 0) return null;
+  return weightedYield / totalWeight;
+}
+
+/**
  * Определяет вердикт: опережает рынок, опережает депозит, или проигрывает обоим.
  */
-function determineVerdict(
+export function determineVerdict(
   portfolioReturn: number,
   imoexReturn: number,
   depositReturn: number,
@@ -133,7 +165,10 @@ function determineVerdict(
 /**
  * Формирует текстовую сводку бенчмарка для промпта ИИ.
  */
-function formatBenchmarkSummary(result: BenchmarkResult): string {
+export function formatBenchmarkSummary(
+  result: BenchmarkResult,
+  depositRateAnnual: number,
+): string {
   const verb =
     result.verdict === 'BEAT_MARKET'
       ? 'опережаешь'
@@ -154,7 +189,12 @@ function formatBenchmarkSummary(result: BenchmarkResult): string {
   text += `- Портфель: ${result.portfolioReturnPct >= 0 ? '+' : ''}${result.portfolioReturnPct.toFixed(1)}%\n`;
   text += `- IMOEX: ${result.imoexReturnPct >= 0 ? '+' : ''}${result.imoexReturnPct.toFixed(1)}%\n`;
   text += `- IMOEX (с див.): ${result.imoexrReturnPct >= 0 ? '+' : ''}${result.imoexrReturnPct.toFixed(1)}%\n`;
-  text += `- Депозит (~14% годовых): ${result.depositReturnPct.toFixed(1)}%\n`;
+  text += `- Депозит (~${depositRateAnnual}% годовых): ${result.depositReturnPct.toFixed(1)}%\n`;
+
+  if (result.bondBenchmarkYield !== null) {
+    text += `- Облигации (средневзвеш.): ${result.bondBenchmarkYield.toFixed(2)}%\n`;
+  }
+
   text += `Ты ${verb} рынок на ${imoexDirection} и ${depositDirection} депозит.\n`;
 
   // Добавляем аналитику
@@ -178,9 +218,14 @@ function formatBenchmarkSummary(result: BenchmarkResult): string {
  * @returns BenchmarkResult с результатами сравнения
  */
 export async function calculateBenchmark(
-  config: BenchmarkConfig,
+  config: BenchmarkConfig & {
+    /** Доходности облигаций портфеля (%) */
+    bondYields?: number[];
+    /** Весовые коэффициенты облигаций в портфеле (%) */
+    bondWeights?: number[];
+  },
 ): Promise<BenchmarkResult> {
-  const { startDate, endDate, startValue, endValue, depositRateAnnual } =
+  const { startDate, endDate, startValue, endValue, depositRateAnnual, bondYields, bondWeights } =
     config;
 
   // Доходность портфеля
@@ -198,6 +243,12 @@ export async function calculateBenchmark(
   // Депозит
   const depositReturnPct = calculateDepositReturn(depositRateAnnual, days);
 
+  // Облигационный бенчмарк (средневзвешенная доходность)
+  const bondBenchmarkYield = calculateBondBenchmarkYield(
+    bondYields ?? [],
+    bondWeights ?? [],
+  );
+
   // Загружаем исторические данные IMOEX и IMOEXR с MOEX
   // MOEX: board=TQBR, engine=market, swig=IMOEX
   // Для дивидендной версии: swig=IMOEXR
@@ -212,6 +263,9 @@ export async function calculateBenchmark(
   // Alpha
   const imoexAlpha = portfolioReturnPct - imoexReturnPct;
   const depositAlpha = portfolioReturnPct - depositReturnPct;
+  const bondAlpha = bondBenchmarkYield !== null
+    ? portfolioReturnPct - bondBenchmarkYield
+    : null;
 
   // Вердикт
   const verdict = determineVerdict(
@@ -229,13 +283,15 @@ export async function calculateBenchmark(
     imoexReturnPct,
     imoexrReturnPct,
     depositReturnPct,
+    bondBenchmarkYield,
     imoexAlpha,
     depositAlpha,
+    bondAlpha,
     verdict,
     summaryText: '',
   };
 
-  result.summaryText = formatBenchmarkSummary(result);
+  result.summaryText = formatBenchmarkSummary(result, depositRateAnnual);
 
   return result;
 }

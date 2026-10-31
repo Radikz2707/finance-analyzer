@@ -130,39 +130,45 @@ export interface HistoricalTradesData {
 }
 
 /**
- * Полные выходные данные Data Agent.
- * Передаются в Research Agent и Analysis Agent.
- */
-export interface DataAgentOutput {
-  /** Агрегированный портфель */
-  aggregated: AggregatedAsset[];
-  /** Текущие активы (flattened) */
-  assets: CurrentAsset[];
-  /** Макро-цели из Excel */
-  macroGoals: MacroGoals;
-  /** Информация о счетах */
-  accounts: AccountInfo[];
-  /** Котировки */
-  quotes: Record<string, AssetQuote>;
-  /** Активные заявки QUIK */
-  activeOrders: QuikOrder[];
-  /** Исторические сделки */
-  historicalTrades: HistoricalTradesData;
-  /** Вложенные средства */
-  investedFunds: InvestedFundsData;
-  /** Отфильтрованные новости от Gatekeeper */
-  news: GatekeeperResult | null;
-  /** Статистические аномалии цен (Python Engine) */
-  anomalies: AnomalyDetectionResult[];
-  /** Ключевая ставка ЦБ РФ */
-  keyRate: number;
-  /** Дата обновления ключевой ставки */
-  keyRateDate: string;
-  /** Полные данные о ключевой ставке ЦБ (включая source, isFresh) */
-  cbrRateData: CbrRateData | null;
-  /** Параметры инвестора (горизонт, цель, риск) */
-  investorParams?: InvestorParams;
-}
+  * Полные выходные данные Data Agent.
+  * Передаются в Research Agent и Analysis Agent.
+  */
+ export interface DataAgentOutput {
+   /** Агрегированный портфель */
+   aggregated: AggregatedAsset[];
+   /** Текущие активы (flattened) */
+   assets: CurrentAsset[];
+   /** Макро-цели из Excel */
+   macroGoals: MacroGoals;
+   /** Информация о счетах */
+   accounts: AccountInfo[];
+   /** Котировки */
+   quotes: Record<string, AssetQuote>;
+   /** Активные заявки QUIK */
+   activeOrders: QuikOrder[];
+   /** Исторические сделки */
+   historicalTrades: HistoricalTradesData;
+   /** Вложенные средства */
+   investedFunds: InvestedFundsData;
+   /** Отфильтрованные новости от Gatekeeper */
+   news: GatekeeperResult | null;
+   /** Статистические аномалии цен (Python Engine) */
+   anomalies: AnomalyDetectionResult[];
+   /** Ключевая ставка ЦБ РФ */
+   keyRate: number;
+   /** Дата обновления ключевой ставки */
+   keyRateDate: string;
+   /** Полные данные о ключевой ставке ЦБ (включая source, isFresh) */
+   cbrRateData: CbrRateData | null;
+   /** Параметры инвестора (горизонт, цель, риск) */
+   investorParams?: InvestorParams;
+   /**
+    * Рыночные данные по облигациям из листа «Облигации».
+    * Map<ISIN, BondReferenceData> — полный справочник ~3030 выпусков.
+    * Используется для обогащения позиций облигаций и передачи в AI.
+    */
+   bondMarketData: Map<string, import('../../xlsx-parser/xlsx-parser.js').BondReferenceData>;
+ }
 
 // ──────────────────────────────────────────────
 // 2. Data Agent
@@ -205,6 +211,12 @@ export class DataAgent extends AgentBase {
 
       // Шаг 3: Макро-цели
       const macroGoals = await this.parser.parseMacroGoals();
+
+      // Шаг 2.7: Рыночные данные по облигациям (лист «Облигации» A:M)
+      const bondMarketData = await this.parser.parseBondsSheet();
+      this.log.info(
+        `[DataAgent] ✅ BondMarketData: ${bondMarketData.size} выпусков загружено`,
+      );
 
     // Шаг 2.5: Сохранение позиций в БД
     for (const asset of assets) {
@@ -470,6 +482,7 @@ export class DataAgent extends AgentBase {
       keyRate,
       keyRateDate,
       cbrRateData: cbrRateDataResult,
+      bondMarketData,
     };
 
     // Парсим параметры инвестора (опционально)

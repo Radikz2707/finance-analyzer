@@ -279,6 +279,7 @@ export type AiAction =
   | 'BUY'
   | 'SELL'
   | 'HOLD'
+  | 'STABLE'
   | 'REDUCE'
   | 'EXIT'
   | 'AVOID'

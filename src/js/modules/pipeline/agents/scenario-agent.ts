@@ -45,6 +45,9 @@ export interface ScenarioAgentInput {
   proposedChanges: ScenarioChange[];
 }
 
+/** Статус расчёта P&L */
+export type PnlCalculationStatus = 'CALCULATED' | 'PARTIAL' | 'INSUFFICIENT_DATA';
+
 /** Результат одного сценария */
 export interface ScenarioResult {
   /** Уникальный ID сценария */
@@ -55,14 +58,28 @@ export interface ScenarioResult {
   changes: ScenarioChange[];
   /** Отклонение структуры от целевых долей после сценария, п.п. */
   structureDeviationPct: number;
-  /** Прогноз нереализованного P&L после сценария, руб */
+  /** Прогноз нереализованного P&L после сценария, руб (signed: отрицательный = убыток) */
   projectedUnrealizedPnL: number;
-  /** Зафиксированный убыток в сценарии, руб (0 если нет) */
-  realizedLossRub: number;
+  /** Реализованный P&L после сценария, руб (signed: отрицательный = убыток, положительный = прибыль) */
+  realizedPnLRub: number;
+  /** Статус расчёта P&L: CALCULATED — все позиции рассчитаны, PARTIAL — часть позиций без данных, INSUFFICIENT_DATA — нет данных ни для одной позиции */
+  pnlCalculationStatus: PnlCalculationStatus;
   /** Оценка сценария */
   verdict: 'IMPROVES' | 'WORSENS' | 'NEUTRAL';
   /** Почему такой вердикт */
   rationale: string;
+  /** Доля акций (%) до операции */
+  stocksBeforePct?: number;
+  /** Доля акций (%) после операции */
+  stocksAfterPct?: number;
+  /** Доля облигаций (%) до операции */
+  bondsBeforePct?: number;
+  /** Доля облигаций (%) после операции */
+  bondsAfterPct?: number;
+  /** Доля кэша (%) до операции */
+  cashBeforePct?: number;
+  /** Доля кэша (%) после операции */
+  cashAfterPct?: number;
 }
 
 /** Выходные данные ScenarioAgent */
@@ -123,7 +140,8 @@ export class ScenarioAgent extends AgentBase {
       changes: [],
       structureDeviationPct: baselineDeviation,
       projectedUnrealizedPnL: baselinePnL,
-      realizedLossRub: 0,
+      realizedPnLRub: 0,
+      pnlCalculationStatus: this.calcPnlStatus(assets, []),
       verdict: 'NEUTRAL',
       rationale: 'Базовый сценарий: текущая структура без изменений.',
     });
@@ -191,21 +209,26 @@ export class ScenarioAgent extends AgentBase {
   ): ScenarioResult {
     const result = this.applyChanges(assets, total, changes);
     const dev = result.structureDeviationPct;
+    const pnlStatus = this.calcPnlStatus(assets, changes);
 
     let verdict: ScenarioResult['verdict'] = 'NEUTRAL';
     let rationale =
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
       `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}.`;
 
-    if (
-      baselineDeviation - dev >= BASE_CHANGE_THRESHOLD_PCT &&
-      result.projectedUnrealizedPnL >= baselinePnL
-    ) {
-      verdict = 'IMPROVES';
-      rationale += ' Структура заметно улучшена без ущерба для P&L.';
-    } else if (dev > baselineDeviation + BASE_CHANGE_THRESHOLD_PCT) {
-      verdict = 'WORSENS';
-      rationale += ' Структура ухудшена относительно базовой.';
+    if (pnlStatus === 'CALCULATED') {
+      if (
+        baselineDeviation - dev >= BASE_CHANGE_THRESHOLD_PCT &&
+        result.projectedUnrealizedPnL >= baselinePnL
+      ) {
+        verdict = 'IMPROVES';
+        rationale += ' Структура заметно улучшена без ущерба для P&L.';
+      } else if (dev > baselineDeviation + BASE_CHANGE_THRESHOLD_PCT) {
+        verdict = 'WORSENS';
+        rationale += ' Структура ухудшена относительно базовой.';
+      }
+    } else {
+      rationale += ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
     }
 
     return {
@@ -214,16 +237,26 @@ export class ScenarioAgent extends AgentBase {
       changes,
       structureDeviationPct: dev,
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
-      realizedLossRub: Math.max(0, -result.realizedLossRub),
+      realizedPnLRub: result.realizedPnLRub,
+      pnlCalculationStatus: pnlStatus,
       verdict,
       rationale,
+      stocksBeforePct: result.stocksBeforePct,
+      stocksAfterPct: result.stocksAfterPct,
+      bondsBeforePct: result.bondsBeforePct,
+      bondsAfterPct: result.bondsAfterPct,
+      cashBeforePct: result.cashBeforePct,
+      cashAfterPct: result.cashAfterPct,
     };
   }
 
   /**
-   * Оптимизированный сценарий: пересчитывает структуру и P&L
-   * без ограничений по просадке. AI имеет свободу выбора.
-   */
+    * Оптимизированный сценарий: пересчитывает структуру и P&L
+    * без ограничений по просадке. AI имеет свободу выбора.
+    *
+    * Дополнительно: автоматически добавляет продажу частей позиций
+    * с концентрацией > 15% и отрицательным P&L для снижения риска.
+    */
   private buildOptimizedScenario(
     assets: AssetAnalysis[],
     total: number,
@@ -232,26 +265,57 @@ export class ScenarioAgent extends AgentBase {
   ): ScenarioResult | null {
     const optimizedChanges: ScenarioChange[] = [...proposed];
 
+    // ─── P0-1: Автоматическое снижение концентраций ───
+    // Находим активы с высокой концентрацией и убыточным P&L
+    const concentratedAssets = assets.filter(
+      (a) =>
+        a.currentPercent > 15 &&
+        (a.unrealizedProfitRub ?? 0) < 0,
+    );
+
+    for (const asset of concentratedAssets) {
+      const currentVal =
+        (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
+      // Продаём 50% позиции для снижения концентрации
+      const targetValue = currentVal * 0.5;
+      optimizedChanges.push({
+        ticker: asset.ticker,
+        action: 'SELL',
+        amountRub: Math.round(targetValue),
+      });
+    }
+
+    // Если нет изменений вообще — нет смысла строить сценарий
     if (optimizedChanges.length === 0) {
       return null;
     }
 
     const result = this.applyChanges(assets, total, optimizedChanges);
     const dev = result.structureDeviationPct;
-    const realizedLoss = result.realizedLossRub; // отрицательный = убыток
+    const realizedPnL = result.realizedPnLRub; // signed: отрицательный = убыток
     const improved = baselineDeviation - dev >= BASE_CHANGE_THRESHOLD_PCT;
+    const optimizedPnlStatus = this.calcPnlStatus(assets, optimizedChanges);
 
     const verdict: ScenarioResult['verdict'] =
-      improved && realizedLoss > -1000
+      improved && realizedPnL > -1000
         ? 'IMPROVES'
-        : realizedLoss < -1000
+        : realizedPnL < -1000
           ? 'WORSENS'
           : 'NEUTRAL';
 
-    const rationale =
+    // Формируем подробную сводку с указанием реализованного убытка
+    const realizedLossAbs = Math.max(0, -realizedPnL);
+    let rationale =
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
       `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}. ` +
-      `Зафиксировано: ${this.fmtRub(Math.max(0, -result.realizedLossRub))}.`;
+      `Зафиксировано: ${this.fmtRub(realizedLossAbs)}.` +
+      (concentratedAssets.length > 0
+        ? ` Снижение концентрации: ${concentratedAssets.map((a) => a.ticker).join(', ')}.`
+        : '');
+
+    if (optimizedPnlStatus === 'INSUFFICIENT_DATA') {
+      rationale += ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
+    }
 
     return {
       id: 'S3_optimized',
@@ -259,9 +323,16 @@ export class ScenarioAgent extends AgentBase {
       changes: optimizedChanges,
       structureDeviationPct: dev,
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
-      realizedLossRub: Math.max(0, -result.realizedLossRub),
+      realizedPnLRub: realizedPnL,
+      pnlCalculationStatus: optimizedPnlStatus,
       verdict,
       rationale,
+      stocksBeforePct: result.stocksBeforePct,
+      stocksAfterPct: result.stocksAfterPct,
+      bondsBeforePct: result.bondsBeforePct,
+      bondsAfterPct: result.bondsAfterPct,
+      cashBeforePct: result.cashBeforePct,
+      cashAfterPct: result.cashAfterPct,
     };
   }
 
@@ -275,26 +346,35 @@ export class ScenarioAgent extends AgentBase {
   ): {
     structureDeviationPct: number;
     projectedUnrealizedPnL: number;
-    realizedLossRub: number;
+    /** Signed P&L: отрицательный = убыток, положительный = прибыль */
+    realizedPnLRub: number;
+    stocksBeforePct: number;
+    stocksAfterPct: number;
+    bondsBeforePct: number;
+    bondsAfterPct: number;
+    cashBeforePct: number;
+    cashAfterPct: number;
   } {
     // Работаем с копиями долей, P&L и стоимости покупки
     const values = new Map<string, number>();
     const pnl = new Map<string, number>();
     const costBases = new Map<string, number>(); // Стоимость покупки позиций
-    let realizedLoss = 0;
+    let realizedPnL = 0; // signed: отрицательный = убыток
 
     for (const asset of assets) {
       const currentVal = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
       values.set(asset.ticker.toUpperCase(), currentVal);
 
-      // Нереализованный P&L
-      pnl.set(asset.ticker.toUpperCase(), asset.unrealizedProfitRub ?? 0);
+      // Нереализованный P&L (signed): null означает отсутствие данных
+      const unrealizedPnL = asset.unrealizedProfitRub;
+      pnl.set(asset.ticker.toUpperCase(), unrealizedPnL);
 
-      // Стоимость покупки = текущая стоимость - нереализованный P&L
-      // (если P&L положительный, цена покупки ниже текущей; если отрицательный — выше)
+      // Стоимость покупки = quantity * balancePrice (прямой расчёт)
+      // НЕ используем обратную формулу currentVal - unrealizedPnL,
+      // т.к. она даёт неверный результат при несогласованных тестовых данных.
       costBases.set(
         asset.ticker.toUpperCase(),
-        currentVal - (asset.unrealizedProfitRub ?? 0),
+        (asset.quantity ?? 0) * (asset.balancePrice ?? 0),
       );
     }
 
@@ -305,17 +385,30 @@ export class ScenarioAgent extends AgentBase {
       const costBase = costBases.get(key) ?? currentValue;
 
       if (change.action === 'BUY') {
-        values.set(key, currentValue + change.amountRub);
-        // При покупке нового P&L = 0 (новая позиция)
-        pnl.set(key, 0);
+        const existingValue = values.get(key) ?? 0;
+        values.set(key, existingValue + change.amountRub);
+        // Обновляем costBases: добавляем стоимость новых бумаг по текущей цене
+        const existingCostBase = costBases.get(key) ?? 0;
+        costBases.set(key, existingCostBase + change.amountRub);
+        // При покупке новых бумаг по текущей рыночной цене:
+        // - существующий абсолютный P&L НЕ изменяется (покупка по текущей цене = 0 P&L для новой части)
+        // - новая позиция имеет P&L = 0
+        // - итоговый P&L = existingPnL + 0 = existingPnL
+        // НЕ усредняем существующий убыток — это математическая ошибка.
+        if (existingValue === 0) {
+          // Новая позиция: P&L = 0
+          pnl.set(key, 0);
+        }
+        // Существующая позиция: existingPnL сохраняется без изменений
       } else if (change.action === 'SELL' || change.action === 'REDUCE') {
         const sold = Math.min(change.amountRub, currentValue);
 
-        // Реализованный P&L при продаже:
+        // Реализованный P&L при продаже (signed):
         // (текущая стоимость - стоимость покупки) * доля проданного
+        // currentPnL отрицательный = убыток → realizedPnL отрицательный = убыток
         if (currentValue > 0) {
-          const realizedPnL = currentPnL * (sold / currentValue);
-          realizedLoss += realizedPnL; // может быть отрицательным = убыток
+          const realized = currentPnL * (sold / currentValue);
+          realizedPnL += realized; // signed: отрицательный = убыток
         }
 
         // Обновляем оставшуюся позицию
@@ -340,14 +433,75 @@ export class ScenarioAgent extends AgentBase {
       if (asset.targetPercent !== undefined && asset.targetPercent > 0) {
         deviation += Math.abs(percent - asset.targetPercent);
       }
-      projectedPnL += pnl.get(key) ?? 0;
+      // pnl.get(key) может быть null (отсутствует unrealizedProfitRub)
+      // null не подставляется как 0 — это означает отсутствие данных
+      const assetPnL = pnl.get(key);
+      if (assetPnL !== null && assetPnL !== undefined) {
+        projectedPnL += assetPnL;
+      }
     }
+
+    // ─── P1-2: Расчёт структуры до/после ───
+    const stocksBeforePct = this.calcClassPct(assets, total, 'STOCK');
+    const bondsBeforePct = this.calcClassPct(assets, total, 'BOND');
+    const cashBeforePct = 100 - stocksBeforePct - bondsBeforePct;
+    const stocksAfterPct = this.calcClassPctAfter(assets, total, values, 'STOCK');
+    const bondsAfterPct = this.calcClassPctAfter(assets, total, values, 'BOND');
+    const cashAfterPct = 100 - stocksAfterPct - bondsAfterPct;
 
     return {
       structureDeviationPct: Math.round(deviation * 10) / 10,
       projectedUnrealizedPnL: Math.round(projectedPnL),
-      realizedLossRub: Math.round(realizedLoss),
+      realizedPnLRub: Math.round(realizedPnL),
+      stocksBeforePct,
+      stocksAfterPct,
+      bondsBeforePct,
+      bondsAfterPct,
+      cashBeforePct,
+      cashAfterPct,
     };
+  }
+
+  /** Рассчитать долю класса активов (%) */
+  private calcClassPct(
+    assets: AssetAnalysis[],
+    total: number,
+    assetClass: 'STOCK' | 'BOND',
+  ): number {
+    let sum = 0;
+    for (const asset of assets) {
+      const val = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
+      const type = asset.assetType.toUpperCase();
+      const isMatch =
+        (assetClass === 'STOCK' &&
+          (type === 'А' || type === 'АКЦИЯ' || type === 'STOCK')) ||
+        (assetClass === 'BOND' &&
+          (type === 'О' || type === 'ОБЛИГАЦИЯ' || type === 'BOND'));
+      if (isMatch) sum += val;
+    }
+    return total > 0 ? Math.round((sum / total) * 100 * 10) / 10 : 0;
+  }
+
+  /** Рассчитать долю класса активов после изменений */
+  private calcClassPctAfter(
+    assets: AssetAnalysis[],
+    total: number,
+    values: Map<string, number>,
+    assetClass: 'STOCK' | 'BOND',
+  ): number {
+    let sum = 0;
+    for (const asset of assets) {
+      const key = asset.ticker.toUpperCase();
+      const val = values.get(key) ?? 0;
+      const type = asset.assetType.toUpperCase();
+      const isMatch =
+        (assetClass === 'STOCK' &&
+          (type === 'А' || type === 'АКЦИЯ' || type === 'STOCK')) ||
+        (assetClass === 'BOND' &&
+          (type === 'О' || type === 'ОБЛИГАЦИЯ' || type === 'BOND'));
+      if (isMatch) sum += val;
+    }
+    return total > 0 ? Math.round((sum / total) * 100 * 10) / 10 : 0;
   }
 
   /** Суммарное отклонение структуры от целевых долей */
@@ -433,9 +587,17 @@ export class ScenarioAgent extends AgentBase {
     const result = this.applyChanges(assets, total, changes);
     const dev = result.structureDeviationPct;
     const improved = baselineDeviation - dev >= BASE_CHANGE_THRESHOLD_PCT;
+    const flexiblePnlStatus = this.calcPnlStatus(assets, changes);
     const verdict: ScenarioResult['verdict'] = improved
       ? 'IMPROVES'
       : 'NEUTRAL';
+
+    let rationale =
+        `Покупка ${buyAsset.ticker} ≈ ${this.fmtRub(amount)}. ` +
+        `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}).`;
+    if (flexiblePnlStatus === 'INSUFFICIENT_DATA') {
+      rationale += ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
+    }
 
     return {
       id: 'S4_flexible',
@@ -443,11 +605,16 @@ export class ScenarioAgent extends AgentBase {
       changes,
       structureDeviationPct: dev,
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
-      realizedLossRub: Math.max(0, -result.realizedLossRub),
+      realizedPnLRub: result.realizedPnLRub,
+      pnlCalculationStatus: flexiblePnlStatus,
       verdict,
-      rationale:
-        `Покупка ${buyAsset.ticker} ≈ ${this.fmtRub(amount)}. ` +
-        `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}).`,
+      rationale,
+      stocksBeforePct: result.stocksBeforePct,
+      stocksAfterPct: result.stocksAfterPct,
+      bondsBeforePct: result.bondsBeforePct,
+      bondsAfterPct: result.bondsAfterPct,
+      cashBeforePct: result.cashBeforePct,
+      cashAfterPct: result.cashAfterPct,
     };
   }
 
@@ -463,6 +630,54 @@ export class ScenarioAgent extends AgentBase {
         ? cur
         : best;
     });
+  }
+
+  // ── P&L data validation ──
+
+  /**
+   * Определяет статус расчёта P&L по всем позициям, участвующим в сценарии.
+   *
+   * CALCULATED — все позиции имеют unrealizedProfitRub !== null,
+   *               balancePrice > 0 и currentPrice > 0;
+   * PARTIAL — часть позиций имеет данные, часть нет;
+   * INSUFFICIENT_DATA — ни одна позиция не имеет необходимых данных.
+   */
+  private calcPnlStatus(
+    assets: AssetAnalysis[],
+    changes: ScenarioChange[],
+  ): PnlCalculationStatus {
+    const involvedTickers = new Set<string>();
+    // Собираем тикеры, участвующие в сценарии
+    for (const a of assets) involvedTickers.add(a.ticker.toUpperCase());
+    for (const c of changes) involvedTickers.add(c.ticker.toUpperCase());
+
+    let calculated = 0;
+    let insufficient = 0;
+
+    for (const ticker of involvedTickers) {
+      const asset = assets.find((a) => a.ticker.toUpperCase() === ticker);
+      if (!asset) {
+        insufficient++;
+        continue;
+      }
+      // Проверяем ВСЕ три условия:
+      // 1. unrealizedProfitRub — конечное число (не null, не NaN, не Infinity)
+      // 2. balancePrice > 0 — цена покупки известна
+      // 3. currentPrice > 0 — текущая цена известна
+      if (
+        Number.isFinite(asset.unrealizedProfitRub ?? NaN) &&
+        (asset.balancePrice ?? 0) > 0 &&
+        (asset.currentPrice ?? 0) > 0
+      ) {
+        calculated++;
+      } else {
+        insufficient++;
+      }
+    }
+
+    if (insufficient === 0) return 'CALCULATED';
+    if (calculated === 0) return 'INSUFFICIENT_DATA';
+    return 'PARTIAL';
   }
 
   // ── Formatting helpers ──

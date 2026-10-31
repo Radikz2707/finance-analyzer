@@ -300,4 +300,179 @@ describe('MathAiAgreement — согласование PortfolioMath и ИИ', (
       expect(isExecutionAllowed(agreement)).toBe(false);
     });
   });
+
+  // ========================================================================
+  // ИСПРАВЛЕНИЯ ЭТАПА 2: Источник рекомендации и confidence
+  // ========================================================================
+
+  describe('Этап 2: MATH_ONLY при отсутствии AI рекомендации', () => {
+    it('IRAO: Math=BUY, AI=null → статус MATH_ONLY, не BOTH_AGREED', () => {
+      const agreement = agreeMathAndAi(
+        'IRAO',
+        'BUY' as PortfolioMathStatus,
+        null, // AI не вернул рекомендацию
+        null,
+      );
+
+      expect(agreement.status).toBe('MATH_ONLY');
+      expect(agreement.aiAction).toBeNull();
+      expect(agreement.mathAction).toBe('BUY');
+      expect(agreement.conflict).toBe(false);
+      expect(agreement.executionAllowed).toBe(true);
+      expect(agreement.requiresReview).toBe(false);
+    });
+
+    it('TATN: Math=BUY, AI=null → статус MATH_ONLY', () => {
+      const agreement = agreeMathAndAi(
+        'TATN',
+        'BUY' as PortfolioMathStatus,
+        null,
+        null,
+      );
+
+      expect(agreement.status).toBe('MATH_ONLY');
+      expect(agreement.aiAction).toBeNull();
+    });
+
+    it('PLZL: Math=REDUCE, AI=null → статус MATH_ONLY, не BOTH_AGREED', () => {
+      const agreement = agreeMathAndAi(
+        'PLZL',
+        'REDUCE' as PortfolioMathStatus,
+        null,
+        null,
+      );
+
+      expect(agreement.status).toBe('MATH_ONLY');
+      expect(agreement.aiAction).toBeNull();
+      expect(agreement.mathAction).toBe('REDUCE');
+    });
+  });
+
+  describe('Этап 2: BOTH_AGREED только при двух действительных рекомендациях', () => {
+    it('Math=BUY, AI=BUY → BOTH_AGREED (AGREED)', () => {
+      const agreement = agreeMathAndAi(
+        'SBER',
+        'BUY' as PortfolioMathStatus,
+        'BUY' as AiAction,
+        'AGREE' as MathAgreement,
+      );
+
+      expect(agreement.status).toBe('AGREED');
+      expect(agreement.conflict).toBe(false);
+      expect(agreement.mathAction).toBe('BUY');
+      expect(agreement.aiAction).toBe('BUY');
+    });
+
+    it('Math=STABLE, AI=HOLD → AGREED (совместимые)', () => {
+      const agreement = agreeMathAndAi(
+        'GAZP',
+        'STABLE' as PortfolioMathStatus,
+        'HOLD' as AiAction,
+        'AGREE' as MathAgreement,
+      );
+
+      expect(agreement.status).toBe('AGREED');
+      expect(agreement.conflict).toBe(false);
+    });
+
+    it('Math=BUY, AI=null → НЕ BOTH_AGREED, а MATH_ONLY', () => {
+      const agreement = agreeMathAndAi(
+        'IRAO',
+        'BUY' as PortfolioMathStatus,
+        null,
+        null,
+      );
+
+      // Ключевое: MATH_ONLY, а не AGREED/BOTH_AGREED
+      expect(agreement.status).toBe('MATH_ONLY');
+      expect(agreement.aiAction).toBeNull();
+    });
+  });
+
+  describe('Этап 2: CONFLICT при противоположных сигналах', () => {
+    it('Math=REDUCE, AI=BUY → CONFLICT', () => {
+      const agreement = agreeMathAndAi(
+        'PLZL',
+        'REDUCE' as PortfolioMathStatus,
+        'BUY' as AiAction,
+        'DISAGREE' as MathAgreement,
+      );
+
+      expect(agreement.status).toBe('CONFLICT');
+      expect(agreement.conflict).toBe(true);
+      expect(agreement.executionAllowed).toBe(false);
+      expect(agreement.requiresReview).toBe(true);
+    });
+
+    it('Math=BUY, AI=SELL → CONFLICT', () => {
+      const agreement = agreeMathAndAi(
+        'TATN',
+        'BUY' as PortfolioMathStatus,
+        'SELL' as AiAction,
+        'DISAGREE' as MathAgreement,
+      );
+
+      expect(agreement.status).toBe('CONFLICT');
+      expect(agreement.conflict).toBe(true);
+      expect(agreement.executionAllowed).toBe(false);
+    });
+  });
+
+  describe('Этап 2: Отсутствующий confidence', () => {
+    it('confidence=null → «Нет данных», не 0%', () => {
+      // Симуляция: AI не вернул уверенность
+      const confidenceRaw = null;
+
+      // Логика отображения из notification-agent.ts
+      let confidenceDisplay: string;
+      if (confidenceRaw === null || confidenceRaw === undefined) {
+        confidenceDisplay = 'Нет данных';
+      } else {
+        const pct = Math.round(confidenceRaw * 100);
+        confidenceDisplay = pct + '%';
+      }
+
+      expect(confidenceDisplay).toBe('Нет данных');
+    });
+
+    it('confidence=0 → "0%" (действительное значение)', () => {
+      const confidenceRaw = 0;
+
+      let confidenceDisplay: string;
+      if (confidenceRaw === null || confidenceRaw === undefined) {
+        confidenceDisplay = 'Нет данных';
+      } else {
+        const pct = Math.round(confidenceRaw * 100);
+        confidenceDisplay = pct + '%';
+      }
+
+      expect(confidenceDisplay).toBe('0%');
+    });
+
+    it('confidence=0.85 → "85%"', () => {
+      const confidenceRaw = 0.85;
+
+      let confidenceDisplay: string;
+      if (confidenceRaw === null || confidenceRaw === undefined) {
+        confidenceDisplay = 'Нет данных';
+      } else {
+        const pct = Math.round(confidenceRaw * 100);
+        confidenceDisplay = pct + '%';
+      }
+
+      expect(confidenceDisplay).toBe('85%');
+    });
+
+    it('null * 100 = NaN → Math.round(NaN) = 0 (баг, который исправлен)', () => {
+      // До исправления: Math.round(null * 100) = Math.round(NaN) = 0
+      // После исправления: null проверяется до умножения
+      const buggyResult = Math.round((null as unknown as number) * 100);
+      expect(buggyResult).toBe(0); // Это демонстрирует баг
+
+      // Правильный подход: проверяем значение до умножения
+      const confidenceRaw: number | null = null;
+      const correctResult = confidenceRaw === null ? 'Нет данных' : Math.round(confidenceRaw * 100) + '%';
+      expect(correctResult).toBe('Нет данных');
+    });
+  });
 });

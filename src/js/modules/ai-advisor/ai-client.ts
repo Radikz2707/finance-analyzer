@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto';
 import {
   buildSystemPrompt,
   type MacroDataContext,
+  type FundamentalMetrics,
+  type BehavioralFactors,
 } from './prompt-templates.js';
 import { buildFallbackReport } from './fallback-report-builder.js';
 import { UIOrdersData } from './types.js';
@@ -44,11 +46,94 @@ import {
   type RawAIJson,
   type ValidationResult as StructuredValidationResult,
 } from './structured-ai-recommendation.js';
+import {
+  analyzeDeepLoss,
+  type DeepLossAnalysis,
+} from './deep-loss-analyzer.js';
 import { getLogger } from '../logger/index.js';
 
 /** Задержка (мс) */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Типы ошибок, которые можно повторить (retryable).
+ * - TRANSIENT: сетевые ошибки, таймауты — стоит повторить
+ * - INVALID_JSON: AI вернул невалидный JSON — стоит повторить с упрощённым промптом
+ * - EMPTY_RESPONSE: AI вернул пустой ответ — стоит повторить
+ * - MISSING_FIELDS: AI вернул JSON без обязательных полей — стоит повторить
+ */
+export type AiRetryableError =
+  'TRANSIENT' | 'INVALID_JSON' | 'EMPTY_RESPONSE' | 'MISSING_FIELDS';
+
+/**
+ * Проверяет, является ли ошибка retryable.
+ */
+export function isAiRetryableError(error: unknown): error is AiRetryableError {
+  return (
+    error === 'TRANSIENT' ||
+    error === 'INVALID_JSON' ||
+    error === 'EMPTY_RESPONSE' ||
+    error === 'MISSING_FIELDS'
+  );
+}
+
+/**
+ * Retry-обёртка для AI-запросов с exponential backoff.
+ *
+ * Повторяет запрос при:
+ * - Сетевых ошибках (через circuit-breaker withRetry)
+ * - Невалидном JSON от AI
+ * - Пустом ответе от AI
+ * - Ответе без обязательных полей
+ *
+ * @param fn — функция запроса к AI
+ * @param maxRetries — макс. число повторов (по умолчанию 2)
+ * @param baseDelayMs — базовая задержка (по умолчанию 1000 мс)
+ * @param onRetry — колбэк при повторе
+ */
+export async function withAiRetry<T>(
+  fn: () => Promise<T>,
+  options: {
+    maxRetries?: number;
+    baseDelayMs?: number;
+    onRetry?: (
+      error: AiRetryableError,
+      attempt: number,
+      delayMs: number,
+    ) => void;
+  } = {},
+): Promise<T> {
+  const maxRetries = options.maxRetries ?? 2;
+  const baseDelayMs = options.baseDelayMs ?? 1000;
+  const onRetry = options.onRetry;
+
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (error) {
+      // Если это не retryable ошибка — бросаем сразу
+      if (!isAiRetryableError(error)) {
+        throw error;
+      }
+
+      // Если исчерпали попытки — бросаем последнюю ошибку
+      if (attempt >= maxRetries) {
+        throw error;
+      }
+
+      // Exponential backoff с jitter
+      const exponential = baseDelayMs * Math.pow(2, attempt);
+      const jitter = Math.random() * exponential * 0.5;
+      const delayMs = Math.min(exponential + jitter, 10000); // cap at 10s
+
+      onRetry?.(error, attempt + 1, delayMs);
+      await sleep(delayMs);
+      attempt++;
+    }
+  }
 }
 
 /**
@@ -245,8 +330,12 @@ export class AiClient {
     const hasData = macroData != null && rateValue > 0;
 
     const display = hasData
-      ? rateValue + '%' + (!isFresh
-          ? ' (\u26a0\ufe0f \u0434\u0430\u043d\u043d\u044b\u0435 \u0443\u0441\u0442\u0430\u0440\u0435\u043b\u0438, \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a: ' + (macroData.source || 'unknown') + ')'
+      ? rateValue +
+        '%' +
+        (!isFresh
+          ? ' (\u26a0\ufe0f \u0434\u0430\u043d\u043d\u044b\u0435 \u0443\u0441\u0442\u0430\u0440\u0435\u043b\u0438, \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a: ' +
+            (macroData.source || 'unknown') +
+            ')'
           : ' (cbr.ru)')
       : '\u2014 (\u0434\u0430\u043d\u043d\u044b\u0435 \u043d\u0435 \u043f\u043e\u043b\u0443\u0447\u0435\u043d\u044b)';
 
@@ -574,9 +663,34 @@ export class AiClient {
     prompt += 'ДАННЫЕ ПОРТФЕЛЯ:\n';
     prompt += context + '\n\n';
 
-    // Добавляем новостный фон, если есть
+    // Добавляем новостной фон, если есть
     if (newsContext) {
       prompt += 'НОВОСТНОЙ ФОН:\n' + newsContext + '\n\n';
+    }
+
+    // ─── P0-2: Чёткие метки C10/C11 ───
+    if (_historicalData) {
+      const c10 = _historicalData.profitC10;
+      const c11 = _historicalData.profitC11;
+      const invested = _historicalData.investedNet;
+      prompt += '=== ФИНАНСОВЫЕ ПОКАЗАТЕЛИ ===\n';
+      prompt +=
+        '• C10_РезультатРынка (реализованный P&L от исторических сделок): ' +
+        this.fmtRubWithSign(c10) +
+        '\n';
+      prompt +=
+        '• C11_ЧистыйИтог (текущая стоимость активов − чистые взносы): ' +
+        this.fmtRubWithSign(c11) +
+        '\n';
+      prompt +=
+        '• C12_ВложенныйКапитал (все взносы − все выводы): ' +
+        this.fmtRubWithSign(invested) +
+        '\n';
+      prompt += '⚠️ C10 и C11 — РАЗНЫЕ показатели. C10 ≠ C11. Не перепутай.\n';
+      prompt +=
+        'C10 = сколько заработано/потеряно на конкретных сделках (реализованное).\n';
+      prompt +=
+        'C11 = сколько портфель стоит сейчас минус сколько вложено (включая нереализованное).\n\n';
     }
 
     prompt += '=== ЗАДАЧА ===\n';
@@ -590,7 +704,8 @@ export class AiClient {
     if (hasData) {
       prompt += '1. Макро: соответствие структуры ставке ' + rateValue + '%\n';
     } else {
-      prompt += '1. Макро: данные о ставке ЦБ отсутствуют — укажи "нет данных"\n';
+      prompt +=
+        '1. Макро: данные о ставке ЦБ отсутствуют — укажи "нет данных"\n';
     }
     prompt +=
       '2. Каждый актив: статус (BUY/STABLE/REDUCE/EXIT/NO_TARGET) + аргументация\n';
@@ -663,7 +778,10 @@ export class AiClient {
       },
     );
 
-    this.log.info('[OPENROUTER] ✅ Response received, status:', response.status);
+    this.log.info(
+      '[OPENROUTER] ✅ Response received, status:',
+      response.status,
+    );
     return response.data.choices[0].message.content;
   }
 
@@ -1206,7 +1324,9 @@ export class AiClient {
       return arithmeticValidatedResponse;
     } catch (error) {
       // Если стриминг не сработал, пробуем обычный запрос
-      this.log.info('[Ollama] ⚠️ Стриминг не удался, пробуем обычный запрос...');
+      this.log.info(
+        '[Ollama] ⚠️ Стриминг не удался, пробуем обычный запрос...',
+      );
 
       try {
         const result: StreamResult = await chatWithoutStream(
@@ -1336,7 +1456,11 @@ export class AiClient {
     const assetTickers = analysis.assetsAnalysis.map((a) => a.ticker);
 
     // Формируем отображение ставки ЦБ со статусом
-    const { display: rateDisplay, value: rateValue, hasData } = this.formatCbrRate(macroData);
+    const {
+      display: rateDisplay,
+      value: rateValue,
+      hasData,
+    } = this.formatCbrRate(macroData);
 
     const context = this.buildPortfolioContext(
       analysis,
@@ -1351,6 +1475,64 @@ export class AiClient {
     );
     this.log.info('[AI_CLIENT] buildPortfolioContext OK');
 
+    // ─── Deep Loss Analysis — анализ глубокого падения активов ───
+    // Находим активы с просадкой > -20% и анализируем причины
+    const deepLossThreshold = -20;
+    let deepLossContext: DeepLossAnalysis | undefined;
+    let fundamentalMetrics: FundamentalMetrics | undefined;
+    let behavioralFactors: BehavioralFactors | undefined;
+
+    for (const asset of analysis.assetsAnalysis) {
+      const balancePrice = asset.balancePrice ?? 0;
+      const currentPrice = asset.currentPrice ?? 0;
+      const drawdownPercent = balancePrice > 0
+        ? ((currentPrice - balancePrice) / balancePrice) * 100
+        : 0;
+
+      if (drawdownPercent <= deepLossThreshold) {
+        // Рассчитываем рыночную и секторную просадки
+        const marketDrawdown = this.calculateMarketDrawdown(analysis);
+        const sectorDrawdown = this.calculateSectorDrawdown(asset, analysis);
+        
+        // Извлекаем макро-данные
+        const keyRateChange = macroData.keyRate > 0 ? (macroData.keyRate - 15) : 0;
+        const currencyChange = macroData.currency ?? 0;
+        const oilChange = macroData.oil ?? 0;
+        
+        // Проверяем фундаментал (упрощённо)
+        const hasPositiveFundamentals = this.checkPositiveFundamentals(asset);
+        
+        deepLossContext = analyzeDeepLoss({
+          asset,
+          marketDrawdown,
+          sectorDrawdown,
+          keyRateChange,
+          keyRate: macroData.keyRate,
+          currencyChange,
+          oilChange,
+          hasPositiveFundamentals,
+        });
+        const metrics = this.calculateFundamentalMetrics(asset);
+        if (metrics) fundamentalMetrics = metrics;
+        const factors = this.calculateBehavioralFactors(asset);
+        if (factors) behavioralFactors = factors;
+        this.log.info(
+          `[AI] Глубокое падение: ${asset.ticker} (${asset.name}) ${drawdownPercent.toFixed(1)}% — ${deepLossContext.primaryReason}`,
+        );
+        if (fundamentalMetrics) {
+          this.log.info(
+            `[AI] Фундаментальные метрики: ${asset.ticker} — ${fundamentalMetrics.fundamentalHealth}`,
+          );
+        }
+        if (behavioralFactors) {
+          this.log.info(
+            `[AI] Поведенческие факторы: ${asset.ticker} — ${behavioralFactors.lossAversion}`,
+          );
+        }
+        break; // Анализируем первый актив с глубоким падением
+      }
+    }
+
     const systemPrompt = buildSystemPrompt(
       macroData.keyRate,
       newsContext,
@@ -1359,6 +1541,21 @@ export class AiClient {
       memoryContext,
       guardrailsContext,
       investorParams,
+      undefined, // bondContext — пока не используется
+      deepLossContext
+        ? {
+            ticker: deepLossContext.ticker,
+            name: deepLossContext.name,
+            drawdownPercent: deepLossContext.drawdownPercent,
+            lossLevel: deepLossContext.lossLevel,
+            primaryReason: deepLossContext.primaryReason,
+            vsMarket: deepLossContext.vsMarket,
+            realizationRisk: deepLossContext.realizationRisk,
+            summary: deepLossContext.summary,
+          }
+        : undefined,
+      fundamentalMetrics,
+      behavioralFactors,
     );
     const macroPercentages = actualMacroPercentages || {
       stocks: analysis.macro.stocksPercent,
@@ -1408,6 +1605,15 @@ export class AiClient {
       `[AI] Доступные модели: ${availableModels.map((m) => m.name).join(', ')}`,
     );
     this.log.info(`[AI] Попытка запроса к: ${CURRENT_AI_MODEL.name}...`);
+    
+    // ─── DEBUG: измеряем длину промптов ───
+    this.log.info(`[AI DEBUG] System prompt length: ${systemPrompt.length} chars`);
+    this.log.info(`[AI DEBUG] User prompt length: ${userPrompt.length} chars`);
+    this.log.info(`[AI DEBUG] Total prompt size: ${systemPrompt.length + userPrompt.length} chars`);
+    this.log.info(`[AI DEBUG] Assets count: ${assetTickers.length}`);
+    this.log.info(`[AI DEBUG] DeepLossContext: ${deepLossContext ? 'YES' : 'NO'}`);
+    this.log.info(`[AI DEBUG] FundamentalMetrics: ${fundamentalMetrics ? 'YES' : 'NO'}`);
+    this.log.info(`[AI DEBUG] BehavioralFactors: ${behavioralFactors ? 'YES' : 'NO'}`);
 
     // Пробуем модели по очереди: circuit breaker + retry + fallback chain.
     // Каждый провайдер защищён собственным CircuitBreaker; после N ошибок
@@ -1438,25 +1644,84 @@ export class AiClient {
       },
     }));
 
-    let aiText: string;
-    let usedProviderName: string;
-    try {
-      const routeResult = await this.aiRouter.execute(
-        providers,
-        systemPrompt,
-        userPrompt,
-      );
-      aiText = routeResult.text;
-      usedProviderName = routeResult.providerName;
-      this.log.info(
-        `[AI] ✅ Ответ получен от ${usedProviderName} (${aiText.length} символов)`,
-      );
-    } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.log.error('[AI] Ошибка всех моделей: ' + msg);
+    let aiText: string | undefined;
+    let usedProviderName: string | undefined;
+    let lastError: unknown = null;
+    const maxAiRetries = 2; // Макс. повторов при невалидном ответе AI
+
+    // Retry-обёртка для случаев, когда AI вернул невалидный ответ
+    for (let attempt = 0; attempt <= maxAiRetries; attempt++) {
+      try {
+        const routeResult = await this.aiRouter.execute(
+          providers,
+          systemPrompt,
+          userPrompt,
+        );
+        aiText = routeResult.text;
+        usedProviderName = routeResult.providerName;
+
+        // Проверяем качество ответа
+        if (!aiText || aiText.trim().length < 50) {
+          // Пустой или слишком короткий ответ — retry
+          this.log.warn(
+            `[AI] ⚠️ Пустой/короткий ответ (${aiText?.length ?? 0} символов). ` +
+              `Попытка ${attempt + 1}/${maxAiRetries + 1}...`,
+          );
+          lastError = 'EMPTY_RESPONSE';
+          if (attempt < maxAiRetries) {
+            const delayMs = 1000 * Math.pow(2, attempt);
+            await sleep(delayMs);
+            continue;
+          }
+        }
+
+        // Если ответ нормальный — выходим
+        if (aiText && usedProviderName) {
+          this.log.info(
+            `[AI] ✅ Ответ получен от ${usedProviderName} (${aiText.length} символов)`,
+          );
+          this.log.info(`[AI DEBUG] First 500 chars: ${aiText.substring(0, 500)}`);
+          lastError = null;
+          break;
+        } else {
+          this.log.warn(
+            `[AI] ⚠️ Пустой ответ. Попытка ${attempt + 1}/${maxAiRetries + 1}...`,
+          );
+          lastError = 'EMPTY_RESPONSE';
+          if (attempt < maxAiRetries) {
+            const delayMs = 1000 * Math.pow(2, attempt);
+            await sleep(delayMs);
+            continue;
+          }
+        }
+      } catch (error: unknown) {
+        lastError = error;
+        const msg = error instanceof Error ? error.message : String(error);
+
+        // Если это транзиентная ошибка — retry
+        if (isTransientOllamaError(msg) || attempt < maxAiRetries) {
+          this.log.warn(
+            `[AI] ⚠️ Транзиентная ошибка: ${msg}. ` +
+              `Попытка ${attempt + 1}/${maxAiRetries + 1}...`,
+          );
+          if (attempt < maxAiRetries) {
+            const delayMs = 1000 * Math.pow(2, attempt);
+            await sleep(delayMs);
+            continue;
+          }
+        }
+
+        // Если это не транзиентная ошибка — бросаем
+        throw error;
+      }
+    }
+
+    // Если все попытки исчерпаны — локальный fallback
+    if (lastError || !aiText || !usedProviderName) {
+      this.log.error('[AI] Ошибка всех моделей: ' + String(lastError));
       // Детальная отладка: выводим полный ответ ошибки
-      if (error instanceof Error && 'response' in error) {
-        const axiosError = error as Error & {
+      if (lastError instanceof Error && 'response' in lastError) {
+        const axiosError = lastError as Error & {
           response?: { data?: unknown; status?: number };
         };
         if (axiosError.response?.data) {
@@ -1488,76 +1753,132 @@ export class AiClient {
       };
     }
 
-    // Извлекаем структурированный JSON из AI-ответа
+    // Извлекаем структурированный JSON из AI-ответа с retry-логикой
     let structuredJson: RawAIJson | null = null;
     let structuredJsonArray: RawAIJson[] = [];
     let structuredValidation: StructuredValidationResult | null = null;
 
-    try {
-      // Сначала пробуем массив JSON (один объект на каждый актив)
-      structuredJsonArray = extractJsonArrayFromAiResponse(aiText);
+    // Если aiText не определён — используем пустую строку
+    const safeAiText = aiText ?? '';
 
-      if (structuredJsonArray.length > 0) {
-        // Валидируем каждый элемент массива
-        const validResults: RawAIJson[] = [];
-        for (const item of structuredJsonArray) {
-          const validation = validateStructuredAIJson(item, assetTickers);
-          if (validation.valid) {
-            validResults.push(item);
-          } else {
-            this.log.warn(
-              `[AI] ⚠️ JSON валидация не пройдена для ${item.ticker}:`,
-              validation.errors,
+    // Retry-логика для случаев, когда AI вернул невалидный JSON
+    const maxJsonRetries = 1; // Макс. повторов при невалидном JSON
+    let jsonExtractSuccess = false;
+
+    for (let jsonAttempt = 0; jsonAttempt <= maxJsonRetries; jsonAttempt++) {
+      try {
+        // Сначала пробуем массив JSON (один объект на каждый актив)
+        this.log.info(`[AI DEBUG] JSON extraction attempt ${jsonAttempt + 1}`);
+        this.log.info(`[AI DEBUG] Text contains \`\`\`json: ${safeAiText.includes('```json')}`);
+        this.log.info(`[AI DEBUG] Text contains \`\`\`: ${safeAiText.includes('```')}`);
+        
+        structuredJsonArray = extractJsonArrayFromAiResponse(safeAiText);
+
+        if (structuredJsonArray.length > 0) {
+          // Валидируем каждый элемент массива
+          const validResults: RawAIJson[] = [];
+          for (const item of structuredJsonArray) {
+            const validation = validateStructuredAIJson(item, assetTickers);
+            if (validation.valid) {
+              validResults.push(item);
+            } else {
+              this.log.warn(
+                `[AI] ⚠️ JSON валидация не пройдена для ${item.ticker}:`,
+                validation.errors,
+              );
+            }
+          }
+          structuredJsonArray = validResults;
+          structuredJson =
+            validResults.length > 0 ? (validResults[0] as RawAIJson) : null;
+
+          this.log.info(
+            `[AI] JSON-массив извлечён: ${structuredJsonArray.length} актив(ов) прошло валидацию`,
+          );
+          for (const item of structuredJsonArray) {
+            this.log.info(
+              `[AI]   ${item.ticker}: ${item.recommendedAction}, confidence=${item.confidence}`,
             );
           }
-        }
-        structuredJsonArray = validResults;
-        structuredJson = validResults.length > 0 ? (validResults[0] as RawAIJson) : null;
-
-        this.log.info(
-          `[AI] JSON-массив извлечён: ${structuredJsonArray.length} актив(ов) прошло валидацию`,
-        );
-        for (const item of structuredJsonArray) {
-          this.log.info(
-            `[AI]   ${item.ticker}: ${item.recommendedAction}, confidence=${item.confidence}`,
-          );
-        }
-      } else {
-        // Fallback: одиночный JSON-объект
-        structuredJson = extractJsonFromAiResponse(aiText);
-        if (structuredJson) {
-          // Одиночный JSON — оборачиваем в массив, чтобы ai-agent мог
-          // обработать его наравне с другими активами
-          structuredJsonArray = [structuredJson as RawAIJson];
-          this.log.info(
-            `[AI] Одиночный JSON обернут в массив: ticker=${structuredJson.ticker}`,
-          );
-        }
-        if (structuredJson) {
-          structuredValidation = validateStructuredAIJson(
-            structuredJson,
-            assetTickers,
-          );
-          this.log.info(
-            `[AI] JSON извлечён: ticker=${structuredJson.ticker}, ` +
-              `action=${structuredJson.recommendedAction}, ` +
-              `valid=${structuredValidation?.valid ?? 'N/A'}`,
-          );
-          if (structuredValidation && !structuredValidation.valid) {
-            this.log.warn(
-              '[AI] ⚠️ JSON валидация не пройдена:',
-              structuredValidation.errors,
-            );
-          }
+          jsonExtractSuccess = true;
+          break; // Успех — выходим из retry-цикла
         } else {
-          this.log.warn('[AI] JSON-блок не найден в ответе');
-          // Логгируем начало ответа AI для отладки
-          this.log.info('[AI] Начало ответа AI:', aiText.slice(0, 500));
+          // Fallback: одиночный JSON-объект
+          structuredJson = extractJsonFromAiResponse(safeAiText);
+          if (structuredJson) {
+            // Одиночный JSON — оборачиваем в массив, чтобы ai-agent мог
+            // обработать его наравне с другими активами
+            structuredJsonArray = [structuredJson as RawAIJson];
+            this.log.info(
+              `[AI] Одиночный JSON обернут в массив: ticker=${structuredJson.ticker}`,
+            );
+          }
+          if (structuredJson) {
+            structuredValidation = validateStructuredAIJson(
+              structuredJson,
+              assetTickers,
+            );
+            this.log.info(
+              `[AI] JSON извлечён: ticker=${structuredJson.ticker}, ` +
+                `action=${structuredJson.recommendedAction}, ` +
+                `valid=${structuredValidation?.valid ?? 'N/A'}`,
+            );
+            if (structuredValidation && !structuredValidation.valid) {
+              this.log.warn(
+                '[AI] ⚠️ JSON валидация не пройдена:',
+                structuredValidation.errors,
+              );
+              // Если JSON не прошёл валидацию — retry
+              if (jsonAttempt < maxJsonRetries) {
+                this.log.warn(
+                  `[AI] ⚠️ Невалидный JSON. Попытка ${jsonAttempt + 1}/${maxJsonRetries + 1}...`,
+                );
+                const delayMs = 1000 * Math.pow(2, jsonAttempt);
+                await sleep(delayMs);
+                continue; // Retry
+              }
+            } else {
+              jsonExtractSuccess = true;
+              break; // Успех — выходим из retry-цикла
+            }
+          } else {
+            this.log.warn('[AI] JSON-блок не найден в ответе');
+            // Логгируем начало ответа AI для отладки
+            this.log.info('[AI] Начало ответа AI:', safeAiText.slice(0, 500));
+            // Если JSON не найден — retry
+            if (jsonAttempt < maxJsonRetries) {
+              this.log.warn(
+                `[AI] ⚠️ JSON не найден. Попытка ${jsonAttempt + 1}/${maxJsonRetries + 1}...`,
+              );
+              const delayMs = 1000 * Math.pow(2, jsonAttempt);
+              await sleep(delayMs);
+              continue; // Retry
+            }
+          }
+        }
+      } catch (err) {
+        this.log.error('[AI] Ошибка парсинга JSON:', err);
+        // Если ошибка парсинга — retry
+        if (jsonAttempt < maxJsonRetries) {
+          this.log.warn(
+            `[AI] ⚠️ Ошибка парсинга JSON. Попытка ${jsonAttempt + 1}/${maxJsonRetries + 1}...`,
+          );
+          const delayMs = 1000 * Math.pow(2, jsonAttempt);
+          await sleep(delayMs);
+          continue; // Retry
         }
       }
-    } catch (err) {
-      this.log.error('[AI] Ошибка парсинга JSON:', err);
     }
+
+    if (!jsonExtractSuccess) {
+      this.log.warn(
+        '[AI] ⚠️ JSON не извлечён после всех попыток. Используется fallback.',
+      );
+    }
+    
+    // ─── DEBUG: проверяем возвращаемые данные ───
+    this.log.info(`[AI DEBUG] Returning structuredJsonArray: ${structuredJsonArray.length} items`);
+    this.log.info(`[AI DEBUG] Returning structuredJson: ${structuredJson ? 'exists' : 'null'}`);
 
     return {
       text: aiText.replace(/\n/g, '<br>'),
@@ -1606,5 +1927,219 @@ export class AiClient {
       return this.queryYandexGpt(modelConfig, systemPrompt, userPrompt);
     }
     throw new Error(`Модель ${modelConfig.name} пока не поддерживается`);
+  }
+
+  // ─── P0-2: Вспомогательные методы ───
+
+  /** Форматирование рубля со знаком для финансовых показателей */
+  private fmtRubWithSign(value: number): string {
+    const formatted = new Intl.NumberFormat('ru-RU', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(Math.round(value));
+    return value >= 0
+      ? '+' + formatted + ' ₽'
+      : '−' + formatted.replace('-', '') + ' ₽';
+  }
+
+  /**
+   * Рассчитывает фундаментальные метрики актива.
+   * Использует данные из AssetAnalysis и доступные финансовые показатели.
+   */
+  private calculateFundamentalMetrics(
+    asset: AssetAnalysis,
+  ): FundamentalMetrics | null {
+    // Упрощённая оценка фундаментала на основе доступных данных
+    const isPositive = this.checkPositiveFundamentals(asset);
+    const hasDrawdown = asset.balancePrice > 0 && asset.currentPrice > 0;
+    const drawdownPercent = hasDrawdown
+      ? ((asset.currentPrice - asset.balancePrice) / asset.balancePrice) * 100
+      : 0;
+
+    // Оценка фундаментала
+    let fundamentalHealth: 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE';
+    let summary: string;
+
+    if (isPositive && drawdownPercent > -10) {
+      fundamentalHealth = 'POSITIVE';
+      summary = `Фундаментал в норме: статус ${asset.status}, просадка умеренная (${drawdownPercent.toFixed(1)}%).`;
+    } else if (isPositive && drawdownPercent <= -10) {
+      fundamentalHealth = 'NEUTRAL';
+      summary = `Фундаментал умеренный: статус ${asset.status}, но просадка глубокая (${drawdownPercent.toFixed(1)}%).`;
+    } else {
+      fundamentalHealth = 'NEGATIVE';
+      summary = `Фундаментал под вопросом: статус ${asset.status}, просадка ${drawdownPercent.toFixed(1)}%, актив сконцентрирован.`;
+    }
+
+    return {
+      ticker: asset.ticker,
+      name: asset.name,
+      pe: null, // Нет данных
+      ps: null, // Нет данных
+      pb: null, // Нет данных
+      dividendYield: null, // Нет данных
+      roe: null, // Нет данных
+      debtToEquity: null, // Нет данных
+      profitMargin: null, // Нет данных
+      revenueGrowth: null, // Нет данных
+      earningsGrowth: null, // Нет данных
+      fundamentalHealth,
+      summary,
+    };
+  }
+
+  /**
+   * Рассчитывает поведенческие факторы актива.
+   * Учитывает глубину просадки, статус и концентрацию.
+   */
+  private calculateBehavioralFactors(
+    asset: AssetAnalysis,
+  ): BehavioralFactors | null {
+    const hasDrawdown = asset.balancePrice > 0 && asset.currentPrice > 0;
+    const drawdownPercent = hasDrawdown
+      ? ((asset.currentPrice - asset.balancePrice) / asset.balancePrice) * 100
+      : 0;
+
+    // Оценка психологического барьера убытка
+    let lossAversion: 'HIGH' | 'MEDIUM' | 'LOW';
+    if (drawdownPercent <= -30) {
+      lossAversion = 'HIGH';
+    } else if (drawdownPercent <= -15) {
+      lossAversion = 'MEDIUM';
+    } else {
+      lossAversion = 'LOW';
+    }
+
+    // Оценка склонности к усреднению
+    let averagingTendency: 'HIGH' | 'MEDIUM' | 'LOW';
+    if (asset.status === 'BUY' && drawdownPercent <= -20) {
+      averagingTendency = 'HIGH';
+    } else if (asset.status === 'BUY') {
+      averagingTendency = 'MEDIUM';
+    } else {
+      averagingTendency = 'LOW';
+    }
+
+    // Оценка склонности к панике
+    let panicTendency: 'HIGH' | 'MEDIUM' | 'LOW';
+    if (drawdownPercent <= -40 && asset.isConcentrated) {
+      panicTendency = 'HIGH';
+    } else if (drawdownPercent <= -25) {
+      panicTendency = 'MEDIUM';
+    } else {
+      panicTendency = 'LOW';
+    }
+
+    // Рекомендация по поведению
+    let behavioralAdvice: string;
+    if (lossAversion === 'HIGH' && panicTendency === 'HIGH') {
+      behavioralAdvice =
+        '⚠️ Критический уровень: избегайте эмоциональных решений. Рассмотрите частичную продажу или хеджирование.';
+    } else if (lossAversion === 'HIGH') {
+      behavioralAdvice =
+        '⚠️ Высокий риск фиксации убытка: оцените фундаментал перед принятием решения.';
+    } else if (averagingTendency === 'HIGH') {
+      behavioralAdvice =
+        '💡 Усреднение возможно, но только при положительном фундаментале и наличии кэша.';
+    } else {
+      behavioralAdvice =
+        '✅ Психологический баланс в норме: принимайте решения на основе данных.';
+    }
+
+    // Резюме
+    let summary = 'Поведенческий профиль: ';
+    if (lossAversion === 'HIGH') summary += 'высокая_aversion к убытку, ';
+    if (panicTendency === 'HIGH') summary += 'высокая склонность к панике, ';
+    if (averagingTendency === 'HIGH') summary += 'склонность к усреднению. ';
+    if (summary === 'Поведенческий профиль: ') summary += 'баланс в норме. ';
+
+    return {
+      ticker: asset.ticker,
+      name: asset.name,
+      lossAversion,
+      averagingTendency,
+      panicTendency,
+      behavioralAdvice,
+      summary,
+    };
+  }
+
+  /**
+   * Рассчитывает средневзвешенную просадку рынка по всем акциям в портфеле.
+   * Используется как бенчмарк для сравнения с конкретным активом.
+   */
+  private calculateMarketDrawdown(analysis: PortfolioReportData): number {
+    const stocks = analysis.assetsAnalysis.filter(
+      (a) => a.assetType.toUpperCase() === 'STOCK',
+    );
+    if (stocks.length === 0) return 0;
+
+    const totalDrawdown = stocks.reduce((sum, asset) => {
+      const balancePrice = asset.balancePrice ?? 0;
+      const currentPrice = asset.currentPrice ?? 0;
+      const drawdownPercent =
+        balancePrice > 0
+          ? ((currentPrice - balancePrice) / balancePrice) * 100
+          : 0;
+      return sum + drawdownPercent * asset.currentPercent;
+    }, 0);
+
+    const totalPercent = stocks.reduce((sum, a) => sum + a.currentPercent, 0);
+    return totalPercent > 0 ? totalDrawdown / totalPercent : 0;
+  }
+
+  /**
+   * Рассчитывает средневзвешенную просадку сектора для данного актива.
+   * Сектор определяется по типу актива (STOCK/BOND).
+   */
+  private calculateSectorDrawdown(
+    asset: AssetAnalysis,
+    analysis: PortfolioReportData,
+  ): number {
+    const assetType = asset.assetType.toUpperCase();
+
+    // Для акций используем все остальные акции как сектор
+    // Для облигаций используем все остальные облигации
+    const sectorAssets = analysis.assetsAnalysis.filter(
+      (a) =>
+        a.assetType.toUpperCase() === assetType && a.ticker !== asset.ticker,
+    );
+
+    if (sectorAssets.length === 0) return 0;
+
+    const totalDrawdown = sectorAssets.reduce((sum, a) => {
+      const balancePrice = a.balancePrice ?? 0;
+      const currentPrice = a.currentPrice ?? 0;
+      const drawdownPercent =
+        balancePrice > 0
+          ? ((currentPrice - balancePrice) / balancePrice) * 100
+          : 0;
+      return sum + drawdownPercent * a.currentPercent;
+    }, 0);
+
+    const totalPercent = sectorAssets.reduce(
+      (sum, a) => sum + a.currentPercent,
+      0,
+    );
+    return totalPercent > 0 ? totalDrawdown / totalPercent : 0;
+  }
+
+  /**
+   * Проверяет, есть ли у актива положительные фундаментальные признаки.
+   * Упрощённая проверка: статус BUY/STABLE, отсутствие признаков концентрации риска.
+   */
+  private checkPositiveFundamentals(asset: AssetAnalysis): boolean {
+    // Если актив в статусе BUY или STABLE — это положительный сигнал
+    if (asset.status === 'BUY' || asset.status === 'STABLE') {
+      return true;
+    }
+
+    // Если актив не является сконцентрированным — это положительный сигнал
+    if (!asset.isConcentrated) {
+      return true;
+    }
+
+    // По умолчанию — неопределённо
+    return false;
   }
 }

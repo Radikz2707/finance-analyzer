@@ -27,11 +27,73 @@ export interface InvestorParams {
   maxDrawdown: number;
 }
 
-/** Детерминированные справочные данные по облигациям из листа «Облигации» */
+/**
+ * Полные рыночные данные по облигационному выпуску из листа «Облигации».
+ *
+ * Источник: QUIK → Excel, столбцы A:M (~3030 выпусков).
+ * Все числовые показатели сохраняются в исходных единицах измерения.
+ *
+ * ВАЖНО:
+ * - yield — НЕ называть YTM без подтверждения семантики QUIK.
+ * - duration — НЕ называть модифицированной до подтверждения методики.
+ * - couponAmount — не перепутать с couponRub из листа QUIK.
+ */
 export interface BondReferenceData {
+  /** B: ISIN — уникальный идентификатор выпуска */
   isin: string;
+  /** G: Номинал — номинальная стоимость одной облигации (RUB) */
   nominal: number;
+  /** Источник данных */
   source: 'EXCEL_BONDS';
+
+  // ─── Дополнительные столбцы A:M (P0: читаем все) ───
+
+  /** A: Инструмент — название выпуска */
+  instrumentName: string;
+  /** C: Листинг — уровень листинга (если есть) */
+  listingLevel: string;
+  /** D: Цена последняя — рыночная цена */
+  lastPrice: number;
+  /**
+   * E: Доходность — показатель из QUIK.
+   * НЕ называть YTM до подтверждения. Единица: %.
+   */
+  yield: number;
+  /**
+   * F: Оборот — объём торгов.
+   * Единица: RUB, период: уточнить в Excel.
+   */
+  turnover: number;
+  /**
+   * H: Размер купона — денежная выплата на одну облигацию.
+   * Единица: RUB (уточнить в Excel).
+   */
+  couponAmount: number;
+  /**
+   * I: Длительность купона — период между выплатами (дни).
+   */
+  couponPeriodDays: number;
+  /**
+   * J: Дата выплаты купона — ближайшая дата выплаты.
+   */
+  nextCouponDate: Date | null;
+  /**
+   * K: НКД — накопленный купонный доход на одну облигацию.
+   * Единица: RUB.
+   */
+  nkd: number;
+  /**
+   * L: Дата погашения — срок обращения выпуска.
+   */
+  maturityDate: Date | null;
+  /**
+   * M: Дюрация — показатель чувствительности к изменению доходности.
+   * НЕ называть модифицированной до подтверждения методики.
+   * Единица: годы (уточнить в Excel).
+   */
+  duration: number;
+  /** Дата актуальности рыночных данных */
+  asOfDate: Date | null;
 }
 
 export interface CurrentAsset {
@@ -132,6 +194,71 @@ export interface AggregatedAsset {
   /** Флаг конфликта targetPercent между счетами (true = разные target на разных счетах) */
   targetPercentConflict?: boolean;
   accounts: AccountPosition[];
+}
+
+/** Результат валидации целевых долей */
+export interface TargetValidationResult {
+  isValid: boolean;
+  errors: string[];
+  warnings: string[];
+  totalTargetPercent: number;
+  cashReservePercent: number;
+}
+
+/**
+ * Валидирует целевые доли активов, собранные из Excel.
+ *
+ * Правила:
+ *   - Каждая доля ∈ [0, 100]
+ *   - Сумма всех долей ≤ 100%
+ *   - Расчётный кэш = 100% − сумма долей (может быть отрицательным при ошибке)
+ *
+ * ВНИМАНИЕ: функция read-only — не изменяет targetPercent, только логирует проблемы.
+ */
+export function validateTargetPercentages(
+  assets: AggregatedAsset[],
+): TargetValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  let totalTargetPercent = 0;
+
+  for (const asset of assets) {
+    if (asset.targetPercent !== undefined) {
+      if (asset.targetPercent < 0) {
+        errors.push(
+          `Отрицательная целевая доля для ${asset.ticker}: ${asset.targetPercent}%`,
+        );
+      }
+      if (asset.targetPercent > 100) {
+        errors.push(
+          `Целевая доля > 100% для ${asset.ticker}: ${asset.targetPercent}%`,
+        );
+      }
+      totalTargetPercent += asset.targetPercent;
+    }
+  }
+
+  if (totalTargetPercent > 100) {
+    errors.push(
+      `Сумма целевых долей > 100%: ${totalTargetPercent}%`,
+    );
+  }
+
+  const cashReservePercent = 100 - totalTargetPercent;
+
+  if (cashReservePercent < 0) {
+    warnings.push(
+      `Расчётный кэш отрицательный: ${cashReservePercent}%`,
+    );
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+    warnings,
+    totalTargetPercent,
+    cashReservePercent,
+  };
 }
 
 export class XlsxParserModule {
@@ -1139,6 +1266,26 @@ export class XlsxParserModule {
     // [DIAGNOSTIC] Показать все собранные активы
     // silent — allTickers больше не используется
 
+    // ─── Валидация целевых долей (D0-1) ───
+    const targetValidation = validateTargetPercentages(result);
+    if (targetValidation.errors.length > 0) {
+      for (const err of targetValidation.errors) {
+        console.error(`[XLSX-PARSER] Ошибка валидации целевых долей: ${err}`);
+      }
+    }
+    if (targetValidation.warnings.length > 0) {
+      for (const warn of targetValidation.warnings) {
+        console.warn(`[XLSX-PARSER] Предупреждение валидации целевых долей: ${warn}`);
+      }
+    }
+    // Логирование итоговой сводки (не влияет на бизнес-логику)
+    if (targetValidation.isValid) {
+      console.log(
+        `[XLSX-PARSER] Целевые доли валидны: сумма=${targetValidation.totalTargetPercent.toFixed(2)}%, ` +
+        `кэш-резерв=${targetValidation.cashReservePercent.toFixed(2)}%`,
+      );
+    }
+
     return result;
   }
 
@@ -1361,77 +1508,161 @@ export class XlsxParserModule {
   }
 
   /**
-    * Парсинг листа «Облигации» — справочник ISIN → номинал.
-   *
-   * Структура таблицы (динамический поиск заголовков):
-   *   - ISIN / ISIN-код / Код ISIN / ISIN код
-   *   - Номинал / Номинальная стоимость / Nominal
-   *
-   * Возвращает Map<ISIN, BondReferenceData>
-   */
-  public async parseBondsSheet(): Promise<Map<string, BondReferenceData>> {
-    await this.loadWorkbook();
-    const bondsMap = new Map<string, BondReferenceData>();
+    * Парсинг листа «Облигации» — полные рыночные данные по облигационным выпускам.
+    *
+    * Структура таблицы (динамический поиск заголовков):
+    *   A: Инструмент
+    *   B: ISIN / ISIN-код / Код ISIN / ISIN код
+    *   C: Листинг
+    *   D: Цена последняя
+    *   E: Доходность
+    *   F: Оборот
+    *   G: Номинал / Номинальная стоимость / Nominal / Номинал облигации
+    *   H: Размер купона
+    *   I: Длительность купона
+    *   J: Дата выплаты купона
+    *   K: НКД
+    *   L: Дата погашения
+    *   M: Дюрация
+    *
+    * Возвращает Map<ISIN, BondReferenceData>
+    */
+   public async parseBondsSheet(): Promise<Map<string, BondReferenceData>> {
+     await this.loadWorkbook();
+     const bondsMap = new Map<string, BondReferenceData>();
 
-    const sheetName = this.workbook?.SheetNames.find(
-      (name) => name === config.BONDS_SHEET_NAME,
-    );
-    if (!sheetName || !this.workbook) {
-      console.warn(
-        '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» не найден',
-      );
-      return bondsMap;
-    }
+     const sheetName = this.workbook?.SheetNames.find(
+       (name) => name === config.BONDS_SHEET_NAME,
+     );
+     if (!sheetName || !this.workbook) {
+       console.warn(
+         '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» не найден',
+       );
+       return bondsMap;
+     }
 
-    const sheet = this.workbook.Sheets[sheetName];
-    if (!sheet || !sheet['!ref']) {
-      console.warn(
-        '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» пуст',
-      );
-      return bondsMap;
-    }
+     const sheet = this.workbook.Sheets[sheetName];
+     if (!sheet || !sheet['!ref']) {
+       console.warn(
+         '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» пуст',
+       );
+       return bondsMap;
+     }
 
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
 
-    for (const row of rows) {
-      // ISIN из любой из допустимых колонок
-      const isin = String(
-        row[config.BONDS_COLUMN_ISIN] ||
-          row[config.BONDS_COLUMN_ISIN_ALT1] ||
-          row[config.BONDS_COLUMN_ISIN_ALT2] ||
-          row[config.BONDS_COLUMN_ISIN_ALT3] ||
-          '',
-      )
-        .trim()
-        .toUpperCase();
-      if (!isin || isin.length < 10) continue;
+     for (const row of rows) {
+       // ISIN из любой из допустимых колонок
+       const isin = String(
+         row[config.BONDS_COLUMN_ISIN] ||
+           row[config.BONDS_COLUMN_ISIN_ALT1] ||
+           row[config.BONDS_COLUMN_ISIN_ALT2] ||
+           row[config.BONDS_COLUMN_ISIN_ALT3] ||
+           '',
+       )
+         .trim()
+         .toUpperCase();
+       if (!isin || isin.length < 10) continue;
 
-      // Номинал из любой из допустимых колонок
-      const nominal = this.parseNominalFromRow(row);
+       // Номинал из любой из допустимых колонок
+       const nominal = this.parseNominalFromRow(row) ?? 0;
 
-      bondsMap.set(isin, {
-        isin,
-        nominal: nominal ?? 0,
-        source: 'EXCEL_BONDS',
-      });
+       // A: Инструмент
+       const instrumentName = String(
+         row[config.BONDS_COLUMN_INSTRUMENT] || '',
+       ).trim();
 
-      // Диагностика: только для облигаций из портфеля
-      const portfolioIsins = [
-        'RU000A10C8F3',
-        'RU000A10EC22',
-        'RU000A10ER66',
-        'RU000A10FXF8',
-      ];
-      if (portfolioIsins.includes(isin)) {
-        // silent — bond reference
-      }
-    }
+       // C: Листинг
+       const listingLevel = String(
+         row[config.BONDS_COLUMN_LISTING] || '',
+       ).trim();
 
-    // Сохраняем в кэш
-    this.bondReferenceData = bondsMap;
+       // D: Цена последняя
+       const lastPrice = this.parseValue(
+         row[config.BONDS_COLUMN_LAST_PRICE],
+       );
 
-    return bondsMap;
-  }
+       // E: Доходность
+       const yield_ = this.parseValue(row[config.BONDS_COLUMN_YIELD]);
+
+       // F: Оборот
+       const turnover = this.parseValue(row[config.BONDS_COLUMN_TURNOVER]);
+
+       // H: Размер купона
+       const couponAmount = this.parseValue(
+         row[config.BONDS_COLUMN_COUPON_AMOUNT],
+       );
+
+       // I: Длительность купона (дни)
+       const couponPeriodDays = this.parseValue(
+         row[config.BONDS_COLUMN_COUPON_PERIOD],
+       );
+
+       // J: Дата выплаты купона
+       let nextCouponDate: Date | null = null;
+       const rawCouponDate = row[config.BONDS_COLUMN_COUPON_DATE];
+       if (rawCouponDate !== undefined && rawCouponDate !== null && rawCouponDate !== '') {
+         nextCouponDate = this.parseExcelDate(rawCouponDate);
+       }
+
+       // K: НКД
+       const nkd = this.parseValue(row[config.BONDS_COLUMN_NKD]);
+
+       // L: Дата погашения
+       let maturityDate: Date | null = null;
+       const rawMaturityDate = row[config.BONDS_COLUMN_MATURITY_DATE];
+       if (rawMaturityDate !== undefined && rawMaturityDate !== null && rawMaturityDate !== '') {
+         maturityDate = this.parseExcelDate(rawMaturityDate);
+       }
+
+       // M: Дюрация
+       const duration = this.parseValue(row[config.BONDS_COLUMN_DURATION]);
+
+       bondsMap.set(isin, {
+         isin,
+         nominal,
+         source: 'EXCEL_BONDS',
+         instrumentName,
+         listingLevel,
+         lastPrice,
+         yield: yield_,
+         turnover,
+         couponAmount,
+         couponPeriodDays,
+         nextCouponDate,
+         nkd,
+         maturityDate,
+         duration,
+         asOfDate: null, // Дата актуальности определяется при загрузке книги
+       });
+     }
+
+     // Сохраняем в кэш
+     this.bondReferenceData = bondsMap;
+
+     return bondsMap;
+   }
+
+   /**
+    * Безопасная конвертация значения Excel в Date.
+    * Поддерживает: число (serial date), строку, объект Date.
+    */
+   private parseExcelDate(val: unknown): Date | null {
+     if (val instanceof Date && !isNaN(val.getTime())) {
+       return val;
+     }
+     if (typeof val === 'number') {
+       // Excel serial date: days since 1899-12-30
+       const ms = (val - 25569) * 86400 * 1000;
+       const d = new Date(ms);
+       return isNaN(d.getTime()) ? null : d;
+     }
+     if (typeof val === 'string') {
+       const d = new Date(val.trim());
+       return isNaN(d.getTime()) ? null : d;
+     }
+     return null;
+   }
 
   /**
    * Получить справочные данные по облигации по ISIN.
@@ -2379,23 +2610,24 @@ export class XlsxParserModule {
     return 'UNKNOWN';
   }
 
-  /**
-   * Очистка кэша и освобождение памяти.
-   *
-   * XLSX (SheetJS) загружает ВЕСЬ файл в RAM (~50-300 МБ).
-   * После парсинга нужно освободить workbook, чтобы не держать память.
-   * Вызывается после завершения всех операций с парсером.
-   */
-  public cleanup(): void {
-    this.workbook = null;
-    this.cachedActiveOrdersText = 'Заявки отсутствуют';
-    this.cachedIisOrdersSum = 0;
-    this.cachedBrokerOrdersSum = 0;
-    this.cachedFreeCashFromQuikSheet = 0;
-    this.cachedInvestedFunds = 0;
-    this.parsedActiveOrders = [];
-    this.nameToTickerMap = {};
-    this.bondReferenceData.clear();
-    console.log('[XlsxParser] 🧹 Кэш очищен, workbook освобождён');
-  }
+   /**
+    * Очистка кэша и освобождение памяти.
+    *
+    * XLSX (SheetJS) загружает ВЕСЬ файл в RAM (~50-300 МБ).
+    * После парсинга нужно освободить workbook, чтобы не держать память.
+    * bondReferenceData НЕ очищается — данные нужны для AI-контекста.
+    * Вызывается после завершения всех операций с парсером.
+    */
+   public cleanup(): void {
+     this.workbook = null;
+     this.cachedActiveOrdersText = 'Заявки отсутствуют';
+     this.cachedIisOrdersSum = 0;
+     this.cachedBrokerOrdersSum = 0;
+     this.cachedFreeCashFromQuikSheet = 0;
+     this.cachedInvestedFunds = 0;
+     this.parsedActiveOrders = [];
+     this.nameToTickerMap = {};
+     // bondReferenceData НЕ очищается — BondMarketData передаётся в AI
+     console.log('[XlsxParser] 🧹 Кэш очищен, workbook освобождён');
+   }
 }

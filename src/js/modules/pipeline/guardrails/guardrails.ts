@@ -9,13 +9,19 @@
 
 import type { PortfolioPosition } from '../../db-manager/types.js';
 import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
+import { loadUserPolicy } from '../../../config/user-policy.js';
 
 // ──────────────────────────────────────────────
 // 1. Типы данных guardrails
 // ────────────────────────
 
 /** Тип защиты */
-export type GuardrailType = 'RECOVERY_ONLY_BLOCK' | 'SELL_LIMIT' | 'EXIT_LIMIT';
+export type GuardrailType =
+  | 'RECOVERY_ONLY_BLOCK'
+  | 'HOLD_ONLY_BLOCK'
+  | 'SELL_LIMIT'
+  | 'EXIT_LIMIT'
+  | 'NO_SELL_POLICY';
 
 /** Предупреждение guardrail */
 export interface GuardrailWarning {
@@ -139,7 +145,56 @@ export function checkGuardrails(
     }
   }
 
-  // ─── Правило 2: Предупреждение о большой концентрации ───
+  // ─── Правило 1.5: No-sell policy пользователя (IRAO, TATN и др.) ───
+  const noSellTickers = loadUserPolicy().noSellTickers;
+  if (noSellTickers.length > 0) {
+    const isNoSell = noSellTickers.includes(ticker.toUpperCase());
+    const isSellAction =
+      recommendedAction === 'SELL' ||
+      recommendedAction === 'EXIT' ||
+      recommendedAction === 'REDUCE';
+
+    if (isNoSell && isSellAction) {
+      warnings.push({
+        type: 'NO_SELL_POLICY',
+        ticker,
+        message: `Действие ${recommendedAction} заблокировано: ${ticker} — no-sell policy пользователя`,
+        severity: 'BLOCK',
+      });
+
+      blockedActions.push({
+        ticker,
+        action: recommendedAction,
+        reason: `NO_SELL_POLICY: пользователь НЕ продаёт ${ticker}. Доля снижается докупкой других активов (размыванием).`,
+      });
+    }
+  }
+
+  // ─── Правило 2: holdOnly — ограничение исполнения (не подменять сигнал AI) ───
+  if (asset && asset.holdOnly) {
+    const isSellAction =
+      recommendedAction === 'SELL' ||
+      recommendedAction === 'EXIT' ||
+      recommendedAction === 'REDUCE';
+
+    if (isSellAction) {
+      // Сохраняем EXIT как аналитический сигнал, блокируем исполнение
+      warnings.push({
+        type: 'HOLD_ONLY_BLOCK',
+        ticker,
+        message: `Действие ${recommendedAction} заблокировано: ${ticker} — holdOnly (исполнение запрещено, аналитический сигнал сохранён)`,
+        severity: 'BLOCK',
+      });
+
+      blockedActions.push({
+        ticker,
+        action: recommendedAction,
+        reason: `HOLD_ONLY: пользователь установил запрет на продажу ${ticker}. Аналитический сигнал ${recommendedAction} сохранён, исполнение заблокировано.`,
+      });
+    }
+  }
+
+  // ─── Правило 3: Предупреждение о большой концентрации ───
   if (asset && asset.currentPercent > 25) {
     warnings.push({
       type: 'SELL_LIMIT',
@@ -261,38 +316,65 @@ function buildRecoveryStrategy(
 // ──────────────────────
 
 /**
- * Генерирует текстовый блок guardrails для вставки в промпт ИИ.
- */
-export function buildGuardrailsContext(
-  recoveryTickers: string[],
-  positionsRepo: {
-    getByTicker: (ticker: string) => PortfolioPosition | undefined;
-  },
-): string {
-  if (recoveryTickers.length === 0) {
-    return '';
-  }
+  * Генерирует текстовый блок guardrails для вставки в промпт ИИ.
+  */
+ export function buildGuardrailsContext(
+   recoveryTickers: string[],
+   positionsRepo: {
+     getByTicker: (ticker: string) => PortfolioPosition | undefined;
+   },
+   holdOnlyTickers?: string[],
+ ): string {
+   const hasRecovery = recoveryTickers.length > 0;
+   const hasHoldOnly = holdOnlyTickers && holdOnlyTickers.length > 0;
 
-  let context = '=== ЗАЩИТНЫЕ ПРАВИЛА (GUARDRAILS) — ОБЯЗАТЕЛЬНО СОБЛЮДАЙ ===\n';
-  context += 'Следующие активы находятся в режиме RECOVERY_ONLY:\n';
+   if (!hasRecovery && !hasHoldOnly) {
+     return '';
+   }
 
-  for (const ticker of recoveryTickers) {
-    const position = positionsRepo.getByTicker(ticker);
-    if (position) {
-      context += '• ' + ticker + ' (' + position.name + '): РЕЖИМ ВОССТАНОВЛЕНИЯ\n';
-      context += '  - Запрещено: SELL, EXIT, REDUCE (фиксация убытка)\n';
-      context += '  - Разрешено: BUY (усреднение), HOLD\n';
-      context += '  - Причина: актив ' + ticker + ' в режиме восстановления, текущая цена ниже средней\n\n';
-    }
-  }
+   let context = '=== ЗАЩИТНЫЕ ПРАВИЛА (GUARDRAILS) — ОБЯЗАТЕЛЬНО СОБЛЮДАЙ ===\n';
 
-  context += '⚠️ КРИТИЧЕСКОЕ ПРАВИЛО:\n';
-  context += 'Если ИИ-агент рекомендует SELL/EXIT/REDUCE для актива из списка RECOVERY_ONLY:\n';
-  context += '1. БЛОКИРУЙ рекомендацию\n';
-  context += '2. ЗАМЕНИ на HOLD или BUY (усреднение)\n';
-  context += '3. ОБЪЯСНИ причину блокировки\n';
-  context += '4. ПРЕДЛОЖИ стратегию восстановления через усреднение на уровнях поддержки\n';
-  context += '5. ПРЕДЛОЖИ субсидирование купонами/дивидендами от стабильных позиций\n\n';
+   // RECOVERY_ONLY
+   if (hasRecovery) {
+     context += 'Следующие активы находятся в режиме RECOVERY_ONLY:\n';
 
-  return context;
-}
+     for (const ticker of recoveryTickers) {
+       const position = positionsRepo.getByTicker(ticker);
+       if (position) {
+         context += '• ' + ticker + ' (' + position.name + '): РЕЖИМ ВОССТАНОВЛЕНИЯ\n';
+         context += '  - Запрещено: SELL, EXIT, REDUCE (фиксация убытка)\n';
+         context += '  - Разрешено: BUY (усреднение), HOLD\n';
+         context += '  - Причина: актив ' + ticker + ' в режиме восстановления, текущая цена ниже средней\n\n';
+       }
+     }
+   }
+
+   // holdOnly — ограничение исполнения
+   if (hasHoldOnly) {
+     context += 'Следующие активы имеют запрет на продажу (holdOnly):\n';
+
+     for (const ticker of holdOnlyTickers!) {
+       context += '• ' + ticker + ': ЗАПРЕТ НА ПРОДАЖУ\n';
+       context += '  - Аналитический сигнал SELL/EXIT/REDUCE сохраняется\n';
+       context += '  - Исполнение продажи БЛОКИРУЕТСЯ детерминированным механизмом\n';
+       context += '  - AI НЕ должен предлагать обход этого ограничения\n\n';
+     }
+   }
+
+   context += '⚠️ КРИТИЧЕСКОЕ ПРАВИЛО:\n';
+   context += 'Если ИИ-агент рекомендует SELL/EXIT/REDUCE для актива из списка RECOVERY_ONLY:\n';
+   context += '1. БЛОКИРУЙ рекомендацию\n';
+   context += '2. ЗАМЕНИ на HOLD или BUY (усреднение)\n';
+   context += '3. ОБЪЯСНИ причину блокировки\n';
+   context += '4. ПРЕДЛОЖИ стратегию восстановления через усреднение на уровнях поддержки\n';
+   context += '5. ПРЕДЛОЖИ субсидирование купонами/дивидендами от стабильных позиций\n\n';
+
+   context += '⚠️ ПРАВИЛО HOLD_ONLY:\n';
+   context += 'Если ИИ рекомендует SELL/EXIT/REDUCE для актива с holdOnly:\n';
+   context += '1. СОХРАНИ аналитический сигнал (EXIT/SELL/REDUCE)\n';
+   context += '2. БЛОКИРУЙ исполнение продажи\n';
+   context += '3. ПОКАЖИ пользовательское ограничение\n';
+   context += '4. НЕ ДОПУСКАЙ обхода блокировки через другие агенты\n\n';
+
+   return context;
+ }

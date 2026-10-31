@@ -598,3 +598,197 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
 
   return { quotesTableRows, topGainers, topLosers };
 }
+
+// ============================================================================
+// P1-3: Итоговое заключение — 7 элементов по ТЗ
+// ============================================================================
+
+/** Источник рекомендации */
+export type RecommendationSource = 'MATH_ONLY' | 'AI_ONLY' | 'BOTH_AGREED' | 'BOTH_CONFLICT' | 'NO_DATA';
+
+/** Итоговое заключение по активу */
+export interface FinalConclusion {
+  /** 1. Действие */
+  action: string;
+  /** 2. Причины рекомендации */
+  reasons: string[];
+  /** 3. Основные риски */
+  risks: string[];
+  /** 4. Состояние данных */
+  dataStatus: string;
+  /** 5. Источник рекомендации */
+  source: RecommendationSource;
+  /** 6. Согласованность Math и AI */
+  mathAiAgreement: string;
+  /** 7. Ограничения исполнения */
+  executionLimitations: string[];
+}
+
+/**
+ * Формирует итоговое заключение по активу.
+ *
+ * Требования ТЗ (Этап 8):
+ * 1. Действие
+ * 2. Причины рекомендации
+ * 3. Основные риски
+ * 4. Состояние данных
+ * 5. Источник рекомендации
+ * 6. Согласованность Math и AI
+ * 7. Ограничения исполнения
+ */
+export function buildFinalConclusion(
+  assetAnalysis: {
+    ticker: string;
+    name: string;
+    status: string;
+    targetPercent?: number;
+    currentPercent: number;
+    deficitRub: number;
+    unrealizedProfitRub: number;
+    balancePrice: number;
+    currentPrice: number;
+    holdOnly?: boolean;
+    isConcentrated?: boolean;
+    quantity: number;
+  },
+  aiRecommendation: {
+    recommendedAction: string | null;
+    confidence: number | null;
+    rationale: string | null;
+    keyRisks: string[];
+  } | null,
+): FinalConclusion {
+  const reasons: string[] = [];
+  const risks: string[] = [];
+  const limitations: string[] = [];
+
+  // ─── 1. Действие ───
+  const mathAction = assetAnalysis.status;
+  let aiAction: string | null = null;
+  if (aiRecommendation && aiRecommendation.recommendedAction) {
+    aiAction = aiRecommendation.recommendedAction;
+  }
+
+  // ─── 2. Причины рекомендации ───
+  const deviation = assetAnalysis.currentPercent - (assetAnalysis.targetPercent ?? 0);
+
+  if (mathAction === 'BUY') {
+    reasons.push(
+      `Дефицит доли: текущая ${assetAnalysis.currentPercent.toFixed(1)}% vs целевая ${assetAnalysis.targetPercent?.toFixed(1) ?? '—'}%`,
+    );
+    if (assetAnalysis.deficitRub > 0) {
+      reasons.push(`Рублёвый дефицит: ${assetAnalysis.deficitRub.toLocaleString('ru-RU')} ₽`);
+    }
+  } else if (mathAction === 'SELL' || mathAction === 'REDUCE') {
+    reasons.push(
+      `Профицит доли: текущая ${assetAnalysis.currentPercent.toFixed(1)}% vs целевая ${assetAnalysis.targetPercent?.toFixed(1) ?? '—'}%`,
+    );
+    reasons.push(`Превышение: ${Math.abs(deviation).toFixed(1)} п.п.`);
+  } else if (mathAction === 'EXIT') {
+    reasons.push('Целевая доля = 0% — плановый выход из позиции');
+  } else if (mathAction === 'STABLE' || mathAction === 'HOLD') {
+    reasons.push('Позиция в пределах целевого диапазона');
+  } else if (mathAction === 'NEW') {
+    reasons.push('Целевая доля есть, но позиции нет — новая позиция');
+  } else if (mathAction === 'NO_TARGET') {
+    reasons.push('Целевая доля не установлена в Excel');
+  }
+
+  // AI rationale как дополнительная причина
+  if (aiRecommendation && aiRecommendation.rationale) {
+    reasons.push('AI: ' + aiRecommendation.rationale);
+  }
+
+  // ─── 3. Основные риски ───
+  if (assetAnalysis.isConcentrated) {
+    risks.push(`Высокая концентрация: ${assetAnalysis.currentPercent.toFixed(1)}% портфеля`);
+  }
+  if (assetAnalysis.unrealizedProfitRub < 0) {
+    const drawdownPct =
+      assetAnalysis.balancePrice > 0
+        ? ((assetAnalysis.currentPrice - assetAnalysis.balancePrice) / assetAnalysis.balancePrice) * 100
+        : 0;
+    risks.push(`Нереализованный убыток: ${assetAnalysis.unrealizedProfitRub.toLocaleString('ru-RU')} ₽ (${drawdownPct.toFixed(1)}%)`);
+  }
+  if (aiRecommendation && aiRecommendation.keyRisks && aiRecommendation.keyRisks.length > 0) {
+    risks.push(...aiRecommendation.keyRisks);
+  }
+  if (risks.length === 0) {
+    risks.push('Нет критических рисков');
+  }
+
+  // ─── 4. Состояние данных ───
+  const hasMarketData = assetAnalysis.currentPrice > 0;
+  const hasTarget = assetAnalysis.targetPercent !== undefined;
+  // Надёжная проверка: aiRecommendation != null (не null и не undefined)
+  // И recommendedAction != null (AI вернул рекомендацию, а не пустой объект)
+  const hasAiData = aiRecommendation != null && aiRecommendation.recommendedAction != null;
+
+  if (!hasMarketData) {
+    risks.unshift('⚠️ Рыночные данные отсутствуют (currentPrice=0)');
+  }
+  if (!hasTarget) {
+    risks.push('⚠️ Целевая доля не установлена');
+  }
+
+  // Раздельная оценка полноты данных
+  const portfolioDataComplete = hasMarketData && hasTarget;
+  const aiDataComplete = hasAiData;
+
+  let dataStatus: string;
+  if (portfolioDataComplete && aiDataComplete) {
+    dataStatus = 'Данные портфеля: OK, AI: рекомендация есть';
+  } else if (portfolioDataComplete) {
+    dataStatus = 'Данные портфеля: OK, AI: нет данных';
+  } else {
+    dataStatus = 'Данные неполные';
+  }
+
+  // ─── 5. Источник рекомендации ───
+  let source: RecommendationSource;
+  if (!hasAiData && !aiAction) {
+    source = 'MATH_ONLY';
+  } else if (hasAiData && !mathAction || mathAction === 'NO_TARGET') {
+    source = 'AI_ONLY';
+  } else if (aiAction && aiAction === mathAction) {
+    source = 'BOTH_AGREED';
+  } else {
+    source = 'BOTH_CONFLICT';
+  }
+
+  // ─── 6. Согласованность Math и AI ───
+  let mathAiAgreement: string;
+  if (source === 'MATH_ONLY') {
+    mathAiAgreement = 'AI рекомендация отсутствует — решение на основе PortfolioMath';
+  } else if (source === 'AI_ONLY') {
+    mathAiAgreement = 'Только AI вернул рекомендацию';
+  } else if (source === 'BOTH_AGREED') {
+    mathAiAgreement = `Math=${mathAction}, AI=${aiAction} — согласованы`;
+  } else {
+    mathAiAgreement = `Конфликт: Math=${mathAction}, AI=${aiAction} — требуется ручная проверка`;
+  }
+
+  // ─── 7. Ограничения исполнения ───
+  if (assetAnalysis.holdOnly) {
+    limitations.push('Продажа запрещена (holdOnly=true)');
+  }
+  if (mathAction === 'BUY' && assetAnalysis.deficitRub <= 0) {
+    limitations.push('Недостаточно средств для покупки');
+  }
+  if (assetAnalysis.holdOnly && (mathAction === 'SELL' || mathAction === 'REDUCE' || mathAction === 'EXIT')) {
+    limitations.push('⛔ Исполнение заблокировано: holdOnly конфликтует с действием');
+  }
+  if (limitations.length === 0) {
+    limitations.push('Нет ограничений');
+  }
+
+  return {
+    action: mathAction,
+    reasons,
+    risks,
+    dataStatus,
+    source,
+    mathAiAgreement,
+    executionLimitations: limitations,
+  };
+}
