@@ -92,6 +92,51 @@ export interface BondReferenceData {
    * Единица: годы (уточнить в Excel).
    */
   duration: number;
+  /**
+   * N: Эмитент — наименование компании-эмитента облигации.
+   * Используется для анализа концентрации риска и кредитного скоринга.
+   */
+  issuer: string;
+  /**
+   * Тип купона из MOEX (FIXED / FLOATER / MICROFIX / ZERO_COUPON).
+   * Если не загружен с MOEX — определяется эвристикой в yield-calculator.
+   */
+  couponType?: 'FIXED' | 'FLOATER' | 'MICROFIX' | 'ZERO_COUPON';
+  /**
+   * Внутренний рейтинг МОEX (ICBRR).
+   * Используется для кредитного скоринга.
+   */
+  icbrrRating?: string;
+  /**
+   * Сектор экономики (banks, energy, metals, govmy и т.д.).
+   * Используется для анализа отраслевой диверсификации.
+   */
+  sector?: string;
+  /**
+   * Спред к ключевой ставке в % (для флоатеров).
+   * Реальная ставка = КС + floatSpreadPct.
+   */
+  floatSpreadPct?: number;
+  /**
+   * Базовый индекс для флоатера (RU SR, Key Rate, etc.).
+   */
+  floatIndex?: string;
+  /**
+   * Есть опцион досрочного погашения (callable).
+   */
+  hasOption?: boolean;
+  /**
+   * Дата исполнения опциона (если hasOption = true).
+   */
+  callDate?: string;
+  /**
+   * Амортизационный график.
+   */
+  hasAmortization?: boolean;
+  /**
+   * Частота купонов в год (2 = полугодие, 4 = квартал).
+   */
+  couponFrequency?: number;
   /** Дата актуальности рыночных данных */
   asOfDate: Date | null;
 }
@@ -1549,9 +1594,9 @@ export class XlsxParserModule {
        return bondsMap;
      }
 
-     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
 
-     for (const row of rows) {
+      for (const row of rows) {
        // ISIN из любой из допустимых колонок
        const isin = String(
          row[config.BONDS_COLUMN_ISIN] ||
@@ -1615,33 +1660,160 @@ export class XlsxParserModule {
          maturityDate = this.parseExcelDate(rawMaturityDate);
        }
 
-       // M: Дюрация
-       const duration = this.parseValue(row[config.BONDS_COLUMN_DURATION]);
+        // M: Дюрация
+        const duration = this.parseValue(row[config.BONDS_COLUMN_DURATION]);
 
-       bondsMap.set(isin, {
-         isin,
-         nominal,
-         source: 'EXCEL_BONDS',
-         instrumentName,
-         listingLevel,
-         lastPrice,
-         yield: yield_,
-         turnover,
-         couponAmount,
-         couponPeriodDays,
-         nextCouponDate,
-         nkd,
-         maturityDate,
-         duration,
-         asOfDate: null, // Дата актуальности определяется при загрузке книги
-       });
+        // N: Эмитент — ищем столбец по ключу, содержащему «Эмитент» или «Issuer»
+        let issuer = '';
+        for (const key of Object.keys(row)) {
+          const keyLower = key.toLowerCase();
+          if (
+            keyLower.includes('эмитент') ||
+            keyLower.includes('issuer') ||
+            keyLower.includes('эмит')
+          ) {
+            issuer = String(row[key] || '').trim();
+            break;
+          }
+        }
+
+        bondsMap.set(isin, {
+          isin,
+          nominal,
+          source: 'EXCEL_BONDS',
+          instrumentName,
+          listingLevel,
+          lastPrice,
+          yield: yield_,
+          turnover,
+          couponAmount,
+          couponPeriodDays,
+          nextCouponDate,
+          nkd,
+          maturityDate,
+          duration,
+          issuer,
+          asOfDate: null, // Дата актуальности определяется при загрузке книги
+        });
      }
 
-     // Сохраняем в кэш
-     this.bondReferenceData = bondsMap;
+      // Сохраняем в кэш
+      this.bondReferenceData = bondsMap;
 
-     return bondsMap;
-   }
+      // Обогащаем данные из MOEX (эмитенты, типы купонов и т.д.)
+      await this.enrichBondsFromMoex(bondsMap);
+
+      return bondsMap;
+    }
+
+    /**
+     * Обогащение данных из Excel данными с MOEX ISS API.
+     * Загружает эмитентов, типы купонов, частоту выплат и другие поля.
+     */
+    private async enrichBondsFromMoex(
+      bondsMap: Map<string, BondReferenceData>,
+    ): Promise<void> {
+      try {
+        const isins = Array.from(bondsMap.keys());
+        if (isins.length === 0) return;
+
+        console.log(`[BondEnrich] Загрузка данных с MOEX для ${isins.length} облигаций...`);
+
+        // Загружаем справочник с MOEX
+        const { fetchBondCatalog } = await import(
+          '../moex-api/bond-api.js'
+        );
+        const catalog = await fetchBondCatalog();
+
+        if (catalog.length === 0) {
+          console.warn('[BondEnrich] ⚠️ MOEX вернул пустой справочник');
+          return;
+        }
+
+        // Создаём маппинг ISIN → BondInfo
+        const moexMap = new Map<string, import('../moex-api/bond-api.js').BondInfo>();
+        for (const bond of catalog) {
+          moexMap.set(bond.isin, bond);
+        }
+
+        // Обогащаем данные
+        let enriched = 0;
+        let matched = 0;
+
+        for (const [isin, bond] of bondsMap) {
+          const moex = moexMap.get(isin);
+          if (moex) {
+            matched++;
+
+            // Обновляем эмитента из MOEX (самое важное)
+            if (!bond.issuer && moex.issuerName) {
+              bond.issuer = moex.issuerName;
+            }
+
+            // Обновляем тип купона
+            if (!bond.couponType && moex.couponType) {
+              bond.couponType = moex.couponType;
+              enriched++;
+            }
+
+            // Обновляем рейтинг МОEX
+            if (!bond.icbrrRating && moex.icbrrRating) {
+              bond.icbrrRating = moex.icbrrRating;
+              enriched++;
+            }
+
+            // Обновляем сектор
+            if (!bond.sector && moex.sector) {
+              bond.sector = moex.sector;
+              enriched++;
+            }
+
+            // Обновляем спред к КС (для флоатеров)
+            if (moex.floatSpreadPct != null && moex.floatSpreadPct > 0) {
+              bond.floatSpreadPct = moex.floatSpreadPct;
+              enriched++;
+            }
+
+            // Обновляем базовый индекс
+            if (!bond.floatIndex && moex.floatIndex) {
+              bond.floatIndex = moex.floatIndex;
+              enriched++;
+            }
+
+            // Обновляем опцион
+            if (moex.hasOption && !bond.hasOption) {
+              bond.hasOption = moex.hasOption;
+              enriched++;
+            }
+
+            // Обновляем дату опциона
+            if (moex.callDate && !bond.callDate) {
+              bond.callDate = moex.callDate;
+              enriched++;
+            }
+
+            // Обновляем амортизацию
+            if (moex.hasAmortization && !bond.hasAmortization) {
+              bond.hasAmortization = moex.hasAmortization;
+              enriched++;
+            }
+
+            // Обновляем частоту купонов
+            if (!bond.couponFrequency && moex.couponFrequency && moex.couponFrequency > 0) {
+              bond.couponFrequency = moex.couponFrequency;
+              enriched++;
+            }
+          }
+        }
+
+        console.log(
+          `[BondEnrich] ✅ Совпадений: ${matched}/${isins.length}, обновлено эмитентов: ${enriched}`,
+        );
+      } catch (error) {
+        console.warn('[BondEnrich] ⚠️ Ошибка обогащения из MOEX:', error);
+        // Не блокируем парсинг, если MOEX недоступен
+      }
+    }
 
    /**
     * Безопасная конвертация значения Excel в Date.

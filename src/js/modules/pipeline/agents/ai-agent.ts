@@ -176,7 +176,7 @@ export class AiAgent extends AgentBase {
     console.log('[AiAgent] DEBUG: input.keys=' + Object.keys(input).join(','));
     console.log('[AiAgent] DEBUG: analysis=' + (input.analysis ? 'exists' : 'null'));
     const { data, research, analysis } = input;
-    const { macroGoals } = data;
+    const { macroGoals, historicalTrades, investedFunds, accounts } = data;
     const { snapshots = new Map() } = research;
     const { portfolioAnalysis, riskValidation, income } = analysis;
 
@@ -317,12 +317,13 @@ export class AiAgent extends AgentBase {
           freshMacroData,
           thesisResults,
           portfolioAnalysis.assetsAnalysis,
-          data.historicalTrades,
-          data.investedFunds,
-          data.accounts,
+          historicalTrades,
+          investedFunds,
+          accounts,
           memoryContext,
           { stocks: actualStocksPct, bonds: actualBondsPct },
           guardrailsContext,
+          data.bondMarketData as unknown as Map<string, Record<string, unknown>>, // ← передаём bondMarketData
         );
 
         if (aiClientResult.success) {
@@ -581,7 +582,9 @@ export class AiAgent extends AgentBase {
     memoryContext: string,
     assetClassPercents: { stocks: number; bonds: number },
     guardrailsContext: string,
+    _bondMarketData?: Map<string, Record<string, unknown>>,
   ): Promise<AiClientResult> {
+
     const aiClient = new AiClient();
 
     // Строим MacroDataContext

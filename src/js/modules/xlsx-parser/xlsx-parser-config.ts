@@ -67,6 +67,11 @@ export const BONDS_COLUMN_MATURITY_DATE = 'Дата погашения';
 // Столбец M
 export const BONDS_COLUMN_DURATION = 'Дюрация';
 
+// Столбец N
+export const BONDS_COLUMN_ISSUER = 'Эмитент';
+export const BONDS_COLUMN_ISSUER_ALT1 = 'Наименование эмитента';
+export const BONDS_COLUMN_ISSUER_ALT2 = 'Issuer';
+
 // Столбцы листа "Акции" — левая таблица (сырые данные из QUIK)
 export const QUOTES_COLUMN_INSTRUMENT = 'Инструмент';
 export const QUOTES_COLUMN_TICKER = 'Код инструмента';

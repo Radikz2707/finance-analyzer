@@ -1451,6 +1451,7 @@ export class AiClient {
       riskProfile: string;
       maxDrawdown: number;
     },
+    bondMarketData?: Map<string, Record<string, unknown>>,
   ): Promise<AiResponseResult> {
     // Извлекаем тикеры активов для валидации
     const assetTickers = analysis.assetsAnalysis.map((a) => a.ticker);
@@ -1533,6 +1534,171 @@ export class AiClient {
       }
     }
 
+    // ─── Bond Analysis — структурированный анализ ВСЕХ облигаций портфеля ───
+    interface BondAnalysisResult {
+      isin: string;
+      name: string;
+      issuer: string;
+      quantity: number;
+      currentPrice: number;
+      balanceValue: number;
+      yieldAnalysis: {
+        currentYield: number | null;
+        ytm: number | null;
+        effectiveYield: number | null;
+        annualCouponIncome: number | null;
+        couponType: string;
+        dataQuality: string;
+      };
+      durationAnalysis: {
+        duration: number | null;
+        durationType: string;
+        dv01: number | null;
+        scenarios: Array<{ yieldChangePct: number; priceImpactPct: number; priceImpactRub: number }>;
+        dataQuality: string;
+      };
+      creditAssessment: {
+        quality: string;
+        source: string;
+        summary: string;
+      };
+      recommendation: string;
+      rationale: string;
+      moexData: {
+        couponType?: string;
+        icbrrRating?: string;
+        sector?: string;
+        floatSpreadPct?: number;
+        floatIndex?: string;
+        hasOption?: boolean;
+      };
+    }
+
+    const bondAnalyses: BondAnalysisResult[] = [];
+
+    if (bondMarketData && bondMarketData.size > 0) {
+      // Загружаем bond-анализаторы лениво
+      const { analyzeYield } = await import('../bond-analyzer/bond-yield-calculator.js');
+      const { analyzeDuration } = await import('../bond-analyzer/bond-duration-calculator.js');
+      const { analyzeCredit } = await import('../bond-analyzer/bond-credit-analyzer.js');
+      const { buildBondFinalAssessment } = await import('../bond-analyzer/bond-analyst-summary.js');
+
+      // Находим ВСЕ облигации в портфеле
+      const bondAssets = analysis.assetsAnalysis.filter(a =>
+        a.assetType.toUpperCase() === 'BOND' || a.assetType === 'О' || a.assetType === 'Облигация'
+      );
+
+      this.log.info(`[BondAnalysis] Найдено ${bondAssets.length} облигаций в портфеле`);
+
+      for (const bondAsset of bondAssets) {
+        const bondData = bondMarketData.get(bondAsset.ticker);
+        if (!bondData) {
+          this.log.warn(`[BondAnalysis] ⚠️ Нет рыночных данных для ${bondAsset.ticker}`);
+          continue;
+        }
+
+        try {
+          // 1. Анализ доходности
+          const yieldAnalysis = analyzeYield({
+            quikYield: bondData.yield != null ? Number(bondData.yield) : undefined,
+            couponAmount: Number(bondData.couponAmount) || 0,
+            couponPeriodDays: Number(bondData.couponPeriodDays) || 0,
+            marketPrice: Number(bondData.lastPrice) || 0,
+            nominal: Number(bondData.nominal) || 1000,
+            quantity: bondAsset.quantity || 0,
+            nextCouponDate: bondData.nextCouponDate as Date | null | undefined,
+            maturityDate: bondData.maturityDate as Date | null | undefined,
+            hasFloatingTerms: bondData.couponType === 'FLOATER' || bondData.couponType === 'MICROFIX',
+            couponType: bondData.couponType as 'FIXED' | 'FLOATER' | 'MICROFIX' | 'ZERO_COUPON' | undefined,
+          });
+
+          // 2. Анализ процентного риска
+          const durationAnalysis = analyzeDuration({
+            duration: Number(bondData.duration) || 0,
+            durationType: 'MODIFIED', // QUIK обычно даёт модифицированную
+            currentYield: yieldAnalysis.currentYield || 0,
+            currentPrice: Number(bondData.lastPrice) || 0,
+            quantity: bondAsset.quantity || 0,
+            bondType: bondData.couponType as 'FIXED' | 'FLOATER' | 'ZERO_COUPON' | 'AMORTIZING' | 'UNKNOWN' | undefined,
+          });
+
+          // 3. Кредитный анализ
+          const creditAssessment = analyzeCredit({
+            maturityDate: bondData.maturityDate as Date | null | undefined,
+            turnover: bondData.turnover != null ? Number(bondData.turnover) : null,
+            quantity: bondAsset.quantity || 0,
+            currentPrice: Number(bondData.lastPrice) || 0,
+            dataSource: 'MOEX_EXCEL',
+            icbrrRating: bondData.icbrrRating != null ? String(bondData.icbrrRating) : undefined,
+          });
+
+          // 4. Итоговая оценка
+          const finalAssessment = buildBondFinalAssessment({
+            yieldAnalysis,
+            durationAnalysis,
+            creditAssessment,
+            portfolioMathStatus: 'STABLE',
+            currentPercent: bondAsset.currentPercent || 0,
+            targetPercent: bondAsset.targetPercent || null,
+            positionValue: bondAsset.balancePrice * (bondAsset.quantity || 0),
+            isin: bondAsset.ticker,
+            instrumentName: bondAsset.name || '',
+            holdOnly: bondAsset.holdOnly || false,
+          });
+
+          // 5. Собираем результат
+          bondAnalyses.push({
+            isin: bondAsset.ticker,
+            name: bondAsset.name || '',
+            issuer: bondData.issuer != null ? String(bondData.issuer) : '',
+            quantity: bondAsset.quantity || 0,
+            currentPrice: Number(bondData.lastPrice) || 0,
+            balanceValue: bondAsset.balancePrice * (bondAsset.quantity || 0),
+            yieldAnalysis: {
+              currentYield: yieldAnalysis.currentYield,
+              ytm: yieldAnalysis.ytm,
+              effectiveYield: yieldAnalysis.effectiveYield,
+              annualCouponIncome: yieldAnalysis.annualCouponIncome,
+              couponType: yieldAnalysis.couponType,
+              dataQuality: yieldAnalysis.dataQuality,
+            },
+            durationAnalysis: {
+              duration: durationAnalysis.duration,
+              durationType: durationAnalysis.durationType,
+              dv01: durationAnalysis.dv01,
+              scenarios: durationAnalysis.scenarios,
+              dataQuality: durationAnalysis.dataQuality,
+            },
+            creditAssessment: {
+              quality: creditAssessment.quality,
+              source: creditAssessment.source,
+              summary: creditAssessment.summary,
+            },
+            recommendation: finalAssessment.recommendation,
+            rationale: finalAssessment.rationale,
+            moexData: {
+              couponType: bondData.couponType as string | undefined,
+              icbrrRating: bondData.icbrrRating != null ? String(bondData.icbrrRating) : undefined,
+              sector: bondData.sector != null ? String(bondData.sector) : undefined,
+              floatSpreadPct: bondData.floatSpreadPct != null ? Number(bondData.floatSpreadPct) : undefined,
+              floatIndex: bondData.floatIndex != null ? String(bondData.floatIndex) : undefined,
+              hasOption: bondData.hasOption != null ? Boolean(bondData.hasOption) : undefined,
+            },
+          });
+
+          this.log.info(
+            `[BondAnalysis] ✅ ${bondAsset.ticker}: yield=${yieldAnalysis.ytm?.toFixed(2) || 'N/A'}%, ` +
+            `duration=${durationAnalysis.duration}, credit=${creditAssessment.quality}, ` +
+            `rec=${finalAssessment.recommendation}`,
+          );
+        } catch (error) {
+          this.log.error(`[BondAnalysis] ❌ Ошибка анализа ${bondAsset.ticker}:`, error);
+        }
+      }
+
+      this.log.info(`[BondAnalysis] ✅ Проанализировано ${bondAnalyses.length} облигаций`);
+    }
+
     const systemPrompt = buildSystemPrompt(
       macroData.keyRate,
       newsContext,
@@ -1541,7 +1707,8 @@ export class AiClient {
       memoryContext,
       guardrailsContext,
       investorParams,
-      undefined, // bondContext — пока не используется
+      undefined, // bondContext — устарело, используем bondAnalyses
+      bondAnalyses.length > 0 ? bondAnalyses : undefined, // ← передаём структурированный анализ облигаций
       deepLossContext
         ? {
             ticker: deepLossContext.ticker,

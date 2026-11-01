@@ -124,6 +124,51 @@ export interface BondMarketData {
    * Единица: годы (уточнить в Excel).
    */
   duration: number;
+  /**
+   * N: Эмитент — наименование компании-эмитента облигации.
+   * Используется для анализа концентрации риска и кредитного скоринга.
+   */
+  issuer: string;
+  /**
+   * Тип купона из MOEX (FIXED / FLOATER / MICROFIX / ZERO_COUPON).
+   * Если не загружен с MOEX — определяется эвристикой в yield-calculator.
+   */
+  couponType?: 'FIXED' | 'FLOATER' | 'MICROFIX' | 'ZERO_COUPON';
+  /**
+   * Внутренний рейтинг МОEX (ICBRR).
+   * Используется для кредитного скоринга.
+   */
+  icbrrRating?: string;
+  /**
+   * Сектор экономики (banks, energy, metals, govmy и т.д.).
+   * Используется для анализа отраслевой диверсификации.
+   */
+  sector?: string;
+  /**
+   * Спред к ключевой ставке в % (для флоатеров).
+   * Реальная ставка = КС + floatSpreadPct.
+   */
+  floatSpreadPct?: number;
+  /**
+   * Базовый индекс для флоатера (RU SR, Key Rate, etc.).
+   */
+  floatIndex?: string;
+  /**
+   * Есть опцион досрочного погашения (callable).
+   */
+  hasOption?: boolean;
+  /**
+   * Дата исполнения опциона (если hasOption = true).
+   */
+  callDate?: string;
+  /**
+   * Амортизационный график.
+   */
+  hasAmortization?: boolean;
+  /**
+   * Частота купонов в год (2 = полугодие, 4 = квартал).
+   */
+  couponFrequency?: number;
   /** Источник данных */
   source: 'EXCEL_BONDS';
   /**

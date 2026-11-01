@@ -277,6 +277,11 @@ export function analyzeCredit(params: {
   financials?: IssuerFinancials;
   /** Кредитный рейтинг */
   rating?: CreditRating;
+  /**
+   * Внутренний рейтинг МОEX (ICBRR).
+   * Приоритет: если передан — используется для определения качества.
+   */
+  icbrrRating?: string;
   /** Профиль долга эмитента */
   issuerDebtProfile?: {
     totalDebt: number;
@@ -297,6 +302,7 @@ export function analyzeCredit(params: {
   const {
     financials,
     rating,
+    icbrrRating,
     issuerDebtProfile,
     maturityDate,
     turnover,
@@ -309,7 +315,11 @@ export function analyzeCredit(params: {
   let quality: CreditQuality = 'INSUFFICIENT_DATA';
   let financialSummary = '';
 
-  if (financials) {
+  // Приоритет: icbrrRating из MOEX > financials > rating
+  if (icbrrRating) {
+    quality = icbrrToQuality(icbrrRating);
+    financialSummary = `ICBRR рейтинг: ${icbrrRating}`;
+  } else if (financials) {
     const creditScore = calculateCreditScore(financials);
     quality = scoreToQuality(creditScore);
 
@@ -324,6 +334,9 @@ export function analyzeCredit(params: {
       parts.push(`Чистая прибыль: ${financials.netProfit.toLocaleString('ru-RU')} руб.`);
     }
     financialSummary = parts.join(', ');
+  } else if (rating) {
+    quality = 'HIGH';
+    financialSummary = `${rating.agency}: ${rating.rating} (${rating.outlook})`;
   }
 
   // Риск рефинансирования
@@ -404,5 +417,39 @@ function mapRatingToQuality(rating: string): CreditQuality {
   }
 
   // Неизвестный рейтинг
+  return 'INSUFFICIENT_DATA';
+}
+
+/**
+ * Преобразование ICBRR рейтинга МОEX в качественную оценку.
+ *
+ * ICBRR (Internal Credit Rating of MOEX):
+ * AAA — высшее качество
+ * AA — высокое качество
+ * A — хорошее качество
+ * BBB — среднее качество
+ * BB — ниже среднего
+ * B — низкое качество
+ * C — высокий риск
+ */
+function icbrrToQuality(rating: string): CreditQuality {
+  const upper = rating.trim().toUpperCase();
+
+  if (upper.startsWith('AAA') || upper.startsWith('AA')) {
+    return 'HIGH';
+  }
+
+  if (upper.startsWith('A') || upper.startsWith('BBB')) {
+    return 'MEDIUM';
+  }
+
+  if (upper.startsWith('BB') || upper.startsWith('B')) {
+    return 'LOW';
+  }
+
+  if (upper.startsWith('C') || upper.includes('D')) {
+    return 'LOW';
+  }
+
   return 'INSUFFICIENT_DATA';
 }

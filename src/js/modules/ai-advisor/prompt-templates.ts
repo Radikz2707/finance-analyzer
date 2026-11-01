@@ -46,6 +46,60 @@ export interface BondDataContext {
   maturityDate: string;
   /** НКД рыночный (RUB) */
   marketNkd: number;
+  /** Эмитент облигации */
+  issuer: string;
+  /** Тип купона из MOEX (FIXED / FLOATER / MICROFIX) */
+  couponType?: 'FIXED' | 'FLOATER' | 'MICROFIX' | 'ZERO_COUPON';
+  /** Внутренний рейтинг МОEX (ICBRR) */
+  creditRating?: string;
+  /** Сектор экономики (banks, energy, metals и т.д.) */
+  sector?: string;
+  /** Есть опцион досрочного погашения (callable) */
+  hasOption?: boolean;
+  /** Спред к ключевой ставке в % (для флоатеров) */
+  floatSpreadPct?: number;
+  /** Базовый индекс для флоатера (RU SR, Key Rate) */
+  floatIndex?: string;
+}
+
+/** Результат структурированного анализа облигации */
+export interface BondAnalysisResult {
+  isin: string;
+  name: string;
+  issuer: string;
+  quantity: number;
+  currentPrice: number;
+  balanceValue: number;
+  yieldAnalysis: {
+    currentYield: number | null;
+    ytm: number | null;
+    effectiveYield: number | null;
+    annualCouponIncome: number | null;
+    couponType: string;
+    dataQuality: string;
+  };
+  durationAnalysis: {
+    duration: number | null;
+    durationType: string;
+    dv01: number | null;
+    scenarios: Array<{ yieldChangePct: number; priceImpactPct: number; priceImpactRub: number }>;
+    dataQuality: string;
+  };
+  creditAssessment: {
+    quality: string;
+    source: string;
+    summary: string;
+  };
+  recommendation: string;
+  rationale: string;
+  moexData: {
+    couponType?: string;
+    icbrrRating?: string;
+    sector?: string;
+    floatSpreadPct?: number;
+    floatIndex?: string;
+    hasOption?: boolean;
+  };
 }
 
 /** Контекст глубокого падения актива */
@@ -128,30 +182,32 @@ export interface BehavioralFactors {
   * @param macroData — макроэкономические данные
   * @param memoryContext — контекст из памяти ИИ (опционально)
   * @param guardrailsContext — защитные правила (опционально)
-  * @param investorParams — параметры инвестора (опционально)
-  * @param bondContext — облигационные данные для текущего актива (опционально)
-  * @param deepLossContext — контекст глубокого падения актива (опционально)
-  * @param fundamentalMetrics — фундаментальные метрики актива (опционально)
-  * @param behavioralFactors — поведенческие факторы (опционально)
-  */
- export function buildSystemPrompt(
-   cbrRate: number,
-   newsContext?: string,
-   assetTickers?: string[],
-   macroData?: MacroDataContext,
-   memoryContext?: string,
-   guardrailsContext?: string,
-   investorParams?: {
-     horizon: string;
-     goal: string;
-     riskProfile: string;
-     maxDrawdown: number;
-   },
-   bondContext?: BondDataContext,
-   deepLossContext?: DeepLossContext,
-   fundamentalMetrics?: FundamentalMetrics,
-   behavioralFactors?: BehavioralFactors,
- ): string {
+   * @param investorParams — параметры инвестора (опционально)
+   * @param bondContext — облигационные данные для текущего актива (устарело, использовать bondAnalyses)
+   * @param bondAnalyses — структурированный анализ ВСЕХ облигаций портфеля (приоритет)
+   * @param deepLossContext — контекст глубокого падения актива (опционально)
+   * @param fundamentalMetrics — фундаментальные метрики актива (опционально)
+   * @param behavioralFactors — поведенческие факторы (опционально)
+   */
+  export function buildSystemPrompt(
+    cbrRate: number,
+    newsContext?: string,
+    assetTickers?: string[],
+    macroData?: MacroDataContext,
+    memoryContext?: string,
+    guardrailsContext?: string,
+    investorParams?: {
+      horizon: string;
+      goal: string;
+      riskProfile: string;
+      maxDrawdown: number;
+    },
+    bondContext?: BondDataContext,
+    bondAnalyses?: BondAnalysisResult[],
+    deepLossContext?: DeepLossContext,
+    fundamentalMetrics?: FundamentalMetrics,
+    behavioralFactors?: BehavioralFactors,
+  ): string {
   const currentMonth = new Date().toLocaleDateString('ru-RU', {
     month: 'long',
     year: 'numeric',
@@ -258,9 +314,41 @@ export interface BehavioralFactors {
 
 Учитывай эти параметры при формировании рекомендаций.
 ` : '') +
+    (bondAnalyses && bondAnalyses.length > 0 ? `
+=== СТРУКТУРИРОВАННЫЙ АНАЛИЗ ОБЛИГАЦИЙ ===
+В портфеле ${bondAnalyses.length} облигаций. Для каждой проведён полный анализ:
+
+${bondAnalyses.map(bond => `
+--- ${bond.isin} (${bond.name}) ---
+• Эмитент: ${bond.issuer}
+• Доля в портфеле: ${(bond.balanceValue / 1000000).toFixed(2)} млн руб., кол-во: ${bond.quantity}
+• Доходность:
+  - Current Yield: ${bond.yieldAnalysis.currentYield?.toFixed(2) || 'N/A'}%
+  - YTM: ${bond.yieldAnalysis.ytm?.toFixed(2) || 'N/A'}%
+  - Effective Yield: ${bond.yieldAnalysis.effectiveYield?.toFixed(2) || 'N/A'}%
+  - Годовой купон: ${bond.yieldAnalysis.annualCouponIncome?.toLocaleString('ru-RU') || 'N/A'} руб.
+  - Тип купона: ${bond.yieldAnalysis.couponType}
+• Процентный риск:
+  - Дюрация: ${bond.durationAnalysis.duration?.toFixed(2) || 'N/A'} лет (${bond.durationAnalysis.durationType})
+  - DV01: ${bond.durationAnalysis.dv01?.toFixed(2) || 'N/A'} руб.
+  - Данные: ${bond.durationAnalysis.dataQuality}
+• Кредитное качество:
+  - Оценка: ${bond.creditAssessment.quality}
+  - Источник: ${bond.creditAssessment.source}
+  - Резюме: ${bond.creditAssessment.summary}
+• MOEX данные:
+  - Рейтинг ICBRR: ${bond.moexData.icbrrRating || 'N/A'}
+  - Сектор: ${bond.moexData.sector || 'N/A'}
+  - Спред к КС: ${bond.moexData.floatSpreadPct ? bond.moexData.floatSpreadPct + '%' : 'N/A'}
+  - Callable: ${bond.moexData.hasOption ? 'да' : 'нет'}
+• Рекомендация анализатора: ${bond.recommendation}
+• Обоснование: ${bond.rationale}
+`).join('\n')}
+` : '') +
     (bondContext ? `
-=== ОБЛИГАЦИЯ ===
+=== ОБЛИГАЦИЯ (legacy context) ===
 • ISIN: ${bondContext.isin}
+• Эмитент: ${bondContext.issuer}
 • Номинал: ${bondContext.nominal} руб.
 • Доходность (QUIK): ${bondContext.yield}% — НЕ называть YTM без подтверждения
 • Дюрация (QUIK): ${bondContext.duration} — НЕ называть модифицированной без подтверждения
@@ -270,6 +358,12 @@ export interface BehavioralFactors {
 • Следующая выплата: ${bondContext.nextCouponDate}
 • Погашение: ${bondContext.maturityDate}
 • НКД рыночный: ${bondContext.marketNkd} руб.
+${bondContext.couponType ? `• Тип купона: ${bondContext.couponType} (из MOEX)` : ''}
+${bondContext.creditRating ? `• Рейтинг МОEX (ICBRR): ${bondContext.creditRating}` : ''}
+${bondContext.sector ? `• Сектор: ${bondContext.sector}` : ''}
+${bondContext.hasOption ? '• Callable: да (опцион досрочного погашения)' : ''}
+${bondContext.floatSpreadPct ? `• Спред к КС: ${bondContext.floatSpreadPct}%` : ''}
+${bondContext.floatIndex ? `• Базовый индекс: ${bondContext.floatIndex}` : ''}
 ` : '') +
     (deepLossContext ? `
 === ГЛУБОКОЕ ПАДЕНИЕ ===

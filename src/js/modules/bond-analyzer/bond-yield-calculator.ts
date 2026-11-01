@@ -345,6 +345,11 @@ export function analyzeYield(params: {
   maturityDate?: Date | null;
   /** Известны ли условия плавающего купона */
   hasFloatingTerms?: boolean;
+  /**
+   * Тип купона из MOEX (FIXED / FLOATER / MICROFIX / ZERO_COUPON).
+   * Приоритет: если передан — используется напрямую, без эвристики.
+   */
+  couponType?: 'FIXED' | 'FLOATER' | 'MICROFIX' | 'ZERO_COUPON';
 }): YieldAnalysis {
   const {
     quikYield,
@@ -356,16 +361,27 @@ export function analyzeYield(params: {
     nextCouponDate,
     maturityDate,
     hasFloatingTerms,
+    couponType: moexCouponType,
   } = params;
 
   // Определение типа купона
-  const couponType = determineCouponType(
-    couponAmount,
-    nominal,
-    marketPrice,
-    couponPeriodDays,
-    hasFloatingTerms,
-  );
+  // Приоритет: MOEX данные > эвристика
+  let couponType: CouponType;
+  if (moexCouponType) {
+    if (moexCouponType === 'MICROFIX') {
+      couponType = 'FLOATER'; // MICROFIX обрабатывается как FLOATER
+    } else {
+      couponType = moexCouponType as CouponType;
+    }
+  } else {
+    couponType = determineCouponType(
+      couponAmount,
+      nominal,
+      marketPrice,
+      couponPeriodDays,
+      hasFloatingTerms,
+    );
+  }
 
   // Годовой купонный доход на 1 облигацию
   const annualCouponPerBondVal = annualCouponPerBond(couponAmount, couponPeriodDays);
