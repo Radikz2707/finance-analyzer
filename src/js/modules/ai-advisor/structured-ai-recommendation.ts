@@ -372,6 +372,16 @@ export function buildDeterministicAssetData(
     ? asset.currentPrice! * asset.quantity
     : null;
 
+  // P&L: рассчитывается из реальных данных (currentPrice - balancePrice) * quantity,
+  // а не берётся из Excel (unrealizedProfitRub может быть 0 при реальной просадке).
+  // fallback на Excel только если currentPrice/balancePrice недоступны.
+  let unrealizedProfitRub: number;
+  if (marketDataValid && balancePrice > 0) {
+    unrealizedProfitRub = (asset.currentPrice! - balancePrice) * asset.quantity;
+  } else {
+    unrealizedProfitRub = asset.unrealizedProfitRub ?? 0;
+  }
+
   // Buy / Sell amounts from deterministic
   let buyAmountRub: number | null = null;
   let sellAmountRub: number | null = null;
@@ -405,7 +415,7 @@ export function buildDeterministicAssetData(
     currentPrice: marketDataValid ? asset.currentPrice : null,
     balancePrice,
     drawdownPercent,
-    unrealizedProfitRub: asset.unrealizedProfitRub ?? 0,
+    unrealizedProfitRub,
     currentQuantity: asset.quantity,
     liquidationValueRub,
     buyAmountRub,
@@ -533,21 +543,29 @@ export function validateStructuredAIJson(
   }
 
   // 5. agreementWithPortfolioMath допустим
-  const validAgreements: MathAgreement[] = ['AGREE', 'DISAGREE', 'UNCERTAIN'];
-  if (json.agreementWithPortfolioMath !== null) {
-    if (typeof json.agreementWithPortfolioMath !== 'string') {
+  const validAgreements: MathAgreement[] = ['AGREE', 'DISAGREE', 'UNCERTAIN', 'INSUFFICIENT_DATA'];
+  if (json.agreementWithPortfolioMath !== null && json.agreementWithPortfolioMath !== undefined) {
+    // AI может вернуть boolean или число — конвертируем в строку
+    let agreementValue: string;
+    if (typeof json.agreementWithPortfolioMath === 'boolean') {
+      agreementValue = json.agreementWithPortfolioMath ? 'AGREE' : 'DISAGREE';
+    } else if (typeof json.agreementWithPortfolioMath === 'number') {
+      agreementValue = json.agreementWithPortfolioMath > 0 ? 'AGREE' : 'DISAGREE';
+    } else {
+      agreementValue = json.agreementWithPortfolioMath;
+    }
+    
+    if (typeof agreementValue !== 'string') {
       errors.push({
         field: 'agreementWithPortfolioMath',
         message: 'agreementWithPortfolioMath должен быть строкой или null',
       });
     } else if (
-      !validAgreements.includes(
-        json.agreementWithPortfolioMath as MathAgreement,
-      )
+      !validAgreements.includes(agreementValue as MathAgreement)
     ) {
       errors.push({
         field: 'agreementWithPortfolioMath',
-        message: `недопустимое согласие '${json.agreementWithPortfolioMath}', допустимые: ${validAgreements.join(', ')}`,
+        message: `недопустимое согласие '${agreementValue}', допустимые: ${validAgreements.join(', ')}`,
       });
     }
   }
@@ -563,15 +581,16 @@ export function validateStructuredAIJson(
       message: 'rationale обязателен и не может быть пустым',
     });
   }
+  // targetReason — необязателен, если пустой — дадим дефолтное значение
   if (
-    !json.targetReason ||
-    typeof json.targetReason !== 'string' ||
-    json.targetReason.trim().length === 0
+    json.targetReason &&
+    typeof json.targetReason === 'string' &&
+    json.targetReason.trim().length > 0
   ) {
-    errors.push({
-      field: 'targetReason',
-      message: 'targetReason обязателен и не может быть пустым',
-    });
+    // OK — заполнено
+  } else {
+    // Дадим дефолтное значение
+    json.targetReason = 'целевая доля не меняется';
   }
 
   // 7. keyRisks и keyCatalysts — массивы строк или null
@@ -675,8 +694,7 @@ function validAiAction(value: string | null): value is AiAction {
 }
 
 function validMathAgreement(value: string | null): value is MathAgreement {
-  if (!value) return false;
-  const valid: MathAgreement[] = ['AGREE', 'DISAGREE', 'UNCERTAIN'];
+  const valid: MathAgreement[] = ['AGREE', 'DISAGREE', 'UNCERTAIN', 'INSUFFICIENT_DATA'];
   return valid.includes(value as MathAgreement);
 }
 

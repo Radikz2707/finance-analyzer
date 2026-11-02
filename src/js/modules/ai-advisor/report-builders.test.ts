@@ -64,7 +64,7 @@ describe('buildFinalConclusion — итоговое заключение', () =>
 
     const conclusion = buildFinalConclusion(mathAsset, aiRec);
     expect(conclusion.source).toBe('BOTH_CONFLICT');
-    expect(conclusion.mathAiAgreement).toContain('Конфликт');
+    expect(conclusion.mathAiAgreement).toContain('конфликт');
   });
 
   // ─── Тест 4: Согласованность BUY/BUY ───
@@ -145,7 +145,7 @@ describe('buildFinalConclusion — итоговое заключение', () =>
       isConcentrated: false,
     };
     const aiRec = {
-      // HOLD и STABLE — разные действия, поэтому будет CONFLICT
+      // HOLD и STABLE — после нормализации оба → HOLD, поэтому согласованы
       recommendedAction: 'HOLD',
       confidence: null,
       rationale: 'Стабильная позиция',
@@ -153,9 +153,8 @@ describe('buildFinalConclusion — итоговое заключение', () =>
     };
 
     const conclusion = buildFinalConclusion(mathAsset, aiRec);
-    // HOLD ≠ STABLE → конфликт
-    expect(conclusion.source).toBe('BOTH_CONFLICT');
-    expect(conclusion.mathAiAgreement).toContain('Конфликт');
+    // STABLE нормализуется в HOLD → согласованы
+    expect(conclusion.source).toBe('BOTH_AGREED');
   });
 
   // ========================================================================

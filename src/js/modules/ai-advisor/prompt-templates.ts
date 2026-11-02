@@ -4,8 +4,6 @@
  * Все критические правила сохранены, дублирование устранено.
  */
 
-import { loadUserPolicy } from '../../config/user-policy.js';
-
 /** Контекст макроэкономических данных */
 export interface MacroDataContext {
   keyRate: number;
@@ -68,7 +66,7 @@ export interface BondAnalysisResult {
   name: string;
   issuer: string;
   quantity: number;
-  currentPrice: number;
+  currentPrice: number | null;
   balanceValue: number;
   yieldAnalysis: {
     currentYield: number | null;
@@ -82,8 +80,10 @@ export interface BondAnalysisResult {
     duration: number | null;
     durationType: string;
     dv01: number | null;
+    originalDv01?: { value: number; unit: string; scope: string };
     scenarios: Array<{ yieldChangePct: number; priceImpactPct: number; priceImpactRub: number }>;
     dataQuality: string;
+    derivedDataQuality: string;
   };
   creditAssessment: {
     quality: string;
@@ -100,31 +100,59 @@ export interface BondAnalysisResult {
     floatIndex?: string;
     hasOption?: boolean;
   };
+  /** Недостающие данные для анализа */
+  missingData: string[];
+  /** Согласованность с PortfolioMath: AGREE / DISAGREE / INSUFFICIENT_DATA */
+  mathAgreement: string;
+  /** Влияние на структуру портфеля */
+  portfolioImpact: string;
 }
 
-/** Контекст глубокого падения актива */
-export interface DeepLossContext {
-  /** Тикер актива */
-  ticker: string;
-  /** Название актива */
-  name: string;
-  /** Текущая просадка (%) */
-  drawdownPercent: number;
-  /** Уровень глубины падения */
-  lossLevel: 'MODERATE' | 'SEVERE' | 'CRITICAL';
-  /** Основная причина падения */
-  primaryReason: string;
-  /** Сравнение с рынком */
-  vsMarket: {
-    marketDrawdown: number;
-    relativePerformance: number;
-    isSystemic: boolean;
-  };
-  /** Оценка риска фиксации убытка */
-  realizationRisk: 'LOW' | 'MEDIUM' | 'HIGH';
-  /** Резюме */
-  summary: string;
-}
+  /** Контекст глубокого падения актива */
+  export interface DeepLossContext {
+    /** Тикер актива */
+    ticker: string;
+    /** Название актива */
+    name: string;
+    /** Текущая просадка (%) */
+    drawdownPercent: number;
+    /** Уровень глубины падения */
+    lossLevel: 'MODERATE' | 'SEVERE' | 'CRITICAL';
+    /** Основная причина падения */
+    primaryReason: string;
+    /** Сравнение с рынком */
+    vsMarket: {
+      marketDrawdown: number;
+      relativePerformance: number;
+      isSystemic: boolean;
+    };
+    /** Оценка риска фиксации убытка */
+    realizationRisk: 'LOW' | 'MEDIUM' | 'HIGH';
+    /** Резюме */
+    summary: string;
+  }
+
+  /** Технические индикаторы для актива */
+  export interface TechnicalIndicators {
+    /** Тикер актива */
+    ticker: string;
+    /** Индекс относительной силы (14 периодов) */
+    rsi: number | null;
+    /** Простое скользящее среднее 20 периодов */
+    sma20: number | null;
+    /** Простое скользящее среднее 50 периодов */
+    sma50: number | null;
+    /** Тренд: восходящий / нисходящий / боковик */
+    trend: 'up' | 'down' | 'flat' | null;
+    /** Годовая волатильность (доля, например 0.35 = 35%) */
+    volatilityAnnual: number | null;
+    /** Уровень риска: низкий / средний / высокий */
+    riskLevel: 'low' | 'medium' | 'high' | null;
+    /** Z-score последнего бара (статистическая аномалия) */
+    zScoreLast: number | null;
+    /** true если на последнем баре обнаружена аномалия */
+    isLastAnomaly: boolean;
+  }
 
 /** Фундаментальные метрики актива */
 export interface FundamentalMetrics {
@@ -174,6 +202,60 @@ export interface BehavioralFactors {
   summary: string;
 }
 
+/** Результат анализа ликвидности одного актива */
+export interface AssetLiquidityContext {
+  /** Тикер актива */
+  ticker: string;
+  /** Название актива */
+  name: string;
+  /** Рыночная стоимость позиции (руб) */
+  marketValue: number;
+  /** Дневной оборот (руб) или null */
+  dailyTurnover: number | null;
+  /** Уровень ликвидности: HIGH/MEDIUM/LOW/CRITICAL/UNKNOWN */
+  liquidityLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'CRITICAL' | 'UNKNOWN';
+  /** Отношение оборота к стоимости позиции */
+  turnoverToValueRatio: number;
+  /** Оценка дней для ликвидации позиции */
+  liquidationDays: number | null;
+  /** Предупреждение (если есть) */
+  warning?: string;
+  /** Рекомендация */
+  advice?: string;
+}
+
+/** Сводка по ликвидности всего портфеля */
+export interface PortfolioLiquiditySummary {
+  /** Общая рыночная стоимость портфеля */
+  totalMarketValue: number;
+  /** Доля высоколиквидных активов (%) */
+  highLiquidityPct: number;
+  /** Доля среднеликвидных активов (%) */
+  mediumLiquidityPct: number;
+  /** Доля низколиквидных активов (%) */
+  lowLiquidityPct: number;
+  /** Доля критически низколиквидных активов (%) */
+  criticalLiquidityPct: number;
+  /** Количество активов без данных по обороту */
+  unknownCount: number;
+  /** Количество «мёртвых» активов */
+  deadAssetsCount: number;
+  /** Статус: HEALTHY/WARNING/CRITICAL */
+  status: 'HEALTHY' | 'WARNING' | 'CRITICAL';
+}
+
+/** Полный контекст ликвидности портфеля */
+export interface LiquidityContext {
+  /** Сводка по портфелю */
+  summary: PortfolioLiquiditySummary;
+  /** Результаты по каждому активу */
+  assets: AssetLiquidityContext[];
+  /** Предупреждения */
+  warnings: string[];
+  /** Рекомендации */
+  recommendations: string[];
+}
+
 /**
   * Формирует системный промпт для ИИ-модели.
   * @param cbrRate — ключевая ставка ЦБ
@@ -188,30 +270,40 @@ export interface BehavioralFactors {
    * @param deepLossContext — контекст глубокого падения актива (опционально)
    * @param fundamentalMetrics — фундаментальные метрики актива (опционально)
    * @param behavioralFactors — поведенческие факторы (опционально)
-   */
-  export function buildSystemPrompt(
-    cbrRate: number,
-    newsContext?: string,
-    assetTickers?: string[],
-    macroData?: MacroDataContext,
-    memoryContext?: string,
-    guardrailsContext?: string,
-    investorParams?: {
-      horizon: string;
-      goal: string;
-      riskProfile: string;
-      maxDrawdown: number;
-    },
-    bondContext?: BondDataContext,
-    bondAnalyses?: BondAnalysisResult[],
-    deepLossContext?: DeepLossContext,
-    fundamentalMetrics?: FundamentalMetrics,
-    behavioralFactors?: BehavioralFactors,
-  ): string {
+    */
+    export function buildSystemPrompt(
+      cbrRate: number,
+      newsContext?: string,
+      assetTickers?: string[],
+      macroData?: MacroDataContext,
+      memoryContext?: string,
+      guardrailsContext?: string,
+      investorParams?: {
+        horizon: string;
+        goal: string;
+        riskProfile: string;
+        maxDrawdown: number;
+      },
+      bondContext?: BondDataContext,
+      bondAnalyses?: BondAnalysisResult[],
+      deepLossContext?: DeepLossContext,
+      fundamentalMetrics?: FundamentalMetrics,
+      behavioralFactors?: BehavioralFactors,
+      technicalIndicators?: TechnicalIndicators[],
+      liquidityContext?: LiquidityContext,
+    ): string {
   const currentMonth = new Date().toLocaleDateString('ru-RU', {
     month: 'long',
     year: 'numeric',
   });
+
+  /** Форматирование суммы в рублях */
+  function formatRub(value: number): string {
+    if (value >= 1e9) return (value / 1e9).toFixed(1) + ' млрд ₽';
+    if (value >= 1e6) return (value / 1e6).toFixed(1) + ' млн ₽';
+    if (value >= 1e3) return (value / 1e3).toFixed(1) + ' тыс ₽';
+    return value.toLocaleString('ru-RU') + ' ₽';
+  }
 
   // Макро-контекст
   const macroLines: string[] = [];
@@ -269,7 +361,7 @@ export interface BehavioralFactors {
     '• ЗАПРЕЩЕНО: "гарантированная доходность", "безрисковый", "100% гарантия".\n' +
     '• ЗАПРЕЩЕНО: выдумывать отсутствующие данные и факты.\n' +
     '• ЗАПРЕЩЕНО: выдумывать доходность облигаций. Если данные не переданы — пиши «нет данных».\n' +
-    buildNoSellPolicyRules() +
+    buildDeepAnalysisRules() +
     '\n' +
     '=== ИНВЕСТИЦИОННЫЙ REASONING ===\n' +
     '• USER_TARGET_PERCENT — факт пользователя. AI может дать AI_RECOMMENDED_TARGET_PERCENT как рекомендацию.\n' +
@@ -328,10 +420,11 @@ ${bondAnalyses.map(bond => `
   - Effective Yield: ${bond.yieldAnalysis.effectiveYield?.toFixed(2) || 'N/A'}%
   - Годовой купон: ${bond.yieldAnalysis.annualCouponIncome?.toLocaleString('ru-RU') || 'N/A'} руб.
   - Тип купона: ${bond.yieldAnalysis.couponType}
+  - Качество данных: ${bond.yieldAnalysis.dataQuality}
 • Процентный риск:
   - Дюрация: ${bond.durationAnalysis.duration?.toFixed(2) || 'N/A'} лет (${bond.durationAnalysis.durationType})
   - DV01: ${bond.durationAnalysis.dv01?.toFixed(2) || 'N/A'} руб.
-  - Данные: ${bond.durationAnalysis.dataQuality}
+  - Данные: ${bond.durationAnalysis.dataQuality}, Производные: ${bond.durationAnalysis.derivedDataQuality}
 • Кредитное качество:
   - Оценка: ${bond.creditAssessment.quality}
   - Источник: ${bond.creditAssessment.source}
@@ -343,6 +436,10 @@ ${bondAnalyses.map(bond => `
   - Callable: ${bond.moexData.hasOption ? 'да' : 'нет'}
 • Рекомендация анализатора: ${bond.recommendation}
 • Обоснование: ${bond.rationale}
+• Влияние на портфель: ${bond.portfolioImpact}
+• Согласованность с PortfolioMath: ${bond.mathAgreement}
+${bond.missingData && bond.missingData.length > 0 ? `• Недостающие данные:\n${bond.missingData.map((m: string) => '  - ' + m).join('\n')}` : ''}
+${bond.creditAssessment.quality === 'INSUFFICIENT_DATA' ? '\n⚠️ ВАЖНО: Кредитное качество НЕ ПОДТВЕРЖДЕНО.\nНЕ писать высокий рейтинг если quality = INSUFFICIENT_DATA.\nЕсли нет данных — писать нет данных по кредитному качеству.\n' : ''}
 `).join('\n')}
 ` : '') +
     (bondContext ? `
@@ -377,6 +474,63 @@ ${bondContext.floatIndex ? `• Базовый индекс: ${bondContext.float
 === ПОВЕДЕНИЕ ===
 • ${behavioralFactors.ticker}: ${behavioralFactors.lossAversion} lossAversion, ${behavioralFactors.averagingTendency} averaging, ${behavioralFactors.panicTendency} panic — ${behavioralFactors.behavioralAdvice}
 ` : '') +
+    (technicalIndicators && technicalIndicators.length > 0 ? `
+=== ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ И ИСТОРИЧЕСКИЕ ДАННЫЕ ===
+Для каждого актива рассчитаны индикаторы на основе 180 дней исторических котировок:
+
+${technicalIndicators.map(ind => `
+--- ${ind.ticker} ---
+• RSI(14): ${ind.rsi !== null ? ind.rsi.toFixed(1) : 'нет данных'}${ind.rsi !== null ? (ind.rsi < 30 ? ' (перепроданность)' : ind.rsi > 70 ? ' (перекупленность)' : '') : ''}
+• SMA20: ${ind.sma20 !== null ? ind.sma20.toFixed(2) : 'нет данных'}
+• SMA50: ${ind.sma50 !== null ? ind.sma50.toFixed(2) : 'нет данных'}
+• Тренд: ${ind.trend !== null ? (ind.trend === 'up' ? 'восходящий' : ind.trend === 'down' ? 'нисходящий' : 'боковик') : 'нет данных'}
+• Волатильность (годовая): ${ind.volatilityAnnual !== null ? (ind.volatilityAnnual * 100).toFixed(1) + '%' : 'нет данных'}
+• Риск: ${ind.riskLevel !== null ? (ind.riskLevel === 'low' ? 'низкий' : ind.riskLevel === 'medium' ? 'средний' : 'высокий') : 'нет данных'}
+• Z-score: ${ind.zScoreLast !== null ? ind.zScoreLast.toFixed(2) : 'нет данных'}${ind.zScoreLast !== null && Math.abs(ind.zScoreLast) > 2 ? ' (аномалия)' : ''}
+${ind.isLastAnomaly ? '⚠️ Аномалия на последнем баре!' : ''}
+`).join('\n')}
+
+ИСПОЛЬЗУЙ эти данные для рекомендации оптимальных точек входа/выхода:
+• RSI < 30 + цена ниже SMA20/SMA50 → потенциальная точка покупки (перепроданность)
+• RSI > 70 + цена выше SMA20/SMA50 → потенциальная точка продажи (перекупленность)
+• Восходящий тренд + низкая волатильность → благоприятная среда для покупки
+• Нисходящий тренд + высокая волатильность → осторожность с покупками
+• Z-score > 2 или < -2 → аномальное движение, требует внимания
+• НЕ используй технические индикаторы как единственный аргумент — комбинируй с фундаменталом
+` : '') +
+    (liquidityContext ? `
+=== АНАЛИЗ ЛИКВИДНОСТИ ПОРТФЕЛЯ ===
+Статус портфеля: ${liquidityContext.summary.status === 'HEALTHY' ? '✅ Здоровый' : liquidityContext.summary.status === 'WARNING' ? '⚠️ ВНИМАНИЕ' : '🔴 КРИТИЧЕСКИЙ'}
+├── Высокая ликвидность: ${liquidityContext.summary.highLiquidityPct.toFixed(1)}%
+├── Средняя ликвидность: ${liquidityContext.summary.mediumLiquidityPct.toFixed(1)}%
+├── Низкая ликвидность: ${liquidityContext.summary.lowLiquidityPct.toFixed(1)}%
+└── Критическая ликвидность: ${liquidityContext.summary.criticalLiquidityPct.toFixed(1)}% (${liquidityContext.summary.deadAssetsCount} активов)
+
+Предупреждения:
+${liquidityContext.warnings.length > 0 ? liquidityContext.warnings.map((w: string) => '  • ' + w).join('\n') : '  (нет)'}
+
+Рекомендации по ликвидности:
+${liquidityContext.recommendations.length > 0 ? liquidityContext.recommendations.map((r: string) => '  • ' + r).join('\n') : '  (нет)'}
+
+Данные по активам:
+${liquidityContext.assets.map(asset => `
+--- ${asset.ticker} (${asset.name}) ---
+• Стоимость позиции: ${formatRub(asset.marketValue)}
+• Дневной оборот: ${asset.dailyTurnover !== null ? formatRub(asset.dailyTurnover) : 'нет данных'}
+• Уровень: ${asset.liquidityLevel === 'HIGH' ? '✅ Высокий' : asset.liquidityLevel === 'MEDIUM' ? '⚠️ Средний' : asset.liquidityLevel === 'LOW' ? '⚠️ Низкий' : asset.liquidityLevel === 'CRITICAL' ? '🔴 Критический' : '❓ Нет данных'}
+• Отношение оборот/позиция: ${asset.turnoverToValueRatio.toFixed(3)}
+• Дней для ликвидации: ${asset.liquidationDays !== null ? asset.liquidationDays : 'н/д'}
+${asset.warning ? '• ⚠️ ' + asset.warning : ''}
+${asset.advice ? '• 💡 ' + asset.advice : ''}
+`).join('\n')}
+
+ВАЖНО ПРИ ФОРМИРОВАНИИ РЕКОМЕНДАЦИЙ:
+• НЕ РЕКОМЕНДУЙ BUY для активов с CRITICAL ликвидностью без предупреждения о рисках выхода.
+• При рекомендации BUY низколиквидного актива (LOW/CRITICAL): ОБЯЗАТЕЛЬНО укажи "наращивать частями".
+• При рекомендации SELL низколиквидного актива: ОБЯЗАТЕЛЬНО укажи "продавать частями из-за низкого оборота".
+• Активы с CRITICAL ликвидностью не должны составлять более 5% портфеля.
+• Если портфель имеет статус WARNING/CRITICAL по ликвидности — приоритетом является снижение концентрации низколиквидных активов.
+` : '') +
     '=== ЗАДАЧА ===\n' +
     '1. Макро: соответствие структуры портфеля ставке ' +
     cbrRate +
@@ -399,7 +553,7 @@ ${bondContext.floatIndex ? `• Базовый индекс: ${bondContext.float
     '    "recommendedAction": "BUY"|"SELL"|"HOLD"|"REDUCE"|"EXIT"|"AVOID"|"AVERAGE",\n' +
     '    "confidence": ЧИСЛО_0_1,\n' +
     '    "rationale": "Текст",\n' +
-    '    "targetReason": "Текст",\n' +
+    '    "targetReason": "Причина изменения целевой доли",\n' +
     '    "keyRisks": ["риск 1"],\n' +
     '    "keyCatalysts": ["катализатор 1"],\n' +
     '    "agreementWithPortfolioMath": "AGREE"|"DISAGREE"|"UNCERTAIN"\n' +
@@ -410,9 +564,10 @@ ${bondContext.floatIndex ? `• Базовый индекс: ${bondContext.float
     '⚠️ ticker: ТОЛЬКО символы тикера (например: "PLZL", "SBER"). НЕ "PLZL (Полюс)", НЕ "PLZL — Полюс", НЕ "IRAO — ИнтерРАОао".\n' +
     '⚠️ Если тикер содержит пробелы, скобки, тире — JSON будет отброшен.\n' +
     '⚠️ ОБЯЗАТЕЛЬНО верни JSON-объект ДЛЯ КАЖДОГО актива из списка активов. Не пропускай ни один.\n' +
-    '⚠️ Если нет данных для актива — верни {"ticker":"ТИКЕР","recommendedAction":"HOLD","confidence":null,"rationale":"нет данных","keyRisks":[],"keyCatalysts":[],"agreementWithPortfolioMath":"UNCERTAIN"}.\n' +
+    '⚠️ Если нет данных для актива — верни {"ticker":"ТИКЕР","recommendedAction":"HOLD","confidence":null,"rationale":"нет данных","targetReason":"нет данных","keyRisks":[],"keyCatalysts":[],"agreementWithPortfolioMath":"UNCERTAIN"}.\n' +
     '⚠️ НЕ включай в JSON: price, quantity, deficit, liquidationValue.\n' +
     '⚠️ Проценты: 47.7%, не 47.739999%.\n' +
+    '⚠️ ОБЯЗАТЕЛЬНО заполни targetReason для КАЖДОГО актива. Если нет причины — напиши "целевая доля не меняется".\n' +
     '=== ТЕКСТОВЫЙ ОТВЕТ (7 секций, ПОСЛЕ JSON) ===\n' +
     '1. Макро и структура\n' +
     '2. Рекомендации по каждому активу (таблица)\n' +
@@ -427,21 +582,56 @@ ${bondContext.floatIndex ? `• Базовый индекс: ${bondContext.float
 }
 
 /**
- * Правила политики пользователя: тикеры, которые НЕ продаются.
- * Снижение их доли — только размыванием (увеличением долей других активов).
- * Пустая строка, если список пуст.
+ * Правила глубокого анализа для каждого актива.
+ * Заменяют жёсткие noBuy/noSell правила.
+ * AI должен принимать решения на основе комплексного анализа,
+ * а не хардкодных ограничений.
  */
-function buildNoSellPolicyRules(): string {
-  const tickers = loadUserPolicy().noSellTickers;
-  if (tickers.length === 0) return '';
+function buildDeepAnalysisRules(): string {
   return (
-    '• ПОЛИТИКА ПОЛЬЗОВАТЕЛЯ: тикеры [' +
-    tickers.join(', ') +
-    '] пользователь ДЕРЖИТ и продавать не планирует.\n' +
-    '  По умолчанию рекомендуй для них HOLD.\n' +
-    '  SELL/EXIT/REDUCE допустимы ТОЛЬКО с убедительным обоснованием:\n' +
-    '  конкретные фундаментальные факторы, катализаторы падения, альтернативная\n' +
-    '  доходность. Общая доля/концентрация — НЕ аргумент для продажи: доля\n' +
-    '  снижается покупками других активов. Нет убедительных аргументов → HOLD.\n'
+    '• ГЛУБОКИЙ АНАЛИЗ перед рекомендацией BUY/SELL:\n' +
+    '  Для каждого актива ОБЯЗАТЕЛЬНО оцени:\n' +
+    '  1. Фундаментал: финансовые показатели, динамика выручки/прибыли, долг/капитал\n' +
+    '  2. Технический анализ: RSI, SMA20/50, тренд, волатильность, Z-score\n' +
+    '  3. Новостной фон: последние новости по компании и отрасли\n' +
+    '  4. Кредитный риск (для облигаций): рейтинг эмитента, качество активов\n' +
+    '  5. Макроэкономика: влияние ключевой ставки, курса валют, цен на сырьё\n' +
+    '  6. Историческая доходность: как актив вёл себя при схожих макроусловиях\n' +
+    '  7. Концентрация: не превышает ли позиция допустимый риск\n' +
+    '  8. Целевая доля: текущая vs целевая из Excel\n' +
+    '  РЕКОМЕНДАЦИЯ должна включать хотя бы 3 из 8 факторов с конкретными цифрами.\n' +
+    '  Если данных для какого-то фактора нет — явно указывай "нет данных".\n' +
+    '  НЕ принимай решения на основе одного фактора (только дефицит доли или только RSI).\n' +
+    '• РЕШЕНИЕ О ПРОДАЖЕ/ПОКУПКЕ принимается на основе совокупности факторов:\n' +
+    '  - BUY: дефицит доли + позитивный фундаментал + технически не перекуплен + новостной фон позитивный\n' +
+    '  - SELL: профицит доли + негативный фундаментал + технически перекуплен или тренд сломлен + новостной фон негативный\n' +
+    '  - HOLD: нет убедительных аргументов за BUY или SELL, данные неоднозначны\n' +
+    '  - REDUCE: частичное снижение при умеренном профиците доли\n' +
+    '• НЕ ЗАПРЕЩАЙ покупки/продажи по тикеру без анализа.\n' +
+    '  Каждый актив должен быть оценён индивидуально.\n' +
+    '  Даже актив с высокой концентрацией может быть куплен, если фундаментал сильный.\n' +
+    '  Даже актив с дефицитом доли может быть продан, если фундаментал слабый.\n' +
+    '\n' +
+    '• ВАЖНО: ОБЛИГАЦИИ — разделение portfolioSignal и bondAssessment:\n' +
+    '  PortfolioMath возвращает статус для облигаций:\n' +
+    '  - STABLE = "позиция в пределах целевой доли, нет необходимости менять вес"\n' +
+    '  - BUY = "есть дефицит доли, портфельная математика рекомендует покупку"\n' +
+    '  - REDUCE = "профицит доли, портфельная математика рекомендует снижение"\n' +
+    '  - EXIT = "целевая доля 0%, плановый выход"\n' +
+    '  - NO_TARGET = "целевая доля не установлена"\n' +
+    '  ЭТО НЕ оценка надёжности или привлекательности!\n' +
+    '  STABLE НЕ означает "надёжный эмитент" и НЕ означает "нет критических проблем".\n' +
+    '  STABLE означает только: "текущий вес облигации соответствует целевому диапазону".\n' +
+    '  Облигация со статусом STABLE может иметь:\n' +
+    '  - Кредитное качество LOW (высокий риск дефолта)\n' +
+    '  - Отсутствующую доходность (нет данных)\n' +
+    '  - Низкую ликвидность (невозможно продать без дисконта)\n' +
+    '  - Негативный новостной фон по эмитенту\n' +
+    '  Для оценки привлекательности облигации ИСПОЛЬЗУЙ bondAnalyses:\n' +
+    '  - yieldAnalysis.dataQuality = "MISSING" → доходность не подтверждена\n' +
+    '  - creditAssessment.quality = "INSUFFICIENT_DATA" → кредитное качество не подтверждено\n' +
+    '  - bondFinalAssessment.recommendation = "INSUFFICIENT_DATA" → недостаточно данных\n' +
+    '  При INSUFFICIENT_DATA: рекомендуй HOLD с явным указанием "нет данных по доходности/кредиту"\n' +
+    '  НЕ интерпретируй HOLD/STABLE как подтверждение качества облигации.\n'
   );
 }

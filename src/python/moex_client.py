@@ -76,6 +76,8 @@ def get_quotes(tickers: list[str]) -> dict[str, Any]:
     Портфель может содержать акции (TQBR), облигации (EQOB) и ETF (TQTF);
     раньше board=TQBR отдавал пустой marketdata для не-акций, и провайдер
     сообщал «Пустой/некорректный ответ get_quotes».
+
+    Возвращает: SECID, LAST, LASTCHANGEPCT, VALTODAY (оборот в RUB за день), VALTODAY_USD.
     """
     clean = [t for t in tickers if t]
     if not clean:
@@ -99,6 +101,44 @@ def get_quotes(tickers: list[str]) -> dict[str, Any]:
 
     # Один SECID может присутствовать на нескольких досках —
     # берём первую валидную строку на каждый инструмент.
+    quotes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not row or not row[0] or row[0] not in clean:
+            continue
+        if row[0] in seen:
+            continue
+        seen.add(row[0])
+        quotes.append(dict(zip(columns, row)))
+
+    return {"ok": True, "quotes": quotes}
+
+
+def get_board_quotes(tickers: list[str], board: str) -> dict[str, Any]:
+    """Котировки по конкретной доске (для облигаций EQOB, ETF TQTF).
+
+    Возвращает: SECID, LAST, LASTCHANGEPCT, VALTODAY (оборот в RUB за день).
+    """
+    clean = [t for t in tickers if t]
+    if not clean:
+        return {"ok": False, "error": "empty tickers"}
+
+    joined = ",".join(clean)
+    url = (
+        f"{ISS_BASE}/engines/stock/markets/shares/boards/{board}/securities.json?"
+        f"iss.meta=off&iss.only=marketdata"
+        f"&marketdata.columns=SECID,LAST,LASTCHANGEPCT,VALTODAY"
+        f"&securities={urllib.parse.quote(joined)}"
+    )
+
+    try:
+        data = _get_json(url)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    columns = data["marketdata"]["columns"]
+    rows = data["marketdata"]["data"]
+
     quotes: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows:

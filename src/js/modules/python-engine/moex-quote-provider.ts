@@ -4,7 +4,9 @@
  * Основной источник котировок в DataAgent — Excel (лист «Акции»).
  * Этот провайдер ДОПОЛНЯЕТ только отсутствующие тикеры: запрашивает
  * у Python-движка команду get_quotes (MOEX ISS, board TQBR) и маппит
- * ответ SECID → { price, changePct }.
+ * ответ SECID → { price, changePct, volumeTodayRub }.
+ *
+ * Для облигаций используется get_board_quotes (доска EQOB).
  *
  * Отказоустойчивость:
  * - Python недоступен / команда упала → {} (без проброса ошибки);
@@ -23,7 +25,15 @@ export interface MoexQuote {
   LAST?: number | string | null;
   /** Изменение к предыдущему закрытию, % */
   LASTCHANGEPCT?: number | string | null;
-  /** Оборот за сегодня, ₽ (не используется, но присутствует в ответе) */
+  /** Оборот за сегодня, ₽ */
+  VALTODAY?: number | string | null;
+}
+
+/** Одна строка ответа get_board_quotes (для облигаций/ETF) */
+export interface MoexBoardQuote {
+  SECID: string;
+  LAST?: number | string | null;
+  LASTCHANGEPCT?: number | string | null;
   VALTODAY?: number | string | null;
 }
 
@@ -34,10 +44,18 @@ export interface MoexQuotesResponse {
   error?: string;
 }
 
-/** Котировка, понятная DataAgent: цена + дневная динамика */
+/** Ответ Python-моста на команду get_board_quotes */
+export interface MoexBoardQuotesResponse {
+  ok: boolean;
+  quotes?: MoexBoardQuote[];
+  error?: string;
+}
+
+/** Котировка, понятная DataAgent: цена + дневная динамика + оборот */
 export interface MoexFetchedQuote {
   price: number;
   changePct: number;
+  volumeTodayRub?: number;
 }
 
 /** Конфигурация провайдера */
@@ -119,6 +137,72 @@ export class MoexQuoteProvider {
       result[quote.SECID] = {
         price,
         changePct: toFiniteNumber(quote.LASTCHANGEPCT),
+        volumeTodayRub: toFiniteNumber(quote.VALTODAY),
+      };
+    }
+    return result;
+  }
+
+  /**
+   * Получить котировки с конкретной доски (облигации EQOB, ETF TQTF).
+   *
+   * @param tickers — коды инструментов (SECID)
+   * @param board — доска торгов (по умолчанию EQOB для облигаций)
+   * @returns мапа SECID → { price, changePct, volumeTodayRub }.
+   */
+  async fetchBoardQuotes(
+    tickers: string[],
+    board: string = 'EQOB',
+  ): Promise<Record<string, MoexFetchedQuote>> {
+    const clean = tickers
+      .map((t) =>
+        String(t ?? '')
+          .trim()
+          .toUpperCase(),
+      )
+      .filter((t) => t.length > 0);
+
+    if (clean.length === 0) {
+      return {};
+    }
+
+    let data: MoexBoardQuotesResponse;
+    try {
+      data = await this.bridge.call<MoexBoardQuotesResponse>({
+        command: 'get_board_quotes',
+        payload: { tickers: clean, board },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[MoexQuoteProvider] Python недоступен (board ${board}): ${message}`,
+      );
+      return {};
+    }
+
+    if (!data || !data.ok || !Array.isArray(data.quotes)) {
+      const reason = data?.error ? `: ${data.error}` : '';
+      const quotesCount = Array.isArray(data?.quotes) ? data.quotes.length : 0;
+      console.warn(
+        `[MoexQuoteProvider] Пустой ответ get_board_quotes ${board}${reason}` +
+          ` (ok=${data?.ok}, quotes=${quotesCount})`,
+      );
+      return {};
+    }
+
+    const result: Record<string, MoexFetchedQuote> = {};
+    for (const quote of data.quotes) {
+      if (!quote || typeof quote.SECID !== 'string') {
+        continue;
+      }
+      const price = toFiniteNumber(quote.LAST);
+      if (price <= 0) {
+        continue;
+      }
+      result[quote.SECID] = {
+        price,
+        changePct: toFiniteNumber(quote.LASTCHANGEPCT),
+        volumeTodayRub: toFiniteNumber(quote.VALTODAY),
       };
     }
     return result;

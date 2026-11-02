@@ -66,13 +66,17 @@ const REQUEST_TIMEOUT = 15000;
 
 /**
  * Выполнить запрос к MOEX ISS API.
+ * MOEX ISS API возвращает объект { <entity>: { metadata: ..., data: ... } },
+ * а не массив.
  */
-async function fetchMoex(path: string, params: Record<string, string> = {}): Promise<Record<string, unknown>[]> {
+async function fetchMoex(path: string, params: Record<string, string> = {}): Promise<Record<string, unknown>> {
   const url = new URL(`${MOEX_ISS_BASE}${path}`);
   
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.append(key, value);
   }
+
+  console.log(`[BondApi] URL: ${url.toString()}`);
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
@@ -80,15 +84,22 @@ async function fetchMoex(path: string, params: Record<string, string> = {}): Pro
   try {
     const response = await fetch(url.toString(), {
       signal: controller.signal,
-      headers: { 'Accept': 'application/json' },
+      headers: { 
+        'Accept': 'application/json',
+        'User-Agent': 'FinanceAnalyzer/1.0',
+      },
     });
 
+    console.log(`[BondApi] Status: ${response.status} ${response.statusText}`);
+
     if (!response.ok) {
+      const text = await response.text();
+      console.error(`[BondApi] Response body: ${text.substring(0, 500)}`);
       throw new Error(`MOEX API error: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json();
-    return data as unknown as Record<string, unknown>[];
+    return data as Record<string, unknown>;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -96,6 +107,7 @@ async function fetchMoex(path: string, params: Record<string, string> = {}): Pro
 
 /**
  * Преобразовать данные из MOEX в BondInfo.
+ * MOEX ISS API возвращает плоские имена столбцов (без префикса securities.).
  */
 function parseBondFromMoex(
   columns: string[],
@@ -106,11 +118,12 @@ function parseBondFromMoex(
     return idx >= 0 ? row[idx] : null;
   };
 
-  const isin = String(get('securities.id') || '').trim();
+  // Плоские имена столбцов из MOEX
+  const isin = String(get('SECID') || '').trim();
   if (!isin || !isin.startsWith('RU00')) return null;
 
   // Определяем тип купона
-  const couponKind = String(get('securities.couponKind') || '').trim().toLowerCase();
+  const couponKind = String(get('COUPONPERIOD') || '').trim().toLowerCase();
   let couponType: CouponType = 'FIXED';
   
   if (couponKind.includes('float') || couponKind.includes('пла')) {
@@ -137,21 +150,21 @@ function parseBondFromMoex(
 
   return {
     isin,
-    issueName: (String(get('securities.name') || '') || '').trim(),
-    issuerName: (String(get('securities.issueName') || '') || '').trim(),
-    nominal: parseNum(get('securities.nominal')),
-    couponRatePct: parseNum(get('securities.couponRate')),
+    issueName: (String(get('SECNAME') || '') || '').trim(),
+    issuerName: (String(get('BOARDNAME') || '') || '').trim(),
+    nominal: parseNum(get('FACEVALUE')),
+    couponRatePct: parseNum(get('YIELDATPREVWAPRICE')),
     couponType,
-    couponFrequency: parseNum(get('securities.couponFrequency')) || 2,
-    maturityDate: parseDate(get('securities.maturityRegDate')) || '',
-    nextCouponDate: parseDate(get('securities.nextCouponDate')) || '',
-    floatSpreadPct: parseNum(get('securities.floatSpread')),
-    floatIndex: String(get('securities.floatIndex') || '').trim(),
-    hasOption: Boolean(get('securities.hasOption')),
-    callDate: parseDate(get('securities.callDate')) || '',
-    hasAmortization: Boolean(get('securities.hasAmortization')),
-    icbrrRating: String(get('securities.icbrrRating') || '').trim(),
-    sector: String(get('securities.sector') || '').trim(),
+    couponFrequency: parseNum(get('DECIMALS')) || 2,
+    maturityDate: parseDate(get('MATDATE')) || '',
+    nextCouponDate: parseDate(get('NEXTCOUPON')) || '',
+    floatSpreadPct: parseNum(get('COUPONVALUE')),
+    floatIndex: String(get('BOARDID') || '').trim(),
+    hasOption: false,
+    callDate: '',
+    hasAmortization: false,
+    icbrrRating: String(get('ICBRR') || '').trim(),
+    sector: String(get('SECTOR') || '').trim(),
   };
 }
 
@@ -163,35 +176,73 @@ function parseBondFromMoex(
  * Загрузить справочник всех облигаций с TQOB.
  * 
  * Использует endpoint:
- * /iss/engines/stock/markets/bonds/boards/TQOB/securities.json
+ * /engines/stock/markets/bonds/securities.json
  */
 export async function fetchBondCatalog(): Promise<BondInfo[]> {
   try {
     console.log('[BondApi] Загрузка справочника облигаций с MOEX ISS...');
     
-    const data = await fetchMoex('/iss/engines/stock/markets/bonds/boards/TQOB/securities.json', {
-      'group': 'securities',
-    });
+    // Пробуем несколько endpoint'ов по порядку
+    const endpoints = [
+      '/engines/stock/markets/bonds/securities.json',
+      '/securities.json',
+    ];
+    
+    let data: Record<string, unknown> | null = null;
+    let lastError: Error | null = null;
 
-    if (!data || !Array.isArray(data)) {
-      console.warn('[BondApi] Ошибка: пустой ответ от MOEX');
+    for (const endpoint of endpoints) {
+      try {
+        console.log(`[BondApi] Пробую endpoint: ${endpoint}`);
+        data = await fetchMoex(endpoint, {
+          'qboard': 'TQOB',
+          'columns': 'SECID,SECNAME,BOARDNAME,FACEVALUE,YIELDATPREVWAPRICE,MATDATE,NEXTCOUPON,COUPONVALUE,COUPONPERIOD,ICBRR,SECTOR,DECIMALS',
+        });
+        if (data) {
+          console.log(`[BondApi] ✅ Endpoint ${endpoint} сработал`);
+          break;
+        }
+      } catch (err) {
+        lastError = err as Error;
+        console.warn(`[BondApi] Endpoint ${endpoint} не сработал: ${err}`);
+      }
+    }
+
+    if (!data) {
+      console.warn(`[BondApi] Ошибка: все endpoint'ы не сработали. Последний: ${lastError?.message}`);
       return [];
     }
 
     const bonds: BondInfo[] = [];
 
-    for (const item of data) {
-      const columns = (item as Record<string, { columns: string[] }>)?.securities?.columns;
-      const rows = (item as Record<string, { data: unknown[][] }>)?.securities?.data;
+    // MOEX ISS API возвращает объект: { securities: { metadata: ..., data: [[...], [...]] } }
+    const sec = data['securities'] as Record<string, unknown> | undefined;
+    if (!sec) {
+      console.warn('[BondApi] Ошибка: нет поля securities в ответе');
+      console.log('[BondApi] Ключи ответа:', Object.keys(data));
+      return [];
+    }
 
-      if (!columns || !rows || !Array.isArray(rows)) continue;
+    const columns = (sec['columns'] as string[] | undefined) ?? [];
+    const rowsData = (sec['data'] as unknown[][] | undefined) ?? [];
 
-      for (const row of rows) {
-        const bond = parseBondFromMoex(columns, row as unknown[]);
-        if (bond) {
-          bonds.push(bond);
-        }
+    if (!columns || columns.length === 0 || !rowsData || rowsData.length === 0) {
+      console.warn('[BondApi] Ошибка: нет данных в ответе MOEX');
+      console.log('[BondApi] columns:', columns?.length, 'rows:', rowsData?.length);
+      return [];
+    }
+
+    for (const row of rowsData) {
+      const bond = parseBondFromMoex(columns, row as unknown[]);
+      if (bond) {
+        bonds.push(bond);
       }
+    }
+
+    if (bonds.length === 0 && rowsData.length > 0) {
+      console.warn('[BondApi] Parse вернул 0 облигаций, отладка:');
+      console.log('[BondApi] columns:', columns);
+      console.log('[BondApi] first row:', rowsData[0]);
     }
 
     console.log(`[BondApi] ✅ Загружено ${bonds.length} облигаций`);
@@ -207,7 +258,7 @@ export async function fetchBondCatalog(): Promise<BondInfo[]> {
  */
 export async function fetchBondByIsin(isin: string): Promise<BondInfo | null> {
   try {
-    const data = await fetchMoex('/iss/securities.json', {
+    const data = await fetchMoex('/securities.json', {
       'securities.id': isin,
     });
 

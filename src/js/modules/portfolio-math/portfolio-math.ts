@@ -132,6 +132,8 @@ export interface AssetAnalysis {
   currentPrice: number;
   /** Единица currentPrice: RUB / PERCENT_OF_NOMINAL / UNKNOWN */
   priceUnit?: PriceUnit;
+  /** Статус нормализации currentPrice в RUB: true когда priceUnit !== 'UNKNOWN' */
+  priceNormalized?: boolean;
   unrealizedProfitRub: number;
   priority: number;
   isConcentrated: boolean;
@@ -171,6 +173,35 @@ export interface PortfolioReportData {
     includedAssets: Array<{ ticker: string; value: number; reason: string }>;
     excludedAssets: Array<{ ticker: string; value: number; reason: string }>;
   };
+  // ─── P4: Мост финансовой сверки ───
+  /** Разложение финансовых показателей портфеля */
+  financialReconciliation?: {
+    /** Текущая стоимость портфеля (liquidation value) */
+    totalMarketValue: number;
+    /** Суммарный нереализованный P&L */
+    totalUnrealizedPnL: number;
+    /** Реализованный P&L от исторических сделок */
+    realizedPnL: number;
+    /** Суммарные купоны */
+    totalCoupons: number;
+    /** Суммарные дивиденды */
+    totalDividends: number;
+    /** Суммарные комиссии */
+    totalCommissions: number;
+    /** Суммарные налоги */
+    totalTaxes: number;
+    /** Суммарные взносы */
+    totalDeposits: number;
+    /** Суммарные выводы */
+    totalWithdrawals: number;
+    /** Чистый вложенный капитал (взносы − выводы) */
+    netInvestedCapital: number;
+    /** Итоговая формула: marketValue = netInvested + unrealizedPnL + realizedPnL + coupons + dividends − commissions − taxes */
+    formula: string;
+  };
+  // ─── P5: Раскрытие allocationBaseValue ───
+  /** Стоимость портфеля, относительно которой рассчитываются проценты и рублёвые отклонения */
+  allocationBaseValue?: number;
 }
 
 export class PortfolioMathModule {
@@ -476,6 +507,17 @@ export class PortfolioMathModule {
 
     const calculationBaseBreakdown = breakdown;
 
+    // ─── P4: Мост финансовой сверки ───
+    const totalUnrealizedPnL = assetsAnalysis.reduce(
+      (sum, a) => sum + (a.unrealizedProfitRub ?? 0),
+      0,
+    );
+
+    // ─── P5: Раскрытие allocationBaseValue ───
+    // allocationBaseValue = totalLiquidationValue — это стоимость портфеля,
+    // относительно которой рассчитываются проценты и рублёвые отклонения.
+    const allocationBaseValue = totalLiquidationValue;
+
     // Сортируем по приоритету покупок (больший дефицит = выше приоритет)
     assetsAnalysis.sort((a, b) => b.deficitRub - a.deficitRub);
 
@@ -500,6 +542,22 @@ export class PortfolioMathModule {
       actualCashPercent,
       cashDiscrepancy,
       calculationBaseBreakdown,
+      // ─── P4: Мост финансовой сверки ───
+      financialReconciliation: {
+        totalMarketValue: totalLiquidationValue,
+        totalUnrealizedPnL,
+        realizedPnL: 0, // Заполняется из historicalTrades на уровне AI Client
+        totalCoupons: 0, // Заполняется из данных по облигациям
+        totalDividends: 0, // Заполняется из данных по акциям
+        totalCommissions: 0, // Заполняется из historicalTrades
+        totalTaxes: 0, // Заполняется из historicalTrades
+        totalDeposits: 0, // Заполняется из investedFunds
+        totalWithdrawals: 0, // Заполняется из investedFunds
+        netInvestedCapital: 0, // Заполняется из investedFunds
+        formula: 'marketValue = netInvestedCapital + unrealizedPnL + realizedPnL + coupons + dividends − commissions − taxes',
+      },
+      // ─── P5: Раскрытие allocationBaseValue ───
+      allocationBaseValue,
     };
   }
 }

@@ -160,6 +160,8 @@ export interface CurrentAsset {
   currentPrice?: number;
   /** Единица currentPrice: RUB / PERCENT_OF_NOMINAL / UNKNOWN */
   priceUnit?: PriceUnit;
+  /** Статус нормализации currentPrice в RUB: true когда priceUnit !== 'UNKNOWN' */
+  priceNormalized?: boolean;
   /** Идентификатор счёта (например, 'S04J3LB' или '403GPBT') */
   accountId?: string;
   /** Тип счёта: ИИС или брокерский */
@@ -204,6 +206,8 @@ export interface PriceLookup {
   currentPrice: number;
   liquidationPrice: number;
   priceUnit: PriceUnit;
+  /** Статус нормализации currentPrice в RUB: true когда priceUnit !== 'UNKNOWN' */
+  priceNormalized: boolean;
   nominal?: number;
 }
 
@@ -586,8 +590,10 @@ export class XlsxParserModule {
       // Для облигаций: nominal × pricePercent / 100
       // Для акций/ETF: currentPriceRaw = Стоимость из QUIK (без конвертации)
       let finalCurrentPrice = currentPriceRaw;
+      let priceNormalized: boolean;
       if (priceUnit === 'UNKNOWN') {
         finalCurrentPrice = 0;
+        priceNormalized = false;
       } else if (
         priceUnit === 'PERCENT_OF_NOMINAL' &&
         nominal !== undefined &&
@@ -595,6 +601,11 @@ export class XlsxParserModule {
       ) {
         // Процент от номинала → конвертируем в рубли
         finalCurrentPrice = (nominal * currentPriceRaw) / 100;
+        // Подтверждаем нормализацию только при успешном результате
+        priceNormalized = Number.isFinite(finalCurrentPrice) && finalCurrentPrice > 0;
+      } else {
+        // RUB — без конвертации, проверяем корректность
+        priceNormalized = Number.isFinite(currentPriceRaw) && currentPriceRaw > 0;
       }
 
       // finalBalancePrice — цена входа одной единицы в рублях
@@ -658,6 +669,7 @@ export class XlsxParserModule {
         couponRub: couponRate,
         nominal,
         priceUnit,
+        priceNormalized,
         quantity: quantity,
         balancePrice: finalBalancePrice,
         currentPrice: finalCurrentPrice,
@@ -848,10 +860,11 @@ export class XlsxParserModule {
       const position = this.parseValue(row['Позиция']);
 
       // Нормализуем цены в рубли за 1 единицу
-      let balancePriceRub = rawBalancePrice;
+      const balancePriceRub = rawBalancePrice;
       // Стоимость в QUIK = позиция в рублях → делим на количество
-      let currentPriceRub = position > 0 ? rawTotalCost / position : 0;
+      const currentPriceRub = position > 0 ? rawTotalCost / position : 0;
       let liquidationPriceRub = rawLiquidationPrice;
+      let priceNormalized = false;
 
       if (
         priceUnit === 'PERCENT_OF_NOMINAL' &&
@@ -862,18 +875,18 @@ export class XlsxParserModule {
         // «Ликвидационная цена» — в % от номинала → конвертируем в рубли.
         liquidationPriceRub = (nominal * rawLiquidationPrice) / 100;
         // currentPrice уже в рублях (из Стоимость / Позиция)
-      } else if (priceUnit === 'UNKNOWN') {
-        // Облигация без номинала — цены = 0
-        balancePriceRub = 0;
-        currentPriceRub = 0;
-        liquidationPriceRub = 0;
+        priceNormalized = Number.isFinite(currentPriceRub) && currentPriceRub > 0;
+      } else if (priceUnit === 'RUB') {
+        priceNormalized = Number.isFinite(currentPriceRub) && currentPriceRub > 0;
       }
+      // UNKNOWN → priceNormalized = false
 
       priceMap[ticker] = {
         balancePrice: balancePriceRub,
         currentPrice: currentPriceRub,
         liquidationPrice: liquidationPriceRub,
         priceUnit,
+        priceNormalized,
         nominal,
       };
     }
@@ -1400,13 +1413,23 @@ export class XlsxParserModule {
   public async parseQuotesSheet(): Promise<
     Record<
       string,
-      { currentPrice: number; dailyDynamicsPercent: number; shortName: string }
+      {
+        currentPrice: number;
+        dailyDynamicsPercent: number;
+        shortName: string;
+        volumeTodayRub?: number | null;
+      }
     >
   > {
     await this.loadWorkbook();
     const quotesMap: Record<
       string,
-      { currentPrice: number; dailyDynamicsPercent: number; shortName: string }
+      {
+        currentPrice: number;
+        dailyDynamicsPercent: number;
+        shortName: string;
+        volumeTodayRub?: number | null;
+      }
     > = {};
     const nameToTicker: Record<string, string> = {};
 
@@ -1463,10 +1486,23 @@ export class XlsxParserModule {
       const dailyDynamicsPercent =
         rawDynamics > 25 || rawDynamics < -25 ? 0 : rawDynamics;
 
+      // Дневной оборот в рублях (из столбца «Оборот»)
+      const volumeTodayRubRaw = this.parseValue(
+        row[config.QUOTES_COLUMN_TURNOVER] ||
+          row[config.QUOTES_COLUMN_TURNOVER_ALT1] ||
+          row[config.QUOTES_COLUMN_TURNOVER_ALT2] ||
+          row[config.QUOTES_COLUMN_TURNOVER_ALT3],
+      );
+      const volumeTodayRub =
+        volumeTodayRubRaw != null && volumeTodayRubRaw > 0
+          ? volumeTodayRubRaw
+          : undefined;
+
       quotesMap[ticker] = {
         currentPrice,
         dailyDynamicsPercent,
         shortName: cleanName,
+        volumeTodayRub,
       };
 
       // Маппим название → тикер для fuzzy-поиска

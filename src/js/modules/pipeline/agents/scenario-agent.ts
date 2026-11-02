@@ -365,8 +365,14 @@ export class ScenarioAgent extends AgentBase {
       const currentVal = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
       values.set(asset.ticker.toUpperCase(), currentVal);
 
-      // Нереализованный P&L (signed): null означает отсутствие данных
-      const unrealizedPnL = asset.unrealizedProfitRub;
+      // P&L: рассчитывается из реальных данных (currentPrice - balancePrice) * quantity,
+      // а не берётся из Excel (unrealizedProfitRub может быть 0 при реальной просадке).
+      const balancePrice = asset.balancePrice ?? 0;
+      const currentPrice = asset.currentPrice ?? 0;
+      const unrealizedPnL =
+        (currentPrice > 0 && balancePrice > 0)
+          ? (currentPrice - balancePrice) * (asset.quantity ?? 0)
+          : asset.unrealizedProfitRub;
       pnl.set(asset.ticker.toUpperCase(), unrealizedPnL);
 
       // Стоимость покупки = quantity * balancePrice (прямой расчёт)
@@ -664,8 +670,9 @@ export class ScenarioAgent extends AgentBase {
       // 1. unrealizedProfitRub — конечное число (не null, не NaN, не Infinity)
       // 2. balancePrice > 0 — цена покупки известна
       // 3. currentPrice > 0 — текущая цена известна
+      // P&L рассчитывается из (currentPrice - balancePrice) * quantity,
+      // поэтому проверяем наличие price данных, а не Excel P&L.
       if (
-        Number.isFinite(asset.unrealizedProfitRub ?? NaN) &&
         (asset.balancePrice ?? 0) > 0 &&
         (asset.currentPrice ?? 0) > 0
       ) {

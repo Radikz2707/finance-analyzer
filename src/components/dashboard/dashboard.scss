@@ -29,7 +29,7 @@ $dashboard-radius-sm: 8px;
   color: $dashboard-text;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   margin: 0;
-  padding: 20px;
+  padding: 16px;
   min-height: 100vh;
 
   &__container {
@@ -39,7 +39,7 @@ $dashboard-radius-sm: 8px;
 
   &__title {
     color: $dashboard-primary;
-    margin-bottom: 20px;
+    margin-bottom: 16px;
   }
 }
 
@@ -48,15 +48,15 @@ $dashboard-radius-sm: 8px;
   background: linear-gradient(135deg, $dashboard-card-bg 0%, $dashboard-bg 100%);
   border: 1px solid $dashboard-border;
   border-radius: 16px;
-  padding: 24px;
-  margin-bottom: 20px;
+  padding: 20px;
+  margin-bottom: 12px;
 
   &__header {
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 20px;
-    padding-bottom: 15px;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
     border-bottom: 1px solid $dashboard-border;
   }
 
@@ -78,28 +78,28 @@ $dashboard-radius-sm: 8px;
   &__grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 15px;
-    margin-bottom: 20px;
+    gap: 12px;
+    margin-bottom: 14px;
     
     // Для блока "Взносы и средства" — не более 4 карточек в ряд
     &:has(#funds-grid) {
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
       max-width: 1200px;
-      margin: 0 auto 20px;
+      margin: 0 auto 14px;
     }
   }
 
   &__divider {
     height: 1px;
     background: $dashboard-border;
-    margin: 20px 0;
+    margin: 14px 0;
   }
 
   &__section-title {
     font-size: 14px;
     color: $dashboard-text-secondary;
     font-weight: 600;
-    margin-bottom: 12px;
+    margin-bottom: 8px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
@@ -196,8 +196,8 @@ $dashboard-radius-sm: 8px;
   background: $dashboard-card-bg;
   border: 1px solid $dashboard-border;
   border-radius: $dashboard-radius;
-  padding: 20px;
-  margin-bottom: 20px;
+  padding: 16px;
+  margin-bottom: 12px;
 
   &__heading {
     color: $dashboard-primary;
@@ -348,8 +348,8 @@ $dashboard-radius-sm: 8px;
   background: $dashboard-card-bg;
   border: 1px solid $dashboard-border;
   border-radius: $dashboard-radius;
-  padding: 20px;
-  margin-bottom: 20px;
+  padding: 16px;
+  margin-bottom: 12px;
 
   &__heading {
     color: $dashboard-primary;
@@ -427,8 +427,8 @@ $dashboard-radius-sm: 8px;
 .dashboard__movers {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 20px;
-  margin-bottom: 20px;
+  gap: 16px;
+  margin-bottom: 12px;
 
   &__panel {
     background: $dashboard-card-bg;
@@ -489,13 +489,29 @@ $dashboard-radius-sm: 8px;
   }
 }
 
+// ── Two-column layout (AI + Director) ──
+.dashboard__two-col {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.dashboard__two-col__left {
+  min-width: 0;
+}
+
+.dashboard__two-col__right {
+  min-width: 0;
+}
+
 // ── AI Analysis ──
 .dashboard__ai {
   background: $dashboard-card-bg;
   border: 1px solid $dashboard-border;
   border-radius: $dashboard-radius;
-  padding: 20px;
-  margin-bottom: 20px;
+  padding: 16px;
+  margin-bottom: 12px;
 
   &__heading {
     color: $dashboard-primary;
@@ -856,8 +872,8 @@ $dashboard-radius-sm: 8px;
   background: $dashboard-card-bg;
   border: 1px solid $dashboard-border;
   border-radius: $dashboard-radius;
-  padding: 20px;
-  margin: 20px 0;
+  padding: 16px;
+  margin: 0;
 
   &__messages {
     max-height: 400px;
@@ -946,6 +962,16 @@ $dashboard-radius-sm: 8px;
   }
 }
 
+@media (width <= 1024px) {
+  .dashboard__movers {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard__two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (width <= 768px) {
   .dashboard__overview {
     padding: 16px;
@@ -953,5 +979,9 @@ $dashboard-radius-sm: 8px;
     &__grid {
       grid-template-columns: 1fr;
     }
+  }
+
+  .dashboard__two-col {
+    gap: 15px;
   }
 }

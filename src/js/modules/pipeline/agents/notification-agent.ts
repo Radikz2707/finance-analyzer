@@ -235,6 +235,7 @@ export class NotificationAgent extends AgentBase {
         shortName: q.shortName,
         currentPrice: q.currentPrice,
         dailyDynamicsPercent: q.dailyDynamicsPercent,
+        volumeTodayRub: q.volumeTodayRub,
       }),
     );
 

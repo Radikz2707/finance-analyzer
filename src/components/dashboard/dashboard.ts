@@ -149,18 +149,18 @@ export class DashboardReportBuilder {
       "<meta charset='UTF-8'>" +
       '<title>Инвестиционный ИИ-Советник</title>' +
       '<style>' +
-      'body { background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; padding: 20px; }' +
+      'body { background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; padding: 12px; }' +
       '.container { max-width: 1200px; margin: 0 auto; }' +
-      '.header-panel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 25px; }' +
-      '.card { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 15px; text-align: center; }' +
+      '.header-panel { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 15px; }' +
+      '.card { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px; text-align: center; }' +
       '.card-title { font-size: 12px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 5px; }' +
       '.card-value { font-size: 20px; font-weight: bold; color: #fff; }' +
       '.card-sub { font-size: 11px; color: #8b949e; margin-top: 4px; }' +
-      '.grid-main { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 25px; }' +
-      '.block-box { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 20px; margin-bottom: 20px; }' +
-      'h2 { font-size: 16px; margin-top: 0; margin-bottom: 15px; border-bottom: 1px solid #30363d; padding-bottom: 8px; color: #fff; }' +
+      '.grid-main { display: grid; grid-template-columns: 1.5fr 1fr; gap: 12px; margin-bottom: 15px; }' +
+      '.block-box { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; margin-bottom: 12px; }' +
+      'h2 { font-size: 14px; margin-top: 0; margin-bottom: 10px; border-bottom: 1px solid #30363d; padding-bottom: 6px; color: #fff; }' +
       'table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }' +
-      'th, td { padding: 10px; border-bottom: 1px solid #30363d; }' +
+      'th, td { padding: 8px; border-bottom: 1px solid #30363d; }' +
       'th { color: #8b949e; font-weight: normal; }' +
       '.status-badge { padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; }' +
       '.status-OK { background-color: rgba(35, 134, 54, 0.15); color: #56d364; border: 1px solid #238636; }' +
@@ -215,6 +215,7 @@ export class DashboardReportBuilder {
       '.quote-name strong { color: #58a6ff; }' +
       '.quote-price { color: #fff; font-weight: 600; }' +
       '.quote-dynamics { font-weight: 700; white-space: nowrap; }' +
+      '.quote-volume { color: #8b949e; white-space: nowrap; }' +
       '.quote-arrow { margin-right: 4px; }' +
       '.quote-value { font-size: 13px; }' +
       // Top/anti-top blocks
@@ -272,7 +273,7 @@ export class DashboardReportBuilder {
       '.ai-recommendations-table tr:hover td { background: rgba(56, 139, 255, 0.04); }' +
       '.ai-recommendations-table td:first-child { font-weight: 600; color: #58a6ff; }' +
       // === income-widget ===
-      '.income-widget { background: linear-gradient(135deg, rgba(56, 211, 100, 0.06) 0%, rgba(35, 134, 54, 0.1) 100%); border: 1px solid rgba(56, 211, 100, 0.25); border-radius: 12px; padding: 20px 24px; margin-bottom: 20px; color: #e6edf2; position: relative; overflow: hidden; }' +
+      '.income-widget { background: linear-gradient(135deg, rgba(56, 211, 100, 0.06) 0%, rgba(35, 134, 54, 0.1) 100%); border: 1px solid rgba(56, 211, 100, 0.25); border-radius: 12px; padding: 12px 16px; margin-bottom: 12px; color: #e6edf2; position: relative; overflow: hidden; }' +
       ".income-widget::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, #38d364, transparent); opacity: 0.6; }" +
       '.income-widget .income-header { margin: 0 0 16px; font-size: 16px; font-weight: 700; color: #38d364; display: flex; align-items: center; gap: 10px; }' +
       '.income-widget .income-icon { font-size: 20px; line-height: 1; }' +
@@ -301,7 +302,7 @@ export class DashboardReportBuilder {
       '.income-widget .income-empty-text { font-size: 13px; font-weight: 500; color: #8b949e; }' +
       '.income-widget .income-empty-hint { font-size: 11px; color: #6e7681; }' +
       // === Director Chat Styles ===
-      '.director-chat-container{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:20px;margin:20px auto;max-width:640px;font-family:system-ui,sans-serif;}' +
+      '.director-chat-container{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:12px;margin:12px auto;max-width:640px;font-family:system-ui,sans-serif;}' +
       '.director-chat-container h3{color:#58a6ff;margin:0 0 15px 0;font-size:16px;}' +
       '.director-chat-messages{max-height:400px;overflow-y:auto;margin-bottom:15px;padding:10px;background:#0d1117;border-radius:8px;display:flex;flex-direction:column;gap:8px;}' +
       '.dc-msg{padding:8px 10px;border-radius:8px;max-width:92%;white-space:pre-wrap;}' +
@@ -393,7 +394,7 @@ export class DashboardReportBuilder {
       (quotesTableRows
         ? "<div class='quotes-table-container'>" +
           '<table class="quotes-table">' +
-          '<thead><tr><th>Инструмент</th><th>Цена</th><th>Изменение</th></tr></thead>' +
+          '<thead><tr><th>Инструмент</th><th>Цена</th><th>Изменение</th><th>Оборот</th></tr></thead>' +
           '<tbody>' +
           quotesTableRows +
           '</tbody>' +
@@ -424,7 +425,7 @@ export class DashboardReportBuilder {
       '<h2>Действующие лимитные заявки в терминале QUIK</h2>' +
       ordersRows +
       '</div>' +
-      "<div style='text-align: center; font-size: 11px; color: #8b949e; margin-top: 20px;'>" +
+      "<div style='text-align: center; font-size: 11px; color: #8b949e; margin-top: 12px;'>" +
       'Конвейер успешно обновлен: ' +
       dateStr +
       ' в ' +
@@ -641,40 +642,40 @@ export class DashboardReportBuilder {
       };
       
       fundsGridHtml = `
-        <div style="margin-bottom: 20px; padding: 15px; background: #161b22; border: 1px solid #30363d; border-radius: 6px;">
-          <h2 style="margin: 0 0 15px 0; font-size: 14px; color: #fff; border-bottom: 1px solid #30363d; padding-bottom: 8px;">💰 Взносы и средства</h2>
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;">
-            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+        <div style="margin-bottom: 12px; padding: 12px; background: #161b22; border: 1px solid #30363d; border-radius: 6px;">
+          <h2 style="margin: 0 0 10px 0; font-size: 14px; color: #fff; border-bottom: 1px solid #30363d; padding-bottom: 6px;">💰 Взносы и средства</h2>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;">
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; text-align: center;">
               <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Всего внесено</div>
               <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(totalDeposits)} ₽</div>
               <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">За весь период (включая аномальные)</div>
             </div>
-            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; text-align: center;">
               <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Всего выведено</div>
               <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(validTotalWithdrawals)} ₽</div>
               <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">За весь период</div>
             </div>
-            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; text-align: center;">
               <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Всего за текущий месяц</div>
               <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(currentMonthDeposits)} ₽</div>
               <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">${new Date().toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</div>
             </div>
-            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; text-align: center;">
               <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Среднее в месяц</div>
               <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(avgDeposit)} ₽</div>
               <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">Без аномальных взносов</div>
             </div>
-            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; text-align: center;">
               <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Прошлый месяц</div>
               <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(lastMonthDeposits)} ₽</div>
               <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">Прошлый месяц</div>
             </div>
-            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; text-align: center;">
               <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Текущий год</div>
               <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(currentYearDeposits)} ₽</div>
               <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">За текущий год</div>
             </div>
-            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 12px; text-align: center;">
+            <div style="background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px; text-align: center;">
               <div style="font-size: 11px; color: #8b949e; text-transform: uppercase; font-weight: bold; margin-bottom: 4px;">Прошлый год</div>
               <div style="font-size: 16px; font-weight: bold; color: #fff;">${fmt(lastYearDeposits)} ₽</div>
               <div style="font-size: 10px; color: #8b949e; margin-top: 2px;">За прошлый год</div>

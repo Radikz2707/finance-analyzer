@@ -73,6 +73,7 @@ export type PythonCommand =
   | 'detect_anomalies'
   | 'get_candles'
   | 'get_quotes'
+  | 'get_board_quotes'
   | 'health'
   | 'backtest_recommendation'
   | 'forecast_prices'

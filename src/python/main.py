@@ -17,9 +17,9 @@ import sys
 from typing import Any
 
 from anomalies import detect_anomalies
-from moex_client import get_candles, get_quotes
+from moex_client import get_candles, get_quotes, get_board_quotes
 
-COMMANDS = {"detect_anomalies", "get_candles", "get_quotes", "health"}
+COMMANDS = {"detect_anomalies", "get_candles", "get_quotes", "get_board_quotes", "health"}
 
 
 def handle(request: dict[str, Any]) -> dict[str, Any]:
@@ -50,6 +50,13 @@ def handle(request: dict[str, Any]) -> dict[str, Any]:
     if command == "get_quotes":
         result = get_quotes(payload.get("tickers", []))
         # Аналогично: get_quotes возвращает {ok, quotes} — оборачиваем в data.
+        return {"ok": result.get("ok", False), "data": result}
+
+    if command == "get_board_quotes":
+        result = get_board_quotes(
+            tickers=payload.get("tickers", []),
+            board=payload.get("board", "EQOB"),
+        )
         return {"ok": result.get("ok", False), "data": result}
 
     if command == "health":

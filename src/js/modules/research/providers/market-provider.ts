@@ -23,7 +23,7 @@ import type {
   SourceMetadata,
 } from './types.js';
 import type { AssetResearchSnapshot, ResearchEvidence } from '../types.js';
-import { value, noData, pct, raw } from '../helpers.js';
+import { value, noData, pct, rub } from '../helpers.js';
 
 export class MarketDataProvider implements ResearchProvider {
   /** Поддерживает все известные типы активов */
@@ -131,7 +131,23 @@ export class MarketDataProvider implements ResearchProvider {
       priceChange1M: noData(),
       priceChangeYTD: noData(),
       volatility: noData(),
-      volume: raw(quote.currentPrice > 0 ? 0 : null),
+      volume: rub(
+        quote.volumeTodayRub != null && quote.volumeTodayRub > 0
+          ? quote.volumeTodayRub
+          : null,
+        {
+          evidenceIds:
+            quote.volumeTodayRub != null && quote.volumeTodayRub > 0
+              ? this.registerEvidence(
+                  'MARKET',
+                  `Volume ${ticker} = ${quote.volumeTodayRub} RUB`,
+                  sources,
+                  fetchedAt,
+                  evidence,
+                )
+              : [],
+        },
+      ),
       liquidity: noData(),
       marketRegime: noData(),
     };

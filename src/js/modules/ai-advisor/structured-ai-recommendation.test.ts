@@ -164,14 +164,15 @@ describe('StructuredAIRecommendation', () => {
       expect(result.errors.some((e) => e.field === 'rationale')).toBe(true);
     });
 
-    it('fails validation when targetReason is null', () => {
+    it('targetReason null gets default value', () => {
       const json: RawAIJson = {
         ...createValidAIJson(),
         targetReason: null,
       };
       const result = validateStructuredAIJson(json, ['SBER']);
-      expect(result.valid).toBe(false);
-      expect(result.errors.some((e) => e.field === 'targetReason')).toBe(true);
+      // targetReason теперь необязателен — валидация проходит
+      expect(result.valid).toBe(true);
+      expect(result.errors.some((e) => e.field === 'targetReason')).toBe(false);
     });
   });
 
@@ -222,7 +223,7 @@ describe('StructuredAIRecommendation', () => {
       expect(result.recommendedTargetPercent).toBeNull();
       expect(result.recommendedAction).toBeNull();
       expect(result.confidence).toBeNull();
-      expect(result.rationale).toBe('AI analysis unavailable');
+      expect(result.rationale).toContain('AI не вернул JSON-ответ');
       expect(result.agreementWithPortfolioMath).toBe('UNCERTAIN');
     });
   });
@@ -235,7 +236,7 @@ describe('StructuredAIRecommendation', () => {
 
       expect(result.currentPercent).toBe(7.9);
       expect(result.recommendedTargetPercent).toBeNull();
-      expect(result.rationale).toBe('AI analysis unavailable');
+      expect(result.rationale).toContain('AI не вернул JSON-ответ');
     });
   });
 
@@ -378,7 +379,7 @@ describe('StructuredAIRecommendation', () => {
       expect(fallback.ticker).toBe('SBER');
       expect(fallback.currentPercent).toBe(7.9);
       expect(fallback.recommendedTargetPercent).toBeNull();
-      expect(fallback.rationale).toBe('AI analysis unavailable');
+      expect(fallback.rationale).toContain('AI не вернул JSON-ответ');
       expect(fallback.keyRisks).toEqual([]);
       expect(fallback.keyCatalysts).toEqual([]);
     });
@@ -528,7 +529,7 @@ describe('StructuredAIRecommendation', () => {
 
       expect(result.userTargetPercent).toBeNull();
       expect(result.recommendedTargetPercent).toBeNull();
-      expect(result.rationale).toBe('AI analysis unavailable');
+      expect(result.rationale).toContain('AI не вернул JSON-ответ');
     });
   });
 

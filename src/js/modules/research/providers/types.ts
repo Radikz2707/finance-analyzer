@@ -22,6 +22,8 @@ export interface MarketQuote {
   currentPrice: number;
   dailyDynamicsPercent: number;
   shortName: string;
+  /** Дневной оборот в рублях (из листа «Акции», MOEX VALTODAY или Smart-Lab) */
+  volumeTodayRub?: number | null;
 }
 
 /** Данные макроэкономики (из cbr-rate, news-fetcher и т.д.) */

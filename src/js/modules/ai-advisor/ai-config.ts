@@ -43,7 +43,7 @@ export const AI_MODELS: AiModelConfig[] = [
     // план ребалансировки ~5-6k). 4096 приводило к ОБРЫВУ отчёта на
     // середине плана ребалансировки. Таймауты в ollama-stream.ts
     // увеличены до 30 минут, чтобы модель успела на CPU-оффлоаде.
-    maxTokens: 8192,
+    maxTokens: 16384,
     temperature: 0.2,
     priority: 1,
     requiresKey: false,

@@ -315,10 +315,13 @@ export function analyzeCredit(params: {
   let quality: CreditQuality = 'INSUFFICIENT_DATA';
   let financialSummary = '';
 
-  // Приоритет: icbrrRating из MOEX > financials > rating
+  // Приоритет: icbrrRating из MOEX > rating из Smart-Lab/MOEX > financials
   if (icbrrRating) {
     quality = icbrrToQuality(icbrrRating);
     financialSummary = `ICBRR рейтинг: ${icbrrRating}`;
+  } else if (rating) {
+    quality = mapRatingToQuality(rating.rating);
+    financialSummary = `${rating.agency}: ${rating.rating} (${rating.outlook})`;
   } else if (financials) {
     const creditScore = calculateCreditScore(financials);
     quality = scoreToQuality(creditScore);
@@ -334,9 +337,6 @@ export function analyzeCredit(params: {
       parts.push(`Чистая прибыль: ${financials.netProfit.toLocaleString('ru-RU')} руб.`);
     }
     financialSummary = parts.join(', ');
-  } else if (rating) {
-    quality = 'HIGH';
-    financialSummary = `${rating.agency}: ${rating.rating} (${rating.outlook})`;
   }
 
   // Риск рефинансирования
@@ -353,15 +353,9 @@ export function analyzeCredit(params: {
     liquiditySummary = liquidity.summary;
   }
 
-  // Итоговое качество
-  if (!financials && !rating) {
+  // Итоговое качество — если нет данных ни от одного источника
+  if (quality === 'INSUFFICIENT_DATA') {
     quality = 'INSUFFICIENT_DATA';
-  } else if (rating) {
-    // Если есть рейтинг — используем его как приоритетный источник
-    const ratingQuality = mapRatingToQuality(rating.rating);
-    if (quality === 'INSUFFICIENT_DATA') {
-      quality = ratingQuality;
-    }
   }
 
   return {

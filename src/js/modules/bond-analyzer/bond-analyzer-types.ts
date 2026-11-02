@@ -349,22 +349,44 @@ export interface YieldAnalysis {
 // 10. Процентный риск
 // ──────────────────────────────────────────────
 
+/**
+ * Единицы исходного DV01 из источника.
+ * Строго связано с областью расчёта через discriminated union.
+ * Поле `value` — само значение DV01 из источника.
+ */
+export type OriginalDv01Record = {
+  /** Значение DV01 из источника */
+  value: number;
+} & (
+  | { unit: 'PRICE_PER_BOND_PER_1BP'; scope: 'ONE_BOND' }
+  | { unit: 'PRICE_PER_100_NOMINAL_PER_1BP'; scope: 'PER_100_UNITS' }
+  | { unit: 'RUB_PER_POSITION_PER_1BP'; scope: 'FULL_POSITION' }
+);
+
 /** Результат анализа процентного риска */
 export interface DurationAnalysis {
   /** Значение дюрации (из QUIK, не называть модифицированной без подтверждения) */
   duration: number | null;
   /** Тип дюрации */
   durationType: DurationType;
-  /** DV01 — изменение цены при сдвиге доходности на 1 б.п. */
+  /** Расчётный DV01 (ModDur × Price × Qty × 0.0001) — null при UNKNOWN/DV01/MACAULAY без YTM */
   dv01: number | null;
+  /**
+   * Исходный DV01 из источника (если durationType === 'DV01' с подтверждёнными единицами).
+   * Сохраняется независимо от возможности расчёта производных показателей.
+   * Единица и область расчёта строго связаны: нельзя создать недопустимую комбинацию.
+   */
+  originalDv01?: OriginalDv01Record;
   /** Сценарии изменения цены */
   scenarios: Array<{
     yieldChangePct: number;
     priceImpactPct: number;
     priceImpactRub: number;
   }>;
-  /** Статус качества данных */
+  /** Статус качества исходных данных */
   dataQuality: DataQualityStatus;
+  /** Статус качества производных расчётов (DV01, priceImpact, scenarios) */
+  derivedDataQuality: DataQualityStatus;
 }
 
 // ──────────────────────────────────────────────

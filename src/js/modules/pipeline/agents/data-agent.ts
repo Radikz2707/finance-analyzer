@@ -18,7 +18,6 @@ import type { GatekeeperResult } from '../gatekeeper/types.js';
 import { fetchHistoricalBatch } from '../../data-fetcher/index.js';
 import {
   AnomalyDetector,
-  MoexQuoteProvider,
 } from '../../python-engine/index.js';
 import type {
   AnomalyDetectionResult,
@@ -26,8 +25,12 @@ import type {
 } from '../../python-engine/types.js';
 import { getCbrKeyRate } from '../../ai-advisor/cbr-rate.js';
 import type { CbrRateData } from '../../ai-advisor/cbr-rate.js';
+import { LiquidityAnalyzer } from '../../ai-advisor/liquidity-analyzer.js';
+import type { LiquidityAnalysis } from '../../ai-advisor/liquidity-analyzer.js';
 import { positionsRepo, newsRepo } from '../../db-manager/db-manager.js';
 import { getLogger } from '../../logger/index.js';
+import { MoexQuoteProvider } from '../../python-engine/moex-quote-provider.js';
+import { fetchSmartLabBondByIsin } from '../../smart-lab-api/smart-lab-api.js';
 
 // ──────────────────────────────────────────────
 // 0. Хелперы персиста новостей
@@ -87,13 +90,15 @@ export interface AccountInfo {
   value: number;
 }
 
-/** Котировка актива из листа "Акции" */
+/** Котировка актива из листа "Акции" + MOEX */
 export interface AssetQuote {
   ticker: string;
   name: string;
   shortName: string;
   currentPrice: number;
   dailyDynamicsPercent: number;
+  /** Дневной оборот в рублях (из Excel, MOEX VALTODAY или Smart-Lab) */
+  volumeTodayRub?: number;
 }
 
 /** Данные о вложенных средствах */
@@ -162,13 +167,18 @@ export interface HistoricalTradesData {
    cbrRateData: CbrRateData | null;
    /** Параметры инвестора (горизонт, цель, риск) */
    investorParams?: InvestorParams;
-   /**
-    * Рыночные данные по облигациям из листа «Облигации».
-    * Map<ISIN, BondReferenceData> — полный справочник ~3030 выпусков.
-    * Используется для обогащения позиций облигаций и передачи в AI.
-    */
-   bondMarketData: Map<string, import('../../xlsx-parser/xlsx-parser.js').BondReferenceData>;
- }
+    /**
+     * Рыночные данные по облигациям из листа «Облигации».
+     * Map<ISIN, BondReferenceData> — полный справочник ~3030 выпусков.
+     * Используется для обогащения позиций облигаций и передачи в AI.
+     */
+    bondMarketData: Map<string, import('../../xlsx-parser/xlsx-parser.js').BondReferenceData>;
+    /**
+     * Анализ ликвидности портфеля на основе дневных оборотов.
+     * Содержит предупреждения и рекомендации по управлению рисками ликвидности.
+     */
+    liquidityAnalysis?: LiquidityAnalysis;
+  }
 
 // ──────────────────────────────────────────────
 // 2. Data Agent
@@ -268,6 +278,7 @@ export class DataAgent extends AgentBase {
             shortName: value.shortName || key,
             currentPrice: value.currentPrice,
             dailyDynamicsPercent: value.dailyDynamicsPercent ?? 0,
+            volumeTodayRub: value.volumeTodayRub ?? undefined,
           },
         ]),
     );
@@ -294,6 +305,7 @@ export class DataAgent extends AgentBase {
               shortName: key,
               currentPrice: quote.price,
               dailyDynamicsPercent: quote.changePct,
+              volumeTodayRub: quote.volumeTodayRub,
             };
             added++;
           }
@@ -307,6 +319,207 @@ export class DataAgent extends AgentBase {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.log.warn(`[DataAgent] ⚠️ MOEX-котировки недоступны: ${errorMsg}`);
+    }
+
+    // Шаг 5.2: Котировки облигаций с доски EQOB (MOEX) — оборот и цена.
+    // Облигации часто не доступны на доске TQBR (акции), поэтому используем
+    // отдельный запрос к boards/EQOB для получения VALTODAY (оборота в RUB).
+    try {
+      const bondTickers = assets
+        .filter(
+          (a) =>
+            a.assetType === 'BOND' ||
+            a.assetType === 'Облигация' ||
+            a.assetType.includes('Облиг'),
+        )
+        .map((a) => a.ticker.toUpperCase())
+        .filter(
+          (ticker) =>
+            !quotes[ticker] ||
+            (quotes[ticker].currentPrice <= 0 && !quotes[ticker].volumeTodayRub),
+        );
+      if (bondTickers.length > 0) {
+        const moexProvider = new MoexQuoteProvider();
+        const boardQuotes = await moexProvider.fetchBoardQuotes(
+          bondTickers,
+          'EQOB',
+        );
+        let added = 0;
+        for (const [ticker, quote] of Object.entries(boardQuotes)) {
+          const key = ticker.toUpperCase();
+          if (quote.price > 0) {
+            if (!quotes[key]) {
+              quotes[key] = {
+                ticker: key,
+                name: key,
+                shortName: key,
+                currentPrice: quote.price,
+                dailyDynamicsPercent: quote.changePct,
+                volumeTodayRub: quote.volumeTodayRub,
+              };
+            } else {
+              // Дополняем отсутствующий оборот
+              if (!quotes[key].volumeTodayRub && quote.volumeTodayRub) {
+                quotes[key].volumeTodayRub = quote.volumeTodayRub;
+              }
+            }
+            added++;
+          }
+        }
+        if (added > 0) {
+          this.log.info(
+            `[DataAgent] ✅ MOEX EQOB: дополнено данных по ${added} облигациям`,
+          );
+        }
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.log.warn(`[DataAgent] ⚠️ MOEX EQOB недоступен: ${errorMsg}`);
+    }
+
+    // Шаг 5.3: Анализ ликвидности портфеля на основе дневных оборотов.
+    // Определяет «мёртвые» активы, предупреждает о рисках ликвидации,
+    // оценивает долю низколиквидных активов в портфеле.
+    //
+    // Приоритет источников оборота:
+    // 1. Excel «Акции» (quotes[volumeTodayRub]) — для акций
+    // 2. Excel «Облигации» (bondMarketData[ISIN].turnover) — для облигаций
+    // 3. MOEX EQOB (get_board_quotes) — fallback для облигаций
+    // 4. Smart-Lab — fallback для редких облигаций
+    let liquidityAnalysis: LiquidityAnalysis | undefined;
+    try {
+      // Сначала собираем данные из Excel
+      const excelAssets = aggregated
+        .filter((a) => a.totalLiquidationValue > 0)
+        .map((a) => {
+          // Оборот из листа «Акции» (для акций)
+          const quotesTurnover = quotes[a.ticker.toUpperCase()]?.volumeTodayRub;
+          // Оборот из листа «Облигации» (для облигаций)
+          const bondData = bondMarketData.get(a.ticker.toUpperCase());
+          const bondTurnover = bondData?.turnover != null
+            ? Number(bondData.turnover)
+            : undefined;
+          // Приоритет: quotes (акции) → bondMarketData (облигации)
+          const dailyTurnover = quotesTurnover ?? (bondTurnover ?? null);
+          return {
+            ticker: a.ticker,
+            name: a.name,
+            marketValue: a.totalLiquidationValue,
+            dailyTurnover,
+            hasTurnover: dailyTurnover != null && dailyTurnover > 0,
+          };
+        });
+
+      // Находим облигации без оборота для догрузки из MOEX/Smart-Lab
+      const missingBondTickers = excelAssets
+        .filter((a) => !a.hasTurnover)
+        .map((a) => ({
+          ticker: a.ticker.toUpperCase(),
+          isin: a.ticker.toUpperCase(),
+          name: a.name,
+          marketValue: a.marketValue,
+        }));
+
+      const moexTurnovers: Record<string, number> = {};
+      const smartlabTurnovers: Record<string, number> = {};
+
+      // 3. MOEX EQOB — догружаем оборот для облигаций
+      if (missingBondTickers.length > 0) {
+        try {
+          const moexProvider = new MoexQuoteProvider();
+          const boardQuotes = await moexProvider.fetchBoardQuotes(
+            missingBondTickers.map((b) => b.ticker),
+            'EQOB',
+          );
+          for (const [ticker, quote] of Object.entries(boardQuotes)) {
+            if (quote.volumeTodayRub != null && quote.volumeTodayRub > 0) {
+              moexTurnovers[ticker] = quote.volumeTodayRub;
+            }
+          }
+          if (Object.keys(moexTurnovers).length > 0) {
+            this.log.info(
+              `[DataAgent] 📊 MOEX EQOB: загружен оборот по ${Object.keys(moexTurnovers).length} облигациям`,
+            );
+          }
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          this.log.warn(`[DataAgent] ⚠️ MOEX EQOB недоступен: ${errorMsg}`);
+        }
+      }
+
+      // 4. Smart-Lab — fallback для тех, кого нет на MOEX
+      const smartlabTickers = missingBondTickers
+        .filter((b) => !moexTurnovers[b.ticker])
+        .slice(0, 10); // максимум 10, чтобы не перегружать
+
+      if (smartlabTickers.length > 0) {
+        this.log.info(
+          `[DataAgent] 📊 Smart-Lab: запрашиваем оборот для ${smartlabTickers.length} облигаций`,
+        );
+        try {
+          const results = await Promise.allSettled(
+            smartlabTickers.map(async (b) => {
+              const data = await fetchSmartLabBondByIsin(b.isin);
+              if (data && data.volume != null && data.volume > 0) {
+                this.log.info(
+                  `[DataAgent] 📊 Smart-Lab: ${b.ticker} volume=${data.volume} млн руб`,
+                );
+                return { ticker: b.ticker, volume: data.volume * 1e6 }; // млн → руб
+              }
+              return null;
+            }),
+          );
+          for (const result of results) {
+            if (result.status === 'fulfilled' && result.value) {
+              smartlabTurnovers[result.value.ticker] = result.value.volume;
+            }
+          }
+          if (Object.keys(smartlabTurnovers).length > 0) {
+            this.log.info(
+              `[DataAgent] 📊 Smart-Lab: загружен оборот по ${Object.keys(smartlabTurnovers).length} облигациям`,
+            );
+          }
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          this.log.warn(`[DataAgent] ⚠️ Smart-Lab недоступен: ${errorMsg}`);
+        }
+      }
+
+      // Собираем финальный массив с оборотом из всех источников
+      const liquidityAssets = excelAssets.map((a) => {
+        const ticker = a.ticker.toUpperCase();
+        // Приоритет: Excel → MOEX EQOB → Smart-Lab
+        const dailyTurnover =
+          a.dailyTurnover ??
+          moexTurnovers[ticker] ??
+          smartlabTurnovers[ticker] ??
+          null;
+        return {
+          ticker: a.ticker,
+          name: a.name,
+          marketValue: a.marketValue,
+          dailyTurnover,
+        };
+      });
+
+      if (liquidityAssets.length > 0) {
+        const analyzer = new LiquidityAnalyzer();
+        liquidityAnalysis = analyzer.analyze(liquidityAssets);
+        this.log.info(
+          `[DataAgent] 📊 Ликвидность: статус=${liquidityAnalysis.summary.status}, ` +
+            `HIGH=${liquidityAnalysis.summary.highLiquidityPct.toFixed(0)}%, ` +
+            `LOW=${liquidityAnalysis.summary.lowLiquidityPct.toFixed(0)}%, ` +
+            `CRITICAL=${liquidityAnalysis.summary.criticalLiquidityPct.toFixed(0)}%`,
+        );
+        if (liquidityAnalysis.warnings.length > 0) {
+          this.log.warn(
+            `[DataAgent] ⚠️ Предупреждения ликвидности: ${liquidityAnalysis.warnings.length}`,
+          );
+        }
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      this.log.warn(`[DataAgent] ⚠️ Анализ ликвидности недоступен: ${errorMsg}`);
     }
 
     // Шаг 6: Активные заявки QUIK
@@ -483,6 +696,7 @@ export class DataAgent extends AgentBase {
       keyRateDate,
       cbrRateData: cbrRateDataResult,
       bondMarketData,
+      liquidityAnalysis,
     };
 
     // Парсим параметры инвестора (опционально)

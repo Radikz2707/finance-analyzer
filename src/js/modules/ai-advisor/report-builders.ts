@@ -18,6 +18,127 @@ function formatPrice(value: number): string {
   return whole.toLocaleString('ru-RU') + ',' + kopecksStr;
 }
 
+/** Форматирование дневного оборота в рублях */
+function formatVolumeRub(volume: number): string {
+  if (volume >= 1e9) {
+    return (volume / 1e9).toFixed(1) + ' млрд ₽';
+  }
+  if (volume >= 1e6) {
+    return (volume / 1e6).toFixed(1) + ' млн ₽';
+  }
+  if (volume >= 1e3) {
+    return (volume / 1e3).toFixed(1) + ' тыс ₽';
+  }
+  return volume.toLocaleString('ru-RU') + ' ₽';
+}
+
+/**
+ * Генерация блока "Анализ ликвидности" для Markdown-отчёта.
+ */
+export function buildLiquidityBlockMd(
+  warnings: string[],
+  recommendations: string[],
+  highPct: number,
+  mediumPct: number,
+  lowPct: number,
+  criticalPct: number,
+  status: string,
+): string {
+  const statusIcon =
+    status === 'HEALTHY' ? '✅' : status === 'WARNING' ? '⚠️' : '🔴';
+
+  let md = '## 📊 Анализ ликвидности портфеля\n\n';
+  md += `**Статус:** ${statusIcon} ${status === 'HEALTHY' ? 'Здоровый' : status === 'WARNING' ? 'Внимание' : 'Критический'}\n\n`;
+  md += '| Уровень | Доля |\n';
+  md += '|---------|------|\n';
+  md += `| Высокая (${highPct.toFixed(1)}%) | ✅ |\n`;
+  md += `| Средняя (${mediumPct.toFixed(1)}%) | ➖ |\n`;
+  md += `| Низкая (${lowPct.toFixed(1)}%) | ⚠️ |\n`;
+  md += `| Критическая (${criticalPct.toFixed(1)}%) | 🔴 |\n\n`;
+
+  if (warnings.length > 0) {
+    md += '### ⚠️ Предупреждения\n\n';
+    for (const w of warnings) {
+      md += `- ${w}\n`;
+    }
+    md += '\n';
+  }
+
+  if (recommendations.length > 0) {
+    md += '### 💡 Рекомендации\n\n';
+    for (const r of recommendations) {
+      md += `- ${r}\n`;
+    }
+    md += '\n';
+  }
+
+  return md;
+}
+
+/**
+ * Генерация блока "Анализ ликвидности" для HTML-дашборда.
+ */
+export function buildLiquidityBlockHtml(
+  warnings: string[],
+  recommendations: string[],
+  highPct: number,
+  mediumPct: number,
+  lowPct: number,
+  criticalPct: number,
+  status: string,
+): string {
+  const statusColor =
+    status === 'HEALTHY'
+      ? '#56d364'
+      : status === 'WARNING'
+        ? '#e3b341'
+        : '#ff7b72';
+
+  let html = '<div class=\'block-box\'>';
+  html += '<h2>📊 Анализ ликвидности</h2>';
+  html += '<div style="font-size: 14px; margin-bottom: 10px;">';
+  html += `Статус: <strong style="color: ${statusColor};">${status === 'HEALTHY' ? '✅ Здоровый' : status === 'WARNING' ? '⚠️ Внимание' : '🔴 Критический'}</strong>`;
+  html += '</div>';
+
+  // Progress bars
+  html += "<div style='margin: 10px 0;'>";
+  html +=
+    "<div style='font-size: 12px; color: #8b949e; margin-bottom: 4px;'>Структура ликвидности:</div>";
+  html += '<div style="background: #21262d; border-radius: 4px; height: 20px; overflow: hidden; display: flex;">';
+  if (highPct > 0)
+    html += `<div style="background: #56d364; width: ${highPct}%; text-align: center; font-size: 11px; line-height: 20px; color: #000;">${highPct.toFixed(0)}%</div>`;
+  if (mediumPct > 0)
+    html += `<div style="background: #8b949e; width: ${mediumPct}%; text-align: center; font-size: 11px; line-height: 20px;">${mediumPct.toFixed(0)}%</div>`;
+  if (lowPct > 0)
+    html += `<div style="background: #e3b341; width: ${lowPct}%; text-align: center; font-size: 11px; line-height: 20px; color: #000;">${lowPct.toFixed(0)}%</div>`;
+  if (criticalPct > 0)
+    html += `<div style="background: #ff7b72; width: ${criticalPct}%; text-align: center; font-size: 11px; line-height: 20px;">${criticalPct.toFixed(0)}%</div>`;
+  html += '</div></div>';
+
+  if (warnings.length > 0) {
+    html += "<div style='margin-top: 10px;'>";
+    html +=
+      "<div style='font-size: 13px; font-weight: bold; color: #e3b341; margin-bottom: 6px;'>⚠️ Предупреждения:</div>";
+    for (const w of warnings) {
+      html += `<div style='font-size: 12px; color: #ff7b72; margin-bottom: 3px;'>• ${w}</div>`;
+    }
+    html += '</div>';
+  }
+
+  if (recommendations.length > 0) {
+    html += "<div style='margin-top: 10px;'>";
+    html +=
+      "<div style='font-size: 13px; font-weight: bold; color: #58a6ff; margin-bottom: 6px;'>💡 Рекомендации:</div>";
+    for (const r of recommendations) {
+      html += `<div style='font-size: 12px; color: #8b949e; margin-bottom: 3px;'>• ${r}</div>`;
+    }
+    html += '</div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
 export interface HTMLOrdersResult {
   html: string;
   md: string;
@@ -454,6 +575,8 @@ export interface StockQuote {
   shortName: string;
   currentPrice: number;
   dailyDynamicsPercent: number;
+  /** Дневной оборот в рублях */
+  volumeTodayRub?: number;
 }
 
 export interface QuotesBlockResult {
@@ -490,9 +613,7 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
   const decliningQuotes = sortedByDynamics.filter(
     (q) => q.dailyDynamicsPercent < 0,
   );
-  const topLosersList = decliningQuotes
-    .slice(-5)
-    .reverse();
+  const topLosersList = decliningQuotes.slice(-5).reverse();
 
   // Генерация строк таблицы
   for (const quote of quotes) {
@@ -535,6 +656,11 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
           '%'
         : '0.00%') +
       '</span>' +
+      '</td>' +
+      "<td class='quote-volume'>" +
+      (quote.volumeTodayRub != null && quote.volumeTodayRub > 0
+        ? formatVolumeRub(quote.volumeTodayRub)
+        : '—') +
       '</td>' +
       '</tr>';
   }
@@ -604,7 +730,8 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
 // ============================================================================
 
 /** Источник рекомендации */
-export type RecommendationSource = 'MATH_ONLY' | 'AI_ONLY' | 'BOTH_AGREED' | 'BOTH_CONFLICT' | 'NO_DATA';
+export type RecommendationSource =
+  'MATH_ONLY' | 'AI_ONLY' | 'BOTH_AGREED' | 'BOTH_CONFLICT' | 'NO_DATA';
 
 /** Итоговое заключение по активу */
 export interface FinalConclusion {
@@ -670,14 +797,17 @@ export function buildFinalConclusion(
   }
 
   // ─── 2. Причины рекомендации ───
-  const deviation = assetAnalysis.currentPercent - (assetAnalysis.targetPercent ?? 0);
+  const deviation =
+    assetAnalysis.currentPercent - (assetAnalysis.targetPercent ?? 0);
 
   if (mathAction === 'BUY') {
     reasons.push(
       `Дефицит доли: текущая ${assetAnalysis.currentPercent.toFixed(1)}% vs целевая ${assetAnalysis.targetPercent?.toFixed(1) ?? '—'}%`,
     );
     if (assetAnalysis.deficitRub > 0) {
-      reasons.push(`Рублёвый дефицит: ${assetAnalysis.deficitRub.toLocaleString('ru-RU')} ₽`);
+      reasons.push(
+        `Рублёвый дефицит: ${assetAnalysis.deficitRub.toLocaleString('ru-RU')} ₽`,
+      );
     }
   } else if (mathAction === 'SELL' || mathAction === 'REDUCE') {
     reasons.push(
@@ -701,16 +831,26 @@ export function buildFinalConclusion(
 
   // ─── 3. Основные риски ───
   if (assetAnalysis.isConcentrated) {
-    risks.push(`Высокая концентрация: ${assetAnalysis.currentPercent.toFixed(1)}% портфеля`);
+    risks.push(
+      `Высокая концентрация: ${assetAnalysis.currentPercent.toFixed(1)}% портфеля`,
+    );
   }
   if (assetAnalysis.unrealizedProfitRub < 0) {
     const drawdownPct =
       assetAnalysis.balancePrice > 0
-        ? ((assetAnalysis.currentPrice - assetAnalysis.balancePrice) / assetAnalysis.balancePrice) * 100
+        ? ((assetAnalysis.currentPrice - assetAnalysis.balancePrice) /
+            assetAnalysis.balancePrice) *
+          100
         : 0;
-    risks.push(`Нереализованный убыток: ${assetAnalysis.unrealizedProfitRub.toLocaleString('ru-RU')} ₽ (${drawdownPct.toFixed(1)}%)`);
+    risks.push(
+      `Нереализованный убыток: ${assetAnalysis.unrealizedProfitRub.toLocaleString('ru-RU')} ₽ (${drawdownPct.toFixed(1)}%)`,
+    );
   }
-  if (aiRecommendation && aiRecommendation.keyRisks && aiRecommendation.keyRisks.length > 0) {
+  if (
+    aiRecommendation &&
+    aiRecommendation.keyRisks &&
+    aiRecommendation.keyRisks.length > 0
+  ) {
     risks.push(...aiRecommendation.keyRisks);
   }
   if (risks.length === 0) {
@@ -722,7 +862,8 @@ export function buildFinalConclusion(
   const hasTarget = assetAnalysis.targetPercent !== undefined;
   // Надёжная проверка: aiRecommendation != null (не null и не undefined)
   // И recommendedAction != null (AI вернул рекомендацию, а не пустой объект)
-  const hasAiData = aiRecommendation != null && aiRecommendation.recommendedAction != null;
+  const hasAiData =
+    aiRecommendation != null && aiRecommendation.recommendedAction != null;
 
   if (!hasMarketData) {
     risks.unshift('⚠️ Рыночные данные отсутствуют (currentPrice=0)');
@@ -745,27 +886,46 @@ export function buildFinalConclusion(
   }
 
   // ─── 5. Источник рекомендации ───
+  // При конфликте — приоритет у PortfolioMath (детерминированная математика),
+  // AI сигнал показывается как предупреждение в reasons.
+
+  // Нормализация для сравнения: STABLE→HOLD, NO_TARGET→HOLD
+  const normalizedMath =
+    mathAction === 'STABLE' || mathAction === 'NO_TARGET' ? 'HOLD' : mathAction;
+  const normalizedAi = aiAction === 'STABLE' ? 'HOLD' : aiAction;
+
   let source: RecommendationSource;
   if (!hasAiData && !aiAction) {
     source = 'MATH_ONLY';
-  } else if (hasAiData && !mathAction || mathAction === 'NO_TARGET') {
+  } else if ((hasAiData && !mathAction) || mathAction === 'NO_TARGET') {
     source = 'AI_ONLY';
-  } else if (aiAction && aiAction === mathAction) {
+  } else if (aiAction && normalizedAi === normalizedMath) {
     source = 'BOTH_AGREED';
   } else {
     source = 'BOTH_CONFLICT';
   }
 
   // ─── 6. Согласованность Math и AI ───
+  // При конфликте показываем ФИНАЛЬНЫЙ сигнал (PortfolioMath) и AI как предупреждение.
+  // В одном отчёте — только один финальный сигнал, не два.
   let mathAiAgreement: string;
   if (source === 'MATH_ONLY') {
-    mathAiAgreement = 'AI рекомендация отсутствует — решение на основе PortfolioMath';
+    mathAiAgreement =
+      'AI рекомендация отсутствует — решение на основе PortfolioMath';
   } else if (source === 'AI_ONLY') {
     mathAiAgreement = 'Только AI вернул рекомендацию';
   } else if (source === 'BOTH_AGREED') {
     mathAiAgreement = `Math=${mathAction}, AI=${aiAction} — согласованы`;
   } else {
-    mathAiAgreement = `Конфликт: Math=${mathAction}, AI=${aiAction} — требуется ручная проверка`;
+    // Конфликт: финальный сигнал = PortfolioMath, AI — предупреждение
+    mathAiAgreement = `Финальный: Math=${mathAction}. AI=${aiAction} — конфликт, требуется ручная проверка`;
+  }
+
+  // При конфликте — добавить AI действие как предупреждение в reasons
+  if (source === 'BOTH_CONFLICT' && aiAction) {
+    reasons.push(
+      `⚠️ AI предложил ${aiAction}, но PortfolioMath: ${mathAction} — конфликт сигналов`,
+    );
   }
 
   // ─── 7. Ограничения исполнения ───
@@ -775,8 +935,13 @@ export function buildFinalConclusion(
   if (mathAction === 'BUY' && assetAnalysis.deficitRub <= 0) {
     limitations.push('Недостаточно средств для покупки');
   }
-  if (assetAnalysis.holdOnly && (mathAction === 'SELL' || mathAction === 'REDUCE' || mathAction === 'EXIT')) {
-    limitations.push('⛔ Исполнение заблокировано: holdOnly конфликтует с действием');
+  if (
+    assetAnalysis.holdOnly &&
+    (mathAction === 'SELL' || mathAction === 'REDUCE' || mathAction === 'EXIT')
+  ) {
+    limitations.push(
+      '⛔ Исполнение заблокировано: holdOnly конфликтует с действием',
+    );
   }
   if (limitations.length === 0) {
     limitations.push('Нет ограничений');

@@ -17,6 +17,7 @@
 import type {
   DurationType,
   DurationAnalysis,
+  OriginalDv01Record,
 } from './bond-analyzer-types.js';
 
 // ──────────────────────────────────────────────
@@ -67,6 +68,11 @@ export function priceImpact(
   yield_: number,
   yieldChangePct: number,
 ): number | null {
+  // Блокировка при неподтверждённом типе дюрации
+  if (durationType === 'UNKNOWN' || durationType === 'DV01') {
+    return null;
+  }
+
   if (duration <= 0 || yieldChangePct === 0) {
     return null;
   }
@@ -79,7 +85,7 @@ export function priceImpact(
     if (1 + annualYield === 0) return null;
     modifiedDuration = duration / (1 + annualYield);
   } else {
-    // MODIFIED, EFFECTIVE, UNKNOWN — используем как есть
+    // MODIFIED, EFFECTIVE — используем как есть
     modifiedDuration = duration;
   }
 
@@ -110,6 +116,11 @@ export function dv01(
   quantity: number,
   yield_: number,
 ): number | null {
+  // Блокировка при неподтверждённом типе дюрации
+  if (durationType === 'UNKNOWN' || durationType === 'DV01') {
+    return null;
+  }
+
   if (duration <= 0 || price <= 0 || quantity <= 0) {
     return null;
   }
@@ -273,6 +284,8 @@ export function analyzeDuration(params: {
   quantity: number;
   scenarios?: number[];
   bondType?: 'FIXED' | 'FLOATER' | 'ZERO_COUPON' | 'AMORTIZING' | 'UNKNOWN';
+  /** Подтверждённая запись исходного DV01 (единица + область строго связаны) */
+  originalDv01?: OriginalDv01Record;
 }): DurationAnalysis {
   const {
     duration,
@@ -283,32 +296,58 @@ export function analyzeDuration(params: {
     scenarios = [1, 2, 3, -1, -2, -3],
   } = params;
 
-  // DV01
-  const dv01Val = dv01(duration, durationType, currentPrice, quantity, currentYield);
-
-  // Сценарный анализ
-  const scenariosResults = scenarioAnalysis(
-    duration,
-    durationType,
-    currentPrice,
-    quantity,
-    currentYield,
-    scenarios,
-  );
-
-  // Статус качества данных
+  // Статусы качества
   let dataQuality: 'AVAILABLE' | 'PARTIAL' | 'MISSING' = 'AVAILABLE';
-  if (duration <= 0) {
+  let derivedDataQuality: 'AVAILABLE' | 'PARTIAL' | 'MISSING' = 'AVAILABLE';
+
+  // ─── Обработка UNKNOWN и DV01 ───
+  if (durationType === 'UNKNOWN') {
     dataQuality = 'MISSING';
-  } else if (durationType === 'UNKNOWN') {
-    dataQuality = 'PARTIAL'; // Значение есть, но тип не подтверждён
+    derivedDataQuality = 'MISSING';
+  } else if (durationType === 'DV01') {
+    // Исходный DV01 — достоверное значение, сохраняем
+    dataQuality = 'AVAILABLE';
+    derivedDataQuality = 'MISSING'; // нельзя рассчитать производные
+  } else if (durationType === 'MACAULAY' && currentYield <= 0) {
+    // Macaulay без подтверждённой YTM — нельзя конвертировать
+    dataQuality = 'PARTIAL';
+    derivedDataQuality = 'PARTIAL';
+  }
+
+  // ─── Сохранение исходного DV01 ───
+  // Только при подтверждённых единицах и области. Без значений по умолчанию.
+  let originalDv01: DurationAnalysis['originalDv01'] = undefined;
+  if (durationType === 'DV01' && duration > 0 && params.originalDv01) {
+    originalDv01 = {
+      value: duration,
+      unit: params.originalDv01.unit,
+      scope: params.originalDv01.scope,
+    } as DurationAnalysis['originalDv01'];
+  }
+
+  // ─── Расчёт производных (только при подтверждённом типе) ───
+  let dv01Val: number | null = null;
+  let scenariosResults: DurationAnalysis['scenarios'] = [];
+
+  if (durationType !== 'UNKNOWN' && durationType !== 'DV01' && duration > 0) {
+    dv01Val = dv01(duration, durationType, currentPrice, quantity, currentYield);
+    scenariosResults = scenarioAnalysis(
+      duration,
+      durationType,
+      currentPrice,
+      quantity,
+      currentYield,
+      scenarios,
+    );
   }
 
   return {
     duration: duration > 0 ? duration : null,
     durationType,
     dv01: dv01Val,
+    originalDv01,
     scenarios: scenariosResults,
     dataQuality,
+    derivedDataQuality,
   };
 }

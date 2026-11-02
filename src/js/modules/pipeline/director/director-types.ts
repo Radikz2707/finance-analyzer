@@ -171,7 +171,12 @@ export interface DirectorFactsContext {
     newsSummary?: string;
   }>;
   /** Котировки */
-  quotes?: Record<string, { currentPrice: number; dailyDynamicsPercent: number }>;
+  quotes?: Record<string, {
+    currentPrice: number;
+    dailyDynamicsPercent: number;
+    /** Дневной оборот в рублях */
+    volumeTodayRub?: number;
+  }>;
 }
 
 // ──────────────────────────────────────────────

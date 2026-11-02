@@ -62,7 +62,7 @@ describe('buildSystemPrompt', () => {
     expect(basePrompt).toContain(
       'Целевые доли (targetPercent) — факт пользователя',
     );
-    expect(basePrompt).toContain('AI НЕ изменяет этот факт');
+    expect(basePrompt).toContain('AI НЕ изменяет');
   });
 
   it('rule 2: AI can define AI_RECOMMENDED_TARGET_PERCENT and AI_RECOMMENDED_ACTION', () => {
@@ -80,7 +80,7 @@ describe('buildSystemPrompt', () => {
     expect(basePrompt).toContain(
       'Глубокий убыток НЕ блокирует SELL/EXIT/REDUCE',
     );
-    expect(basePrompt).toContain('AI самостоятельно решает');
+    expect(basePrompt).toContain('AI самостоятельно определяет');
   });
 
   it('rule 5: EXIT, AVERAGE are valid AI actions', () => {
@@ -94,8 +94,8 @@ describe('buildSystemPrompt', () => {
   });
 
   it('rule 6: AI can propose own target different from USER_TARGET', () => {
-    expect(basePrompt).toContain('AI может предложить свою целевую долю');
-    expect(basePrompt).toContain('отличающуюся от USER_TARGET');
+    expect(basePrompt).toContain('AI_RECOMMENDED_TARGET_PERCENT');
+    expect(basePrompt).toContain('AI может НЕ соглашаться с PortfolioMath и USER_TARGET');
   });
 
   it('rule 7: AI must not invent missing data', () => {
@@ -140,9 +140,9 @@ describe('buildSystemPrompt', () => {
   });
 
   it('rule 10: AI shows uncertainty when data is missing', () => {
-    expect(basePrompt).toContain(
-      'При конфликте данных AI показывает источник/характер неопределённости',
-    );
+    expect(basePrompt).toContain('NO_DATA');
+    expect(basePrompt).toContain('«нет данных»');
+    expect(basePrompt).toContain('НЕ писать "недооценен"');
   });
 
   // === Prohibitions ===

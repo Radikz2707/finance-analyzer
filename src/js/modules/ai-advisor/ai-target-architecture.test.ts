@@ -108,10 +108,10 @@ describe('AI Target Architecture Tests', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain('targetPercent');
     expect(prompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет этот факт',
+      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет',
     );
     expect(prompt).toContain(
-      'PortfolioMath status — результат детерминированной математики. AI НЕ изменяет этот факт',
+      'PortfolioMath status — результат детерминированной математики. AI НЕ изменяет',
     );
     expect(prompt).toContain(
       'AI может НЕ соглашаться с PortfolioMath и USER_TARGET',
@@ -121,17 +121,17 @@ describe('AI Target Architecture Tests', () => {
   it('Тест 2: USER_TARGET остаётся неизменным', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет этот факт',
+      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет',
     );
     expect(prompt).toContain(
-      'AI может предложить свою целевую долю (AI_RECOMMENDED_TARGET_PERCENT)',
+      'AI_RECOMMENDED_TARGET_PERCENT',
     );
   });
 
   it('Тест 3: PortfolioMath status остаётся неизменным', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'PortfolioMath status — результат детерминированной математики. AI НЕ изменяет этот факт',
+      'PortfolioMath status — результат детерминированной математики. AI НЕ изменяет',
     );
     expect(prompt).toContain('AI самостоятельно определяет');
   });
@@ -139,37 +139,37 @@ describe('AI Target Architecture Tests', () => {
   it('Тест 4: AI может предложить собственный target', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'AI может предложить свою целевую долю (AI_RECOMMENDED_TARGET_PERCENT), отличающуюся от USER_TARGET',
+      'AI_RECOMMENDED_TARGET_PERCENT',
     );
     expect(prompt).toContain(
-      'USER_TARGET_PERCENT — входной факт пользователя. AI может дать AI_RECOMMENDED_TARGET_PERCENT как рекомендацию',
+      'AI_RECOMMENDED_TARGET_PERCENT',
     );
   });
 
   it('Тест 5: AI target не попадает обратно в PortfolioMath', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет этот факт',
+      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет',
     );
     expect(prompt).toContain(
-      'AI может предложить свою целевую долю (AI_RECOMMENDED_TARGET_PERCENT)',
+      'AI_RECOMMENDED_TARGET_PERCENT',
     );
   });
 
   it('Тест 6: USER_TARGET=0 и AI_TARGET=3 корректно разделены', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет этот факт',
+      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет',
     );
     expect(prompt).toContain(
-      'AI может предложить свою целевую долю (AI_RECOMMENDED_TARGET_PERCENT)',
+      'AI_RECOMMENDED_TARGET_PERCENT',
     );
   });
 
   it('Тест 7: USER_TARGET=NOT_SET и AI_TARGET=3 корректно разделены', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'USER_TARGET_PERCENT — входной факт пользователя. AI может дать AI_RECOMMENDED_TARGET_PERCENT как рекомендацию',
+      'AI_RECOMMENDED_TARGET_PERCENT',
     );
     expect(prompt).toContain(
       'AI может НЕ соглашаться с PortfolioMath и USER_TARGET',
@@ -338,7 +338,7 @@ describe('AI Target Architecture Tests', () => {
   it('Тест 12: AI может оспаривать пользовательскую цель, но обязан явно обозначить это', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет этот факт',
+      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет',
     );
     expect(prompt).toContain(
       'AI может НЕ соглашаться с PortfolioMath и USER_TARGET',

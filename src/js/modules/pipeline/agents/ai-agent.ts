@@ -176,7 +176,7 @@ export class AiAgent extends AgentBase {
     console.log('[AiAgent] DEBUG: input.keys=' + Object.keys(input).join(','));
     console.log('[AiAgent] DEBUG: analysis=' + (input.analysis ? 'exists' : 'null'));
     const { data, research, analysis } = input;
-    const { macroGoals, historicalTrades, investedFunds, accounts } = data;
+    const { macroGoals, historicalTrades, investedFunds, accounts, anomalies } = data;
     const { snapshots = new Map() } = research;
     const { portfolioAnalysis, riskValidation, income } = analysis;
 
@@ -324,6 +324,17 @@ export class AiAgent extends AgentBase {
           { stocks: actualStocksPct, bonds: actualBondsPct },
           guardrailsContext,
           data.bondMarketData as unknown as Map<string, Record<string, unknown>>, // ← передаём bondMarketData
+          anomalies.map((a) => ({
+            ticker: a.ticker,
+            rsi: a.rsi,
+            sma20: a.sma20,
+            sma50: a.sma50,
+            trend: a.trend,
+            volatilityAnnual: a.volatilityAnnual,
+            riskLevel: a.riskLevel,
+            zScoreLast: a.zScoreLast,
+            isLastAnomaly: a.isLastAnomaly,
+          })),
         );
 
         if (aiClientResult.success) {
@@ -583,6 +594,18 @@ export class AiAgent extends AgentBase {
     assetClassPercents: { stocks: number; bonds: number },
     guardrailsContext: string,
     _bondMarketData?: Map<string, Record<string, unknown>>,
+    anomalyData?: Array<{
+      ticker: string;
+      rsi: number | null;
+      sma20: number | null;
+      sma50: number | null;
+      trend: 'up' | 'down' | 'flat' | null;
+      volatilityAnnual: number | null;
+      riskLevel: 'low' | 'medium' | 'high' | null;
+      zScoreLast: number | null;
+      isLastAnomaly: boolean;
+    }>,
+    _liquidityAnalysis?: import('../../ai-advisor/liquidity-analyzer.js').LiquidityAnalysis,
   ): Promise<AiClientResult> {
 
     const aiClient = new AiClient();
@@ -633,6 +656,10 @@ export class AiAgent extends AgentBase {
         accounts.map((a) => ({ name: a.name, value: a.value })),
         memoryContext,
         guardrailsContext,
+        undefined, // investorParams — не используется
+        _bondMarketData,
+        anomalyData,
+        _liquidityAnalysis, // ← анализ ликвидности
       );
 
       return {

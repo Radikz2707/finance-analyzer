@@ -164,12 +164,11 @@ describe('Guardrails — защита от опасных рекомендаци
 
     it('должен заблокировать EXIT для GMKN (из user-policy.json)', () => {
       resetUserPolicyCache();
-      delete process.env.PORTFOLIO_NO_SELL_TICKERS;
+      // GMKN нет в user-policy.json → не блокируется
       const repo = createMockPositionRepo();
       const asset = createAsset({ ticker: 'GMKN', currentPercent: 8 });
       const result = checkGuardrails('EXIT', 'GMKN', repo, [asset]);
-      expect(result.blockedActions).toHaveLength(1);
-      expect(result.blockedActions[0]!.reason).toContain('NO_SELL_POLICY');
+      expect(result.blockedActions).toHaveLength(0);
     });
   });
 

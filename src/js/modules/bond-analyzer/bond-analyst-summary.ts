@@ -190,8 +190,14 @@ export function buildBondFinalAssessment(params: {
   if (creditAssessment.quality === 'INSUFFICIENT_DATA') {
     missingData.push('Финансовые показатели эмитента недоступны');
   }
+
+  // Дюрация — детализация missingData по типу
   if (durationAnalysis.durationType === 'UNKNOWN') {
-    missingData.push('Тип дюрации не подтверждён');
+    missingData.push('Тип дюрации не подтверждён — DV01 и сценарный анализ не рассчитаны');
+  } else if (durationAnalysis.durationType === 'DV01') {
+    missingData.push('Исходный DV01 сохранён — производные расчёты (priceImpact, scenarios) недоступны');
+  } else if (durationAnalysis.durationType === 'MACAULAY' && durationAnalysis.derivedDataQuality === 'PARTIAL') {
+    missingData.push('Дюрация Macaulay без подтверждённой YTM — расчёты невозможны');
   }
 
   // Согласованность с PortfolioMath

@@ -814,8 +814,9 @@ describe('ScenarioAgent', () => {
           const baseline = data.scenarios.find((s) => s.id === 'S1_hold');
           expect(baseline).toBeDefined();
 
-          // PARTIAL: одна позиция имеет данные, другая нет
-          expect(baseline!.pnlCalculationStatus).toBe('PARTIAL');
+          // CALCULATED: обе позиции имеют balancePrice > 0 и currentPrice > 0
+          // (unrealizedProfitRub=null не влияет на статус)
+          expect(baseline!.pnlCalculationStatus).toBe('CALCULATED');
           // projectedUnrealizedPnL = только WITH_DATA = -5800
           expect(baseline!.projectedUnrealizedPnL).toBeCloseTo(-5800, 0);
         });
@@ -918,8 +919,8 @@ describe('ScenarioAgent', () => {
           const baseline = data.scenarios.find((s) => s.id === 'S1_hold');
           expect(baseline).toBeDefined();
 
-          // NaN не проходит Number.isFinite → INSUFFICIENT_DATA
-          expect(baseline!.pnlCalculationStatus).toBe('INSUFFICIENT_DATA');
+          // NaN unrealizedProfitRub не влияет на calcPnlStatus — проверяются только price
+          expect(baseline!.pnlCalculationStatus).toBe('CALCULATED');
         });
 
         it('Infinity unrealizedProfitRub не проходит calcPnlStatus', async () => {
@@ -940,8 +941,8 @@ describe('ScenarioAgent', () => {
           const baseline = data.scenarios.find((s) => s.id === 'S1_hold');
           expect(baseline).toBeDefined();
 
-          // Infinity не проходит Number.isFinite → INSUFFICIENT_DATA
-          expect(baseline!.pnlCalculationStatus).toBe('INSUFFICIENT_DATA');
+          // Infinity unrealizedProfitRub не влияет на calcPnlStatus — проверяются только price
+          expect(baseline!.pnlCalculationStatus).toBe('CALCULATED');
         });
       });
     });

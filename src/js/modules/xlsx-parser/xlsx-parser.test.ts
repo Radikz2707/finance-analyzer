@@ -67,7 +67,7 @@ describe('XlsxParserModule', () => {
       },
     });
 
-    // Мокаем sheet_to_json для QUIK
+    // Мокаем sheet_to_json для QUIK и Облигации
     mockSheetToJson.mockImplementation((sheet: { '!ref'?: string }) => {
       if (sheet['!ref'] === 'A1:Z50') {
         return [
@@ -139,6 +139,18 @@ describe('XlsxParserModule', () => {
           { 'Наименование': 'ЛИКВИДНЫЕ СРЕДСТВА', 'Сумма': 500000 },
           { 'Наименование': 'ИТОГО АКТИВОВ', 'Сумма': 5000000 },
           { 'Наименование': 'ВНЕСЕНО СРЕДСТВ', 'Сумма': 3000000 },
+        ];
+      }
+      if (sheet['!ref'] === 'A1:Z500') {
+        // Лист «Облигации» для buildUnifiedPriceMapFromQuik
+        return [
+          {
+            'Инструмент': 'Облигация А',
+            'Код инструмента': 'RU000A10C8F3',
+            'Номинал': 1000,
+            'Цена последняя': 99,
+            'Доходность': 12,
+          },
         ];
       }
       return [];
@@ -1162,6 +1174,204 @@ describe('XlsxParserModule', () => {
       const bond = assets.find((a) => a.ticker === 'RU000A10ER66');
 
       expect(bond?.priceUnit).toBe('UNKNOWN');
+    });
+  });
+
+  // ─── P0-2: priceNormalized ───
+  describe('priceNormalized', () => {
+    it('PERCENT_OF_NOMINAL с номиналом подтверждает нормализацию', async () => {
+      mockSheetToJson.mockReturnValue([
+        {
+          'Инструмент': 'Облигация А',
+          'Код инструмента': 'RU000A10C8F3',
+          'Вид активов': 'Облигация',
+          'Номинал': 1000,
+          'Балансовая цена': 98.5,
+          'Стоимость': 49250,
+          'Позиция': 50,
+        },
+      ]);
+
+      const assets = await parser.parseCurrentPortfolio();
+      const bond = assets.find((a) => a.ticker === 'RU000A10C8F3');
+
+      expect(bond?.priceUnit).toBe('PERCENT_OF_NOMINAL');
+      expect(bond?.nominal).toBe(1000);
+      expect(bond?.priceNormalized).toBe(true);
+      // currentPriceRaw = 49250/50 = 985, final = 1000*985/100 = 9850
+      expect(bond?.currentPrice).toBe(9850);
+    });
+
+    it('PERCENT_OF_NOMINAL без номинала блокирует нормализацию', async () => {
+      mockSheetToJson.mockReturnValue([
+        {
+          'Инструмент': 'Облигация Б',
+          'Код инструмента': 'RU000A10ER66',
+          'Вид активов': 'Облигация',
+          'Балансовая цена': 95,
+          'Стоимость': 2880,
+          'Позиция': 30,
+        },
+      ]);
+
+      const assets = await parser.parseCurrentPortfolio();
+      const bond = assets.find((a) => a.ticker === 'RU000A10ER66');
+
+      expect(bond?.priceUnit).toBe('UNKNOWN');
+      expect(bond?.priceNormalized).toBe(false);
+    });
+
+    it('RUB цена подтверждает нормализацию при корректном значении', async () => {
+      mockSheetToJson.mockReturnValue([
+        {
+          'Инструмент': 'Сбербанк',
+          'Код инструмента': 'SBER',
+          'Вид активов': 'Акция',
+          'Балансовая цена': 280,
+          'Стоимость': 28500,
+          'Позиция': 100,
+        },
+      ]);
+
+      const assets = await parser.parseCurrentPortfolio();
+      const sber = assets.find((a) => a.ticker === 'SBER');
+
+      expect(sber?.priceUnit).toBe('RUB');
+      expect(sber?.priceNormalized).toBe(true);
+    });
+
+    it('NaN цена не подтверждает нормализацию', async () => {
+      mockSheetToJson.mockReturnValue([
+        {
+          'Инструмент': 'Актив NaN',
+          'Код инструмента': 'NAN1',
+          'Вид активов': 'Акция',
+          'Балансовая цена': NaN,
+          'Стоимость': NaN,
+          'Позиция': 100,
+        },
+      ]);
+
+      const assets = await parser.parseCurrentPortfolio();
+      const asset = assets.find((a) => a.ticker === 'NAN1');
+
+      expect(asset?.priceNormalized).toBe(false);
+    });
+
+    it('Infinity цена не подтверждает нормализацию', async () => {
+      mockSheetToJson.mockReturnValue([
+        {
+          'Инструмент': 'Актив Inf',
+          'Код инструмента': 'INF1',
+          'Вид активов': 'Акция',
+          'Балансовая цена': Infinity,
+          'Стоимость': Infinity,
+          'Позиция': 100,
+        },
+      ]);
+
+      const assets = await parser.parseCurrentPortfolio();
+      const asset = assets.find((a) => a.ticker === 'INF1');
+
+      expect(asset?.priceNormalized).toBe(false);
+    });
+
+    it('Нулевая цена не подтверждает нормализацию', async () => {
+      mockSheetToJson.mockReturnValue([
+        {
+          'Инструмент': 'Актив Zero',
+          'Код инструмента': 'ZERO',
+          'Вид активов': 'Акция',
+          'Балансовая цена': 0,
+          'Стоимость': 0,
+          'Позиция': 100,
+        },
+      ]);
+
+      const assets = await parser.parseCurrentPortfolio();
+      const asset = assets.find((a) => a.ticker === 'ZERO');
+
+      expect(asset?.priceNormalized).toBe(false);
+    });
+
+    it('Отрицательная цена не подтверждает нормализацию', async () => {
+      mockSheetToJson.mockReturnValue([
+        {
+          'Инструмент': 'Актив Neg',
+          'Код инструмента': 'NEG1',
+          'Вид активов': 'Акция',
+          'Балансовая цена': -100,
+          'Стоимость': -10000,
+          'Позиция': 100,
+        },
+      ]);
+
+      const assets = await parser.parseCurrentPortfolio();
+      const asset = assets.find((a) => a.ticker === 'NEG1');
+
+      expect(asset?.priceNormalized).toBe(false);
+    });
+
+    it('buildUnifiedPriceMapFromQuik возвращает нормализованную цену', async () => {
+      mockSheetToJson.mockReturnValue([
+        {
+          'Инструмент': 'Сбербанк',
+          'Код инструмента': 'SBER',
+          'Вид активов': 'Акция',
+          'Балансовая цена': 280,
+          'Стоимость': 28500,
+          'Позиция': 100,
+        },
+      ]);
+
+      const map = await parser['buildUnifiedPriceMapFromQuik'](new Map());
+      const sber = map['SBER'];
+
+      expect(sber).toBeDefined();
+      expect(sber?.priceUnit).toBe('RUB');
+      expect(sber?.priceNormalized).toBe(true);
+    });
+
+    it('buildUnifiedPriceMapFromQuik: PERCENT_OF_NOMINAL подтверждает нормализацию', async () => {
+      mockSheetToJson.mockReturnValue([
+        {
+          'Инструмент': 'Облигация А',
+          'Код инструмента': 'RU000A10C8F3',
+          'Вид активов': 'Облигация',
+          'Номинал': 1000,
+          'Балансовая цена': 98,
+          'Стоимость': 49000,
+          'Позиция': 50,
+        },
+      ]);
+
+      const map = await parser['buildUnifiedPriceMapFromQuik'](new Map());
+      const bond = map['RU000A10C8F3'];
+
+      expect(bond).toBeDefined();
+      expect(bond?.priceUnit).toBe('PERCENT_OF_NOMINAL');
+      expect(bond?.priceNormalized).toBe(true);
+    });
+
+    it('двойная конвертация отсутствует: RUB не конвертируется повторно', async () => {
+      mockSheetToJson.mockReturnValue([
+        {
+          'Инструмент': 'Сбербанк',
+          'Код инструмента': 'SBER',
+          'Вид активов': 'Акция',
+          'Балансовая цена': 280,
+          'Стоимость': 28500,
+          'Позиция': 100,
+        },
+      ]);
+
+      const assets = await parser.parseCurrentPortfolio();
+      const sber = assets.find((a) => a.ticker === 'SBER');
+
+      // Цена должна быть 285 (из Стоимость / Позиция), а не 285 * nominal
+      expect(sber?.currentPrice).toBe(285);
+      expect(sber?.priceUnit).toBe('RUB');
+      expect(sber?.priceNormalized).toBe(true);
     });
   });
 

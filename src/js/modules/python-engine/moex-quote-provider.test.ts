@@ -65,8 +65,8 @@ describe('MoexQuoteProvider', () => {
     const result = await provider.fetchQuotes(['SBER', 'GAZP']);
 
     expect(result).toEqual({
-      SBER: { price: 250.5, changePct: 1.25 },
-      GAZP: { price: 180.2, changePct: -0.75 },
+      SBER: { price: 250.5, changePct: 1.25, volumeTodayRub: 10 },
+      GAZP: { price: 180.2, changePct: -0.75, volumeTodayRub: 0 },
     });
     // Один запрос к мосту с корректной командой и payload
     expect(bridge.calls).toHaveLength(1);
@@ -81,7 +81,7 @@ describe('MoexQuoteProvider', () => {
     const result = await provider.fetchQuotes(['sber', '  ', '', 'GAZP']);
 
     expect(bridge.calls[0]!.payload?.tickers).toEqual(['SBER', 'GAZP']);
-    expect(result['SBER']).toEqual({ price: 250.5, changePct: 1.25 });
+    expect(result['SBER']).toEqual({ price: 250.5, changePct: 1.25, volumeTodayRub: 10 });
   });
 
   it('недоступный Python → {} (без проброса ошибки)', async () => {
@@ -139,6 +139,6 @@ describe('MoexQuoteProvider', () => {
     ]);
 
     expect(Object.keys(result)).toEqual(['OK1']);
-    expect(result['OK1']).toEqual({ price: 100, changePct: 1 });
+    expect(result['OK1']).toEqual({ price: 100, changePct: 1, volumeTodayRub: 0 });
   });
 });

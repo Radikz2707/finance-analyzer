@@ -59,20 +59,26 @@
       </div>
     </div>
 
-    <!-- AI Analysis Block -->
-    <div class="dashboard__ai" id="aiAnalysis">
-      <h2 class="dashboard__ai__heading">🤖 AI-рекомендации</h2>
-      <div class="dashboard__ai__loading" id="aiLoading">Загрузка данных...</div>
-      <div class="dashboard__ai__recommendations" id="aiRecommendations" style="display: none;"></div>
-    </div>
-
-    <!-- Director Chat Block -->
-    <div class="dashboard__chat" id="directorChat">
-      <h2 class="dashboard__chat__heading">🎯 Director — инвестиционный координатор</h2>
-      <div class="dashboard__chat__messages" id="directorChatMessages"></div>
-      <div class="dashboard__chat__input-container">
-        <input type="text" class="dashboard__chat__input" id="directorChatInput" placeholder="Спросите Director о портфеле...">
-        <button class="dashboard__chat__send" id="directorChatSend">Отправить</button>
+    <!-- Two-column layout: AI Analysis (left) + Director Chat (right) -->
+    <div class="dashboard__two-col">
+      <div class="dashboard__two-col__left">
+        <!-- AI Analysis Block -->
+        <div class="dashboard__ai" id="aiAnalysis">
+          <h2 class="dashboard__ai__heading">🤖 AI-рекомендации</h2>
+          <div class="dashboard__ai__loading" id="aiLoading">Загрузка данных...</div>
+          <div class="dashboard__ai__recommendations" id="aiRecommendations" style="display: none;"></div>
+        </div>
+      </div>
+      <div class="dashboard__two-col__right">
+        <!-- Director Chat Block -->
+        <div class="dashboard__chat" id="directorChat">
+          <h2 class="dashboard__chat__heading">🎯 Director</h2>
+          <div class="dashboard__chat__messages" id="directorChatMessages"></div>
+          <div class="dashboard__chat__input-container">
+            <input type="text" class="dashboard__chat__input" id="directorChatInput" placeholder="Спросите Director о портфеле...">
+            <button class="dashboard__chat__send" id="directorChatSend">Отправить</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

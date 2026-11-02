@@ -23,11 +23,15 @@
     "ses_ee281be1affe3LyqYgpDhlu8GT": {
       "worktreeId": "wt-1791496173848-1",
       "createdAt": "2026-10-08T21:49:39.141Z"
+    },
+    "ses_e63f862aaffepPN8LmWcUGul0n": {
+      "worktreeId": null,
+      "createdAt": "2026-11-02T11:31:47.187Z"
     }
   },
   "tabOrder": {
     "local": [
-      "pending:1"
+      "ses_e63f862aaffepPN8LmWcUGul0n"
     ]
   },
   "worktreeOrder": [

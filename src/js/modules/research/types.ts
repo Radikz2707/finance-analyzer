@@ -294,7 +294,7 @@ export type PortfolioMathStatus =
   | 'EXIT'
   | 'NO_TARGET';
 
-export type MathAgreement = 'AGREE' | 'DISAGREE' | 'UNCERTAIN';
+export type MathAgreement = 'AGREE' | 'DISAGREE' | 'UNCERTAIN' | 'INSUFFICIENT_DATA';
 
 export interface AIRecommendation {
   userTargetPercent: number;

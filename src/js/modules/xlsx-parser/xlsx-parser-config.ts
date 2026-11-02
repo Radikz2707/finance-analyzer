@@ -79,6 +79,10 @@ export const QUOTES_COLUMN_TICKER_ALT = 'Код';
 export const QUOTES_COLUMN_CURRENT_PRICE = 'Цена';
 export const QUOTES_COLUMN_DAILY_DYNAMICS = 'Динамика';
 export const QUOTES_COLUMN_DAILY_DYNAMICS_ALT = 'Изменение';
+export const QUOTES_COLUMN_TURNOVER = 'Оборот';
+export const QUOTES_COLUMN_TURNOVER_ALT1 = 'Оборот, руб';
+export const QUOTES_COLUMN_TURNOVER_ALT2 = 'Оборот, руб.';
+export const QUOTES_COLUMN_TURNOVER_ALT3 = 'Оборот за день';
 
 // ─── Ключевые слова для поиска строк ────────────────────────────────────────
 
