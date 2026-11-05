@@ -814,6 +814,11 @@ export function buildFinalConclusion(
       `Профицит доли: текущая ${assetAnalysis.currentPercent.toFixed(1)}% vs целевая ${assetAnalysis.targetPercent?.toFixed(1) ?? '—'}%`,
     );
     reasons.push(`Превышение: ${Math.abs(deviation).toFixed(1)} п.п.`);
+    if (assetAnalysis.deficitRub < 0) {
+      reasons.push(
+        `Рублёвый профицит: ${Math.abs(assetAnalysis.deficitRub).toLocaleString('ru-RU')} ₽`,
+      );
+    }
   } else if (mathAction === 'EXIT') {
     reasons.push('Целевая доля = 0% — плановый выход из позиции');
   } else if (mathAction === 'STABLE' || mathAction === 'HOLD') {
