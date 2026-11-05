@@ -5,6 +5,7 @@ import type {
   AgentConfig,
 } from './agent/types.js';
 import { createPipelineState } from './agent/types.js';
+import { PortfolioConfig } from '../../config/portfolio-config.js';
 import { DataAgent, type DataAgentOutput } from './agents/data-agent.js';
 import { ResearchAgentV2 } from './agents/research-agent-v2/research-agent-v2.js';
 import type { ResearchV1Output } from './agents/research-agent-v2/types.js';
@@ -17,18 +18,6 @@ import {
   NotificationAgent,
   type NotificationAgentOutput,
 } from './agents/notification-agent.js';
-// ReviewAgent удалён — используем заглушку
-export interface ReviewResult {
-  agreement: number;
-  agreementPercent: number;
-  discrepancies: string[];
-  hasDisagreement: boolean;
-  timeMs: number;
-  successful: number;
-  timeouts: number;
-  finalRecommendation?: string;
-}
-
 import {
   ScenarioAgent,
   type ScenarioAgentOutput,
@@ -62,7 +51,6 @@ export type PipelineStage =
   | 'research'
   | 'analysis'
   | 'ai'
-  | 'review'
   | 'scenario'
   | 'strategist'
   | 'notification';
@@ -85,8 +73,6 @@ export interface PipelineResult {
   totalDurationMs: number;
   /** Результаты каждого этапа */
   stages: Record<PipelineStage, PipelineStageResult | null>;
-  /** Результаты review */
-  reviewResult?: ReviewResult;
   /** Результаты Scenario Agent */
   scenarioResult?: ScenarioAgentOutput;
   /** Результаты Strategist Agent */
@@ -115,7 +101,6 @@ export interface PipelineConfig {
   research?: AgentConfig;
   analysis?: AgentConfig;
   ai?: AgentConfig;
-  review?: AgentConfig;
   scenario?: AgentConfig;
   strategist?: AgentConfig;
   notification?: AgentConfig;
@@ -143,7 +128,6 @@ const STAGE_AGENT_NAMES: Record<PipelineStage, string> = {
   research: 'ResearchAgent',
   analysis: 'AnalysisAgent',
   ai: 'AiAgent',
-  review: 'ReviewAgent',
   scenario: 'ScenarioAgent',
   strategist: 'StrategistAgent',
   notification: 'NotificationAgent',
@@ -173,7 +157,6 @@ export class PipelineCoordinator {
   private researchAgent: ResearchAgentV2;
   private analysisAgent: AnalysisAgent;
   private aiAgent: AiAgent;
-  // private reviewAgent: ReviewAgent; // Удалён
   private scenarioAgent: ScenarioAgent;
   private strategistAgent: StrategistAgent;
   private notificationAgent: NotificationAgent;
@@ -188,7 +171,6 @@ export class PipelineCoordinator {
     research: null,
     analysis: null,
     ai: null,
-    review: null,
     scenario: null,
     strategist: null,
     notification: null,
@@ -200,7 +182,6 @@ export class PipelineCoordinator {
   > = [];
 
   private agentSummaries: Record<string, AgentSummary> = {};
-  private reviewResultData: ReviewResult | null = null;
   private scenarioResultData: ScenarioAgentOutput | null = null;
   private strategistResultData: StrategistAgentOutput | null = null;
   private consiliumResultData: ConsiliumOutput | null = null;
@@ -222,7 +203,7 @@ export class PipelineCoordinator {
     recordedAt: string;
     checkedAt?: string;
   }> = [];
-  private readonly maxAiRecommendations = 5000;
+  private readonly maxAiRecommendations = PortfolioConfig.pipelineConfig.maxAiRecommendations;
 
   /** Подписаться на завершение стадии конвейера */
   onStageComplete(
@@ -295,7 +276,6 @@ export class PipelineCoordinator {
     });
     this.analysisAgent = new AnalysisAgent(this.config.analysis);
     this.aiAgent = new AiAgent(this.config.ai);
-    // this.reviewAgent = new ReviewAgent(this.config.review); // Удалён
     this.scenarioAgent = new ScenarioAgent(this.config.scenario);
     this.strategistAgent = new StrategistAgent(this.config.strategist);
     this.notificationAgent = new NotificationAgent(this.config.notification);
@@ -338,7 +318,6 @@ export class PipelineCoordinator {
       research: null,
       analysis: null,
       ai: null,
-      review: null,
       scenario: null,
       strategist: null,
       notification: null,
@@ -556,36 +535,6 @@ export class PipelineCoordinator {
       }
       this.cleanupAiRecommendations();
 
-      // ── Stage 4: Review Agent (заглушка — удалён) ──
-      const reviewResult = await this.runStage<'review', ReviewResult>(
-        'review',
-        async () => {
-          // ReviewAgent удалён — возвращаем заглушку
-          const stub: ReviewResult = {
-            agreement: 100,
-            agreementPercent: 100,
-            discrepancies: [],
-            hasDisagreement: false,
-            timeMs: 0,
-            successful: 0,
-            timeouts: 0,
-            finalRecommendation: 'ReviewAgent удалён',
-          };
-          return stub;
-        },
-      );
-
-      if (!reviewResult.result.success) {
-        console.warn(
-          `[Pipeline] Review Agent warning: ${reviewResult.result.error?.message}`,
-        );
-        // Review — необязательный этап, продолжаем
-      }
-
-      this.reviewResultData = reviewResult.result.success
-        ? reviewResult.result.data!
-        : null;
-
       // Извлекаем данные для новых агентов (в scope для всех этапов)
       const assetsAnalysisList =
         analysisOutput.portfolioAnalysis.assetsAnalysis;
@@ -738,7 +687,7 @@ export class PipelineCoordinator {
         this.consiliumResultData = consiliumOutput;
       }
 
-      // ── Stage 5: Notification Agent (ждёт data + analysis + ai + review + consilium) ──
+      // ── Stage 5: Notification Agent (ждёт data + analysis + ai + consilium) ──
       // Вычисляем статистику обратной связи
       const feedbackStats = this.computeFeedbackStats();
 
@@ -750,7 +699,6 @@ export class PipelineCoordinator {
           data: dataOutput,
           analysis: analysisOutput,
           ai: aiOutput,
-          review: this.reviewResultData ?? undefined,
           scenario: this.scenarioResultData ?? undefined,
           strategist: this.strategistResultData ?? undefined,
           consilium: this.consiliumResultData ?? undefined,
@@ -818,13 +766,14 @@ export class PipelineCoordinator {
             success: r.factualResult === 'correct',
           })),
         });
-        // execute возвращает AgentResult<unknown> — извлекаем data
+        // execute возвращает AgentResult — извлекаем data через guard
         type ImprovementOutput = {
           message?: string;
           patterns?: Array<{ pattern: string; description: string; accuracy: number; sampleSize: number; applicableTickers: string[]; recommendation: string }>;
           strategyWeights?: Record<string, number>;
         };
-        const output = (improvementResult as unknown as { data: ImprovementOutput }).data as ImprovementOutput;
+        const agentResult = improvementResult as AgentResult<ImprovementOutput>;
+        const output = agentResult.success ? agentResult.data : undefined;
         console.log(
           `[Pipeline] 🧠 SelfImprovementLoop: ${output?.message || 'завершён'}`,
         );
@@ -902,7 +851,6 @@ export class PipelineCoordinator {
       this.researchAgent.stop(),
       this.analysisAgent.stop(),
       this.aiAgent.stop(),
-      // this.reviewAgent.stop(), // Удалён
       this.scenarioAgent.stop(),
       this.strategistAgent.stop(),
       this.notificationAgent.stop(),
@@ -918,7 +866,6 @@ export class PipelineCoordinator {
       research: this.researchAgent.getSummary(),
       analysis: this.analysisAgent.getSummary(),
       ai: this.aiAgent.getSummary(),
-      // review: this.reviewAgent.getSummary(), // Удалён
       scenario: this.scenarioAgent.getSummary(),
       strategist: this.strategistAgent.getSummary(),
       notification: this.notificationAgent.getSummary(),
@@ -1321,7 +1268,6 @@ export class PipelineCoordinator {
         PipelineStage,
         PipelineStageResult | null
       >,
-      reviewResult: this.reviewResultData || undefined,
       scenarioResult: this.scenarioResultData || undefined,
       strategistResult: this.strategistResultData || undefined,
       consiliumResult: this.consiliumResultData || undefined,

@@ -211,8 +211,7 @@ export class DataAgent extends AgentBase {
   protected async executeInternal(_input: unknown): Promise<DataAgentOutput> {
     this.log.info('[DataAgent] >>> Начало парсинга Excel/QUIK');
 
-    try {
-      // Шаг 1: Синхронизация новых сделок
+    // Шаг 1: Синхронизация новых сделок
       await this.parser.syncNewTrades();
 
       // Шаг 2: Агрегация портфеля
@@ -447,10 +446,10 @@ export class DataAgent extends AgentBase {
         }
       }
 
-      // 4. Smart-Lab — fallback для тех, кого нет на MOEX
+      // 4. Smart-Lab — fallback для тех, у кого нет оборота (null ИЛИ 0)
       const smartlabTickers = missingBondTickers
-        .filter((b) => !moexTurnovers[b.ticker])
-        .slice(0, 10); // максимум 10, чтобы не перегружать
+        .filter((b) => !moexTurnovers[b.ticker] || moexTurnovers[b.ticker] === 0)
+        .slice(0, 50); // максимум 50, чтобы не перегружать
 
       if (smartlabTickers.length > 0) {
         this.log.info(
@@ -464,14 +463,15 @@ export class DataAgent extends AgentBase {
                 this.log.info(
                   `[DataAgent] 📊 Smart-Lab: ${b.ticker} volume=${data.volume} млн руб`,
                 );
-                return { ticker: b.ticker, volume: data.volume * 1e6 }; // млн → руб
+                return { ticker: b.ticker, isin: b.isin, volume: data.volume * 1e6 }; // млн → руб
               }
               return null;
             }),
           );
           for (const result of results) {
             if (result.status === 'fulfilled' && result.value) {
-              smartlabTurnovers[result.value.ticker] = result.value.volume;
+              // Используем ISIN как ключ
+              smartlabTurnovers[result.value.isin] = result.value.volume;
             }
           }
           if (Object.keys(smartlabTurnovers).length > 0) {
@@ -716,10 +716,5 @@ export class DataAgent extends AgentBase {
     this.parser.cleanup();
 
     return output;
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      this.log.error('[DataAgent] ❌ Ошибка executeInternal:', errorMsg);
-      throw err;
-    }
   }
 }

@@ -191,7 +191,7 @@ export type ResearchAgentV2Output = ResearchOperationResult;
 // ──────────────────────────────────────────────
 
 // NewsDriver удалён — используем заглушку
-type NewsImpact = { ticker: string; impact: number; sentiment: 'positive' | 'negative' | 'neutral' };
+export type NewsImpact = { ticker: string; impact: number };
 import type { DirectorFactsContext } from '../../director/director-types.js';
 
 /** Действие для V1-совместимости */

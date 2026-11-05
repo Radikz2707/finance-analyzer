@@ -43,7 +43,18 @@ export const PortfolioConfig = {
   } as const,
 
   /** Параметры YandexGPT */
-  yandexGpt: {
+  yandexgpt: {
     modelUri: 'gpt://d4ece1grc8m9rnbpj0l8/yandexgpt-lite',
+  } as const,
+
+  /** Параметры pipeline-анализа */
+  pipelineConfig: {
+    maxAiRecommendations: 5000,
+    baseChangeThresholdPct: 1.5,
+    minBudgetRub: 5000,
+    minBuyRub: 1000,
+    cacheTtlMs: 3600000,
+    defaultDepth: 5,
+    defaultPeriodDays: 90,
   } as const,
 } as const;

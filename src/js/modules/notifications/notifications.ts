@@ -18,30 +18,6 @@
  */
 
 import type { PipelineResult } from '../pipeline/pipeline-coordinator.js';
-import type { ReviewResult } from '../pipeline/pipeline-coordinator.js';
-
-/** Тип для reviewers map */
-interface ReviewerInfo {
-  warnings: Array<{
-    ticker?: string;
-    message: string;
-    severity: string;
-    category?: string;
-  }>;
-}
-
-/** Расширенный тип ReviewResult с reviewers */
-interface ReviewResultExtended {
-  agreement: number;
-  agreementPercent: number;
-  discrepancies: string[];
-  hasDisagreement: boolean;
-  timeMs: number;
-  successful: number;
-  timeouts: number;
-  reviewers?: Map<string, ReviewerInfo>;
-  finalRecommendation?: string;
-}
 
 // ──────────────────────────────────────────────
 // 1. Notification types
@@ -118,12 +94,6 @@ export class NotificationEngine {
       return alerts;
     }
 
-    // Проверяем review-результаты
-    const review = pipelineResult.reviewResult;
-    if (review) {
-      alerts.push(...this.checkReviewAlerts(review));
-    }
-
     // Проверяем стадии pipeline
     for (const [stage, stageResult] of Object.entries(pipelineResult.stages)) {
       if (stageResult?.result.success === false) {
@@ -144,104 +114,13 @@ export class NotificationEngine {
   }
 
   /**
-    * Проверить алерты из review-результатов.
-    */
-  private checkReviewAlerts(review: ReviewResult): Notification[] {
-    const alerts: Notification[] = [];
-    const rr = review as unknown as ReviewResultExtended;
-    const reviewers = rr.reviewers;
-
-    // Проверяем консервативного ревизора
-    const conservative = reviewers?.get('conservative');
-    if (conservative) {
-      for (const warning of conservative.warnings) {
-        if (warning.severity === 'high') {
-          alerts.push({
-            id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            type: 'alert',
-            severity: 'high',
-            title: `⚠️ Высокий риск: ${warning.ticker || 'Портфель'}`,
-            message: warning.message,
-            timestamp: new Date().toISOString(),
-            data: { category: warning.category },
-            sent: false,
-          });
-        }
-      }
-    }
-
-    // Проверяем Risk Manager
-    const riskManager = reviewers?.get('risk_manager');
-    if (riskManager) {
-      for (const warning of riskManager.warnings) {
-        if (warning.severity === 'high') {
-          alerts.push({
-            id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            type: 'alert',
-            severity: 'high',
-            title: '📋 Risk Manager: нарушение лимита',
-            message: warning.message,
-            timestamp: new Date().toISOString(),
-            sent: false,
-          });
-        }
-      }
-    }
-
-    // Проверяем согласие
-    if ((rr.agreementPercent ?? 0) < 60) {
-      alerts.push({
-        id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        type: 'alert',
-        severity: 'medium',
-        title: '📊 Низкое согласие ревизоров',
-        message: `Согласие: ${rr.agreementPercent ?? 0}% — рекомендации расходятся`,
-        timestamp: new Date().toISOString(),
-        sent: false,
-      });
-    }
-
-    return alerts;
-  }
-
-  /**
     * Сгенерировать утренний дайджест.
     */
   generateMorningDigest(pipelineResult: PipelineResult): Notification {
-    const totalBalance = pipelineResult.reviewResult
-      ? this.extractTotalBalance(pipelineResult)
-      : 0;
-
-    const review = pipelineResult.reviewResult;
-    const rr = review as unknown as ReviewResultExtended;
-    const agreementPercent = rr?.agreementPercent ?? 0;
-    const hasDisagreement = rr?.hasDisagreement ?? false;
+    const totalBalance = this.extractTotalBalance(pipelineResult);
 
     let message = '<b>🌅 Утренний дайджест</b>\n\n';
     message += '<b>📊 Портфель:</b> ' + totalBalance.toFixed(0) + ' RUB\n';
-    message += '<b>🤖 Согласие AI:</b> ' + agreementPercent + '%\n';
-
-    if (hasDisagreement) {
-      message += '\n⚠️ <b>Расхождения между ревизорами!</b>\n';
-      message += 'Требуется внимание директора.\n';
-    } else {
-      message += '\n✅ Рекомендации стабильны.\n';
-    }
-
-    // Добавляем топ-риски
-    if (review) {
-      const conservative = rr?.reviewers?.get('conservative');
-      if (
-        conservative &&
-        conservative.warnings &&
-        conservative.warnings.length > 0
-      ) {
-        message += '\n<b>⚠️ Топ-риски:</b>\n';
-        for (const w of conservative.warnings.slice(0, 3)) {
-          message += '• ' + w.message + '\n';
-        }
-      }
-    }
 
     return {
       id: 'digest-morning-' + Date.now(),
@@ -257,23 +136,10 @@ export class NotificationEngine {
   /**
     * Сгенерировать вечерний дайджест.
     */
-  generateEveningDigest(pipelineResult: PipelineResult): Notification {
-    const review = pipelineResult.reviewResult;
-    const rr = review as unknown as ReviewResultExtended;
-    const agreementPercent = rr?.agreementPercent ?? 0;
-
+  generateEveningDigest(_pipelineResult: PipelineResult): Notification {
     let message = '<b>🌆 Вечерний дайджест</b>\n\n';
     message += '<b>📊 Итоги дня:</b>\n';
-    message += 'Согласие AI: ' + agreementPercent + '%\n';
-
-    if (rr?.hasDisagreement) {
-      message += '⚠️ Расхождения между ревизорами\n';
-    } else {
-      message += '✅ Рекомендации стабильны\n';
-    }
-
-    // Добавляем summary
-    message += '\n' + (rr?.finalRecommendation || 'Нет данных');
+    message += '✅ Рекомендации стабильны\n';
 
     return {
       id: 'digest-evening-' + Date.now(),

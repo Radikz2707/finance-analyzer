@@ -159,7 +159,6 @@ function makeResult(
           }
         : null,
       ai: null,
-      review: null,
       strategist: null,
       scenario: null,
       notification: null,

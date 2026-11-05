@@ -87,11 +87,7 @@ export async function exportToJSON(result: PipelineResult): Promise<string> {
         },
       ]),
     ),
-    review: result.reviewResult ? {
-      agreementPercent: (result.reviewResult as unknown as Record<string, unknown>).agreementPercent as number ?? 0,
-      hasDisagreement: (result.reviewResult as unknown as Record<string, unknown>).hasDisagreement as boolean ?? false,
-      finalRecommendation: (result.reviewResult as unknown as Record<string, unknown>).finalRecommendation as string ?? '',
-    } : null,
+    review: null,
   };
 
   fs.writeFileSync(filepath, JSON.stringify(exportData, null, 2), 'utf-8');
@@ -128,15 +124,6 @@ export async function exportToMarkdown(result: PipelineResult): Promise<string> 
     const status = stage?.result.success ? '✅' : '❌';
     const duration = stage ? (stage.durationMs / 1000).toFixed(2) : 'N/A';
     md += '- **' + key + ':** ' + status + ' (' + duration + 's)\n';
-  }
-
-  // Review
-  if (result.reviewResult) {
-    md += '\n## Review\n\n';
-    const rr = result.reviewResult as unknown as Record<string, unknown>;
-    md += '- **Agreement:** ' + (rr.agreementPercent as number ?? 0) + '%\n';
-    md += '- **Disagreement:** ' + ((rr.hasDisagreement as boolean ?? false) ? 'Yes' : 'No') + '\n';
-    md += '- **Recommendation:** ' + (rr.finalRecommendation as string ?? '') + '\n';
   }
 
   fs.writeFileSync(filepath, md, 'utf-8');

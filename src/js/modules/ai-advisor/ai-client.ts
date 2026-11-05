@@ -1252,7 +1252,7 @@ export class AiClient {
     const response = await axios.post(
       modelConfig.baseUrl,
       {
-        modelUri: PortfolioConfig.yandexGpt.modelUri,
+        modelUri: PortfolioConfig.yandexgpt.modelUri,
         completionOptions: {
           modelCompletionOptions: {
             maxTokens: modelConfig.maxTokens,
@@ -2098,6 +2098,30 @@ export class AiClient {
       isLastAnomaly: boolean;
     }> = anomalyData || [];
 
+    // Формируем точные суммы для ребалансировки
+    const buyListLines: string[] = [];
+    const reduceListLines: string[] = [];
+    let totalBuyRub = 0;
+    let totalReduceRub = 0;
+
+    for (const asset of analysis.assetsAnalysis) {
+      if (asset.deficitRub > 0) {
+        buyListLines.push(`• ${asset.ticker} (${asset.name}): +${asset.deficitRub.toLocaleString('ru-RU')} руб. (целевая ${asset.targetPercent?.toFixed(1)}%, текущая ${asset.currentPercent.toFixed(1)}%)`);
+        totalBuyRub += asset.deficitRub;
+      } else if (asset.deficitRub < 0 && asset.status === 'REDUCE') {
+        reduceListLines.push(`• ${asset.ticker} (${asset.name}): -${Math.abs(asset.deficitRub).toLocaleString('ru-RU')} руб. (профицит ${Math.abs(asset.deficitRub).toLocaleString('ru-RU')} руб.)`);
+        totalReduceRub += Math.abs(asset.deficitRub);
+      }
+    }
+
+    const rebalanceData = {
+      freeCash: analysis.macro.freeCash ?? 0,
+      buyList: buyListLines.length > 0 ? buyListLines.join('\n') : 'нет активов с дефицитом',
+      reduceList: reduceListLines.length > 0 ? reduceListLines.join('\n') : 'нет активов с профицитом',
+      totalBuyRub,
+      totalReduceRub,
+    };
+
     const systemPrompt = buildSystemPrompt(
       macroData.keyRate,
       newsContext,
@@ -2124,6 +2148,7 @@ export class AiClient {
       behavioralFactors,
       technicalIndicators.length > 0 ? technicalIndicators : undefined, // ← технические индикаторы
       liquidityAnalysis ? this.toLiquidityContext(liquidityAnalysis) : undefined, // ← анализ ликвидности
+      rebalanceData, // ← точные суммы для ребалансировки
     );
     const macroPercentages = actualMacroPercentages || {
       stocks: analysis.macro.stocksPercent,

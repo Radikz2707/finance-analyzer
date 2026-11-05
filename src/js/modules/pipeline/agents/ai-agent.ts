@@ -172,28 +172,15 @@ export class AiAgent extends AgentBase {
       );
     }
 
-    console.log('[AiAgent] DEBUG: контекст памяти загружен, деструктуризация input');
-    console.log('[AiAgent] DEBUG: input.keys=' + Object.keys(input).join(','));
-    console.log('[AiAgent] DEBUG: analysis=' + (input.analysis ? 'exists' : 'null'));
     const { data, research, analysis } = input;
-    const { macroGoals, historicalTrades, investedFunds, accounts, anomalies } = data;
+    const { macroGoals, historicalTrades, investedFunds, accounts, anomalies, liquidityAnalysis } = data;
     const { snapshots = new Map() } = research;
     const { portfolioAnalysis, riskValidation, income } = analysis;
-
-    console.log(
-      '[AiAgent] DEBUG: активов=' +
-        portfolioAnalysis.assetsAnalysis.length +
-        ', snapshots.size=' +
-        snapshots.size,
-    );
-    process.stdout.write('[AiAgent] DEBUG: после console.log активов\n');
 
     if (portfolioAnalysis.assetsAnalysis.length === 0) {
       console.warn('[AiAgent] Нет активов для AI-анализа');
       return this.emptyResult();
     }
-
-    console.log('[AiAgent] DEBUG: проверка активов пройдена, начинаем thesis');
 
     // Шаг 2: Генерация InvestmentThesis для каждого актива
     const thesisEngine = new InvestmentThesisEngine();
@@ -261,7 +248,6 @@ export class AiAgent extends AgentBase {
     console.log('[AiAgent] DEBUG: thesis готово, Guardrails');
 
     // Шаг 3: Guardrails — проверка RECOVERY_ONLY
-    console.log('[AiAgent] DEBUG: начало Guardrails');
     const recoveryTickers = getRecoveryOnlyTickers(positionsRepo);
     const guardrailsContext = buildGuardrailsContext(
       recoveryTickers,
@@ -274,10 +260,7 @@ export class AiAgent extends AgentBase {
       );
     }
 
-    console.log('[AiAgent] DEBUG: Guardrails готово, подготовка к AiClient');
-
     // Шаг 3: Вызов AiClient (GigaChat)
-    console.log('[AiAgent] DEBUG: начало вызова AiClient');
     const portfolioReportData: PortfolioReportData = {
       macro: data.macroGoals,
       assetsAnalysis: portfolioAnalysis.assetsAnalysis,
@@ -335,6 +318,7 @@ export class AiAgent extends AgentBase {
             zScoreLast: a.zScoreLast,
             isLastAnomaly: a.isLastAnomaly,
           })),
+          liquidityAnalysis,
         );
 
         if (aiClientResult.success) {
@@ -496,12 +480,14 @@ export class AiAgent extends AgentBase {
       const mathAction = asset.status; // PortfolioMathStatus
       const aiAction = structured.recommendedAction; // AiAction | null
       const mathAgreement = structured.agreementWithPortfolioMath;
+      const aiConfidence = structured.confidence ?? 0;
 
       const agreement = agreeMathAndAi(
         asset.ticker,
         mathAction,
         aiAction,
         mathAgreement,
+        aiConfidence,
       );
 
       // Проверяем исполнение с учётом защитных ограничений

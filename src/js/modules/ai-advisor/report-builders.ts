@@ -824,10 +824,8 @@ export function buildFinalConclusion(
     reasons.push('Целевая доля не установлена в Excel');
   }
 
-  // AI rationale как дополнительная причина
-  if (aiRecommendation && aiRecommendation.rationale) {
-    reasons.push('AI: ' + aiRecommendation.rationale);
-  }
+  // AI rationale НЕ добавляем в итоговое заключение — AI выдумывает числа
+  // Rationale используется только в текстовом отчёте, не в структурированном выводе
 
   // ─── 3. Основные риски ───
   if (assetAnalysis.isConcentrated) {

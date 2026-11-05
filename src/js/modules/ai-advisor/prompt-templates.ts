@@ -291,6 +291,13 @@ export interface LiquidityContext {
       behavioralFactors?: BehavioralFactors,
       technicalIndicators?: TechnicalIndicators[],
       liquidityContext?: LiquidityContext,
+      rebalanceData?: {
+        freeCash: number;
+        buyList: string;
+        reduceList: string;
+        totalBuyRub: number;
+        totalReduceRub: number;
+      },
     ): string {
   const currentMonth = new Date().toLocaleDateString('ru-RU', {
     month: 'long',
@@ -361,6 +368,8 @@ export interface LiquidityContext {
     '• ЗАПРЕЩЕНО: "гарантированная доходность", "безрисковый", "100% гарантия".\n' +
     '• ЗАПРЕЩЕНО: выдумывать отсутствующие данные и факты.\n' +
     '• ЗАПРЕЩЕНО: выдумывать доходность облигаций. Если данные не переданы — пиши «нет данных».\n' +
+    '• ЗАПРЕЩЕНО: выдумывать суммы дефицита/профицита в рублях. Используй ТОЛЬКО данные из раздела «ТОЧНЫЕ СУММЫ ДЛЯ РЕБАЛАНСИРОВКИ».\n' +
+    '• Если в разделе «ТОЧНЫЕ СУММЫ» нет актива — пиши «сумма не указана» вместо выдумывания.\n' +
     buildDeepAnalysisRules() +
     '\n' +
     '=== ИНВЕСТИЦИОННЫЙ REASONING ===\n' +
@@ -413,7 +422,7 @@ export interface LiquidityContext {
 ${bondAnalyses.map(bond => `
 --- ${bond.isin} (${bond.name}) ---
 • Эмитент: ${bond.issuer}
-• Доля в портфеле: ${(bond.balanceValue / 1000000).toFixed(2)} млн руб., кол-во: ${bond.quantity}
+• Рыночная стоимость: ${formatRub(bond.balanceValue)} руб. (${(bond.balanceValue / 1000000).toFixed(2)} млн руб.), кол-во: ${bond.quantity}
 • Доходность:
   - Current Yield: ${bond.yieldAnalysis.currentYield?.toFixed(2) || 'N/A'}%
   - YTM: ${bond.yieldAnalysis.ytm?.toFixed(2) || 'N/A'}%
@@ -497,6 +506,19 @@ ${ind.isLastAnomaly ? '⚠️ Аномалия на последнем баре!
 • Нисходящий тренд + высокая волатильность → осторожность с покупками
 • Z-score > 2 или < -2 → аномальное движение, требует внимания
 • НЕ используй технические индикаторы как единственный аргумент — комбинируй с фундаменталом
+` : '') +
+    (rebalanceData ? `
+=== ТОЧНЫЕ СУММЫ ДЛЯ РЕБАЛАНСИРОВКИ ===
+⚠️ НЕ выдумывай суммы. Используй ТОЛЬКО эти данные:
+• Свободный кэш: ${rebalanceData.freeCash.toLocaleString('ru-RU')} руб.
+• Активы с дефицитом (КУПИТЬ):
+${rebalanceData.buyList}
+• Активы с профицитом (ПРОДАТЬ):
+${rebalanceData.reduceList}
+• Итого нужно купить: ${rebalanceData.totalBuyRub.toLocaleString('ru-RU')} руб.
+• Итого можно продать: ${rebalanceData.totalReduceRub.toLocaleString('ru-RU')} руб.
+
+Используй эти точные суммы в резюме. НЕ рассчитывай суммы самостоятельно.
 ` : '') +
     (liquidityContext ? `
 === АНАЛИЗ ЛИКВИДНОСТИ ПОРТФЕЛЯ ===

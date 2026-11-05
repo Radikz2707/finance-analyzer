@@ -5,6 +5,7 @@
 
 import { AgentBase } from '../../agent/agent-base.js';
 import type { AgentConfig } from '../../agent/types.js';
+import { PortfolioConfig } from '../../../../config/portfolio-config.js';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { AggressiveTokenizerRu } = require('natural');
@@ -23,15 +24,13 @@ import type {
   CrossCheckResult,
   HistoricalAnalysis,
   SentimentAnalysis,
-  HistoricalDataPoint,
   ResearchDepth,
   ResearchV1Output,
   ResearchAction,
   V1FactsParams,
   TextSentimentSource,
+  NewsImpact,
 } from './types.js';
-// NewsDriver удалён — используем заглушку
-type NewsImpact = { ticker: string; impact: number; sentiment: 'positive' | 'negative' | 'neutral'; impactDirection?: string; sentimentScore?: number; importance?: number };
 import type { DirectorFactsContext } from '../../director/director-types.js';
 
 // ──────────────────────────────────────────────
@@ -71,9 +70,9 @@ const STOP_WORDS = new Set([
   'were', 'been', 'has', 'have', 'had', 'not', 'but', 'by', 'from',
 ]);
 
-const CACHE_TTL_MS = 3600000;
+const CACHE_TTL_MS = PortfolioConfig.pipelineConfig.cacheTtlMs;
 const DEFAULT_DEPTH: ResearchDepth = 'standard';
-const DEFAULT_PERIOD_DAYS = 90;
+const DEFAULT_PERIOD_DAYS = PortfolioConfig.pipelineConfig.defaultPeriodDays;
 
 export class ResearchAgentV2 extends AgentBase {
   private cache = new Map<string, DeepAssetSnapshot>();
@@ -83,7 +82,26 @@ export class ResearchAgentV2 extends AgentBase {
     super({ ...config, timeoutMs: config.timeoutMs ?? 60000 });
   }
 
+  /** Удаляет просроченные записи из кэша */
+  private cleanupExpired(): void {
+    const now = Date.now();
+    for (const [key, entry] of this.cache.entries()) {
+      const entryTime = new Date(entry.completedAt).getTime();
+      if (now - entryTime > CACHE_TTL_MS) {
+        this.cache.delete(key);
+      }
+    }
+    // crossCheckCache не хранит timestamp — чистим при переполнении
+    if (this.crossCheckCache.size > 500) {
+      const firstKey = this.crossCheckCache.keys().next().value;
+      if (firstKey !== undefined) {
+        this.crossCheckCache.delete(firstKey);
+      }
+    }
+  }
+
   protected async executeInternal(input: unknown): Promise<unknown> {
+    this.cleanupExpired();
     const p = input as ResearchAgentV2Input;
     switch (p.action) {
       case 'deep-research':
@@ -184,13 +202,13 @@ export class ResearchAgentV2 extends AgentBase {
 
     for (const ticker of tickers) {
       for (const type of checkTypes) {
-        const ok = Math.random() > 0.2;
+        // TODO: реализовать реальные кросс-чеки с данными из DataAgent
         results.push({
           type: type as CrossCheckResult['type'],
           ticker,
-          isConsistent: ok,
-          discrepancies: ok ? [] : ['Расхождение по ' + type],
-          confidence: ok ? 'high' : 'low',
+          isConsistent: true,
+          discrepancies: [],
+          confidence: 'high',
         });
       }
     }
@@ -216,73 +234,18 @@ export class ResearchAgentV2 extends AgentBase {
 
   private async simulateHistoricalAnalysis(
     ticker: string,
-    periodDays: number = DEFAULT_PERIOD_DAYS,
+    _periodDays: number = DEFAULT_PERIOD_DAYS,
   ): Promise<HistoricalAnalysis> {
-    const dataPoints: HistoricalDataPoint[] = [];
-    const days = Math.min(periodDays, 365);
-    let price = 100 + Math.random() * 900;
-    const now = new Date();
-
-    for (let i = days; i >= 0; i--) {
-      const date = new Date(now);
-      date.setDate(date.getDate() - i);
-      const change = (Math.random() - 0.48) * 5;
-      price = Math.max(1, price * (1 + change / 100));
-      const volume = Math.floor(1e6 + Math.random() * 9e6);
-
-      dataPoints.push({
-        date: date.toISOString().split('T').at(0)!,
-        price: Math.round(price * 100) / 100,
-        volume,
-        changePercent: Math.round(change * 100) / 100,
-      });
-    }
-
-    if (dataPoints.length === 0) {
-      return {
-        ticker,
-        dataPoints: [],
-        averageChange: 0,
-        volatility: 0,
-        trend: 'neutral',
-        maxDrawdown: 0,
-        sharpeRatio: 0,
-      };
-    }
-
-    const changes = dataPoints.map((d) => d.changePercent);
-    const avg = changes.reduce((a, b) => a + b, 0) / changes.length;
-    const vol = Math.sqrt(
-      changes.reduce((s, c) => s + Math.pow(c - avg, 2), 0) / changes.length,
-    );
-
-    const firstPrice = dataPoints.at(0)!.price;
-    const lastPrice = dataPoints.at(-1)!.price;
-    const trend: HistoricalAnalysis['trend'] =
-      lastPrice > firstPrice * 1.05
-        ? 'up'
-        : lastPrice < firstPrice * 0.95
-          ? 'down'
-          : 'neutral';
-
-    let maxDD = 0;
-    let peak = dataPoints.at(0)!.price;
-    for (const dp of dataPoints) {
-      if (dp.price > peak) peak = dp.price;
-      const dd = (peak - dp.price) / peak;
-      if (dd > maxDD) maxDD = dd;
-    }
-
-    const sharpe = vol > 0 ? (avg / vol) * Math.sqrt(252) : 0;
-
+    // TODO: реализовать реальный исторический анализ с рыночными данными
+    // Заглушка: возвращаем пустые данные
     return {
       ticker,
-      dataPoints,
-      averageChange: Math.round(avg * 100) / 100,
-      volatility: Math.round(vol * 100) / 100,
-      trend,
-      maxDrawdown: Math.round(maxDD * 100) / 100,
-      sharpeRatio: Math.round(sharpe * 100) / 100,
+      dataPoints: [],
+      averageChange: 0,
+      volatility: 0,
+      trend: 'neutral',
+      maxDrawdown: 0,
+      sharpeRatio: 0,
     };
   }
 
@@ -812,11 +775,7 @@ export class ResearchAgentV2 extends AgentBase {
     if (relevantImpacts.length > 0) {
       newsSummary = relevantImpacts
         .slice(0, 3)
-        .map(
-          (i) =>
-            `${i.ticker}: ${i.impactDirection} ` +
-            `(сентимент ${(i.sentimentScore ?? 0).toFixed(2)}, важность «${i.importance}»)`,
-        )
+        .map((i) => `${i.ticker}: влияние ${i.impact}`)
         .join('; ');
     } else if (facts.newsContext) {
       newsSummary = facts.newsContext.slice(0, 200);

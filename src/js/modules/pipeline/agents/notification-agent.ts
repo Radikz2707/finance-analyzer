@@ -17,18 +17,6 @@ import { resolveReportsDir } from '../../app-paths.js';
 import type { DataAgentOutput } from './data-agent.js';
 import type { AnalysisAgentOutput } from './analysis-agent.js';
 import type { AiAgentOutput } from './ai-agent.js';
-// ReviewAgent удалён — используем заглушку
-export interface ReviewResult {
-  agreement: number;
-  agreementPercent: number;
-  discrepancies: string[];
-  hasDisagreement: boolean;
-  timeMs: number;
-  successful: number;
-  timeouts: number;
-  reviewers?: Array<{ role: string; opinion: string }>;
-  finalRecommendation?: string;
-}
 import type { ScenarioAgentOutput } from '../agents/scenario-agent.js';
 import type { StrategistAgentOutput } from '../agents/strategist-agent.js';
 import type { ConsiliumOutput } from '../agents/consilium.js';
@@ -109,7 +97,6 @@ export class NotificationAgent extends AgentBase {
     data: DataAgentOutput;
     analysis: AnalysisAgentOutput;
     ai: AiAgentOutput;
-    review?: ReviewResult;
     scenario?: ScenarioAgentOutput;
     strategist?: StrategistAgentOutput;
     consilium?: ConsiliumOutput;
@@ -149,12 +136,6 @@ export class NotificationAgent extends AgentBase {
       ai,
       input.scenario,
       input.strategist,
-    );
-
-    console.log(
-      '[NotificationAgent] buildHtmlReport returned ' +
-        htmlContent.length +
-        ' chars',
     );
 
     // ── Шаг 2: Генерация Markdown-отчёта ──
@@ -286,29 +267,15 @@ export class NotificationAgent extends AgentBase {
 
     // Добавляем сценарии "что если" в HTML отчет
     let html = reportBuilder.buildHtml();
-    console.log(
-      `[NotificationAgent] scenario=${!!scenario}, scenarios.length=${scenario?.scenarios?.length ?? 0}, ` +
-        `bestScenarioId=${scenario?.bestScenarioId ?? 'null'}`,
-    );
-    console.log(
-      `[NotificationAgent] strategist=${!!strategist}, decisions.length=${strategist?.decisions?.length ?? 0}`,
-    );
+
     if (scenario && scenario.scenarios.length > 0) {
-      console.log('[NotificationAgent] Calling buildScenarioSectionHtml...');
       const scenarioHtml = this.buildScenarioSectionHtml(scenario);
-      console.log(
-        `[NotificationAgent] buildScenarioSectionHtml returned ${scenarioHtml.length} chars`,
-      );
       html += scenarioHtml;
     }
 
     // Добавляем стратега в HTML отчет
     if (strategist && strategist.decisions.length > 0) {
-      console.log('[NotificationAgent] Calling buildStrategistSectionHtml...');
       const strategistHtml = this.buildStrategistSectionHtml(strategist);
-      console.log(
-        `[NotificationAgent] buildStrategistSectionHtml returned ${strategistHtml.length} chars`,
-      );
       html += strategistHtml;
     }
 

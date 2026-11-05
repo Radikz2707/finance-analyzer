@@ -22,6 +22,7 @@ export type AgreementStatus =
   | 'CONFLICT'         // Конфликт действий
   | 'MATH_ONLY'        // Только PortfolioMath вернул результат
   | 'AI_ONLY'          // Только ИИ вернул результат
+  | 'AI_OVERRIDE'      // ИИ перевесил Math при высокой уверенности
   | 'NO_DATA';         // Нет данных от обоих модулей
 
 /**
@@ -203,6 +204,7 @@ function describeAction(
  * @param mathAction — действие от PortfolioMath (может быть PortfolioMathStatus)
  * @param aiAction — действие от ИИ (AiAction)
  * @param mathAgreement — согласие ИИ с PortfolioMath (из AI JSON)
+ * @param aiConfidence — уверенность ИИ (0-1), используется для разрешения конфликта при высокой уверенности
  * @returns результат согласования
  */
 export function agreeMathAndAi(
@@ -210,6 +212,7 @@ export function agreeMathAndAi(
   mathAction: AiAction | PortfolioMathStatus | null,
   aiAction: AiAction | null,
   mathAgreement: MathAgreement | null = null,
+  aiConfidence: number = 0,
 ): MathAiAgreement {
   // Нормализуем mathAction в AiAction для сравнения
   const normalizedMath = normalizeToAiAction(
@@ -293,26 +296,42 @@ export function agreeMathAndAi(
   // Если ИИ явно не согласен (DISAGREE) — конфликт подтверждён
   const isDisagreement = mathAgreement === 'DISAGREE';
 
+  // ─── Разрешение AI при высокой уверенности ───
+  // Если AI уверен > 0.7 и конфликт LOW severity — разрешаем AI
+  // Это позволяет AI перевесить Math при наличии веских аргументов
+  const AI_CONFIDENCE_THRESHOLD = 0.7;
+  const aiOverridesMath =
+    aiConfidence >= AI_CONFIDENCE_THRESHOLD &&
+    severity === 'low' &&
+    !isDisagreement;
+
   // При конфликте HIGH severity — всегда требует ручной проверки
   // При MEDIUM — также требует проверки (SELL vs EXIT/REDUCE)
   // При LOW — можно пропустить, но логируем
-  const requiresReview = severity !== 'low' || isDisagreement;
+  const requiresReview = aiOverridesMath
+    ? false
+    : (severity !== 'low' || isDisagreement);
+
+  // Если AI перевешивает — используем AI-действие
+  const finalAction = aiOverridesMath ? aiAction : null;
 
   return {
     ticker,
     mathAction,
     aiAction,
-    finalAction: null, // При конфликте — нет финального действия
-    conflict: true,
-    conflictReason,
+    finalAction,
+    conflict: !aiOverridesMath,
+    conflictReason: aiOverridesMath ? null : conflictReason,
     requiresReview,
-    executionAllowed: false, // БЛОКИРУЕМ исполнение при конфликте
-    status: 'CONFLICT',
-    conflictDetails: {
-      mathDescription: describeAction(mathAction),
-      aiDescription: describeAction(aiAction),
-      severity,
-    },
+    executionAllowed: aiOverridesMath,
+    status: aiOverridesMath ? 'AI_OVERRIDE' : 'CONFLICT',
+    conflictDetails: aiOverridesMath
+      ? undefined
+      : {
+          mathDescription: describeAction(mathAction),
+          aiDescription: describeAction(aiAction),
+          severity,
+        },
   };
 }
 

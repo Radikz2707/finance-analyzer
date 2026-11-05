@@ -179,6 +179,11 @@ export function buildInteractiveOrders(
       continue;
     }
 
+    // Не генерируем интерактивные ордера для HOLD — это «ничего не делать»
+    if (action === 'HOLD') {
+      continue;
+    }
+
     // Политика пользователя: тикеры из noSellTickers не продаются.
     // Снижение их доли — только размыванием (докупкой других активов).
     let noSellDowngraded = false;

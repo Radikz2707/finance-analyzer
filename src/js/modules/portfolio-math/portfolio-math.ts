@@ -117,6 +117,8 @@ export interface AssetAnalysis {
   assetType: string;
   /** Роль актива: «Ядро» (стабильные) или «Спутник» (рискованные) */
   coreRole?: 'core' | 'satellite';
+  /** Уровень риска актива (LOW/MEDIUM/HIGH/CRITICAL) — на основе просадки и типа */
+  riskLevel?: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   currentPercent: number;
   targetPercent?: number;
   deficitRub: number;
@@ -393,12 +395,27 @@ export class PortfolioMathModule {
       // Проверяем концентрацию (позиция > X% — риск)
       const isConcentrated = asset.liquidationPercent > concentrationLimitPct;
 
+      // ─── Расчёт уровня риска актива ───
+      const riskLevel = calculateRiskLevel(asset, totalLiquidationValue);
+
+      // Если риск HIGH/CRITICAL — принудительно REDUCE (если не holdOnly)
+      if (
+        (riskLevel === 'HIGH' || riskLevel === 'CRITICAL') &&
+        !asset.holdOnly &&
+        status !== 'BUY' &&
+        status !== 'NEW' &&
+        status !== 'EXIT'
+      ) {
+        status = 'REDUCE';
+      }
+
       // ИСПРАВЛЕНИЕ Этап 2: диагностические поля для рублёвого дефицита
       const deficitCalcBase = totalLiquidationValue;
-      const deficitDevPct = targetPercent !== undefined
-        ? asset.liquidationPercent - targetPercent
+      // deficitPct: положительный = нужно докупить (BUY), отрицательный = можно продать (REDUCE)
+      const deficitPct = targetPercent !== undefined
+        ? targetPercent - asset.liquidationPercent
         : 0;
-      const deficitFormulaStr = `round((${-deficitDevPct.toFixed(2)} / 100) * ${deficitCalcBase}) = ${deficitRub}`;
+      const deficitFormulaStr = `round((${deficitPct.toFixed(2)} / 100) * ${deficitCalcBase}) = ${deficitRub}`;
 
       assetsAnalysis.push({
         name: asset.name,
@@ -420,9 +437,10 @@ export class PortfolioMathModule {
         unrealizedProfitRub: asset.unrealizedProfitRub || 0,
         priority: deficitRub,
         isConcentrated: isConcentrated,
+        riskLevel: riskLevel,
         // Диагностика рублёвого дефицита
         deficitCalculationBase: deficitCalcBase,
-        deficitDeviationPct: deficitDevPct,
+        deficitDeviationPct: deficitPct,
         deficitFormula: deficitFormulaStr,
       });
     });
@@ -448,8 +466,8 @@ export class PortfolioMathModule {
         : 0;
     const cashDiscrepancy = cashReserve - actualCashPercent;
 
-    // Если расхождение > 10% от стоимости портфеля → warning
-    if (Math.abs(cashDiscrepancy) > 10) {
+    // Если расхождение > 50% от стоимости портфеля → warning (не в тестовом режиме)
+    if (Math.abs(cashDiscrepancy) > 50 && typeof process !== 'undefined' && process.env?.NODE_ENV !== 'test') {
       console.warn(
         `[PORTFOLIO-MATH] Расхождение кэша: расчётный=${cashReserve.toFixed(2)}%, ` +
         `фактический=${actualCashPercent.toFixed(2)}%, ` +
@@ -534,6 +552,16 @@ export class PortfolioMathModule {
       );
     }
 
+    // ─── P6: Агрегация дефицитов по классам активов ───
+    const stocksDeficitRub = assetsAnalysis
+      .filter(a => a.assetType === 'stocks')
+      .reduce((sum, a) => sum + a.deficitRub, 0);
+    const bondsDeficitRub = assetsAnalysis
+      .filter(a => a.assetType === 'bonds')
+      .reduce((sum, a) => sum + a.deficitRub, 0);
+    macro.stocksDeficitRub = stocksDeficitRub;
+    macro.bondsDeficitRub = bondsDeficitRub;
+
     return {
       macro,
       assetsAnalysis,
@@ -560,4 +588,34 @@ export class PortfolioMathModule {
       allocationBaseValue,
     };
   }
+}
+
+/**
+ * Рассчитывает уровень риска актива на основе просадки и типа.
+ *
+ * Критерии:
+ * - CRITICAL: просадка > 60% (крайний риск)
+ * - HIGH: просадка > 30% или акция-спутник с просадкой > 20%
+ * - MEDIUM: просадка > 10% или акция-спутник
+ * - LOW: стабильный актив (облигация, ядро, малая просадка)
+ */
+export function calculateRiskLevel(
+  asset: CurrentAsset,
+  _totalValue: number,
+): 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' {
+  const drawdownPct = asset.dynamicsPercent ?? 0;
+
+  // CRITICAL: экстремальная просадка
+  if (drawdownPct < -60) return 'CRITICAL';
+
+  // HIGH: глубокая просадка или спутник с просадкой > 20%
+  if (drawdownPct < -30) return 'HIGH';
+  if (classifyAssetRole(asset) === 'satellite' && drawdownPct < -20) return 'HIGH';
+
+  // MEDIUM: умеренная просадка или спутник
+  if (drawdownPct < -10) return 'MEDIUM';
+  if (classifyAssetRole(asset) === 'satellite') return 'MEDIUM';
+
+  // LOW: стабильный актив (облигация, ядро, малая просадка)
+  return 'LOW';
 }

@@ -19,6 +19,7 @@ import type { AssetAnalysis } from '../../portfolio-math/portfolio-math.js';
 import type { AiAction } from '../../research/types.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
+import { PortfolioConfig } from '../../../config/portfolio-config.js';
 
 // ──────────────────────────────────────────────
 // 1. Types
@@ -100,10 +101,6 @@ export interface ScenarioAgentOutput {
 // 2. ScenarioAgent
 // ──────────────────────────────────────────────
 
-const BASE_CHANGE_THRESHOLD_PCT = 1.5; // значимое улучшение структуры, п.п.
-const MIN_BUDGET_RUB = 5000; // минимальный бюджет для сценария покупки
-const MIN_BUY_RUB = 1000; // минимальная сумма покупки
-
 /**
  * ScenarioAgent — агент «что если».
  *
@@ -112,6 +109,11 @@ const MIN_BUY_RUB = 1000; // минимальная сумма покупки
  * не фиксировать глубокие убытки).
  */
 export class ScenarioAgent extends AgentBase {
+  // Пороги из единого конфига
+  private readonly baseChangeThresholdPct = PortfolioConfig.pipelineConfig.baseChangeThresholdPct;
+  private readonly minBudgetRub = PortfolioConfig.pipelineConfig.minBudgetRub;
+  private readonly minBuyRub = PortfolioConfig.pipelineConfig.minBuyRub;
+
   constructor(config?: AgentConfig) {
     super(config ?? { name: 'ScenarioAgent' });
   }
@@ -218,12 +220,12 @@ export class ScenarioAgent extends AgentBase {
 
     if (pnlStatus === 'CALCULATED') {
       if (
-        baselineDeviation - dev >= BASE_CHANGE_THRESHOLD_PCT &&
+        baselineDeviation - dev >= this.baseChangeThresholdPct &&
         result.projectedUnrealizedPnL >= baselinePnL
       ) {
         verdict = 'IMPROVES';
         rationale += ' Структура заметно улучшена без ущерба для P&L.';
-      } else if (dev > baselineDeviation + BASE_CHANGE_THRESHOLD_PCT) {
+      } else if (dev > baselineDeviation + this.baseChangeThresholdPct) {
         verdict = 'WORSENS';
         rationale += ' Структура ухудшена относительно базовой.';
       }
@@ -293,7 +295,7 @@ export class ScenarioAgent extends AgentBase {
     const result = this.applyChanges(assets, total, optimizedChanges);
     const dev = result.structureDeviationPct;
     const realizedPnL = result.realizedPnLRub; // signed: отрицательный = убыток
-    const improved = baselineDeviation - dev >= BASE_CHANGE_THRESHOLD_PCT;
+    const improved = baselineDeviation - dev >= this.baseChangeThresholdPct;
     const optimizedPnlStatus = this.calcPnlStatus(assets, optimizedChanges);
 
     const verdict: ScenarioResult['verdict'] =
@@ -564,7 +566,7 @@ export class ScenarioAgent extends AgentBase {
     // Финансирование: сначала свободные средства, затем прибыльные позиции
     let budget = Math.max(0, freeCash);
     const sellAsset = sellCandidates[0];
-    if (budget < MIN_BUDGET_RUB && sellAsset) {
+    if (budget < this.minBudgetRub && sellAsset) {
       const sellValue =
         (sellAsset.quantity ?? 0) * (sellAsset.currentPrice ?? 0);
       const amount = Math.min(sellValue, sellAsset.currentPrice * 20);
@@ -576,12 +578,12 @@ export class ScenarioAgent extends AgentBase {
       });
     }
 
-    if (budget < MIN_BUDGET_RUB) {
+    if (budget < this.minBudgetRub) {
       return null;
     }
 
     const amount = Math.min(budget, Math.max(0, buyAsset.deficitRub));
-    if (amount < MIN_BUY_RUB) {
+    if (amount < this.minBuyRub) {
       return null;
     }
     changes.push({
@@ -592,7 +594,7 @@ export class ScenarioAgent extends AgentBase {
 
     const result = this.applyChanges(assets, total, changes);
     const dev = result.structureDeviationPct;
-    const improved = baselineDeviation - dev >= BASE_CHANGE_THRESHOLD_PCT;
+    const improved = baselineDeviation - dev >= this.baseChangeThresholdPct;
     const flexiblePnlStatus = this.calcPnlStatus(assets, changes);
     const verdict: ScenarioResult['verdict'] = improved
       ? 'IMPROVES'

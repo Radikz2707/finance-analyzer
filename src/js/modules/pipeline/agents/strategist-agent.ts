@@ -110,15 +110,6 @@ export class StrategistAgent extends AgentBase {
       const asset = assetByTicker.get(proposal.ticker.toUpperCase());
 
       if (!asset) {
-        decisions.push({
-          ticker: proposal.ticker,
-          name: proposal.ticker,
-          suggestedAction: proposal.action,
-          finalAction: proposal.action,
-          drawdownPercent: null,
-          concentrationPercent: null,
-          note: 'Актив не найден в анализе.',
-        });
         continue;
       }
 
