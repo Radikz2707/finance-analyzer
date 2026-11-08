@@ -1,1 +1,0 @@
-var lines = require('fs').readFileSync('src/js/modules/bond-analyzer/bond-duration-calculator.test.ts', 'utf8').split('\n'); console.log('Line 59: ' + lines[58]); console.log('Line 60: ' + lines[59]); console.log('Line 61: ' + lines[60]); console.log('Line 62: ' + lines[61]); console.log('Line 63: ' + lines[62]);

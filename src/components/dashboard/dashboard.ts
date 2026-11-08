@@ -1,13 +1,13 @@
 import fs from 'fs';
 import path from 'path';
-import { QuikOrder } from '../../js/modules/xlsx-parser/quik-orders-parser';
-import { AssetAnalysis } from '../../js/modules/portfolio-math/portfolio-math.js';
+import { QuikOrder } from '../../js/modules/data/xlsx-parser/quik-orders-parser';
+import { AssetAnalysis } from '../../js/modules/portfolio/portfolio-math/portfolio-math.js';
 import {
   buildOrdersHtmlAndMd,
   buildAssetsTablesAndBars,
   buildQuotesBlock,
   StockQuote,
-} from '../../js/modules/ai-advisor/report-builders.js';
+} from '../../js/modules/ai/ai-advisor/report-builders.js';
 
 /**
  * Опциональные KPI-данные, передаваемые в fromOrdersAndAssets.

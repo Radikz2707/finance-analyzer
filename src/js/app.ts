@@ -18,9 +18,9 @@ function isWebP(): void {
 // ==========================================
 // 📦 ВНЕШНИЕ БИБЛИОТЕКИ И СИСТЕМНЫЕ МОДУЛИ
 // ==========================================
-import { dbManager } from './modules/db-manager/db-manager.js';
-import { memoryLayer } from './modules/memory-layer/memory-layer.js';
-import { initDirectorChat } from './modules/pipeline/director/director-init.js';
+import { dbManager } from './modules/db/db-manager/db-manager.js';
+import { memoryLayer } from './modules/db/memory-layer/memory-layer.js';
+import { initDirectorChat } from './modules/ai/pipeline/director/director-init.js';
 
 // ──────────────────────────────────────────────
 // 🧠 Director Agent — интеграция чата

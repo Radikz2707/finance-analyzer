@@ -14,7 +14,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { resolveAppDataDir } from '../modules/app-paths.js';
+import { resolveAppDataDir } from '../modules/shared/app-paths.js';
 
 export interface UserPolicy {
   /**

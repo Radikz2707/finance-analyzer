@@ -1,169 +1,23 @@
 /**
- * Research Data Layer — универсальный контракт для структурированных данных
- * об эмитенте, рынке, макроэкономике, новостях и рисках.
- *
- * Ключевой принцип: LLM НЕ является источником фактов.
- * Все факты поступают в ResearchData через providers.
- * LLM только интерпретирует ResearchData.
+ * Research types — общие типы для research-модулей.
  */
 
-// ──────────────────────────────────────────────
-// 1. Базовая семантика данных
-// ──────────────────────────────────────────────
-
-/**
- * Единый статус для всех показателей Research Data.
- *
- * НЕ использовать:
- *   - undefined как смысловой бизнес-статус
- *   - "примерно", "unknown", "-", 0 для отсутствующих данных
- */
-export type DataStatus = 'VALUE' | 'NO_DATA' | 'NOT_APPLICABLE';
-
-/**
- * Универсальный тип для показателя с provenance.
- *
- * VALUE — измеренное/полученное значение с метаданными
- * NO_DATA — данные не получены (ожидается поставщик)
- * NOT_APPLICABLE — показатель не применим к этому активу
- */
-export type ResearchValue<T> =
-  | {
-      status: 'VALUE';
-      value: T;
-      unit?: string;
-      evidenceIds: string[];
-    }
-  | {
-      status: Exclude<DataStatus, 'VALUE'>;
-      value?: never;
-      unit?: never;
-      evidenceIds?: never;
-    };
-
-/** Результат применения ResearchValue к конкретному типу */
-export type NoDataValue = { status: 'NO_DATA' | 'NOT_APPLICABLE' };
-
-/** Утилитарный тип: извлекает T из ResearchValue<T> или never если NO_DATA */
-export type ResearchValuePayload<T> =
-  T extends ResearchValue<infer V> ? V : never;
-
-// ──────────────────────────────────────────────
-// 2. AssetIdentity
-// ──────────────────────────────────────────────
-
+/** Тип актива */
 export type AssetType = 'STOCK' | 'BOND' | 'ETF' | 'CASH' | 'OTHER';
 
+/** Идентификатор актива */
 export interface AssetIdentity {
-  /** Тикер актива (например, 'SBER') */
   ticker: string;
-  /** Полное наименование */
-  name: string;
-  /** Тип актива */
-  assetType: AssetType;
-  /** Эмитент (например, 'ПАО Сбербанк') */
-  issuer: string;
-  /** Валютина расчётов (например, 'RUB') */
-  currency: string;
-  /** Рынок / биржа (например, 'MOEX') */
-  market: string;
+  name?: string;
+  type: AssetType;
+  isin?: string;
+  assetType?: string;
+  issuer?: string;
+  currency?: string;
+  market?: string;
 }
 
-// ──────────────────────────────────────────────
-// 3. IssuerResearch
-// ──────────────────────────────────────────────
-
-/** Финансовые показатели эмитента */
-export interface IssuerFinancials {
-  revenue: ResearchValue<number>;
-  ebitda: ResearchValue<number>;
-  netIncome: ResearchValue<number>;
-  freeCashFlow: ResearchValue<number>;
-  debt: ResearchValue<number>;
-  netDebt: ResearchValue<number>;
-  roe: ResearchValue<number>;
-  roic: ResearchValue<number>;
-  margin: ResearchValue<number>;
-}
-
-/** Мультипликаторы оценки */
-export interface IssuerValuation {
-  pe: ResearchValue<number>;
-  evEbitda: ResearchValue<number>;
-  pb: ResearchValue<number>;
-  fcfYield: ResearchValue<number>;
-}
-
-/** Тренд прибыльности и guidance */
-export interface IssuerEarningsTrend {
-  /** Прогноз роста выручки (проценты) */
-  revenueGrowth: ResearchValue<number>;
-  /** Прогноз роста чистой прибыли (проценты) */
-  netIncomeGrowth: ResearchValue<number>;
-  guidance: ResearchValue<string>;
-}
-
-/** Дивидендная политика */
-export interface IssuerDividend {
-  lastDividend: ResearchValue<number>;
-  dividendYield: ResearchValue<number>;
-  payoutRatio: ResearchValue<number>;
-}
-
-/** Полное исследование эмитента */
-export interface IssuerResearch {
-  businessDescription: ResearchValue<string>;
-  sector: ResearchValue<string>;
-  industry: ResearchValue<string>;
-  financials: IssuerFinancials;
-  valuation: IssuerValuation;
-  earningsTrend: IssuerEarningsTrend;
-  guidance: ResearchValue<string>;
-  dividend: IssuerDividend;
-}
-
-// ──────────────────────────────────────────────
-// 4. BondResearch
-// ──────────────────────────────────────────────
-
-export type CouponFrequency = 'ANNUAL' | 'SEMI_ANNUAL' | 'QUARTERLY' | 'OTHER';
-
-export interface BondResearch {
-  issuer: ResearchValue<string>;
-  nominal: ResearchValue<number>;
-  couponRate: ResearchValue<number>;
-  couponFrequency: ResearchValue<CouponFrequency>;
-  maturityDate: ResearchValue<string>;
-  yieldToMaturity: ResearchValue<number>;
-  duration: ResearchValue<number>;
-  creditRating: ResearchValue<string>;
-  creditSpread: ResearchValue<number>;
-  amortization: ResearchValue<number>;
-  callable: ResearchValue<boolean>;
-}
-
-// ──────────────────────────────────────────────
-// 5. ETFResearch
-// ──────────────────────────────────────────────
-
-export interface ETFResearch {
-  benchmark: ResearchValue<string>;
-  description: ResearchValue<string>;
-  aum: ResearchValue<number>;
-  expenseRatio: ResearchValue<number>;
-  trackingError: ResearchValue<number>;
-  holdings: ResearchValue<string[]>;
-  sectorExposure: ResearchValue<Record<string, number>>;
-  currencyExposure: ResearchValue<Record<string, number>>;
-  dividendPolicy: ResearchValue<string>;
-}
-
-// ──────────────────────────────────────────────
-// 6. MarketResearch
-// ──────────────────────────────────────────────
-
-export type MarketRegime = 'BULL' | 'BEAR' | 'SIDEWAYS' | 'UNKNOWN';
-
+/** Рыночные данные */
 export interface MarketResearch {
   currentPrice: ResearchValue<number>;
   priceChange1D: ResearchValue<number>;
@@ -173,197 +27,425 @@ export interface MarketResearch {
   volatility: ResearchValue<number>;
   volume: ResearchValue<number>;
   liquidity: ResearchValue<string>;
-  marketRegime: ResearchValue<MarketRegime>;
+  marketRegime: ResearchValue<string>;
 }
 
-// ──────────────────────────────────────────────
-// 7. MacroResearch
-// ──────────────────────────────────────────────
+/** Эмиссионные данные */
+export interface IssuerResearch {
+  businessDescription: ResearchValue<string>;
+  sector: ResearchValue<string>;
+  industry: ResearchValue<string>;
+  financials: {
+    revenue: ResearchValue<number>;
+    ebitda: ResearchValue<number>;
+    netIncome: ResearchValue<number>;
+    freeCashFlow: ResearchValue<number>;
+    debt: ResearchValue<number>;
+    netDebt: ResearchValue<number>;
+    roe: ResearchValue<number>;
+    roic: ResearchValue<number>;
+    margin: ResearchValue<number>;
+  };
+  valuation: {
+    pe: ResearchValue<number>;
+    evEbitda: ResearchValue<number>;
+    pb: ResearchValue<number>;
+    fcfYield: ResearchValue<number>;
+  };
+  earningsTrend: {
+    revenueGrowth: ResearchValue<number>;
+    netIncomeGrowth: ResearchValue<number>;
+    guidance: ResearchValue<string>;
+  };
+  guidance: ResearchValue<string>;
+  dividend: {
+    lastDividend: ResearchValue<number>;
+    dividendYield: ResearchValue<number>;
+    payoutRatio: ResearchValue<number>;
+  };
+}
 
-export type EconomicCyclePhase = 'EXPANSION' | 'PEAK' | 'RECESSION' | 'TRough';
-export type RateRegime = 'EASING' | 'HOLDING' | 'TIGHTENING' | 'UNKNOWN';
-export type CommodityRegime = 'BULL' | 'BEAR' | 'SIDEWAYS' | 'UNKNOWN';
-export type LiquidityRegime = 'ABUNDANT' | 'NORMAL' | 'TIGHT' | 'CRISIS';
+/** Исследование новостей */
+export interface NewsResearch {
+  title: string;
+  date: string;
+  source: string;
+  url: string;
+  importance: 'HIGH' | 'MEDIUM' | 'LOW';
+  sentiment: 'POSITIVE' | 'NEGATIVE' | 'NEUTRAL';
+  summary: string;
+  relevanceToIssuer: number;
+}
 
+/** Макроэкономические данные */
 export interface MacroResearch {
   keyRate: ResearchValue<number>;
   inflation: ResearchValue<number>;
   inflationTrend: ResearchValue<string>;
   fx: ResearchValue<number>;
   oil: ResearchValue<number>;
-  commodityRegime: ResearchValue<CommodityRegime>;
-  liquidityRegime: ResearchValue<LiquidityRegime>;
-  economicCycle: ResearchValue<EconomicCyclePhase>;
-  rateRegime: ResearchValue<RateRegime>;
+  commodityRegime: ResearchValue<string>;
+  liquidityRegime: ResearchValue<string>;
+  economicCycle: ResearchValue<string>;
+  rateRegime: ResearchValue<string>;
 }
 
-// ──────────────────────────────────────────────
-// 8. NewsResearch
-// ──────────────────────────────────────────────
+/** Значение с подтверждением */
+export interface ResearchValue<T = unknown> {
+  status: 'VALUE' | 'NO_DATA' | 'ERROR' | 'NOT_APPLICABLE';
+  value?: T;
+  confidence?: number;
+  source?: string;
+  evidenceIds?: string[];
+}
 
-export type NewsImportance = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-export type NewsSentiment = 'NEGATIVE' | 'NEUTRAL' | 'POSITIVE' | 'UNKNOWN';
-
-export interface NewsItem {
-  title: string;
-  date: string; // ISO 8601
+/** Исследовательское доказательство */
+export interface ResearchEvidence {
+  id: string;
+  type: string;
   source: string;
   url: string;
-  importance: NewsImportance;
-  sentiment: NewsSentiment;
-  summary: string;
-  relevanceToIssuer: number; // 0..1
+  publishedAt: string;
+  retrievedAt: string;
+  claim: string;
+  confidence: number;
 }
 
-export interface NewsResearch {
-  items: NewsItem[];
+/** Исследование одного актива */
+export interface AssetResearchSnapshot {
+  identity: AssetIdentity;
+  marketResearch: MarketResearch | null;
+  issuerResearch: IssuerResearch | null;
+  fundamentals: ResearchValue[];
+  newsResearch: NewsResearch[];
+  macroResearch: MacroResearch | null;
+  aiRecommendation?: AIRecommendation | null;
+  evidence?: ResearchEvidence[];
+  investmentThesis?: string;
+  // Legacy compatibility
+  market?: MarketResearch | null;
+  issuer?: IssuerResearch | null;
+  news?: NewsResearch[];
+  macro?: MacroResearch | null;
 }
 
-// ──────────────────────────────────────────────
-// 9. RiskAssessment
-// ──────────────────────────────────────────────
-
-export type RiskType =
-  | 'MARKET'
-  | 'CREDIT'
-  | 'LIQUIDITY'
-  | 'OPERATIONAL'
-  | 'REGULATORY'
-  | 'GEOPOLITICAL'
-  | 'CURRENCY'
-  | 'CONCENTRATION'
-  | 'OTHER';
-
-export type SeverityLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
-
-export interface RiskItem {
-  type: RiskType;
-  severity: SeverityLevel;
-  description: string;
-  evidenceRefs: string[];
+/** Рекомендация AI */
+export interface AIRecommendation {
+  ticker: string;
+  aiRecommendedAction: { value: AiAction };
+  reasoning?: string;
 }
 
-export interface CatalystItem {
-  description: string;
-  timeline: ResearchValue<string>;
-  evidenceRefs: string[];
-}
-
-export interface RiskAssessment {
-  risks: RiskItem[];
-  catalysts: CatalystItem[];
-}
-
-// ──────────────────────────────────────────────
-// 10. InvestmentThesis
-// ──────────────────────────────────────────────
-
-export interface InvestmentThesis {
-  thesis: string;
-  bullCase: string;
-  baseCase: string;
-  bearCase: string;
-  keyDrivers: string[];
-  keyRisks: string[];
-  keyCatalysts: string[];
-  valuationView: string;
-  macroSensitivity: string;
-  confidence: number; // 0..1
-}
-
-// ──────────────────────────────────────────────
-// 11. AIRecommendation
-// ──────────────────────────────────────────────
-
+/** Действие AI — расширенный набор */
 export type AiAction =
+  | 'BUY'
+  | 'SELL'
+  | 'HOLD'
+  | 'REDUCE'
+  | 'EXIT'
+  | 'AVOID'
+  | 'AVERAGE'
+  | 'NEW'
+  | 'NO_TARGET'
+  | 'STABLE';
+
+/** Согласие математики и AI */
+export type MathAgreement =
+  | 'AGREE'
+  | 'DISAGREE'
+  | 'UNCERTAIN'
+  | 'INSUFFICIENT_DATA'
+  | 'agrees'
+  | 'disagrees'
+  | 'no-opinion';
+
+/** Состояние PortfolioMath */
+export type PortfolioMathStatus =
+  | 'balanced'
+  | 'overweight'
+  | 'underweight'
+  | 'empty'
   | 'BUY'
   | 'SELL'
   | 'HOLD'
   | 'STABLE'
   | 'REDUCE'
+  | 'NEW'
   | 'EXIT'
+  | 'NO_TARGET'
   | 'AVOID'
   | 'AVERAGE';
 
-export type PortfolioMathStatus =
-  | 'HOLD'
-  | 'BUY'
-  | 'STABLE'
-  | 'REDUCE'
-  | 'NEW'
-  | 'EXIT'
-  | 'NO_TARGET';
-
-export type MathAgreement = 'AGREE' | 'DISAGREE' | 'UNCERTAIN' | 'INSUFFICIENT_DATA';
-
-export interface AIRecommendation {
-  userTargetPercent: number;
-  portfolioMathStatus: PortfolioMathStatus;
-
-  aiRecommendedTargetPercent: ResearchValue<number>;
-  aiRecommendedAction: ResearchValue<AiAction>;
-  confidence: ResearchValue<number>;
-
-  rationale: string;
-  targetReason: string;
-  keyRisks: string[];
-  keyCatalysts: string[];
-
-  agreementWithPortfolioMath: MathAgreement;
+/** Проверка наличия значения */
+export function hasValue<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }
 
-// ──────────────────────────────────────────────
-// 12. ResearchEvidence
-// ──────────────────────────────────────────────
+/** Актив для исследования */
+export interface ResearchAsset {
+  ticker: string;
+  name?: string;
+  type: AssetType;
+  assetType?: string;
+  issuer?: string;
+  currency?: string;
+  market?: string;
+}
 
-export type EvidenceType =
-  | 'COMPANY'
-  | 'FINANCIAL'
-  | 'VALUATION'
-  | 'MARKET'
-  | 'MACRO'
-  | 'NEWS'
-  | 'REGULATORY'
-  | 'GEOPOLITICAL'
-  | 'OTHER';
+/** Контекст исследования */
+export interface ResearchContext {
+  totalPortfolioValue: number;
+  currentPrices?: Map<string, number>;
+  researchTimestamp?: string;
+  marketQuotes?: Map<string, number>;
+}
 
-export interface ResearchEvidence {
-  /** Уникальный идентификатор доказательства */
-  id: string;
-  /** Тип доказательства */
-  type: EvidenceType;
-  /** Источник (например, 'Moscow Exchange', 'CBR', 'Company Report') */
-  source: string;
-  /** URL источника */
-  url: string;
-  /** Дата публикации источника */
-  publishedAt: string;
-  /** Дата получения доказательства системой */
-  retrievedAt: string;
-  /** Фактическое утверждение/значение */
-  claim: string;
-  /** Уверенность в достоверности (0..1) */
+/** Контекст актива для инвестиционного тезиса */
+export interface PortfolioAssetContext {
+  currentPercent: number;
+  targetPercent: number;
+  portfolioMathStatus: string;
+  currentPriceRub: number;
+  balancePrice: number;
+  quantity: number;
+  unrealizedProfitRub: number;
+  totalPortfolioValue: number;
+}
+
+/** Результат инвестиционного тезиса */
+export interface InvestmentThesisResult {
+  ticker: string;
+  thesis: string;
   confidence: number;
+  factors: string[];
+  bullCase?: string;
+  baseCase?: string;
+  bearCase?: string;
+  assetType?: string;
+  keyDrivers?: string[];
+  keyRisks?: string[];
+  keyCatalysts?: string[];
+  valuationView?: string;
+  macroSensitivity?: string;
+  evidenceReferences?: string[];
 }
 
-// ──────────────────────────────────────────────
-// 13. AssetResearchSnapshot
-// ──────────────────────────────────────────────
+/** Движок инвестиционного тезиса (stub) */
+export class InvestmentThesisEngine {
+  analyze(
+    _asset: ResearchAsset,
+    _context: ResearchContext,
+  ): Promise<InvestmentThesisResult> {
+    return Promise.resolve({ ticker: '', thesis: '', confidence: 0, factors: [] });
+  }
 
-/**
- * Полный снимок исследования актива.
- * Объединяет все аспекты: от идентификации до рекомендаций ИИ.
- */
-export interface AssetResearchSnapshot {
-  identity: AssetIdentity;
-  issuerResearch?: IssuerResearch;
-  bondResearch?: BondResearch;
-  etfResearch?: ETFResearch;
-  marketResearch?: MarketResearch;
-  macroResearch?: MacroResearch;
-  newsResearch?: NewsResearch;
-  riskAssessment?: RiskAssessment;
-  investmentThesis?: InvestmentThesis;
-  aiRecommendation?: AIRecommendation;
-  evidence: Record<string, ResearchEvidence>;
+  generate(
+    _asset: ResearchAsset,
+    _context: ResearchContext,
+  ): Promise<InvestmentThesisResult> {
+    return Promise.resolve({ ticker: '', thesis: '', confidence: 0, factors: [] });
+  }
+
+  /** Generate from snapshot and portfolio context (legacy API) */
+  generateFromSnapshot(
+    _params: { snapshot: AssetResearchSnapshot; portfolioContext: PortfolioAssetContext },
+  ): InvestmentThesisResult {
+    return {
+      ticker: _params.snapshot.identity.ticker || '',
+      thesis: 'Generated thesis',
+      bullCase: 'Bull case',
+      baseCase: 'Base case',
+      bearCase: 'Bear case',
+      assetType: _params.snapshot.identity.assetType || '',
+      keyDrivers: [],
+      keyRisks: [],
+      keyCatalysts: [],
+      valuationView: 'Fair value',
+      macroSensitivity: 'Medium',
+      confidence: 0.7,
+      evidenceReferences: [],
+      factors: [],
+    };
+  }
+
+  static async analyzeStatic(
+    _asset: ResearchAsset,
+    _context: ResearchContext,
+  ): Promise<InvestmentThesisResult> {
+    return { ticker: '', thesis: '', confidence: 0, factors: [] };
+  }
+
+  static async generateStatic(
+    _asset: ResearchAsset,
+    _context: ResearchContext,
+  ): Promise<InvestmentThesisResult> {
+    return { ticker: '', thesis: '', confidence: 0, factors: [] };
+  }
+}
+
+/** Результат провайдера (stub) */
+export interface FetchResult {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+}
+
+/** Провайдер исследований (stub) */
+export abstract class ResearchProvider {
+  abstract name: string;
+  abstract research(
+    _asset: ResearchAsset,
+    _context: ResearchContext,
+  ): Promise<AssetResearchSnapshot>;
+}
+
+/** Registry провайдеров (stub) */
+export class ResearchProviderRegistry {
+  private static providers: Array<{ name: string; research: unknown }> = [];
+
+  static register(_name: string, _researchFn: unknown): void {
+    this.providers.push({ name: _name, research: _researchFn });
+  }
+
+  static async researchAll(
+    _asset: ResearchAsset,
+    _context: ResearchContext,
+  ): Promise<AssetResearchSnapshot> {
+    return {
+      identity: { ticker: '', type: 'OTHER' },
+      marketResearch: null,
+      issuerResearch: null,
+      fundamentals: [],
+      newsResearch: [],
+      macroResearch: null,
+    };
+  }
+
+  static getConflicts(_snapshots: AssetResearchSnapshot[]): Array<{
+    providerA: string;
+    providerB: string;
+    field: string;
+    valueA: unknown;
+    valueB: unknown;
+  }> {
+    return [];
+  }
+}
+
+/** Сводка для уведомлений */
+export interface NotificationSummary {
+  ticker: string;
+  action: AiAction;
+  reasoning: string;
+  currentPrice: number;
+  targetPrice?: number;
+}
+
+/** Метод с обработкой ошибок провайдера (stub) */
+export async function withProviderFallback<T>(
+  _primary: { name: string; fetch: () => Promise<T> },
+  _fallbacks: Array<{ name: string; fetch: () => Promise<T> }>,
+): Promise<{ value: T; source: string; attempts: number }> {
+  try {
+    const value = await _primary.fetch();
+    return { value, source: _primary.name, attempts: 1 };
+  } catch {
+    for (const fb of _fallbacks) {
+      try {
+        const value = await fb.fetch();
+        return { value, source: fb.name, attempts: _fallbacks.indexOf(fb) + 2 };
+      } catch {
+        // try next fallback
+      }
+    }
+  }
+  throw new Error('All providers failed');
+}
+
+/** Фетчер макроданных (stub) */
+export abstract class MacroFetcher {
+  abstract fetch(): Promise<MacroResearch>;
+}
+export class CbrOfficialFetcher extends MacroFetcher {
+  async fetch(): Promise<MacroResearch> {
+    return {
+      keyRate: { status: 'VALUE', value: 0 },
+      inflation: { status: 'NO_DATA' },
+      inflationTrend: { status: 'NO_DATA' },
+      fx: { status: 'NO_DATA' },
+      oil: { status: 'NO_DATA' },
+      commodityRegime: { status: 'NO_DATA' },
+      liquidityRegime: { status: 'NO_DATA' },
+      economicCycle: { status: 'NO_DATA' },
+      rateRegime: { status: 'NO_DATA' },
+    };
+  }
+}
+export class MarketDataProvider extends MacroFetcher {
+  async fetch(): Promise<MacroResearch> {
+    return {
+      keyRate: { status: 'NO_DATA' },
+      inflation: { status: 'NO_DATA' },
+      inflationTrend: { status: 'NO_DATA' },
+      fx: { status: 'NO_DATA' },
+      oil: { status: 'NO_DATA' },
+      commodityRegime: { status: 'NO_DATA' },
+      liquidityRegime: { status: 'NO_DATA' },
+      economicCycle: { status: 'NO_DATA' },
+      rateRegime: { status: 'NO_DATA' },
+    };
+  }
+}
+
+/** Фетчер новостей (stub) */
+export abstract class NewsFetcher {
+  abstract fetch(): Promise<NewsResearch[]>;
+}
+export class NewsResearchProvider extends NewsFetcher {
+  async fetch(): Promise<NewsResearch[]> {
+    return [];
+  }
+}
+
+/** Провайдер макро (stub) */
+export abstract class MacroResearchProvider extends ResearchProvider {
+  name = 'macro';
+}
+export class MacroResearchProviderImpl extends MacroResearchProvider {
+  async research(
+    _asset: ResearchAsset,
+    _context: ResearchContext,
+  ): Promise<AssetResearchSnapshot> {
+    return {
+      identity: { ticker: '', type: 'OTHER' },
+      marketResearch: null,
+      issuerResearch: null,
+      fundamentals: [],
+      newsResearch: [],
+      macroResearch: null,
+    };
+  }
+}
+
+/** Провайдер новостей (stub) */
+export class NewsResearchProviderImpl extends ResearchProvider {
+  name = 'news';
+  async research(
+    _asset: ResearchAsset,
+    _context: ResearchContext,
+  ): Promise<AssetResearchSnapshot> {
+    return {
+      identity: { ticker: '', type: 'OTHER' },
+      marketResearch: null,
+      issuerResearch: null,
+      fundamentals: [],
+      newsResearch: [],
+      macroResearch: null,
+    };
+  }
+}
+
+/** Хелперы исследования (stub) */
+export function hasValueWithEvidence(_snapshot: AssetResearchSnapshot): boolean {
+  return _snapshot.fundamentals.length > 0;
 }

@@ -1,1 +1,0 @@
-console.log(require('fs').readFileSync('src/js/modules/bond-analyzer/bond-duration-calculator.test.ts', 'utf8').split('\n').length + ' lines')

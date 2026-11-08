@@ -55,7 +55,6 @@ __pycache__/
 
 # 📦 Локальные конфиги и скрипты автоматизации
 create-modules.js
-pipeline.ts
 
 # 🌐 HTML-дашборды (если генерируются)
 src/components/dashboard/dashboard.html
@@ -79,8 +78,8 @@ nul
 
 # 🖥 Electron-сборки и артефакты десктопа
 release-new/
-desktop/dist/
-desktop/build/
+electron/dist/
+electron/build/
 
 # 📄 Сгенерированные отчёты (дополнительно)
 report.pdf
