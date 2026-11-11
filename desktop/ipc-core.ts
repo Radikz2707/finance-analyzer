@@ -7,26 +7,26 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { DirectorAgent } from '../src/js/modules/pipeline/director/director.js';
-import { resolveReportsDir } from '../src/js/modules/app-paths.js';
+import { DirectorAgent } from '../src/js/modules/ai/pipeline/director/director.js';
+import { resolveReportsDir } from '../src/js/modules/shared/app-paths.js';
 import type {
   AgentOpinion,
   DirectorAuditEvent,
   DirectorFactsContext,
   DirectorResponse,
   DirectorTask,
-} from '../src/js/modules/pipeline/director/director-types.js';
+} from '../src/js/modules/ai/pipeline/director/director-types.js';
 import type { AutonomousBridge } from './autonomous-bridge.js';
 import {
   PipelineCoordinator,
   type PipelineResult,
-} from '../src/js/modules/pipeline/pipeline-coordinator.js';
-import type { NotificationAgentOutput } from '../src/js/modules/pipeline/agents/notification-agent.js';
+} from '../src/js/modules/ai/pipeline/pipeline-coordinator.js';
+import type { NotificationAgentOutput } from '../src/js/modules/ai/pipeline/agents/notification-agent.js';
 import {
   XlsxParserModule,
   type CurrentAsset,
   type MacroGoals,
-} from '../src/js/modules/xlsx-parser/xlsx-parser.js';
+} from '../src/js/modules/data/xlsx-parser/xlsx-parser.js';
 import {
   formatConsiliumRounds,
   stripAnsi,

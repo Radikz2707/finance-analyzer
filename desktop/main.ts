@@ -31,7 +31,7 @@ import type {
   PrintToPDFOptions,
   SaveDialogOptions,
 } from 'electron';
-import { resolveReportsDir } from '../src/js/modules/app-paths.js';
+import { resolveReportsDir } from '../src/js/modules/shared/app-paths.js';
 import {
   getDesktopSettings,
   loadDesktopSettings,
@@ -75,7 +75,7 @@ import {
   type AppState,
 } from './ipc-core.js';
 import { createAutonomousBridge } from './autonomous-bridge.js';
-import { OllamaClient } from '../src/js/modules/pipeline/director/ollama-client.js';
+import { OllamaClient } from '../src/js/modules/ai/pipeline/director/ollama-client.js';
 
 // Пути к собранным артефактам (esbuild: desktop/dist/*)
 const PRELOAD_PATH = path.join(__dirname, 'preload.cjs');
