@@ -4,6 +4,116 @@
   <meta charset="UTF-8">
   <title>Finance Analyzer — Dashboard</title>
   <link rel="stylesheet" href="../../css/app.min.css">
+  <style>
+    /* ─── Print / PDF styles ─── */
+    @media print {
+      /* Предотвращение разрыва карточек между страницами */
+      .dashboard__overview,
+      .dashboard__quotes,
+      .dashboard__weights,
+      .dashboard__top-movers,
+      .dashboard__bonds,
+      .dashboard__recommendations,
+      .dashboard__scenario,
+      .dashboard__macro,
+      [class*="card"],
+      [class*="panel"] {
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      
+      /* AI-блок: не блокировать разрывы, родительские контейнеры — block */
+      .ai-box-styled,
+      .dashboard__ai,
+      .dashboard__two-col,
+      .dashboard__two-col__left,
+      .dashboard__two-col__right {
+        display: block !important;
+        overflow: visible !important;
+        white-space: normal !important;
+      }
+      
+      /* Таблицы из AI-текста: стили для печати */
+      .ai-narrative-table {
+        page-break-inside: auto;
+        break-inside: auto;
+        border-collapse: collapse !important;
+        width: 100% !important;
+        margin: 12px 0 !important;
+      }
+      .ai-narrative-table th {
+        background-color: #f6f8fa !important;
+        color: #24292f !important;
+        border: 1px solid #d0d7de !important;
+        padding: 6px 8px !important;
+        text-align: left !important;
+        font-size: 12px !important;
+        print-color-adjust: exact !important;
+        -webkit-print-color-adjust: exact !important;
+      }
+      .ai-narrative-table td {
+        border: 1px solid #d0d7de !important;
+        padding: 6px 8px !important;
+        text-align: left !important;
+        font-size: 12px !important;
+        color: #24292f !important;
+      }
+      
+      /* Заголовки не отрываются от контента */
+      h1, h2, h3, h4, h5, h6 {
+        page-break-after: avoid;
+        break-after: avoid;
+      }
+      
+      /* Таблицы: разрешают разрывы между строками */
+      table {
+        page-break-inside: auto;
+        break-inside: auto;
+      }
+      tr {
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      thead {
+        display: table-header-group;
+      }
+      tfoot {
+        display: table-footer-group;
+      }
+      
+      /* Изображения не разрываются */
+      img {
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+      
+      /* Убираем unnecessary элементы при печати */
+      .no-print,
+      button,
+      .dashboard__actions {
+        display: none !important;
+      }
+      
+      /* Оптимизация отступов для PDF */
+      body {
+        margin: 0;
+        padding: 12mm;
+      }
+      
+      /* Ссылки показывают URL при печати */
+      a[href]::after {
+        content: ' (' attr(href) ')';
+        font-size: 0.8em;
+        color: #666;
+      }
+      
+      /* Предотвращение пустых страниц */
+      @page {
+        margin: 15mm;
+        size: A4;
+      }
+    }
+  </style>
 </head>
 <body class="dashboard">
   <div class="dashboard__container">
@@ -144,6 +254,7 @@
       const investedFunds = data.investedFunds || {};
       const macroGoals = data.macroGoals || {};
       const keyRate = data.keyRate || 0;
+      const historicalTrades = data.historicalTrades || {};
       const keyRateDate = data.keyRateDate || '—';
       
       // Основные метрики
@@ -200,7 +311,7 @@
       const bondsPercent = totalValue > 0 ? ((bondsValue / totalValue) * 100).toFixed(1) : '0.0';
       
       // C10 — рыночная стоимость + кэш - вложения
-      const marketResult = (totalValue + freeCash) - investedNet;
+      const marketResult = historicalTrades.profitC10 || ((totalValue + freeCash) - investedNet);
       // C11 — балансовая стоимость - вложения (как было)
       const netResult = currentAssets - investedNet;
       const netResultPercent = investedNet > 0 ? ((netResult / investedNet) * 100) : 0;

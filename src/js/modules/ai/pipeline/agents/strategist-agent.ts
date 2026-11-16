@@ -32,6 +32,8 @@ export interface StrategistProposal {
 
 /** Входные данные StrategistAgent */
 export interface StrategistAgentInput {
+  /** Согласованность Math и AI по каждому тикеру */
+  mathAiAgreements?: Map<string, { math: string; ai: string; conflict: boolean } | null>;
   /** Анализ всех активов портфеля (из AnalysisAgent / PortfolioMath) */
   assetsAnalysis: AssetAnalysis[];
   /** Предложения AI по каждому активу */
@@ -52,6 +54,8 @@ export interface StrategistDecision {
   concentrationPercent: number | null;
   /** Примечание стратега (аналитическое, не блокирующее) */
   note: string | null;
+  /** Есть ли конфликт между Math и AI, требующий ручной проверки */
+  hasConflict: boolean;
 }
 
 /** Выходные данные StrategistAgent */
@@ -133,14 +137,27 @@ export class StrategistAgent extends AgentBase {
         proposal.rationale ?? null,
       );
 
+      const agreement = input.mathAiAgreements?.get(proposal.ticker.toUpperCase());
+      const hasConflict = agreement?.conflict ?? false;
+      const conflictNote = hasConflict
+        ? ' ⚠️ Conflict: Math=' + (agreement?.math ?? '?') + ', AI=' + (agreement?.ai ?? '?') + ' \u2014 manual review required'
+        : '';
+
+      // ─── P0-2: finalAction = null при конфликте MathAiAgreement ───
+      // Если есть неразрешённый конфликт, стратег НЕ должен предлагать
+      // исполняемое действие. suggestedAction остаётся (аналитическое),
+      // но finalAction = null (блокировка исполнения).
+      const finalAction = hasConflict ? null : proposal.action;
+
       decisions.push({
         ticker: asset.ticker,
         name: asset.name,
         suggestedAction: proposal.action,
-        finalAction: proposal.action, // стратег НЕ изменяет action AI
+        finalAction,
         drawdownPercent,
         concentrationPercent,
-        note,
+        note: note ? note + conflictNote : conflictNote,
+        hasConflict,
       });
     }
 

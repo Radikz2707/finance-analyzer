@@ -37,9 +37,32 @@ import {
   type GuardrailPolicy,
 } from './guardrail-policy.js';
 import type { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
+import type { AiAction } from '../../research/types.js';
 import { SelfImprovementLoop } from './self-improvement/self-improvement-loop.js';
 import { LearningAgent } from './agents/learning-agent.js';
 import { fetchHistoricalBatch } from '../../data/data-fetcher/index.js';
+
+// ──────────────────────────────────────────────
+// Helper: SELL vs REDUCE — полный выход vs частичное сокращение
+// ──────────────────────────────────────────────
+
+/**
+ * Нормализует SELL в REDUCE когда позиция не закрывается полностью.
+ * - SELL + quantity=0 → SELL (полный выход)
+ * - SELL + quantity>0 → REDUCE (частичное сокращение)
+ */
+function normalizeSellAction(
+  action: AiAction | null,
+  asset: { quantity?: number; currentPercent?: number } | null,
+): AiAction | null {
+  if (action !== 'SELL') return action;
+  // Если позиция полностью закрывается (quantity=0 или currentPercent≈0) → SELL
+  if (asset && (asset.quantity === 0 || (asset.currentPercent != null && asset.currentPercent <= 0.01))) {
+    return 'SELL';
+  }
+  // Иначе это частичная продажа → REDUCE
+  return 'REDUCE';
+}
 
 // ──────────────────────────────────────────────
 // 1. Pipeline stage definitions
@@ -571,6 +594,64 @@ export class PipelineCoordinator {
           }
         }
 
+        // ── Диагностика: сверка баз расчёта ──
+        const excelTotal = macroGoalsJson.totalBalance ?? 0;
+        const totalLiqForDeficit = assetsAnalysisList.reduce(
+          (sum, a) => sum + (a.quantity ?? 0) * (a.currentPrice ?? 0),
+          0,
+        );
+        const baseDiff = excelTotal - totalLiqForDeficit;
+        if (Math.abs(baseDiff) > 1000) {
+          console.error(
+            '═══════════════════════════════════════════════════════',
+          );
+          console.error(
+            '[BASE MISMATCH] Excel totalBalance=' +
+              Math.round(excelTotal).toLocaleString('ru-RU') +
+              '₽ vs Σ(qty×price)=' +
+              Math.round(totalLiqForDeficit).toLocaleString('ru-RU') +
+              '₽ | Разница=' +
+              Math.round(baseDiff).toLocaleString('ru-RU') +
+              '₽ (' +
+              (baseDiff / excelTotal * 100).toFixed(1) +
+              '%)',
+          );
+          console.error(
+            '[BASE MISMATCH] deficitRub рассчитан от ' +
+              Math.round(totalLiqForDeficit).toLocaleString('ru-RU') +
+              '₽, но totalPortfolioValue=' +
+              Math.round(excelTotal).toLocaleString('ru-RU') +
+              '₽',
+          );
+          console.error(
+            '[BASE MISMATCH] Топ-5 активов: ' +
+              [...assetsAnalysisList]
+                .sort(
+                  (a, b) =>
+                    (b.quantity ?? 0) * (b.currentPrice ?? 0) -
+                    (a.quantity ?? 0) * (a.currentPrice ?? 0),
+                )
+                .slice(0, 5)
+                .map(
+                  (a) =>
+                    a.ticker +
+                    ': ' +
+                    Math.round(
+                      (a.quantity ?? 0) * (a.currentPrice ?? 0),
+                    ).toLocaleString('ru-RU') +
+                    '₽ (qty=' +
+                    (a.quantity ?? 0) +
+                    ', price=' +
+                    Number(((a.currentPrice ?? 0).toFixed(2))) +
+                    ')',
+                )
+                .join(' | '),
+          );
+          console.error(
+            '═══════════════════════════════════════════════════════',
+          );
+        }
+
         const scenarioInput = {
           assetsAnalysis: assetsAnalysisJson,
           totalPortfolioValue: macroGoalsJson.totalBalance ?? 0,
@@ -584,14 +665,14 @@ export class PipelineCoordinator {
 
         console.log(
           `[Pipeline] ScenarioAgent input: assets=${scenarioInput.assetsAnalysis.length}, ` +
-            `total=${scenarioInput.totalPortfolioValue}, freeCash=${scenarioInput.freeCashRub}, ` +
+            `total=${Number(scenarioInput.totalPortfolioValue.toFixed(2))}, freeCash=${Number(scenarioInput.freeCashRub.toFixed(2))}, ` +
             `proposedChanges=${scenarioInput.proposedChanges.length}`,
         );
         if (scenarioInput.proposedChanges.length > 0) {
           console.log(
             '[Pipeline] Proposed changes:',
             scenarioInput.proposedChanges
-              .map((c) => `${c.ticker}=${c.action} ${c.amountRub}₽`)
+              .map((c) => `${c.ticker}=${c.action} ${Number(c.amountRub.toFixed(2)).toLocaleString('ru-RU')}₽`)
               .join(', '),
           );
         }
@@ -627,9 +708,12 @@ export class PipelineCoordinator {
 
         if (aiResult.result.success && aiOutput.structuredRecommendations) {
           for (const [ticker, rec] of aiOutput.structuredRecommendations) {
+            // Найдём соответствующий asset для определения полного/частичного выхода
+            const asset = assetsAnalysisJson.find((a: AssetAnalysis) => a.ticker === ticker) ?? null;
+            const normalizedAction = normalizeSellAction(rec.recommendedAction, asset);
             proposals.push({
               ticker,
-              action: rec.recommendedAction,
+              action: normalizedAction,
               keyCatalysts: rec.keyCatalysts ?? [],
               rationale: rec.rationale ?? null,
             });
@@ -665,9 +749,12 @@ export class PipelineCoordinator {
         }> = [];
         if (aiResult.result.success && aiOutput.structuredRecommendations) {
           for (const [ticker, rec] of aiOutput.structuredRecommendations) {
+            // Используем нормализованное действие (SELL→REDUCE если частичная продажа)
+            const asset = assetsAnalysisJson.find((a: AssetAnalysis) => a.ticker === ticker) ?? null;
+            const normalizedAction = normalizeSellAction(rec.recommendedAction, asset);
             proposals.push({
               ticker,
-              action: rec.recommendedAction,
+              action: normalizedAction,
               keyCatalysts: rec.keyCatalysts ?? [],
               rationale: rec.rationale ?? null,
             });

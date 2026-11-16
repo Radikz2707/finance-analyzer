@@ -336,6 +336,23 @@ export class PortfolioMathModule {
       let targetPercent: number | undefined;
       let deficitRub: number;
 
+      // ─── Диагностика: Excel % vs фактический % ───
+      const assetValue = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
+      const calculatedLiqPercent = totalLiquidationValue > 0
+        ? (assetValue / totalLiquidationValue) * 100
+        : 0;
+      const liqPercentDiscrepancy = asset.liquidationPercent - calculatedLiqPercent;
+      if (Math.abs(liqPercentDiscrepancy) > 0.1) {
+        console.warn(
+          `[DIAGNOSTIC] ${asset.ticker} (${asset.name}): ` +
+          `Excel%=${asset.liquidationPercent.toFixed(2)}%, ` +
+          `фактический%=${calculatedLiqPercent.toFixed(2)}%, ` +
+          `расхождение=${liqPercentDiscrepancy.toFixed(2)}%, ` +
+          `assetValue=${Math.round(assetValue).toLocaleString('ru-RU')}₽, ` +
+          `totalLiq=${Math.round(totalLiquidationValue).toLocaleString('ru-RU')}₽`,
+        );
+      }
+
       // ─── КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: holdOnly проверяется ДО присвоения EXIT/REDUCE/SELL ───
       // Если позиция запрещена к продаже, мы НЕ можем продать/уменьшить её,
       // даже если targetPercent=0 или есть перебор.
@@ -392,6 +409,22 @@ export class PortfolioMathModule {
       const balancePrice = asset.balancePrice ?? 0;
       const currentPrice = asset.currentPrice ?? 0;
 
+      // ─── P0-1: Расчёт unrealizedProfitRub из реальных цен ───
+      // НЕ берём из Excel (unrealizedProfitRub может быть 0 при реальной просадке).
+      // Формула: (currentPrice - balancePrice) * quantity
+      // Если цены доступны — рассчитываем; иначе fallback на Excel.
+      let unrealizedProfitRub: number;
+      if (currentPrice > 0 && balancePrice > 0 && asset.quantity && asset.quantity > 0) {
+        unrealizedProfitRub = (currentPrice - balancePrice) * asset.quantity;
+      } else {
+        // Fallback: используем значение из Excel, если цены недоступны
+        unrealizedProfitRub = asset.unrealizedProfitRub ?? 0;
+        // Guard: NaN, Infinity, null → 0
+        if (!Number.isFinite(unrealizedProfitRub)) {
+          unrealizedProfitRub = 0;
+        }
+      }
+
       // Проверяем концентрацию (позиция > X% — риск)
       const isConcentrated = asset.liquidationPercent > concentrationLimitPct;
 
@@ -434,7 +467,7 @@ export class PortfolioMathModule {
         balancePrice: balancePrice,
         currentPrice: currentPrice,
         priceUnit: asset.priceUnit,
-        unrealizedProfitRub: asset.unrealizedProfitRub || 0,
+        unrealizedProfitRub: unrealizedProfitRub,
         priority: deficitRub,
         isConcentrated: isConcentrated,
         riskLevel: riskLevel,
@@ -561,6 +594,22 @@ export class PortfolioMathModule {
       .reduce((sum, a) => sum + a.deficitRub, 0);
     macro.stocksDeficitRub = stocksDeficitRub;
     macro.bondsDeficitRub = bondsDeficitRub;
+
+    // ─── Сводная диагностика: сверка сумм долей ───
+    const totalCalculatedPercent = assetsAnalysis.reduce((sum, a) => sum + a.currentPercent, 0);
+    const totalExcelPercent = assets.reduce((sum, a) => {
+      if (a.targetPercent === undefined && a.targetPercentConflict) return sum;
+      if (a.targetPercent === 0 && a.liquidationPercent === 0) return sum;
+      return sum + a.liquidationPercent;
+    }, 0);
+    if (Math.abs(totalCalculatedPercent - totalExcelPercent) > 0.5) {
+      console.warn(
+        `[DIAGNOSTIC SUMMARY] Excel% суммарно=${totalExcelPercent.toFixed(2)}%, ` +
+        `фактический% суммарно=${totalCalculatedPercent.toFixed(2)}%, ` +
+        `расхождение=${(totalCalculatedPercent - totalExcelPercent).toFixed(2)}%, ` +
+        `totalLiquidationValue=${Math.round(totalLiquidationValue).toLocaleString('ru-RU')}₽`,
+      );
+    }
 
     return {
       macro,

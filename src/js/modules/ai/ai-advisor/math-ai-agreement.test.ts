@@ -139,7 +139,8 @@ describe('MathAiAgreement — согласование PortfolioMath и ИИ', (
       expect(agreement.conflictDetails?.severity).toBe('high');
     });
 
-    it('EXIT + SELL → conflict=true (разный объём сделки)', () => {
+    it('EXIT + SELL → conflict=false (оба полный выход)', () => {
+      // EXIT (целевая 0) и SELL (продать всё) — одинаковый объём
       const agreement = agreeMathAndAi(
         'GAZP',
         'EXIT' as PortfolioMathStatus,
@@ -147,12 +148,12 @@ describe('MathAiAgreement — согласование PortfolioMath и ИИ', (
         'AGREE' as MathAgreement,
       );
 
-      expect(agreement.conflict).toBe(true);
-      expect(agreement.executionAllowed).toBe(false);
-      expect(agreement.conflictDetails?.severity).toBe('high');
+      expect(agreement.conflict).toBe(false);
+      expect(agreement.executionAllowed).toBe(true);
     });
 
-    it('REDUCE + SELL → conflict=false (оба частичное уменьшение)', () => {
+    it('REDUCE + SELL → conflict=true (разный объём: частичное vs полное)', () => {
+      // REDUCE (частичное сокращение) и SELL (полная продажа) — конфликт объёма
       const agreement = agreeMathAndAi(
         'VTBR',
         'REDUCE' as PortfolioMathStatus,
@@ -160,8 +161,9 @@ describe('MathAiAgreement — согласование PortfolioMath и ИИ', (
         'AGREE' as MathAgreement,
       );
 
-      expect(agreement.conflict).toBe(false);
-      expect(agreement.executionAllowed).toBe(true);
+      expect(agreement.conflict).toBe(true);
+      expect(agreement.executionAllowed).toBe(false);
+      expect(agreement.conflictDetails?.severity).toBe('medium');
     });
 
     it('HOLD + HOLD → conflict=false', () => {

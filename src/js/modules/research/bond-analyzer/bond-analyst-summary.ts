@@ -15,6 +15,7 @@ import type {
   YieldAnalysis,
   DurationAnalysis,
   CreditAssessment,
+  LiquidityAssessment,
 } from './bond-analyzer-types.js';
 
 // ──────────────────────────────────────────────
@@ -97,6 +98,8 @@ export function buildBondFinalAssessment(params: {
   durationAnalysis: DurationAnalysis;
   /** Кредитное качество */
   creditAssessment: CreditAssessment;
+  /** Ликвидность */
+  liquidityAssessment: LiquidityAssessment;
   /** Портфельный статус (из PortfolioMath) */
   portfolioMathStatus: string;
   /** Текущая доля в портфеле (%) */
@@ -116,6 +119,7 @@ export function buildBondFinalAssessment(params: {
     yieldAnalysis,
     durationAnalysis,
     creditAssessment,
+    liquidityAssessment,
     portfolioMathStatus,
     currentPercent,
     targetPercent,
@@ -155,11 +159,24 @@ export function buildBondFinalAssessment(params: {
     rationaleParts.push(`Дюрация: ${durationAnalysis.duration.toFixed(1)}`);
   }
   if (durationAnalysis.dv01 !== null) {
-    rationaleParts.push(`DV01: ${durationAnalysis.dv01.toFixed(2)} руб.`);
+    rationaleParts.push(`DV01: ${durationAnalysis.dv01.toFixed(2)} руб. (потеря на 1 п.п. изменения доходности)`);
+  }
+
+  // YTM semantics — чёткое разграничение
+  if (yieldAnalysis.ytm !== null) {
+    rationaleParts.push(`⚠️ YTM=${yieldAnalysis.ytm.toFixed(2)}% — это ПРОЕКЦИЯ, не гарантия (купонные выплаты могут быть reinvested по иной ставке)`);
   }
 
   // Кредитное качество
   rationaleParts.push(`Кредитное качество: ${creditAssessment.quality}`);
+  if (creditAssessment.rating) {
+    rationaleParts.push(`Рейтинг ${creditAssessment.rating.agency}: ${creditAssessment.rating.rating} (прогноз: ${creditAssessment.rating.outlook})`);
+  }
+
+  // Ликвидность
+  if (liquidityAssessment.summary) {
+    rationaleParts.push(`Ликвидность: ${liquidityAssessment.summary}`);
+  }
   if (creditAssessment.summary) {
     rationaleParts.push(creditAssessment.summary);
   }
@@ -225,14 +242,7 @@ export function buildBondFinalAssessment(params: {
     yield: yieldAnalysis,
     duration: durationAnalysis,
     credit: creditAssessment,
-    liquidity: {
-      status: 'PARTIAL',
-      turnover: null,
-      turnoverUnit: null,
-      spread: null,
-      depth: null,
-      summary: 'Детальная оценка ликвидности требует спред и глубину стакана',
-    },
+    liquidity: liquidityAssessment,
     missingData,
     mathAgreement,
     portfolioImpact,

@@ -1348,10 +1348,18 @@ export class AiClient {
       { role: 'user', content: userPrompt },
     ];
 
+    let streamResult: StreamResult = {
+      content: '',
+      model: modelConfig.modelName,
+      totalTokens: 0,
+      totalDuration: 0,
+      loadDuration: 0,
+      success: false,
+    };
     try {
       // Пробуем стриминг для лучшего UX
       this.log.info('[Ollama] calling streamChat...');
-      let streamResult: StreamResult = await streamChat(
+      streamResult = await streamChat(
         messages,
         modelConfig.modelName,
         {
@@ -1435,6 +1443,17 @@ export class AiClient {
       this.log.info(
         '[Ollama] ⚠️ Стриминг не удался, пробуем обычный запрос...',
       );
+
+      // При таймауте стрима НЕ запускаем fallback на chatWithoutStream —
+      // повторный прогон промпта с нуля гарантированно приведёт к ещё одному
+      // 30-минутному зависанию. Сразу возвращаем ошибку.
+      if (streamResult.error?.includes('timeout')) {
+        this.log.error(
+          '[Ollama] ⛔ Пропуск fallback: таймаут стрима — повторный прогон ' +
+            'промпта с нуля приведёт к повторному зависанию',
+        );
+        throw new Error(streamResult.error, { cause: error });
+      }
 
       try {
         const result: StreamResult = await chatWithoutStream(
@@ -1930,7 +1949,22 @@ export class AiClient {
               | undefined,
           });
 
-          // 3. Кредитный анализ
+          // 3. Ликвидность
+          const turnoverNum = bondData.turnover != null ? Number(bondData.turnover) : 0;
+          const liquidityAssessment: import('../../research/bond-analyzer/bond-analyzer-types.js').LiquidityAssessment = {
+            status: turnoverNum > 0 ? 'AVAILABLE' : 'PARTIAL',
+            turnover: turnoverNum > 0 ? turnoverNum : null,
+            turnoverUnit: 'RUB',
+            spread: null,
+            depth: null,
+            summary: turnoverNum > 1e6
+              ? `Оборот: ${turnoverNum.toLocaleString('ru-RU')} руб./день — ликвидность достаточна`
+              : turnoverNum > 0
+                ? `Оборот: ${turnoverNum.toLocaleString('ru-RU')} руб./день — ликвидность умеренная`
+                : 'Оборот отсутствует — ликвидность низкая',
+          };
+
+          // 4. Кредитный анализ
           this.log.info(
             `[BondAnalysis] 📊 ${bondAsset.ticker}: icbrrRating=${bondData.icbrrRating ?? 'null'}, rating=${bondData.rating ?? 'null'}, source=${bondData.source ?? 'null'}`,
           );
@@ -1955,11 +1989,12 @@ export class AiClient {
               : undefined,
           });
 
-          // 4. Итоговая оценка
+          // 5. Итоговая оценка
           const finalAssessment = buildBondFinalAssessment({
             yieldAnalysis,
             durationAnalysis,
             creditAssessment,
+            liquidityAssessment,
             portfolioMathStatus: 'STABLE',
             currentPercent: bondAsset.currentPercent || 0,
             targetPercent: bondAsset.targetPercent || null,
@@ -2169,6 +2204,8 @@ export class AiClient {
       fr.totalWithdrawals = historicalData.totalSales || 0;
       fr.netInvestedCapital = historicalData.investedNet || 0;
       fr.totalCommissions = historicalData.commission || 0;
+      fr.totalCoupons = inc.totalNkd || 0;
+      fr.totalDividends = inc.totalDivsNet || 0;
     }
 
     const userPrompt = this.buildUserPrompt(

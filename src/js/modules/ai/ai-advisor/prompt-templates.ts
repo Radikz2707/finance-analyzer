@@ -317,26 +317,36 @@ export interface LiquidityContext {
   if (macroData) {
     const hasData = macroData.keyRate > 0;
     if (hasData) {
+      const freshnessLabel = macroData.isFresh ? 'актуально' : '⚠️ требует проверки (данные могут быть устаревшими)';
       macroLines.push(
-        'Ставка ЦБ: ' +
-          macroData.keyRate +
-          '% (источник: ' +
-          (macroData.source || 'CBR') +
-          ', ' +
-          (macroData.isFresh ? 'актуально' : '⚠️ требует проверки') +
-          ')',
+        `Ставка ЦБ: ${macroData.keyRate}% (источник: ${macroData.source || 'CBR'}, ${freshnessLabel})`,
       );
     } else {
       macroLines.push('Ставка ЦБ: — (данные не получены)');
     }
-    if (macroData.inflation !== undefined)
-      macroLines.push('Инфляция: ' + macroData.inflation + '%');
+    if (macroData.inflation !== undefined) {
+      const inflationLabel = macroData.inflation > macroData.keyRate
+        ? `⚠️ инфляция (${macroData.inflation}%) превышает ключевую ставку — реальная ставка отрицательная`
+        : macroData.inflation > 7
+          ? 'Инфляция выше целевого диапазона ЦБ (4±1%)'
+          : 'Инфляция в пределах целевого диапазона ЦБ';
+      macroLines.push(`Инфляция: ${macroData.inflation}% (${inflationLabel})`);
+    }
     if (macroData.currency !== undefined)
-      macroLines.push('USD/RUB: ' + macroData.currency);
+      macroLines.push(`USD/RUB: ${macroData.currency} (⚠️ волатильность зависит от геополитики)`);
     if (macroData.oil !== undefined)
-      macroLines.push('Нефть Brent: $' + macroData.oil);
+      macroLines.push(`Нефть Brent: $${macroData.oil} (⚠️ зависит от санкций и спроса из Китая)`);
+
+    // Uncertainty level
+    const hasUncertainty = !macroData.isFresh || (macroData.inflation !== undefined && macroData.inflation > 7);
+    if (hasUncertainty) {
+      macroLines.push('⚠️ Уровень неопределённости: ВЫСОКИЙ — макроэкономические данные требуют осторожной интерпретации');
+    } else {
+      macroLines.push('Уровень неопределённости: УМЕРЕННЫЙ — данные соответствуют ожиданиям');
+    }
   } else {
     macroLines.push('Ставка ЦБ: — (данные не получены)');
+    macroLines.push('⚠️ Макроэкономические данные недоступны — решения принимаются без учёта макроконтекста');
   }
 
   const prompt =
@@ -370,6 +380,18 @@ export interface LiquidityContext {
     '• ЗАПРЕЩЕНО: выдумывать доходность облигаций. Если данные не переданы — пиши «нет данных».\n' +
     '• ЗАПРЕЩЕНО: выдумывать суммы дефицита/профицита в рублях. Используй ТОЛЬКО данные из раздела «ТОЧНЫЕ СУММЫ ДЛЯ РЕБАЛАНСИРОВКИ».\n' +
     '• Если в разделе «ТОЧНЫЕ СУММЫ» нет актива — пиши «сумма не указана» вместо выдумывания.\n' +
+    '• ЗАПРЕТ НА ЛИШНЮЮ ПРОДАЖУ ОБЛИГАЦИЙ (STABLE + профицит ≤ 3.5 п.п.): ' +
+    'Если у облигации mathAgreement=STABLE и профицит доли не превышает 3.5 процентных пункта, ' +
+    'НЕ РЕКОМЕНДУЙ REDUCE или EXIT — ставь HOLD. Выравнивание происходит естественно за счёт ' +
+    'ежемесячных пополнений и купонов без расходов на спред и налоги. ' +
+    'Исключение для REDUCE/EXIT по STABLE-облигациям только при: ' +
+    '(а) критическом кредитном риске (дефолт, рейтинг ниже A-), ' +
+    '(б) экстремальном перевесе доли (> 12–15% портфеля).\n' +
+    '• СТРОГАЯ СОГЛАСОВАННОСТЬ НАПРАВЛЕНИЙ (DIRECTION_CONFLICT): ' +
+    'recommendedAction в JSON, текст в карточке актива и строка в итоговой Markdown-таблице ' +
+    'должны 100% совпадать по направлению (BUY, HOLD, REDUCE, EXIT). ' +
+    'Если Math=REDUCE — запрещено ставить BUY ни в одном из полей. ' +
+    'Если Math=STABLE — запрещено ставить REDUCE/EXIT без обоснования из правил выше.\n' +
     buildDeepAnalysisRules() +
     '\n' +
     '=== ИНВЕСТИЦИОННЫЙ REASONING ===\n' +
@@ -598,6 +620,14 @@ ${asset.advice ? '• 💡 ' + asset.advice : ''}
     '5. Динамический мониторинг\n' +
     '6. Новые инструменты\n' +
     '7. Краткое резюме (3-5 действий)\n\n' +
+    '⚠️ Опора только на переданные данные: ' +
+    'Используй ТОЛЬКО цифры из входного контекста. ' +
+    'При флагах NO_DATA или INSUFFICIENT_DATA прямо указывай «нет данных» — ' +
+    'НЕ выдумывай мультипликаторы (P/E, ROE) или обороты.\n' +
+    '⚠️ Защита Markdown-таблицы (секция 2): ' +
+    'Заполняй таблицу строго для ВСЕХ активов портфеля без пропусков. ' +
+    'Обоснования пиши максимально кратко (5–8 слов), ' +
+    'без переносов строк и символов | внутри текста ячейки.\n' +
     '⚠️ Отвечай на русском, развёрнуто, с аргументацией и цифрами.';
 
   return prompt;

@@ -381,6 +381,10 @@ export function buildDeterministicAssetData(
   } else {
     unrealizedProfitRub = asset.unrealizedProfitRub ?? 0;
   }
+  // Guard: NaN, Infinity → 0
+  if (!Number.isFinite(unrealizedProfitRub)) {
+    unrealizedProfitRub = 0;
+  }
 
   // Buy / Sell amounts from deterministic
   let buyAmountRub: number | null = null;

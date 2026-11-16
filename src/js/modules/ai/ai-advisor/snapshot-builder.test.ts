@@ -420,9 +420,9 @@ describe('Test 10: отсутствие provider → fallback snapshot', () => {
     const asset = createAsset({assetType: 'STOCK' as const });
     const result = await buildAssetResearchSnapshot(asset, undefined);
     expect(result.snapshot.identity.ticker).toBe('SBER');
-    expect(result.snapshot.marketResearch).toBeUndefined();
-    expect(result.snapshot.macroResearch).toBeUndefined();
-    expect(result.snapshot.evidence).toEqual({});
+    expect(result.snapshot.marketResearch).toBeNull();
+    expect(result.snapshot.macroResearch).toBeNull();
+    expect(result.snapshot.evidence).toEqual([]);
     expect(result.conflicts).toEqual([]);
   });
 });

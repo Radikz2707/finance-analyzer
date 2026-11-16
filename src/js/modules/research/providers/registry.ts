@@ -65,7 +65,7 @@ export class ResearchProviderRegistry {
       if (snap.issuerResearch) merged.issuerResearch = snap.issuerResearch;
       if (snap.macroResearch) merged.macroResearch = snap.macroResearch;
       if (snap.newsResearch) merged.newsResearch = snap.newsResearch;
-      if (snap.evidence) {
+      if (snap.evidence && Array.isArray(snap.evidence)) {
         snap.evidence.forEach(e => merged.evidence!.push(e));
       }
     }

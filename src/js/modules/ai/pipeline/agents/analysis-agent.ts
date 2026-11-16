@@ -110,6 +110,48 @@ export class AnalysisAgent extends AgentBase {
     const math = new PortfolioMathModule();
     const totalLiq = this.calculateTotalLiquidationValue(assets);
 
+    // ─── Диагностика: liquidation vs balance ───
+    const excelTotalBalance = macroGoals.totalBalance ?? 0;
+    const liqBalanceDiff = excelTotalBalance - totalLiq;
+    if (excelTotalBalance > 0 && Math.abs(liqBalanceDiff) > 1000) {
+      console.warn(
+        `[DIAGNOSTIC] totalLiquidationValue=${Math.round(totalLiq).toLocaleString('ru-RU')}₽, ` +
+          `Excel totalBalance=${Math.round(excelTotalBalance).toLocaleString('ru-RU')}₽, ` +
+          `расхождение=${Math.round(liqBalanceDiff).toLocaleString('ru-RU')}₽ (${((liqBalanceDiff / excelTotalBalance) * 100).toFixed(1)}%)`,
+      );
+      // Активы с currentPrice = 0
+      const zeroPriceAssets = assets.filter(
+        (a) => (a.currentPrice ?? 0) === 0 && (a.quantity ?? 0) > 0,
+      );
+      if (zeroPriceAssets.length > 0) {
+        console.warn(
+          `[DIAGNOSTIC] Активы с currentPrice=0 (${zeroPriceAssets.length} шт.):`,
+          zeroPriceAssets
+            .map((a) => `${a.ticker} (qty=${a.quantity}, type=${a.assetType})`)
+            .join(', '),
+        );
+      }
+      // Активы с наибольшим вкладом в расхождение
+      const sortedByValue = [...assets]
+        .map((a) => ({
+          ticker: a.ticker,
+          quantity: a.quantity ?? 0,
+          currentPrice: a.currentPrice ?? 0,
+          value: (a.quantity ?? 0) * (a.currentPrice ?? 0),
+        }))
+        .sort((a, b) => b.value - a.value);
+      console.warn(
+        '[DIAGNOSTIC] Топ-5 активов по стоимости:',
+        sortedByValue
+          .slice(0, 5)
+          .map(
+            (a) =>
+              `${a.ticker}: ${a.quantity}×${a.currentPrice}=${Math.round(a.value).toLocaleString('ru-RU')}₽`,
+          )
+          .join(', '),
+      );
+    }
+
     const portfolioAnalysis = math.analyzePortfolio(
       macroGoals,
       assets,
@@ -132,9 +174,9 @@ export class AnalysisAgent extends AgentBase {
 
     console.log(
       '[AnalysisAgent] ✅ Анализ завершён: ' +
-      `${portfolioAnalysis.assetsAnalysis.length} активов, ` +
-      `рисков: ${riskValidation.errors.length}, ` +
-      `алертов: ${priceAlerts.length}`,
+        `${portfolioAnalysis.assetsAnalysis.length} активов, ` +
+        `рисков: ${riskValidation.errors.length}, ` +
+        `алертов: ${priceAlerts.length}`,
     );
 
     return {
@@ -148,9 +190,7 @@ export class AnalysisAgent extends AgentBase {
 
   // ── Helpers ──
 
-  private calculateTotalLiquidationValue(
-    assets: CurrentAsset[],
-  ): number {
+  private calculateTotalLiquidationValue(assets: CurrentAsset[]): number {
     return assets.reduce((sum, asset) => {
       const liqValue = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
       return sum + liqValue;

@@ -32,6 +32,8 @@ export interface ScenarioChange {
   action: Extract<AiAction, 'BUY' | 'SELL' | 'REDUCE'> | 'HOLD';
   /** Сумма операции, руб (для BUY/SELL/REDUCE) */
   amountRub: number;
+  /** Описание сделки для disclosure */
+  tradeComposition?: string;
 }
 
 /** Входные данные ScenarioAgent */
@@ -49,6 +51,12 @@ export interface ScenarioAgentInput {
 /** Статус расчёта P&L */
 export type PnlCalculationStatus = 'CALCULATED' | 'PARTIAL' | 'INSUFFICIENT_DATA';
 
+/** Статус финансирования сценария */
+export type FundingStatus =
+  | 'SUFFICIENT' // Денег достаточно для всех операций
+  | 'PARTIAL' // Частично финансируется за счёт продаж
+  | 'INSUFFICIENT'; // Денег не хватает даже с продажами
+
 /** Результат одного сценария */
 export interface ScenarioResult {
   /** Уникальный ID сценария */
@@ -65,6 +73,10 @@ export interface ScenarioResult {
   realizedPnLRub: number;
   /** Статус расчёта P&L: CALCULATED — все позиции рассчитаны, PARTIAL — часть позиций без данных, INSUFFICIENT_DATA — нет данных ни для одной позиции */
   pnlCalculationStatus: PnlCalculationStatus;
+  /** Статус финансирования: SUFFICIENT/PARTIAL/INSUFFICIENT */
+  fundingStatus: FundingStatus;
+  /** Остаток кэша после всех операций сценария */
+  remainingCashRub: number;
   /** Оценка сценария */
   verdict: 'IMPROVES' | 'WORSENS' | 'NEUTRAL';
   /** Почему такой вердикт */
@@ -118,6 +130,55 @@ export class ScenarioAgent extends AgentBase {
     super(config ?? { name: 'ScenarioAgent' });
   }
 
+  // ─── P1-2: Проверка финансирования сценария ───
+
+  /**
+   * Проверяет, достаточно ли средств для выполнения всех операций сценария.
+   *
+   * Алгоритм:
+   * 1. Считаем totalBuyRub — сумма всех покупок
+   * 2. Считаем totalSellRub — сумма всех продаж
+   * 3. availableCash = freeCash + totalSellRub
+   * 4. Если availableCash >= totalBuyRub → SUFFICIENT
+   * 5. Если totalSellRub > 0 и availableCash < totalBuyRub → PARTIAL
+   * 6. Если totalSellRub === 0 и freeCash < totalBuyRub → INSUFFICIENT
+   */
+  private checkFunding(
+    changes: ScenarioChange[],
+    freeCash: number,
+  ): { status: FundingStatus; remainingCash: number } {
+    let totalBuyRub = 0;
+    let totalSellRub = 0;
+
+    for (const change of changes) {
+      if (change.action === 'BUY') {
+        totalBuyRub += change.amountRub;
+      } else if (change.action === 'SELL' || change.action === 'REDUCE') {
+        totalSellRub += change.amountRub;
+      }
+    }
+
+    const availableCash = freeCash + totalSellRub;
+    const remainingCash = availableCash - totalBuyRub;
+
+    if (totalBuyRub === 0) {
+      // Нет покупок — финансирование не требуется
+      return { status: 'SUFFICIENT', remainingCash: freeCash + totalSellRub };
+    }
+
+    if (availableCash >= totalBuyRub) {
+      return { status: 'SUFFICIENT', remainingCash };
+    }
+
+    if (totalSellRub > 0) {
+      // Частично финансируется за счёт продаж
+      return { status: 'PARTIAL', remainingCash };
+    }
+
+    // Нет продаж и недостаточно кэша
+    return { status: 'INSUFFICIENT', remainingCash };
+  }
+
   protected async executeInternal(
     input: ScenarioAgentInput,
   ): Promise<ScenarioAgentOutput> {
@@ -136,6 +197,7 @@ export class ScenarioAgent extends AgentBase {
     const scenarios: ScenarioResult[] = [];
 
     // S1: Baseline — удержание
+    const baselineFunding = this.checkFunding([], freeCash);
     scenarios.push({
       id: 'S1_hold',
       title: 'Удержание (baseline) — ничего не меняем',
@@ -144,6 +206,8 @@ export class ScenarioAgent extends AgentBase {
       projectedUnrealizedPnL: baselinePnL,
       realizedPnLRub: 0,
       pnlCalculationStatus: this.calcPnlStatus(assets, []),
+      fundingStatus: baselineFunding.status,
+      remainingCashRub: baselineFunding.remainingCash,
       verdict: 'NEUTRAL',
       rationale: 'Базовый сценарий: текущая структура без изменений.',
     });
@@ -157,6 +221,7 @@ export class ScenarioAgent extends AgentBase {
           proposed,
           baselineDeviation,
           baselinePnL,
+          freeCash,
         ),
       );
     }
@@ -167,6 +232,7 @@ export class ScenarioAgent extends AgentBase {
       total,
       proposed,
       baselineDeviation,
+      freeCash,
     );
     if (optimized) {
       scenarios.push(optimized);
@@ -208,17 +274,30 @@ export class ScenarioAgent extends AgentBase {
     changes: ScenarioChange[],
     baselineDeviation: number,
     baselinePnL: number,
+    freeCash: number,
   ): ScenarioResult {
     const result = this.applyChanges(assets, total, changes);
     const dev = result.structureDeviationPct;
     const pnlStatus = this.calcPnlStatus(assets, changes);
 
+    // ─── P1-2: Проверка финансирования ───
+    const funding = this.checkFunding(changes, freeCash);
+
     let verdict: ScenarioResult['verdict'] = 'NEUTRAL';
     let rationale =
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
-      `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}.`;
+      `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}. ` +
+      `Кэш: ${this.fmtRub(funding.remainingCash)} (статус: ${funding.status}).`;
 
-    if (pnlStatus === 'CALCULATED') {
+    // Если финансирование недостаточное — сценарий WORSENS
+    if (funding.status === 'INSUFFICIENT') {
+      verdict = 'WORSENS';
+      rationale += ' НЕДОСТАТОЧНО СРЕДСТВ для выполнения всех операций.';
+    } else if (funding.status === 'PARTIAL') {
+      rationale += ' ЧАСТИЧНОЕ финансирование: не все покупки могут быть выполнены.';
+    }
+
+    if (pnlStatus === 'CALCULATED' && funding.status !== 'INSUFFICIENT') {
       if (
         baselineDeviation - dev >= this.baseChangeThresholdPct &&
         result.projectedUnrealizedPnL >= baselinePnL
@@ -229,7 +308,7 @@ export class ScenarioAgent extends AgentBase {
         verdict = 'WORSENS';
         rationale += ' Структура ухудшена относительно базовой.';
       }
-    } else {
+    } else if (pnlStatus !== 'CALCULATED') {
       rationale += ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
     }
 
@@ -241,6 +320,8 @@ export class ScenarioAgent extends AgentBase {
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
       realizedPnLRub: result.realizedPnLRub,
       pnlCalculationStatus: pnlStatus,
+      fundingStatus: funding.status,
+      remainingCashRub: funding.remainingCash,
       verdict,
       rationale,
       stocksBeforePct: result.stocksBeforePct,
@@ -264,6 +345,7 @@ export class ScenarioAgent extends AgentBase {
     total: number,
     proposed: ScenarioChange[],
     baselineDeviation: number,
+    freeCash: number,
   ): ScenarioResult | null {
     const optimizedChanges: ScenarioChange[] = [...proposed];
 
@@ -278,11 +360,11 @@ export class ScenarioAgent extends AgentBase {
     for (const asset of concentratedAssets) {
       const currentVal =
         (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
-      // Продаём 50% позиции для снижения концентрации
+      // Продаём 50% позиции для снижения концентрации → REDUCE (частичная продажа)
       const targetValue = currentVal * 0.5;
       optimizedChanges.push({
         ticker: asset.ticker,
-        action: 'SELL',
+        action: 'REDUCE',
         amountRub: Math.round(targetValue),
       });
     }
@@ -298,19 +380,25 @@ export class ScenarioAgent extends AgentBase {
     const improved = baselineDeviation - dev >= this.baseChangeThresholdPct;
     const optimizedPnlStatus = this.calcPnlStatus(assets, optimizedChanges);
 
+    // ─── P1-2: Проверка финансирования ───
+    const funding = this.checkFunding(optimizedChanges, freeCash);
+
     const verdict: ScenarioResult['verdict'] =
-      improved && realizedPnL > -1000
-        ? 'IMPROVES'
-        : realizedPnL < -1000
-          ? 'WORSENS'
-          : 'NEUTRAL';
+      funding.status === 'INSUFFICIENT'
+        ? 'WORSENS'
+        : improved && realizedPnL > -1000
+          ? 'IMPROVES'
+          : realizedPnL < -1000
+            ? 'WORSENS'
+            : 'NEUTRAL';
 
     // Формируем подробную сводку с указанием реализованного убытка
     const realizedLossAbs = Math.max(0, -realizedPnL);
     let rationale =
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
       `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}. ` +
-      `Зафиксировано: ${this.fmtRub(realizedLossAbs)}.` +
+      `Зафиксировано: ${this.fmtRub(realizedLossAbs)}. ` +
+      `Кэш: ${this.fmtRub(funding.remainingCash)} (${funding.status}).` +
       (concentratedAssets.length > 0
         ? ` Снижение концентрации: ${concentratedAssets.map((a) => a.ticker).join(', ')}.`
         : '');
@@ -327,6 +415,8 @@ export class ScenarioAgent extends AgentBase {
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
       realizedPnLRub: realizedPnL,
       pnlCalculationStatus: optimizedPnlStatus,
+      fundingStatus: funding.status,
+      remainingCashRub: funding.remainingCash,
       verdict,
       rationale,
       stocksBeforePct: result.stocksBeforePct,
@@ -391,6 +481,17 @@ export class ScenarioAgent extends AgentBase {
       const currentValue = values.get(key) ?? 0;
       const currentPnL = pnl.get(key) ?? 0;
       const costBase = costBases.get(key) ?? currentValue;
+
+      // ─── Trade composition disclosure ───
+      if (!change.tradeComposition) {
+        if (change.action === 'BUY') {
+          change.tradeComposition = `Покупка ${change.ticker} на ${this.fmtRub(change.amountRub)}`;
+        } else if (change.action === 'SELL') {
+          change.tradeComposition = `Полная продажа ${change.ticker} на ${this.fmtRub(change.amountRub)}`;
+        } else if (change.action === 'REDUCE') {
+          change.tradeComposition = `Частичная продажа ${change.ticker} на ${this.fmtRub(change.amountRub)}`;
+        }
+      }
 
       if (change.action === 'BUY') {
         const existingValue = values.get(key) ?? 0;
@@ -596,13 +697,17 @@ export class ScenarioAgent extends AgentBase {
     const dev = result.structureDeviationPct;
     const improved = baselineDeviation - dev >= this.baseChangeThresholdPct;
     const flexiblePnlStatus = this.calcPnlStatus(assets, changes);
+    // ─── P1-2: Проверка финансирования ───
+    const flexibleFunding = this.checkFunding(changes, freeCash);
+
     const verdict: ScenarioResult['verdict'] = improved
       ? 'IMPROVES'
       : 'NEUTRAL';
 
     let rationale =
         `Покупка ${buyAsset.ticker} ≈ ${this.fmtRub(amount)}. ` +
-        `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}).`;
+        `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
+        `Кэш: ${this.fmtRub(flexibleFunding.remainingCash)} (${flexibleFunding.status}).`;
     if (flexiblePnlStatus === 'INSUFFICIENT_DATA') {
       rationale += ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
     }
@@ -615,6 +720,8 @@ export class ScenarioAgent extends AgentBase {
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
       realizedPnLRub: result.realizedPnLRub,
       pnlCalculationStatus: flexiblePnlStatus,
+      fundingStatus: flexibleFunding.status,
+      remainingCashRub: flexibleFunding.remainingCash,
       verdict,
       rationale,
       stocksBeforePct: result.stocksBeforePct,

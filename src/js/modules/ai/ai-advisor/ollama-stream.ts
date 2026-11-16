@@ -76,6 +76,8 @@ export async function streamChat(
   let totalDuration = 0;
   let loadDuration = 0;
   let chunksReceived = 0;
+  let doneReason: string | undefined;
+  let thinkingChars = 0;
 
   // ─── Line buffer: Node.js stream буферизует данные произвольными чанками.
   //     JSON-объекты могут быть разорваны между чанками или объединены в один.
@@ -104,7 +106,7 @@ export async function streamChat(
             // модели (у qwen3.6:35b-a3b это 32768) → огромный KV-cache → OOM.
             // 24576 достаточно для промпта ~5-7k токенов и ответа до 8192.
             num_ctx: options.numCtx || 24576,
-            temperature: options.temperature || 0.3,
+            temperature: options.temperature ?? 0.2,
             top_p: options.topP || 0.9,
             top_k: options.topK || 40,
             frequency_penalty: options.frequencyPenalty || 0,
@@ -170,7 +172,8 @@ export async function streamChat(
         // потока без лимита может длиться бесконечно на медленной модели.
         const streamTimer = setTimeout(() => {
           console.error(
-            `[Ollama Stream] ❌ Таймаут стрима: ${streamTimeout}мс превышен`,
+            `[Ollama Stream] ❌ Таймаут стрима: ${streamTimeout}мс превышен ` +
+              `(чанков=${chunksReceived}, fullContent=${fullContent.length}, thinking=${thinkingChars})`,
           );
           response.data.destroy();
           settle({
@@ -232,6 +235,16 @@ export async function streamChat(
                 }
               }
 
+              // Считаем символы в буфере рассуждений (thinking)
+              if (json.message?.thinking) {
+                thinkingChars += json.message.thinking.length;
+              }
+
+              // Сохраняем done_reason из финального чанка
+              if (json.done && json.done_reason != null) {
+                doneReason = String(json.done_reason);
+              }
+
               // Собираем статистику из последнего сообщения.
               // Ollama в финальном чанке возвращает eval_count (число
               // сгенерированных токенов), а не total_tokens — иначе 0.
@@ -243,6 +256,21 @@ export async function streamChat(
             } catch {
               // Игнорируем не-JSON данные
             }
+          }
+
+          // Прогресс-лог каждые 500 чанков
+          if (chunksReceived % 500 === 0) {
+            const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+            const elapsedNum = parseFloat(elapsedSec);
+            const speed = elapsedNum > 0
+              ? (chunksReceived / elapsedNum).toFixed(1)
+              : '0';
+            console.log(
+              `[Ollama Stream] 📊 Прогресс: чанков=${chunksReceived}, ` +
+                `время=${elapsedSec}с, скорость=${speed} чанков/с, ` +
+                `fullContent=${fullContent.length} символов, ` +
+                `thinking=${thinkingChars} символов`,
+            );
           }
         });
 
@@ -266,7 +294,7 @@ export async function streamChat(
 
           const elapsed = Date.now() - startTime;
           console.log(
-            `[Ollama Stream] ✅ Ответ получен за ${elapsed}мс (${fullContent.length} символов, ${totalTokens} токенов, ${chunksReceived} чанков)`,
+            `[Ollama Stream] ✅ Ответ получен за ${elapsed}мс (${fullContent.length} символов, ${totalTokens} токенов, ${chunksReceived} чанков, done_reason=${doneReason || 'no_done_chunk'})`,
           );
 
           settle({

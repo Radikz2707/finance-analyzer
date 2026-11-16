@@ -179,14 +179,16 @@ export async function savePortfolioKpi(
   const analysisOutput = result.stages.analysis?.result.data as
     AnalysisAgentOutput | undefined;
 
-  // DIAG: что пришло в kpi-sink
+  // DIAG: что пришло в kpi-sink (округлено до копеек)
+  const fmt2 = (v: number | undefined) =>
+    v != null ? Number(v.toFixed(2)) : 'undefined';
   console.warn(
     '[KpiSink] 🔍 investedFunds.totalNet=' +
-      (dataOutput?.investedFunds?.totalNet ?? 'undefined') +
+      fmt2(dataOutput?.investedFunds?.totalNet) +
       ', profitC11=' +
-      (dataOutput?.historicalTrades?.profitC11 ?? 'undefined') +
+      fmt2(dataOutput?.historicalTrades?.profitC11) +
       ', totalBalance=' +
-      (dataOutput?.macroGoals?.totalBalance ?? 'undefined'),
+      fmt2(dataOutput?.macroGoals?.totalBalance),
   );
 
   // Полный снапшот для стратегической памяти: реальные поля + нули

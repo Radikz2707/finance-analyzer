@@ -1175,6 +1175,11 @@ export class XlsxParserModule {
         existing.totalLiquidationValue += liqValue;
         existing.totalQuantity += quantity;
         existing.totalBalanceValue += balancePrice * quantity;
+        // ─── P0-1: Обновляем unrealizedProfitRub при агрегации ───
+        if (currentPrice > 0 && balancePrice > 0) {
+          existing.totalUnrealizedProfitRub +=
+            (currentPrice - balancePrice) * quantity;
+        }
         existing.holdOnly = existing.holdOnly || holdOnly;
         existing.excludeFromStockPool =
           existing.excludeFromStockPool || excludeFromStockPool;
@@ -1188,7 +1193,11 @@ export class XlsxParserModule {
           totalLiquidationValue: liqValue,
           totalQuantity: quantity,
           totalBalanceValue: balancePrice * quantity,
-          totalUnrealizedProfitRub: 0,
+          // ─── P0-1: Расчёт unrealizedProfitRub из реальных цен ───
+          totalUnrealizedProfitRub:
+            currentPrice > 0 && balancePrice > 0
+              ? (currentPrice - balancePrice) * quantity
+              : 0,
           balancePrice: balancePrice,
           currentPrice: currentPrice,
           liquidationPrice: liquidationPrice,

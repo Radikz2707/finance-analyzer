@@ -231,11 +231,11 @@ describe('ScenarioAgent', () => {
       const data = dataOf(result);
       const optimized = data.scenarios.find((s) => s.id === 'S3_optimized');
       expect(optimized).toBeDefined();
-      // S3 должен добавить автоматическую продажу PLZL (>15% концентрация, убыток)
-      const hasPlzlSell = optimized!.changes.some(
-        (c) => c.ticker.toUpperCase() === 'PLZL' && c.action === 'SELL',
+      // S3 должен добавить автоматическое сокращение PLZL (>15% концентрация, убыток)
+      const hasPlzlReduce = optimized!.changes.some(
+        (c) => c.ticker.toUpperCase() === 'PLZL' && c.action === 'REDUCE',
       );
-      expect(hasPlzlSell).toBe(true);
+      expect(hasPlzlReduce).toBe(true);
     });
 
     it('S3 показывает реализованный убыток при продаже PLZL', async () => {

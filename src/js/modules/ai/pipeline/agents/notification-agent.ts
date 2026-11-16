@@ -594,10 +594,142 @@ export class NotificationAgent extends AgentBase {
 
     // AI-текст (raw structured JSON никогда не должен попадать в дашборд —
     // stripJsonBlockFromAiText удаляет ```json / {"ticker": ...} блоки)
-    html += stripJsonBlockFromAiText(ai.aiNarrative);
+    const aiText = stripJsonBlockFromAiText(ai.aiNarrative);
+    html += this.convertMarkdownTablesToHtml(aiText);
     html += '</div>';
 
     return html;
+  }
+
+  /**
+   * Преобразует Markdown-таблицы в тексте в HTML-таблицы <table>.
+   * Позволяет корректно переносить таблицу между страницами при печати в PDF.
+   *
+   * Алгоритм:
+   * 1. Находим блок, начинающийся с | и содержащий строку-разделитель (| :--- |).
+   * 2. Склейка разорванных строк: если строка начинается с | но не заканчивается на |,
+   *    присоединяем следующую строку через пробел.
+   * 3. Первая строка → <thead>, строка-разделитель → пропускаем, остальные → <tbody>.
+   */
+  private convertMarkdownTablesToHtml(text: string): string {
+    const lines = text.split('\n');
+    const result: string[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const line = lines[i]!;
+
+      // Проверяем, начинается ли строка с | (возможная таблица)
+      if (line.trimStart().startsWith('|')) {
+        // Ищем строку-разделитель в ближайших строках
+        let sepIdx = -1;
+        for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+          if (/^\|?[\s:|-]+\|?\s*$/.test(lines[j]!)) {
+            sepIdx = j;
+            break;
+          }
+        }
+
+        if (sepIdx > i + 1) {
+          // Нашли таблицу: от i до sepIdx — заголовок, sepIdx+1 — тело
+          const headerLine = this.joinBrokenLines(lines[i]!, lines[i + 1] ?? '');
+          const headers = this.parseTableRow(headerLine);
+
+          // Склеиваем тело таблицы
+          const bodyLines: string[] = [];
+          let k = sepIdx + 1;
+          while (k < lines.length) {
+            const bLine = lines[k]!;
+            // Конец таблицы: строка не начинается с | или пустая
+            if (!bLine.trimStart().startsWith('|') || bLine.trim() === '') break;
+            bodyLines.push(bLine);
+            k++;
+          }
+
+          // Склейка разорванных строк в теле
+          const joinedBody: string[] = [];
+          for (const bl of bodyLines) {
+            if (bl.trimStart().startsWith('|') && !bl.trimEnd().endsWith('|')) {
+              // Строка разорвана — склеиваем с предыдущей
+              if (joinedBody.length > 0) {
+                joinedBody[joinedBody.length - 1] =
+                  joinedBody[joinedBody.length - 1]! + ' ' + bl.trim();
+              }
+            } else {
+              joinedBody.push(bl);
+            }
+          }
+
+          // Генерируем HTML-таблицу
+          let htmlTable =
+            '<table class="ai-narrative-table" style="width:100%;border-collapse:collapse;margin:12px 0;font-size:12px;">';
+          htmlTable += '<thead><tr>';
+          for (const h of headers) {
+            htmlTable +=
+              '<th style="background-color:#f6f8fa;color:#24292f;font-weight:600;padding:6px 8px;text-align:left;border:1px solid #d0d7de;font-size:12px;">' +
+              this.escapeHtml(h) +
+              '</th>';
+          }
+          htmlTable += '</tr></thead><tbody>';
+
+          for (const bl of joinedBody) {
+            const cells = this.parseTableRow(bl);
+            if (cells.length === 0) continue;
+            htmlTable += '<tr>';
+            for (const cell of cells) {
+              htmlTable +=
+                '<td style="padding:6px 8px;border:1px solid #d0d7de;text-align:left;font-size:12px;">' +
+                this.escapeHtml(cell) +
+                '</td>';
+            }
+            htmlTable += '</tr>';
+          }
+          htmlTable += '</tbody></table>';
+
+          result.push(htmlTable);
+          i = k; // Пропускаем все строки таблицы
+          continue;
+        }
+      }
+
+      result.push(line);
+      i++;
+    }
+
+    return result.join('\n');
+  }
+
+  /**
+   * Склейка разорванной строки таблицы с следующей.
+   * Если line не заканчивается на |, присоединяем next через пробел.
+   */
+  private joinBrokenLines(line: string, next: string): string {
+    if (line.trimEnd().endsWith('|')) return line;
+    return line.trimEnd() + ' ' + next.trimStart();
+  }
+
+  /**
+   * Парсит строку Markdown-таблицы в массив ячеек.
+   */
+  private parseTableRow(line: string): string[] {
+    const parts = line.split('|');
+    // Убираем пустые элементы в начале и конце (от ведущих/ведущих |)
+    let start = 0;
+    if (parts[0]!.trim() === '') start = 1;
+    let end = parts.length - 1;
+    if (parts[end]!.trim() === '') end = parts.length - 2;
+    return parts.slice(start, end + 1).map((c) => c.trim());
+  }
+
+  /**
+   * Экранирует HTML-сущности в содержимом ячейки.
+   */
+  private escapeHtml(str: string): string {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   private calcStocksPercent(assetsAnalysis: AssetAnalysis[]): number {
@@ -844,11 +976,15 @@ export class NotificationAgent extends AgentBase {
 
       // Формируем примечание с данными о просадке и концентрации
       let note = d.note || '';
+      const isConflict = d.hasConflict === true;
+      if (isConflict) {
+        note += (note ? ' · ' : '') + '⚠️ Conflict: requires manual review';
+      }
       if (d.drawdownPercent !== null && d.drawdownPercent < 0) {
-        note += (note ? ' · ' : '') + `📉 ${fmtPct(d.drawdownPercent)}`;
+        note += (note ? ' · ' : '') + '📉 ' + fmtPct(d.drawdownPercent);
       }
       if (d.concentrationPercent !== null && d.concentrationPercent > 10) {
-        note += (note ? ' · ' : '') + `⚠️ ${fmtPct(d.concentrationPercent)}`;
+        note += (note ? ' · ' : '') + '⚠️ ' + fmtPct(d.concentrationPercent);
       }
       if (!note) note = '—';
 

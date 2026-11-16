@@ -117,8 +117,8 @@ describe('formatMetrics', () => {
     const metrics = calculatePriceMetrics(createBars(10, 100));
     const formatted = formatMetrics(metrics);
 
-    expect(formatted).toContain('Доходность:');
-    expect(formatted).toContain('Sharpe:');
+    expect(formatted).toContain('Total Return:');
+    expect(formatted).toContain('Sharpe Ratio:');
     expect(formatted).toContain('Max Drawdown:');
     expect(formatted).toContain('Win Rate:');
   });

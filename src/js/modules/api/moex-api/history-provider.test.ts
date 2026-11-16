@@ -647,14 +647,13 @@ describe('formatMetrics', () => {
 
     const formatted = formatMetrics(metrics);
 
-    expect(formatted).toContain('📊 Метрики');
-    expect(formatted).toContain('Доходность:');
-    expect(formatted).toContain('Годовая:');
-    expect(formatted).toContain('Волатильность:');
-    expect(formatted).toContain('Sharpe:');
+    expect(formatted).toContain('Total Return:');
+    expect(formatted).toContain('Annualized Return:');
+    expect(formatted).toContain('Volatility:');
+    expect(formatted).toContain('Sharpe Ratio:');
     expect(formatted).toContain('Max Drawdown:');
     expect(formatted).toContain('Win Rate:');
-    expect(formatted).toContain('Лучший день:');
-    expect(formatted).toContain('Худший день:');
+    expect(formatted).toContain('Best Day:');
+    expect(formatted).toContain('Worst Day:');
   });
 });

@@ -70,20 +70,21 @@ export interface MathAiAgreement {
 /**
  * Совместимые действия (не конфликтуют):
  * - BUY и AVERAGE совместимы (оба предполагают покупку)
- * - SELL и REDUCE совместимы (оба предполагают уменьшение позиции)
- * - НО: EXIT (полное закрытие) и REDUCE (частичное сокращение) НЕ совместимы,
- *   так как представляют разный объём сделки.
+ * - EXIT и SELL совместимы (оба предполагают полный выход)
  * - HOLD и STABLE совместимы (удержание)
  *
- * ИСПРАВЛЕНИЕ P0-3: EXIT и REDUCE больше не считаются автоматически совместимыми.
+ * НЕ совместимы:
+ * - SELL и REDUCE — конфликт ОБЪЁМА (полный выход vs частичное сокращение)
+ * - EXIT и REDUCE — конфликт ОБЪЁМА (полный выход vs частичное сокращение)
+ * - BUY и SELL/REDUCE/EXIT — противоположные направления
  */
 const COMPATIBLE_GROUPS: Record<string, string[]> = {
   BUY: ['BUY', 'AVERAGE'],
   AVERAGE: ['BUY', 'AVERAGE'],
-  SELL: ['SELL', 'REDUCE'], // SELL и REDUCE совместимы (оба — уменьшение)
-  REDUCE: ['SELL', 'REDUCE'], // REDUCE и SELL совместимы
-  // EXIT больше НЕ включает REDUCE/SELL — это полный выход, а не частичное сокращение
-  EXIT: ['EXIT'],
+  // ИСПРАВЛЕНИЕ P1-1: SELL и REDUCE больше НЕ совместимы — разный объём
+  SELL: ['SELL', 'EXIT'], // SELL совместим только с EXIT (оба — полный выход)
+  REDUCE: ['REDUCE'], // REDUCE не совместим ни с чем кроме самого себя
+  EXIT: ['EXIT', 'SELL'], // EXIT совместим с SELL (оба — полный выход)
   HOLD: ['HOLD', 'STABLE'],
   STABLE: ['HOLD', 'STABLE'],
   NEW: ['NEW', 'BUY'],
@@ -92,6 +93,9 @@ const COMPATIBLE_GROUPS: Record<string, string[]> = {
 
 /**
  * Нормализует PortfolioMathStatus в AiAction для сравнения.
+ *
+ * REDUCE и SELL остаются разными действиями — COMPATIBLE_GROUPS
+ * определяет их совместимость по направлению (оба уменьшают позицию).
  */
 function normalizeToAiAction(
   status: PortfolioMathStatus | AiAction | null,

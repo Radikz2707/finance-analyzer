@@ -449,6 +449,29 @@ export class AiAgent extends AgentBase {
 
       structuredRecommendations.set(asset.ticker, structured);
 
+      // ─── Этап 5: User constraints — BUY не превышает доступный капитал ───
+      if (
+        structured.recommendedAction === 'BUY' &&
+        macroGoals.freeCash !== undefined &&
+        structured.currentPrice !== null &&
+        structured.currentPrice > 0 &&
+        structured.recommendedTargetPercent !== null
+      ) {
+        const deficit = asset.deficitRub ?? 0;
+        if (deficit > 0 && deficit > macroGoals.freeCash) {
+          // BUY рекомендация превышает доступный капитал
+          // Снижаем до HOLD и добавляем предупреждение
+          this.log.warn(
+            `[AiAgent] [CONSTRAINT] ${asset.ticker}: BUY требует ${deficit.toFixed(0)} ₽, ` +
+              `доступно ${macroGoals.freeCash.toFixed(0)} ₽ → HOLD`,
+          );
+          structured.recommendedAction = 'HOLD';
+          if (!structured.rationale || structured.rationale === 'AI analysis unavailable') {
+            structured.rationale = `BUY рекомендован, но недоступен: требуется ${deficit.toFixed(0)} ₽, доступно ${macroGoals.freeCash.toFixed(0)} ₽. Рекомендуется дождаться пополнения.`;
+          }
+        }
+      }
+
       // ─── Guardrails — проверка на опасные действия ───
       const guardrailResult = checkGuardrails(
         structured.recommendedAction ?? 'HOLD',
