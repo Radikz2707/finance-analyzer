@@ -6,6 +6,11 @@
  * - mathAction и aiAction хранятся раздельно и никогда не перезаписывают друг друга.
  * - conflict=true означает, что требуется ручная проверка (REVIEW_REQUIRED).
  * - executionAllowed=false блокирует генерацию торговой заявки.
+ * - ИТОГОВОЕ действие карточки всегда определяется расчётным ядром PortfolioMath
+ *   (детерминированное правило + политика); AI-направление — advisory, то есть
+ *   мнение модели для ручной проверки. Даже при conflict=true AI не перезаписывает
+ *   расчётное действие — карточка показывает действие PortfolioMath и фиксирует
+ *   расхождение отдельным предупреждением role=advisory.
  *
  * Сценарии:
  * 1. mathAction=REDUCE, aiAction=BUY → conflict=true, requiresReview=true, executionAllowed=false

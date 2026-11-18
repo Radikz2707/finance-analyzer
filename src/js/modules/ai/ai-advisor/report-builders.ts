@@ -1,5 +1,7 @@
 import { QuikOrder } from '../../data/xlsx-parser/quik-orders-parser.js';
 import { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
+import { PortfolioConfig } from '../../../config/portfolio-config.js';
+import { assessDailyMove } from './daily-move.js';
 
 /**
  * Форматирование цены: показывает копейки только если они есть
@@ -152,6 +154,87 @@ export interface HTMLTablesResult {
   priorityBlock: string;
   concentrationBlock: string;
   rebalanceBlock: string;
+  /** Действующие долевые позиции (не дивидендные): «Имя (TICKER): N шт.» */
+  stocksPositionsBlock: string;
+}
+
+/** Шаг стратега, участвующий в итоге ребалансировки. */
+export interface RebalanceStep {
+  ticker: string;
+  amountRub: number;
+  /** «Купить» / «Продать» / «Удерживать» */
+  action?: string;
+  /** Отображаемое имя (если известно) */
+  name?: string;
+}
+
+interface RebalancePosition {
+  name: string;
+  ticker: string;
+  amountRub: number;
+}
+
+/**
+ * Действующие долевые позиции из assetsAnalysis.
+ *
+ * Раньше список брался из income.stocks (дивидендные позиции), поэтому
+ * при пустом листе «Дивиденды» отчёт писал «Данные не получены», хотя
+ * акции в портфеле есть. Здесь источник — сам портфель.
+ */
+export function buildActiveStockPositionsText(
+  assetsAnalysis: AssetAnalysis[],
+): string {
+  return assetsAnalysis
+    .filter((asset) => {
+      const type = (asset.assetType ?? '').trim().toUpperCase();
+      const isStock = type === 'А' || type === 'АКЦИЯ' || type === 'STOCK';
+      return isStock && (asset.quantity ?? 0) > 0;
+    })
+    .map((asset) => `${asset.name} (${asset.ticker}): ${asset.quantity} шт.`)
+    .join(', ');
+}
+
+/**
+ * Итог ребалансировки = дефицитные позиции PortfolioMath + BUY-шаги стратега.
+ *
+ * PortfolioMath не всегда содержит NEW-ОФЗ (например, когда бумага только
+ * докупается), но стратег уже построил для неё шаг. Итоговая сумма обязана
+ * учитывать оба источника, иначе 3 позиции превращаются в 2.
+ */
+function mergeRebalancePositions(
+  assetsAnalysis: AssetAnalysis[],
+  strategySteps?: RebalanceStep[],
+): RebalancePosition[] {
+  const buyAssets = assetsAnalysis.filter(
+    (asset) =>
+      (asset.status === 'BUY' || asset.status === 'NEW') &&
+      asset.deficitRub > 0,
+  );
+
+  const positions = new Map<string, RebalancePosition>();
+  for (const asset of buyAssets) {
+    positions.set(asset.ticker.toUpperCase(), {
+      name: asset.name,
+      ticker: asset.ticker,
+      amountRub: asset.deficitRub,
+    });
+  }
+
+  for (const step of strategySteps ?? []) {
+    const ticker = (step.ticker ?? '').trim();
+    if (!ticker) continue;
+    const isBuy = step.action ? /куп/i.test(step.action) : true;
+    if (!isBuy || !(step.amountRub > 0)) continue;
+    const key = ticker.toUpperCase();
+    if (positions.has(key)) continue;
+    positions.set(key, {
+      name: step.name ?? ticker,
+      ticker,
+      amountRub: step.amountRub,
+    });
+  }
+
+  return [...positions.values()];
 }
 
 /**
@@ -299,6 +382,7 @@ export function buildOrdersHtmlAndMd(
  */
 export function buildAssetsTablesAndBars(
   assetsAnalysis: AssetAnalysis[],
+  strategySteps?: RebalanceStep[],
 ): HTMLTablesResult {
   let barRows = '';
   let legendRows = '';
@@ -478,22 +562,25 @@ export function buildAssetsTablesAndBars(
 
   // NEW-активы (например, ОФЗ) тоже участвуют в приведении к целям:
   // стратег строит для них шаг, значит итоговая сумма обязана их учитывать.
-  const buyAssets = assetsAnalysis.filter(
-    (a) => (a.status === 'BUY' || a.status === 'NEW') && a.deficitRub > 0,
+  // BUY-шаги стратега добавляются к дефицитным позициям PortfolioMath —
+  // иначе NEW-ОФЗ из шага не попадает в итог и 3 позиции превращаются в 2.
+  const rebalancePositions = mergeRebalancePositions(
+    assetsAnalysis,
+    strategySteps,
   );
-  if (buyAssets.length > 0) {
+  if (rebalancePositions.length > 0) {
     console.log(
-      `[REBALANCE_TOTAL] render=report-builders positions=${buyAssets.length} ` +
-        `totalRub=${buyAssets.reduce((sum, a) => sum + a.deficitRub, 0)} ` +
-        `tickers=${buyAssets.map((a) => a.ticker).join(',')}`,
+      `[REBALANCE_TOTAL] render=report-builders positions=${rebalancePositions.length} ` +
+        `totalRub=${rebalancePositions.reduce((sum, a) => sum + a.amountRub, 0)} ` +
+        `tickers=${rebalancePositions.map((a) => a.ticker).join(',')}`,
     );
   }
-  if (buyAssets.length > 0) {
+  if (rebalancePositions.length > 0) {
     priorityBlock =
       "<div class='priority-section'>" +
       "<h3 class='section-title section-title--blue'>🎯 Приоритет покупок (по дефициту)</h3>" +
       "<div class='priority-list'>";
-    buyAssets.forEach((item, index) => {
+    rebalancePositions.forEach((item, index) => {
       const rank = index + 1;
       priorityBlock +=
         "<div class='priority-item'>" +
@@ -504,7 +591,7 @@ export function buildAssetsTablesAndBars(
         item.name +
         '</span>' +
         "<span class='priority-deficit'>" +
-        item.deficitRub.toLocaleString('ru-RU') +
+        item.amountRub.toLocaleString('ru-RU') +
         ' ₽</span>' +
         '</div>';
     });
@@ -531,16 +618,20 @@ export function buildAssetsTablesAndBars(
     concentrationBlock += '</div></div>';
   }
 
-  if (buyAssets.length > 0) {
-    const topBuy = buyAssets[0]!;
-    const topTargetPct = topBuy.targetPercent ?? 0;
-    const totalDeficit = buyAssets
-      .reduce((sum, a) => sum + a.deficitRub, 0)
+  if (rebalancePositions.length > 0) {
+    const topBuy = rebalancePositions[0]!;
+    const topAsset = assetsAnalysis.find(
+      (asset) => asset.ticker.toUpperCase() === topBuy.ticker.toUpperCase(),
+    );
+    const topTargetPct = topAsset?.targetPercent ?? 0;
+    const topCurrentPct = topAsset?.currentPercent ?? 0;
+    const totalDeficit = rebalancePositions
+      .reduce((sum, a) => sum + a.amountRub, 0)
       .toLocaleString('ru-RU');
-    const totalPositions = buyAssets.length;
+    const totalPositions = rebalancePositions.length;
     const topName = topBuy.name;
-    const topDeficit = topBuy.deficitRub.toLocaleString('ru-RU');
-    const topPct = (topTargetPct - topBuy.currentPercent).toFixed(1);
+    const topDeficit = topBuy.amountRub.toLocaleString('ru-RU');
+    const topPct = (topTargetPct - topCurrentPct).toFixed(1);
     const positionsWord =
       totalPositions % 10 === 1 && totalPositions % 100 !== 11
         ? 'позицию'
@@ -575,6 +666,16 @@ export function buildAssetsTablesAndBars(
       '</div></div>';
   }
 
+  // Действующие долевые позиции — из самого портфеля, а не из income.stocks.
+  const activeStocksText = buildActiveStockPositionsText(assetsAnalysis);
+  const stocksPositionsBlock = activeStocksText
+    ? "<div class='stocks-positions-section'>" +
+      "<h3 class='section-title section-title--blue'>📌 Действующие долевые позиции</h3>" +
+      "<div class='stocks-positions-list'>" +
+      activeStocksText +
+      '</div></div>'
+    : '';
+
   return {
     barRows,
     legendRows,
@@ -582,6 +683,7 @@ export function buildAssetsTablesAndBars(
     priorityBlock,
     concentrationBlock,
     rebalanceBlock,
+    stocksPositionsBlock,
   };
 }
 
@@ -595,12 +697,23 @@ export interface StockQuote {
   dailyDynamicsPercent: number;
   /** Дневной оборот в рублях */
   volumeTodayRub?: number;
+  /** Источник котировки: MOEX_ISS / EXCEL / PYTHON_ISS */
+  source?: string;
+  /** Время среза котировки (ISO) */
+  asOf?: string | null;
 }
 
 export interface QuotesBlockResult {
   quotesTableRows: string;
   topGainers: string;
   topLosers: string;
+  /** Подпись источника и времени среза (атрибуция таблицы). */
+  quotesSourceNote: string;
+  /**
+   * Пометка о движениях на низкой ликвидности: такие проценты —
+   * шум, а не сигнал. Пустая строка — подобных движений нет.
+   */
+  lowLiquidityNote: string;
 }
 
 /**
@@ -613,38 +726,76 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
   let topLosers = '';
 
   if (quotes.length === 0) {
-    return { quotesTableRows, topGainers, topLosers };
+    return {
+      quotesTableRows,
+      topGainers,
+      topLosers,
+      quotesSourceNote: '',
+      lowLiquidityNote: '',
+    };
   }
 
-  // Сортировка по дневной динамике
-  const sortedByDynamics = [...quotes].sort(
-    (a, b) => b.dailyDynamicsPercent - a.dailyDynamicsPercent,
+  // Атрибуция таблицы: источник и время среза. Без этого таблица выглядит
+  // как «данные ниоткуда» — именно этот дефект был в дашборде.
+  const sources = Array.from(
+    new Set(
+      quotes
+        .map((quote) => quote.source)
+        .filter((source): source is string => Boolean(source)),
+    ),
   );
+  const asOfValues = quotes
+    .map((quote) => quote.asOf)
+    .filter((asOf): asOf is string => Boolean(asOf))
+    .sort();
+  const latestAsOf = asOfValues[asOfValues.length - 1] ?? null;
+  const quotesSourceNote =
+    sources.length > 0
+      ? `Источник: ${sources.join(', ')}${
+          latestAsOf
+            ? `, срез ${new Date(latestAsOf).toLocaleString('ru-RU')}`
+            : ''
+        }`
+      : 'Источник котировок не указан';
 
-  // Топ-5 роста — только акции с положительной динамикой
+  // Сортировка по дневной динамике. NaN/undefined не участвуют: они не
+  // «нулевое изменение», а отсутствие данных.
+  const noticePct = PortfolioConfig.anomaly.noticePct;
+  const sortedByDynamics = quotes
+    .filter((quote) => Number.isFinite(quote.dailyDynamicsPercent))
+    .sort((a, b) => b.dailyDynamicsPercent - a.dailyDynamicsPercent);
+
+  // Топ-5 роста — только значимые движения (>= порога заметности из конфига).
+  // Движения меньше 1% — шум, а не сигнал.
   const risingQuotes = sortedByDynamics.filter(
-    (q) => q.dailyDynamicsPercent > 0,
+    (q) => q.dailyDynamicsPercent >= noticePct,
   );
   const topGainersList = risingQuotes.slice(0, 5);
 
-  // Топ-5 падения — только акции с отрицательной динамикой
+  // Топ-5 падения — только значимые движения.
   const decliningQuotes = sortedByDynamics.filter(
-    (q) => q.dailyDynamicsPercent < 0,
+    (q) => q.dailyDynamicsPercent <= -noticePct,
   );
   const topLosersList = decliningQuotes.slice(-5).reverse();
 
   // Генерация строк таблицы
   for (const quote of quotes) {
-    const color =
-      quote.dailyDynamicsPercent > 0
+    // Изменение может быть NaN/undefined (источник не отдал LASTCHANGEPCT).
+    // Fail-closed: пишем «н/д», а не «NaN%» и не выдуманный 0.
+    const change = quote.dailyDynamicsPercent;
+    const changeValid = Number.isFinite(change);
+    const color = !changeValid
+      ? '#8b949e'
+      : change > 0
         ? '#56d364'
-        : quote.dailyDynamicsPercent < 0
+        : change < 0
           ? '#ff7b72'
           : '#e3b341';
-    const arrow =
-      quote.dailyDynamicsPercent > 0
+    const arrow = !changeValid
+      ? '—'
+      : change > 0
         ? '↑'
-        : quote.dailyDynamicsPercent < 0
+        : change < 0
           ? '↓'
           : '↔';
 
@@ -668,11 +819,11 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
       arrow +
       '</span>' +
       "<span class='quote-value'>" +
-      (quote.dailyDynamicsPercent !== 0
-        ? (quote.dailyDynamicsPercent > 0 ? '+' : '') +
-          quote.dailyDynamicsPercent.toFixed(2) +
-          '%'
-        : '0.00%') +
+      (changeValid
+        ? change !== 0
+          ? (change > 0 ? '+' : '') + change.toFixed(2) + '%'
+          : '0.00%'
+        : 'н/д') +
       '</span>' +
       '</td>' +
       "<td class='quote-volume'>" +
@@ -740,7 +891,43 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
       '</div>';
   }
 
-  return { quotesTableRows, topGainers, topLosers };
+  // Движения на низкой ликвидности — шум, а не сигнал. Отчёт обязан
+  // отделить их от значимых движений (кейс ЕвроТранс: −9,90% при 1,7 млн ₽).
+  const lowLiquidityMoves = quotes
+    .filter((quote) => Number.isFinite(quote.dailyDynamicsPercent))
+    .map((quote) =>
+      assessDailyMove({
+        ticker: quote.ticker,
+        dayChangePct: quote.dailyDynamicsPercent,
+        turnoverRub: quote.volumeTodayRub ?? null,
+      }),
+    )
+    .filter((assessment) => assessment.verdict === 'low_liquidity_noise');
+
+  const lowLiquidityNote =
+    lowLiquidityMoves.length > 0
+      ? 'Движение на низкой ликвидности (не сигнал): ' +
+        lowLiquidityMoves.map((assessment) => assessment.message).join('; ')
+      : '';
+
+  // Если значимых движений нет — честно говорим, что топ не сформирован,
+  // а не показываем «+0,12%» как сигнал.
+  const noNotableMovesNote =
+    topGainersList.length === 0 &&
+    topLosersList.length === 0 &&
+    quotes.length > 0
+      ? `Движения ниже порога заметности ${noticePct}% — шум, топ не сформирован.`
+      : '';
+
+  return {
+    quotesTableRows,
+    topGainers,
+    topLosers,
+    quotesSourceNote,
+    lowLiquidityNote: [lowLiquidityNote, noNotableMovesNote]
+      .filter((note) => note.length > 0)
+      .join(' '),
+  };
 }
 
 // ============================================================================

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * MoexHistoryProvider — загрузка исторических цен через MOEX ISS API.
  *
  * Бесплатный API без регистрации и ключей:
@@ -27,7 +27,10 @@ import type {
 } from '../../data/data-fetcher/contracts.js';
 export type { OHLCVBar, HistoryResult, HistoryInterval };
 
-import { calculatePriceMetrics, formatMetrics } from '../../shared/price-metrics.js';
+import {
+  calculatePriceMetrics,
+  formatMetrics,
+} from '../../shared/price-metrics.js';
 
 // Реэкспорт для обратной совместимости
 export { calculatePriceMetrics, formatMetrics };
@@ -329,6 +332,9 @@ export async function fetchHistoricalData(
 
 /**
  * Загрузить исторические данные для множества тикеров.
+ *
+ * Сбой одного тикера (нет доски, сеть, пустой ответ) не прерывает batch:
+ * тикер получает пустой массив, остальные загружаются как обычно.
  */
 export async function fetchHistoricalBatch(
   tickers: string[],
@@ -339,14 +345,22 @@ export async function fetchHistoricalBatch(
   const results = new Map<string, OHLCVBar[]>();
 
   for (const ticker of tickers) {
-    const result = await fetchHistoricalData({
-      ticker,
-      interval,
-      from,
-      to,
-    });
+    try {
+      const result = await fetchHistoricalData({
+        ticker,
+        interval,
+        from,
+        to,
+      });
 
-    results.set(ticker, result.bars);
+      results.set(ticker, result.bars);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[MoexHistory] ⚠️ ${ticker} — история недоступна: ${message}`,
+      );
+      results.set(ticker, []);
+    }
   }
 
   return results;

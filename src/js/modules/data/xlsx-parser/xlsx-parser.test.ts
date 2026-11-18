@@ -310,6 +310,106 @@ describe('XlsxParserModule', () => {
     });
   });
 
+  describe('parseBondsSheet — «Дата выпл. куп.» и заголовок на второй строке', () => {
+    const HEADER = [
+      'Инструмент',
+      'ISIN',
+      'Листинг',
+      'Цена последняя',
+      'Доходность',
+      'Оборот',
+      'Номинал',
+      'Размер купона',
+      'Длительность купона',
+      'Дата выпл. куп.',
+      'НКД',
+      'Дата погашения',
+      'Дюрация',
+    ];
+
+    function mockBondsSheet(rows: Array<Array<string | number>>): void {
+      mockReadFile.mockReturnValue({
+        SheetNames: ['Облигации'],
+        Sheets: { Облигации: { '!ref': 'A1:M100' } },
+      });
+      mockSheetToJson.mockImplementation(
+        (_sheet: unknown, options?: { header?: number }) => {
+          if (options?.header === 1) {
+            return [['Справочник облигаций'], HEADER, ...rows];
+          }
+          // sheet_to_json с range=1: шапка на второй строке.
+          return rows.map((row) =>
+            Object.fromEntries(HEADER.map((key, index) => [key, row[index]])),
+          );
+        },
+      );
+    }
+
+    it('читает 11.02.2027 для RU000A10GF83 и помечает источник EXCEL', async () => {
+      mockBondsSheet([
+        [
+          'ОФЗ 29027',
+          'RU000A10GF83',
+          '1',
+          99,
+          12,
+          1000,
+          1000,
+          50,
+          182,
+          '11.02.2027',
+          0,
+          '11.02.2030',
+          700,
+        ],
+      ]);
+
+      const bondsMap = await parser.parseBondsSheet();
+      const bond = bondsMap.get('RU000A10GF83');
+
+      // Календарный день не зависит от часового пояса машины:
+      // 11.02.2027 — это февраль, а не 2 ноября.
+      expect(bond?.nextCouponDate?.toISOString().slice(0, 10)).toBe(
+        '2027-02-11',
+      );
+      expect(bond?.nextCouponDateSource).toBe('EXCEL');
+      // Дата погашения идёт через тот же единый парсер.
+      expect(bond?.maturityDate?.toISOString().slice(0, 10)).toBe('2030-02-11');
+    });
+
+    it('пустая дата у неактивной бумаги — not_in_excel, без ошибки маппинга', async () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      mockBondsSheet([
+        [
+          'Неактивная бумага',
+          'RU000A104RT9',
+          '',
+          0,
+          0,
+          0,
+          1000,
+          0,
+          0,
+          '',
+          0,
+          '01.01.2030',
+          0,
+        ],
+      ]);
+
+      const bondsMap = await parser.parseBondsSheet();
+      expect(bondsMap.get('RU000A104RT9')?.nextCouponDate).toBeNull();
+      expect(
+        log.mock.calls.some((call) =>
+          String(call[0]).includes(
+            'nextCouponDate=not_in_excel inactiveRows=1',
+          ),
+        ),
+      ).toBe(true);
+      log.mockRestore();
+    });
+  });
+
   describe('getBondReference и getBondNominal', () => {
     it('должен возвращать справочные данные по облигации', async () => {
       await parser.parseBondsSheet();

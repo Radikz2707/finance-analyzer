@@ -13,6 +13,7 @@
  * 4. PythonBridge — ошибки (скрипт не найден)
  */
 
+import { PortfolioConfig } from '../../../config/portfolio-config.js';
 import {
   AnomalyDetector,
   detectAnomaliesInTypeScript,
@@ -153,7 +154,7 @@ describe('AnomalyDetector (Python путь)', () => {
   it('должен передать запрос в Python и вернуть его данные', async () => {
     const pythonData: AnomalyDetectionResult[] = [
       {
-        ticker: 'FROM_PYTHON',
+        ticker: 'SBER',
         lastPrice: 123.45,
         zScoreLast: 3.1,
         isLastAnomaly: true,
@@ -171,11 +172,23 @@ describe('AnomalyDetector (Python путь)', () => {
     const bridge = new FakeBridge(true, pythonData);
     const detector = new AnomalyDetector(bridge);
 
+    const prices = wavySeries(60);
     const results = await detector.detectAnomalies([
-      { ticker: 'SBER', prices: wavySeries(60) },
+      { ticker: 'SBER', prices },
     ]);
 
-    expect(results).toEqual(pythonData);
+    expect(results[0]).toMatchObject(pythonData[0]!);
+    expect(results[0]?.smaPeriods).toEqual([
+      ...PortfolioConfig.moexQuotes.smaPeriods,
+    ]);
+    for (const period of results[0]?.smaPeriods ?? []) {
+      const value = results[0]?.smaValues?.[String(period)];
+      if (prices.length >= period) {
+        expect(value).not.toBeNull();
+      } else {
+        expect(value).toBeNull();
+      }
+    }
     expect(bridge.calls).toHaveLength(1);
     expect(bridge.calls[0]!.command).toBe('detect_anomalies');
     expect(bridge.calls[0]!.payload?.series).toHaveLength(1);
@@ -211,17 +224,33 @@ describe('AnomalyDetector (Python путь)', () => {
 // ──────────────────────────────────────────────
 
 describe('detectAnomaliesInTypeScript', () => {
-  it('должен рассчитать SMA20/SMA50 и тренд для восходящего ряда', () => {
+  it('должен рассчитать SMA по периодам конфига и тренд для восходящего ряда', () => {
     const input: PriceSeriesInput = {
       ticker: 'SBER',
-      prices: monotonicSeries(80),
+      prices: monotonicSeries(260),
     };
 
     const result = detectAnomaliesInTypeScript(input);
-    expect(result.sma20).not.toBeNull();
-    expect(result.sma50).not.toBeNull();
+    expect(result.smaPeriods).toEqual([
+      ...PortfolioConfig.moexQuotes.smaPeriods,
+    ]);
+    for (const period of result.smaPeriods ?? []) {
+      expect(result.smaValues?.[String(period)]).not.toBeNull();
+    }
     expect(result.trend).toBe('up');
     expect(result.riskLevel).toBeDefined();
+  });
+
+  it('legacy sma20/sma50 заполняются только для периодов из конфига', () => {
+    const result = detectAnomaliesInTypeScript({
+      ticker: 'SBER',
+      prices: monotonicSeries(260),
+    });
+
+    // Периода 20 в конфиге нет — хардкод отсутствует.
+    expect(result.sma20).toBeNull();
+    // Период 50 в конфиге есть — legacy-поле совпадает со smaValues.
+    expect(result.sma50).toBe(result.smaValues?.['50'] ?? null);
   });
 
   it('должен корректно маркировать точки аномалий внутри серии', () => {

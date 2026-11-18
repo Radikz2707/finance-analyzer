@@ -13,11 +13,16 @@
  * - НЕ классифицировать тип купона без достоверных данных → UNKNOWN.
  */
 
+import { PortfolioConfig } from '../../../config/portfolio-config.js';
 import type {
   CouponType,
+  CouponTypeReason,
+  CouponTypeSource,
+  YtmMethod,
   YieldAnalysis,
   CouponProjection,
 } from './bond-analyzer-types.js';
+import { formatCalendarDate } from '../../shared/date-utils.js';
 
 // ──────────────────────────────────────────────
 // 1. Константы
@@ -130,9 +135,10 @@ export function annualCouponIncome(
   couponPeriodDays: number,
   quantity: number,
 ): number | null {
-  const perBond = couponAmount > 0 && couponPeriodDays > 0
-    ? couponAmount * (DAYS_PER_YEAR / couponPeriodDays)
-    : null;
+  const perBond =
+    couponAmount > 0 && couponPeriodDays > 0
+      ? couponAmount * (DAYS_PER_YEAR / couponPeriodDays)
+      : null;
   if (perBond === null) return null;
   return perBond * quantity;
 }
@@ -197,7 +203,9 @@ export function projectedCouponFlow(
     });
 
     // Следующая дата выплаты
-    currentDate = new Date(currentDate.getTime() + couponPeriodDays * 24 * 60 * 60 * 1000);
+    currentDate = new Date(
+      currentDate.getTime() + couponPeriodDays * 24 * 60 * 60 * 1000,
+    );
   }
 
   return projections;
@@ -264,13 +272,14 @@ export function calculateYTM(
       const discount = Math.pow(1 + ytm / periodsPerYear, t);
       const cf = t < periods ? couponAmount : couponAmount + nominal;
       npv += cf / discount;
-      dnpv -= (t * cf) / (discount * (1 + ytm / periodsPerYear) * periodsPerYear);
+      dnpv -=
+        (t * cf) / (discount * (1 + ytm / periodsPerYear) * periodsPerYear);
     }
 
     const diff = npv - price;
 
     if (Math.abs(diff) < tolerance) {
-      return (ytm * 100);
+      return ytm * 100;
     }
 
     if (Math.abs(dnpv) < 1e-12) {
@@ -307,13 +316,44 @@ export function effectiveYield(
 ): number | null {
   if (nominalYTM <= -100) return null;
 
-  const periodicRate = (nominalYTM / 100) / periodsPerYear;
+  const periodicRate = nominalYTM / 100 / periodsPerYear;
   return (Math.pow(1 + periodicRate, periodsPerYear) - 1) * 100;
 }
 
 // ──────────────────────────────────────────────
 // 9. Основной интерфейс — YieldAnalysis
 // ──────────────────────────────────────────────
+
+/** Тип купона, однозначно заданный серией ОФЗ. */
+export type OfzSeries =
+  'FIXED' | 'FLOATER' | 'FIXED_AMORTIZING' | 'INFLATION_LINKED' | 'UNKNOWN';
+
+const OFZ_SERIES_BY_PREFIX: Readonly<Record<string, OfzSeries>> =
+  PortfolioConfig.bondOfz.seriesByPrefix;
+
+/**
+ * Определить серию ОФЗ по государственному регистрационному номеру.
+ *
+ * Фактическая раскладка (см. PortfolioConfig.bondOfz):
+ * - 24xxx, 29xxx — ОФЗ-ПК (плавающий купон);
+ * - 25xxx, 26xxx — ОФЗ-ПД (фиксированный купон);
+ * - 46xxx — ОФЗ-АД (фиксированный купон + амортизация долга);
+ * - 52xxx — ОФЗ-ИН (индексируемый номинал).
+ *
+ * Префикс-карта — только фолбэк: основной путь — couponType из description
+ * MOEX ISS. Распознанный госрегномер с неизвестным префиксом даёт UNKNOWN
+ * (тип не определён), а не класс по умолчанию. null — если это не
+ * госрегномер ОФЗ.
+ */
+export function classifyOfzSeries(
+  identifier: string | undefined,
+): OfzSeries | null {
+  const match = /^(SU)?(\d{2})\d{3}/i.exec((identifier ?? '').trim());
+  if (!match) return null;
+  const prefix = match[2];
+  if (!prefix) return 'UNKNOWN';
+  return OFZ_SERIES_BY_PREFIX[prefix] ?? 'UNKNOWN';
+}
 
 /**
  * Полный расчёт доходности облигации.
@@ -329,6 +369,11 @@ export function effectiveYield(
 export function analyzeYield(params: {
   /** Доходность из QUIK (столбец E). НЕ называть YTM без подтверждения. */
   quikYield?: number;
+  /**
+   * Идентификатор бумаги (ISIN или госрегномер). Нужен для фолбэка
+   * классификации купона по префиксу 29xxx (ОФЗ).
+   */
+  identifier?: string;
   /** Размер купона на 1 облигацию (RUB) */
   couponAmount: number;
   /** Длительность купонного периода (дни) */
@@ -346,10 +391,12 @@ export function analyzeYield(params: {
   /** Известны ли условия плавающего купона */
   hasFloatingTerms?: boolean;
   /**
-   * Тип купона из MOEX (FIXED / FLOATER / MICROFIX / ZERO_COUPON).
-   * Приоритет: если передан — используется напрямую, без эвристики.
+   * Тип купона из description MOEX ISS — основной источник.
+   * Передаётся как OfzSeries (включая FIXED_AMORTIZING / INFLATION_LINKED).
    */
-  couponType?: 'FIXED' | 'FLOATER' | 'MICROFIX' | 'ZERO_COUPON';
+  issCouponType?: OfzSeries;
+  /** Сырое значение из ISS (например, «ОФЗ-ПК») для атрибуции конфликта. */
+  issCouponTypeRaw?: string | null;
 }): YieldAnalysis {
   const {
     quikYield,
@@ -361,30 +408,72 @@ export function analyzeYield(params: {
     nextCouponDate,
     maturityDate,
     hasFloatingTerms,
-    couponType: moexCouponType,
+    issCouponType,
+    issCouponTypeRaw,
+    identifier,
   } = params;
 
-  // Определение типа купона
-  // Приоритет: MOEX данные > эвристика
+  // Классификация типа купона.
+  // Приоритет: description ISS → серия ОФЗ из конфига → эвристика по Excel.
+  // «Excel FIXED» — это эвристика determineCouponType (купон > 0), а не
+  // подтверждённый источник. Конфликт с FLOATER даёт UNKNOWN, а не FIXED.
+  const excelType = determineCouponType(
+    couponAmount,
+    nominal,
+    marketPrice,
+    couponPeriodDays,
+    hasFloatingTerms,
+  );
+  const issType =
+    issCouponType && issCouponType !== 'UNKNOWN' ? issCouponType : null;
+  const seriesType = classifyOfzSeries(identifier);
+  const authoritative = issType
+    ? { type: issType, source: 'ISS' as CouponTypeSource }
+    : seriesType && seriesType !== 'UNKNOWN'
+      ? { type: seriesType, source: 'SERIES' as CouponTypeSource }
+      : null;
+
   let couponType: CouponType;
-  if (moexCouponType) {
-    if (moexCouponType === 'MICROFIX') {
-      couponType = 'FLOATER'; // MICROFIX обрабатывается как FLOATER
+  let couponTypeReason: CouponTypeReason | null = null;
+  let couponTypeReasonDetail: string | null = null;
+  let couponTypeSource: CouponTypeSource | null = null;
+
+  if (authoritative) {
+    const label = authoritative.source === 'ISS' ? 'ISS' : 'серия';
+    if (authoritative.type === 'FLOATER' && excelType === 'FIXED') {
+      // Excel (эвристика) даёт FIXED, а ISS/серия — FLOATER: источники
+      // противоречат, тип не подтверждён. Это и есть кейс 29027.
+      couponType = 'UNKNOWN';
+      couponTypeReason = 'excel_conflict';
+      couponTypeReasonDetail =
+        `Excel FIXED, ${label} FLOATER` +
+        (issCouponTypeRaw ? ` (${issCouponTypeRaw})` : '');
     } else {
-      couponType = moexCouponType as CouponType;
+      couponType = authoritative.type;
+      couponTypeSource = authoritative.source;
     }
+  } else if (seriesType === 'UNKNOWN') {
+    // Госрегномер распознан, но префикс не из карты: тип не определён.
+    couponType = 'UNKNOWN';
+    couponTypeReason = 'type_unconfirmed';
+    couponTypeReasonDetail =
+      'префикс серии не распознан — тип купона не определён';
   } else {
-    couponType = determineCouponType(
-      couponAmount,
-      nominal,
-      marketPrice,
-      couponPeriodDays,
-      hasFloatingTerms,
-    );
+    couponType = excelType;
+    couponTypeSource = 'EXCEL';
   }
 
+  console.log(
+    `[BOND_CARD] id=${identifier ?? 'n/a'} couponType=${couponType} ` +
+      `source=${couponTypeSource ?? 'none'} raw=${issCouponTypeRaw ?? 'null'} ` +
+      `reason=${couponTypeReason ?? 'none'}`,
+  );
+
   // Годовой купонный доход на 1 облигацию
-  const annualCouponPerBondVal = annualCouponPerBond(couponAmount, couponPeriodDays);
+  const annualCouponPerBondVal = annualCouponPerBond(
+    couponAmount,
+    couponPeriodDays,
+  );
 
   // Годовой купонный доход на позицию
   const annualCouponIncomeVal = annualCouponIncome(
@@ -397,32 +486,66 @@ export function analyzeYield(params: {
   const nextCouponVal = couponAmount > 0 ? couponAmount * quantity : 0;
 
   // Current Yield
-  const currentYieldVal = annualCouponPerBondVal !== null
-    ? currentYield(annualCouponPerBondVal, marketPrice)
-    : null;
+  const currentYieldVal =
+    annualCouponPerBondVal !== null
+      ? currentYield(annualCouponPerBondVal, marketPrice)
+      : null;
 
   // YTM из QUIK (приоритет)
-  let ytm: number | null = quikYield !== undefined && quikYield > 0
-    ? quikYield
-    : null;
+  let ytm: number | null =
+    quikYield !== undefined && quikYield > 0 ? quikYield : null;
 
   // Расчёт YTM — только при наличии полного графика
-  if (ytm === null && maturityDate && couponPeriodDays > 0 && couponAmount >= 0) {
-    ytm = calculateYTM(marketPrice, couponAmount, couponPeriodDays, maturityDate, nominal);
+  if (
+    ytm === null &&
+    maturityDate &&
+    couponPeriodDays > 0 &&
+    couponAmount >= 0
+  ) {
+    ytm = calculateYTM(
+      marketPrice,
+      couponAmount,
+      couponPeriodDays,
+      maturityDate,
+      nominal,
+    );
   }
 
   // Эффективная доходность
   let effectiveYieldVal: number | null = null;
   if (ytm !== null) {
-    const periodsPerYear = couponPeriodDays > 0
-      ? DAYS_PER_YEAR / couponPeriodDays
-      : 1;
+    const periodsPerYear =
+      couponPeriodDays > 0 ? DAYS_PER_YEAR / couponPeriodDays : 1;
     effectiveYieldVal = effectiveYield(ytm, periodsPerYear);
   }
 
   // Проекция купонных выплат (для будущего использования)
-  if (nextCouponDate && maturityDate && couponAmount > 0 && couponPeriodDays > 0) {
+  if (
+    nextCouponDate &&
+    maturityDate &&
+    couponAmount > 0 &&
+    couponPeriodDays > 0
+  ) {
     // couponFlow = projectedCouponFlow(...) — используется в P2 для cashflow-анализа
+  }
+
+  // Дата ближайшей выплаты: только подтверждённая источником.
+  // null означает «дата не указана», а не «сегодня».
+  // Форматтер календарный: локальная полночь Excel иначе даёт день-1.
+  const nextCouponDateIso = formatCalendarDate(nextCouponDate);
+
+  // Методика YTM: карточка обязана её подписать, особенно для флоатера.
+  let ytmMethod: YtmMethod | null = null;
+  if (ytm !== null) {
+    if (quikYield !== undefined && quikYield > 0) {
+      ytmMethod = 'QUIK';
+    } else if (couponType === 'FLOATER') {
+      ytmMethod = 'FLOATER_ASSUMED_CONSTANT_RATE';
+    } else if (couponType === 'FIXED_AMORTIZING') {
+      ytmMethod = 'AMORTIZING_NOT_ADJUSTED';
+    } else {
+      ytmMethod = 'CALCULATED_FIXED_COUPON';
+    }
   }
 
   // Статус качества данных
@@ -439,7 +562,12 @@ export function analyzeYield(params: {
     effectiveYield: effectiveYieldVal,
     annualCouponIncome: annualCouponIncomeVal,
     nextCouponPayment: nextCouponVal > 0 ? nextCouponVal : null,
+    nextCouponDate: nextCouponDateIso,
     couponType,
+    couponTypeReason,
+    couponTypeReasonDetail,
+    couponTypeSource,
+    ytmMethod,
     dataQuality,
   };
 }

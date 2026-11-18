@@ -6,8 +6,10 @@
  * в упакованном приложении), с возможностью переопределения через env
  * PORTFOLIO_NO_SELL_TICKERS / PORTFOLIO_NO_SELL_ASSET_TYPES (список через запятую).
  *
- * Частично заполненный файл не отключает запреты молча: незаданные или пустые
- * поля дополняются значениями по умолчанию, а в отчёт попадают предупреждения.
+ * Тикерные запреты задаёт ТОЛЬКО пользователь (файл или env). В коде нет
+ * «дефолтного» списка тикеров: иначе политика жила бы в исходниках, а не в
+ * конфиге. Если список не задан, действуют только запреты по типам активов,
+ * а в отчёт попадает предупреждение — тихого no-op быть не должно.
  *
  * Используется:
  * - interactive-orders: REDUCE/EXIT для no-sell тикеров → HOLD;
@@ -54,7 +56,10 @@ export interface UserPolicyLoadResult {
 }
 
 const DEFAULT_POLICY: UserPolicy = {
-  noSellTickers: ['PLZL'],
+  // Хардкод тикера запрещён: тикерные запреты приходят из user-policy.json
+  // или PORTFOLIO_NO_SELL_TICKERS. Пустой список — валидное состояние,
+  // но о нём обязательно предупреждаем (см. loadUserPolicyWithMeta).
+  noSellTickers: [],
   noSellAssetTypes: ['О', 'Облигация'],
 };
 
@@ -139,12 +144,13 @@ export function loadUserPolicyWithMeta(): UserPolicyLoadResult {
 
   if (parsedFile.error) {
     warnings.push(
-      `user-policy.json не прочитан (${parsedFile.error}) — применены значения по умолчанию`,
+      `user-policy.json не прочитан (${parsedFile.error}) — тикерные запреты не применены`,
     );
   } else if (parsedFile.exists) {
     if (!parsedFile.values.noSellTickers?.length) {
       warnings.push(
-        'user-policy.json: noSellTickers не задан или пуст — применены значения по умолчанию (PLZL)',
+        'user-policy.json: noSellTickers не задан или пуст — тикерные запреты не действуют; ' +
+          'задайте список в файле или через PORTFOLIO_NO_SELL_TICKERS',
       );
     }
     if (!parsedFile.values.noSellAssetTypes?.length) {
@@ -152,6 +158,12 @@ export function loadUserPolicyWithMeta(): UserPolicyLoadResult {
         'user-policy.json: noSellAssetTypes не задан или пуст — применены значения по умолчанию (О, Облигация)',
       );
     }
+  } else {
+    // Файла нет — это не ошибка, но и не повод молча терять тикерные запреты.
+    warnings.push(
+      'user-policy.json не найден — тикерные запреты не настроены; ' +
+        'действуют только запреты по типам активов',
+    );
   }
 
   let source: UserPolicySource = parsedFile.exists ? 'file' : 'defaults';
@@ -181,7 +193,8 @@ export function loadUserPolicyWithMeta(): UserPolicyLoadResult {
   if (!restrictionsActive) {
     source = 'empty';
     warnings.push(
-      'Пользовательская политика не загружена: запреты не действуют',
+      'Пользовательская политика не содержит действующих запретов: ' +
+        'продажи не блокируются',
     );
   }
 

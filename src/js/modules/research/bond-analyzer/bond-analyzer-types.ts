@@ -20,11 +20,7 @@
 
 /** Статус доступности данных */
 export type DataQualityStatus =
-  | 'AVAILABLE'
-  | 'PARTIAL'
-  | 'MISSING'
-  | 'INVALID'
-  | 'STALE';
+  'AVAILABLE' | 'PARTIAL' | 'MISSING' | 'INVALID' | 'STALE';
 
 // ──────────────────────────────────────────────
 // 2. Тип купона — только после подтверждения
@@ -36,8 +32,17 @@ export type DataQualityStatus =
  * НЕ определять FIXED/FLOATER/ZERO_COUPON только по размеру купона,
  * номиналу и рыночной цене. Если нет достоверной информации об условиях
  * выпуска — возвращать UNKNOWN.
+ *
+ * FIXED_AMORTIZING — фиксированный купон + амортизация долга (ОФЗ-АД, 46xxx).
+ * INFLATION_LINKED — индексируемый номинал (ОФЗ-ИН, 52xxx).
  */
-export type CouponType = 'FIXED' | 'FLOATER' | 'ZERO_COUPON' | 'UNKNOWN';
+export type CouponType =
+  | 'FIXED'
+  | 'FLOATER'
+  | 'FIXED_AMORTIZING'
+  | 'INFLATION_LINKED'
+  | 'ZERO_COUPON'
+  | 'UNKNOWN';
 
 // ──────────────────────────────────────────────
 // 3. Тип дюрации — только после подтверждения
@@ -50,11 +55,7 @@ export type CouponType = 'FIXED' | 'FLOATER' | 'ZERO_COUPON' | 'UNKNOWN';
  * методики и единиц измерения QUIK.
  */
 export type DurationType =
-  | 'MACAULAY'
-  | 'MODIFIED'
-  | 'EFFECTIVE'
-  | 'DV01'
-  | 'UNKNOWN';
+  'MACAULAY' | 'MODIFIED' | 'EFFECTIVE' | 'DV01' | 'UNKNOWN';
 
 // ──────────────────────────────────────────────
 // 4. Рыночные данные облигации (лист «Облигации», A:M)
@@ -323,6 +324,20 @@ export interface CouponProjection {
   daysUntil: number;
 }
 
+/** Причина, по которой тип купона остался неподтверждённым. */
+export type CouponTypeReason =
+  'excel_conflict' | 'ofz_no_coupon' | 'type_unconfirmed';
+
+/** Источник, которым подтверждён тип купона. */
+export type CouponTypeSource = 'ISS' | 'SERIES' | 'EXCEL';
+
+/** Методика, которой получен YTM (обязательна к подписи в карточке). */
+export type YtmMethod =
+  | 'QUIK'
+  | 'CALCULATED_FIXED_COUPON'
+  | 'FLOATER_ASSUMED_CONSTANT_RATE'
+  | 'AMORTIZING_NOT_ADJUSTED';
+
 /** Результат расчёта доходности */
 export interface YieldAnalysis {
   /** Текущая доходность (Current Yield) */
@@ -339,8 +354,25 @@ export interface YieldAnalysis {
   annualCouponIncome: number | null;
   /** Следующая купонная выплата */
   nextCouponPayment: number | null;
+  /**
+   * Ближайшая дата выплаты купона (YYYY-MM-DD), если источник её подтвердил.
+   * null — дата не подтверждена; карточка обязана писать «дата не указана»,
+   * а не подставлять текущую дату.
+   */
+  nextCouponDate: string | null;
   /** Тип купона */
   couponType: CouponType;
+  /** Причина UNKNOWN (конфликт/пробел источника), иначе null. */
+  couponTypeReason: CouponTypeReason | null;
+  /**
+   * Человекочитаемая причина: «Excel FIXED, ISS FLOATER (ОФЗ-ПК)».
+   * Показывается в карточке вместо обобщённой формулировки.
+   */
+  couponTypeReasonDetail: string | null;
+  /** Откуда подтверждён тип купона. */
+  couponTypeSource: CouponTypeSource | null;
+  /** Методика расчёта ytm: карточка обязана её подписать. */
+  ytmMethod: YtmMethod | null;
   /** Статус качества данных */
   dataQuality: DataQualityStatus;
 }
@@ -395,12 +427,7 @@ export interface DurationAnalysis {
 
 /** Итоговая рекомендация по облигации */
 export type BondRecommendation =
-  | 'BUY'
-  | 'HOLD'
-  | 'REDUCE'
-  | 'EXIT'
-  | 'WAIT'
-  | 'INSUFFICIENT_DATA';
+  'BUY' | 'HOLD' | 'REDUCE' | 'EXIT' | 'WAIT' | 'INSUFFICIENT_DATA';
 
 /**
  * Итоговая оценка облигации.

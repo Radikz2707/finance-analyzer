@@ -46,6 +46,11 @@ export interface ScenarioAgentInput {
   freeCashRub: number;
   /** Предложенные AI изменения (проверяются и улучшаются) */
   proposedChanges: ScenarioChange[];
+  /**
+   * Тикеры, которые запрещено продавать (пользовательская политика).
+   * S4 не имеет права финансировать покупки продажей таких активов.
+   */
+  noSellTickers?: string[];
 }
 
 /** Статус расчёта P&L */
@@ -72,6 +77,14 @@ export interface ScenarioResult {
   projectedUnrealizedPnL: number;
   /** Реализованный P&L после сценария, руб (signed: отрицательный = убыток, положительный = прибыль) */
   realizedPnLRub: number;
+  /** Совокупный P&L: projectedUnrealizedPnL + realizedPnLRub (единая цифра отчёта) */
+  totalPnLRub: number;
+  /** Отклонение совокупного P&L от baseline, руб (signed) */
+  pnlDeltaVsBaselineRub: number;
+  /** Улучшилась ли структура относительно baseline (не P&L) */
+  structureImproved: boolean;
+  /** Оценка НДФЛ с реализованной прибыли, руб (0 если прибыли нет) */
+  estimatedRealizedTaxRub?: number;
   /** Статус расчёта P&L: CALCULATED — все позиции рассчитаны, PARTIAL — часть позиций без данных, INSUFFICIENT_DATA — нет данных ни для одной позиции */
   pnlCalculationStatus: PnlCalculationStatus;
   /** Статус финансирования: SUFFICIENT/PARTIAL/INSUFFICIENT */
@@ -228,12 +241,13 @@ export class ScenarioAgent extends AgentBase {
       return { status: 'SUFFICIENT', remainingCash, diagnostics };
     }
 
-    if (totalSellRub > 0) {
-      // Частично финансируется за счёт продаж
+    // Есть продажи и положительный доступный кэш — хотя бы часть покупок
+    // профинансирована. Если доступный кэш <= 0, продажи не спасают:
+    // это INSUFFICIENT, а не PARTIAL (иначе сценарий выглядит выполнимым).
+    if (totalSellRub > 0 && availableCash > 0) {
       return { status: 'PARTIAL', remainingCash, diagnostics };
     }
 
-    // Нет продаж и недостаточно кэша
     return { status: 'INSUFFICIENT', remainingCash, diagnostics };
   }
 
@@ -263,6 +277,10 @@ export class ScenarioAgent extends AgentBase {
       structureDeviationPct: baselineDeviation,
       projectedUnrealizedPnL: baselinePnL,
       realizedPnLRub: 0,
+      totalPnLRub: baselinePnL,
+      pnlDeltaVsBaselineRub: 0,
+      structureImproved: false,
+      estimatedRealizedTaxRub: 0,
       pnlCalculationStatus: this.calcPnlStatus(assets, []),
       fundingStatus: baselineFunding.status,
       remainingCashRub: baselineFunding.remainingCash,
@@ -291,6 +309,7 @@ export class ScenarioAgent extends AgentBase {
       total,
       proposed,
       baselineDeviation,
+      baselinePnL,
       freeCash,
     );
     if (optimized) {
@@ -301,12 +320,16 @@ export class ScenarioAgent extends AgentBase {
       scenarios.push(optimized);
     }
 
-    // S4: Гибкий — докупка дефицитных активов без продажи глубоких просадок
+    // S4: Гибкий — докупка дефицита. Название и rationale строятся по
+    // фактическому источнику финансирования (кэш / продажа прибыльных),
+    // а не по обещанию «без продаж». Политика no-sell учитывается.
     const flexible = this.buildFlexibleScenario(
       assets,
       total,
       freeCash,
       baselineDeviation,
+      baselinePnL,
+      input?.noSellTickers ?? [],
     );
     if (flexible && flexible.changes.length > 0) {
       scenarios.push(flexible);
@@ -326,7 +349,7 @@ export class ScenarioAgent extends AgentBase {
     }
 
     // Выбираем лучший сценарий (не baseline)
-    const best = this.pickBest(scenarios);
+    const best = this.pickBest(scenarios, baselinePnL);
 
     return {
       scenarios,
@@ -359,11 +382,28 @@ export class ScenarioAgent extends AgentBase {
     // ─── P1-2: Проверка финансирования ───
     const funding = this.checkFunding(changes, freeCash);
 
+    const totalPnLRub = result.projectedUnrealizedPnL + result.realizedPnLRub;
+    const pnlDeltaVsBaselineRub = totalPnLRub - baselinePnL;
+    const structureImproved =
+      baselineDeviation - dev >= this.baseChangeThresholdPct;
+    const estimatedRealizedTaxRub =
+      result.realizedPnLRub > 0
+        ? Math.round(
+            result.realizedPnLRub * PortfolioConfig.tax.dividendNdflRate,
+          )
+        : 0;
+
     let verdict: ScenarioResult['verdict'] = 'NEUTRAL';
     let rationale =
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
-      `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}. ` +
-      `Кэш: ${this.fmtRub(funding.remainingCash)} (статус: ${funding.status}).`;
+      `P&L (unrealized + realized): ${this.fmtRub(totalPnLRub)} ` +
+      `(baseline ${this.fmtRub(baselinePnL)}). ` +
+      `Кэш: ${this.fmtRubPrecise(funding.remainingCash)} (статус: ${funding.status}).`;
+    if (estimatedRealizedTaxRub > 0) {
+      rationale +=
+        ` ⚠️ НДФЛ 13% ≈ ${this.fmtRub(estimatedRealizedTaxRub)} ` +
+        'и комиссия не учтены.';
+    }
 
     // Если финансирование недостаточное — сценарий WORSENS
     if (funding.status === 'INSUFFICIENT') {
@@ -375,10 +415,7 @@ export class ScenarioAgent extends AgentBase {
     }
 
     if (pnlStatus === 'CALCULATED' && funding.status !== 'INSUFFICIENT') {
-      if (
-        baselineDeviation - dev >= this.baseChangeThresholdPct &&
-        result.projectedUnrealizedPnL >= baselinePnL
-      ) {
+      if (structureImproved && totalPnLRub >= baselinePnL) {
         verdict = 'IMPROVES';
         rationale += ' Структура заметно улучшена без ущерба для P&L.';
       } else if (dev > baselineDeviation + this.baseChangeThresholdPct) {
@@ -397,6 +434,10 @@ export class ScenarioAgent extends AgentBase {
       structureDeviationPct: dev,
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
       realizedPnLRub: result.realizedPnLRub,
+      totalPnLRub,
+      pnlDeltaVsBaselineRub,
+      structureImproved,
+      estimatedRealizedTaxRub,
       pnlCalculationStatus: pnlStatus,
       fundingStatus: funding.status,
       remainingCashRub: funding.remainingCash,
@@ -424,6 +465,7 @@ export class ScenarioAgent extends AgentBase {
     total: number,
     proposed: ScenarioChange[],
     baselineDeviation: number,
+    baselinePnL: number,
     freeCash: number,
   ): ScenarioResult | null {
     const optimizedChanges: ScenarioChange[] = [...proposed];
@@ -455,6 +497,12 @@ export class ScenarioAgent extends AgentBase {
     const realizedPnL = result.realizedPnLRub; // signed: отрицательный = убыток
     const improved = baselineDeviation - dev >= this.baseChangeThresholdPct;
     const optimizedPnlStatus = this.calcPnlStatus(assets, optimizedChanges);
+    const totalPnLRub = result.projectedUnrealizedPnL + realizedPnL;
+    const pnlDeltaVsBaselineRub = totalPnLRub - baselinePnL;
+    const estimatedRealizedTaxRub =
+      realizedPnL > 0
+        ? Math.round(realizedPnL * PortfolioConfig.tax.dividendNdflRate)
+        : 0;
 
     // ─── P1-2: Проверка финансирования ───
     const funding = this.checkFunding(optimizedChanges, freeCash);
@@ -468,17 +516,22 @@ export class ScenarioAgent extends AgentBase {
             ? 'WORSENS'
             : 'NEUTRAL';
 
-    // Формируем подробную сводку с указанием реализованного убытка
-    const realizedLossAbs = Math.max(0, -realizedPnL);
+    // Формируем подробную сводку: совокупный P&L и signed «зафиксировано»
     let rationale =
       'Теоретический сценарий: не учитывает политику no-sell. ' +
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
-      `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}. ` +
-      `Зафиксировано: ${this.fmtRub(realizedLossAbs)}. ` +
-      `Кэш: ${this.fmtRub(funding.remainingCash)} (${funding.status}).` +
+      `P&L (unrealized + realized): ${this.fmtRub(totalPnLRub)} ` +
+      `(baseline ${this.fmtRub(baselinePnL)}). ` +
+      `Зафиксировано: ${this.fmtRub(realizedPnL)}. ` +
+      `Кэш: ${this.fmtRubPrecise(funding.remainingCash)} (${funding.status}).` +
       (concentratedAssets.length > 0
         ? ` Снижение концентрации: ${concentratedAssets.map((a) => a.ticker).join(', ')}.`
         : '');
+    if (estimatedRealizedTaxRub > 0) {
+      rationale +=
+        ` ⚠️ НДФЛ 13% ≈ ${this.fmtRub(estimatedRealizedTaxRub)} ` +
+        'и комиссия не учтены.';
+    }
 
     if (optimizedPnlStatus === 'INSUFFICIENT_DATA') {
       rationale +=
@@ -492,6 +545,10 @@ export class ScenarioAgent extends AgentBase {
       structureDeviationPct: dev,
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
       realizedPnLRub: realizedPnL,
+      totalPnLRub,
+      pnlDeltaVsBaselineRub,
+      structureImproved: improved,
+      estimatedRealizedTaxRub,
       pnlCalculationStatus: optimizedPnlStatus,
       fundingStatus: funding.status,
       remainingCashRub: funding.remainingCash,
@@ -714,26 +771,41 @@ export class ScenarioAgent extends AgentBase {
   // drawdownOf удалён — больше не используется (не блокируем по просадке)
 
   /**
-   * Гибкий сценарий: докупаем дефицитные активы за счёт продажи
-   * прибыльных (или свободных средств).
+   * Гибкий сценарий: докупаем дефицитный актив.
+   *
+   * Источник финансирования выбирается детерминированно:
+   * 1. свободный кэш;
+   * 2. если кэша мало — частичная продажа ПРИБЫЛЬНОЙ позиции,
+   *    не входящей в no-sell политику;
+   * 3. если продажа запрещена политикой и кэша не хватает — сценарий
+   *    не строится (честная невозможность), а не «докупка» без денег.
+   *
+   * Название и rationale отражают фактический источник, а не лозунг
+   * «без продаж»: если продажа есть, это прямо написано.
    */
   private buildFlexibleScenario(
     assets: AssetAnalysis[],
     total: number,
     freeCash: number,
     baselineDeviation: number,
+    baselinePnL: number,
+    noSellTickers: string[],
   ): ScenarioResult | null {
     // Дефицитные активы (BUY/дефицит по PortfolioMath) — кандидаты на покупку
     const buyCandidates = assets
       .filter((a) => a.status === 'BUY' || a.deficitRub > 0)
       .sort((a, b) => b.deficitRub - a.deficitRub);
 
-    // Прибыльные активы с перевесом — кандидаты на частичную продажу
+    const noSell = new Set(noSellTickers.map((t) => t.toUpperCase()));
+
+    // Прибыльные активы с перевесом — кандидаты на частичную продажу.
+    // No-sell политика исключает их из финансирования: продажа запрещена.
     const sellCandidates = assets
       .filter(
         (a) =>
           a.unrealizedProfitRub > 0 &&
-          (a.status === 'REDUCE' || a.status === 'STABLE'),
+          (a.status === 'REDUCE' || a.status === 'STABLE') &&
+          !noSell.has(a.ticker.toUpperCase()),
       )
       .sort((a, b) => b.unrealizedProfitRub - a.unrealizedProfitRub);
 
@@ -759,6 +831,8 @@ export class ScenarioAgent extends AgentBase {
       });
     }
 
+    // Если продажа заблокирована политикой и кэша не хватает — не строим
+    // фиктивную «докупку». Это и есть честная невозможность.
     if (budget < this.minBudgetRub) {
       return null;
     }
@@ -780,26 +854,73 @@ export class ScenarioAgent extends AgentBase {
     // ─── P1-2: Проверка финансирования ───
     const flexibleFunding = this.checkFunding(changes, freeCash);
 
-    const verdict: ScenarioResult['verdict'] = improved
-      ? 'IMPROVES'
-      : 'NEUTRAL';
+    // Совокупный P&L = нереализованный + реализованный. Сравнивать только
+    // projectedUnrealizedPnL нельзя: продажа прибыльной позиции уменьшает
+    // unrealized, но увеличивает realized — итог не ухудшается.
+    const totalPnL = result.projectedUnrealizedPnL + result.realizedPnLRub;
+    const pnlDeltaVsBaselineRub = totalPnL - baselinePnL;
+    const estimatedRealizedTaxRub =
+      result.realizedPnLRub > 0
+        ? Math.round(
+            result.realizedPnLRub * PortfolioConfig.tax.dividendNdflRate,
+          )
+        : 0;
+    const pnlWorse = totalPnL < baselinePnL - 1000;
+
+    const verdict: ScenarioResult['verdict'] =
+      flexibleFunding.status === 'INSUFFICIENT' || pnlWorse
+        ? 'WORSENS'
+        : improved
+          ? 'IMPROVES'
+          : 'NEUTRAL';
+
+    const usedSale = changes.some((c) => c.action === 'SELL');
+    const saleChange = changes.find((c) => c.action === 'SELL');
+    const fundingParts: string[] = [
+      `свободный кэш ${this.fmtRub(Math.max(0, freeCash))}`,
+    ];
+    if (saleChange) {
+      fundingParts.push(
+        `продажа ${saleChange.ticker} ≈ ${this.fmtRub(saleChange.amountRub)}`,
+      );
+    }
 
     let rationale =
       `Покупка ${buyAsset.ticker} ≈ ${this.fmtRub(amount)}. ` +
+      `Источник: ${fundingParts.join(' + ')}. ` +
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
-      `Кэш: ${this.fmtRub(flexibleFunding.remainingCash)} (${flexibleFunding.status}).`;
+      `P&L (unrealized + realized): ${this.fmtRub(totalPnL)} ` +
+      `(baseline ${this.fmtRub(baselinePnL)}). ` +
+      `Кэш: ${this.fmtRubPrecise(flexibleFunding.remainingCash)} (${flexibleFunding.status}).`;
+    if (estimatedRealizedTaxRub > 0) {
+      rationale +=
+        ` ⚠️ НДФЛ 13% ≈ ${this.fmtRub(estimatedRealizedTaxRub)} ` +
+        'и комиссия не учтены.';
+    }
+    if (flexibleFunding.status === 'PARTIAL') {
+      rationale +=
+        ' ⚠️ Покупка профинансирована частично: не весь дефицит покрыт.';
+    }
     if (flexiblePnlStatus === 'INSUFFICIENT_DATA') {
       rationale +=
         ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
     }
 
+    const title = usedSale
+      ? 'Гибкий — докупка дефицита с продажей прибыльных позиций'
+      : 'Гибкий — докупка дефицита на свободный кэш';
+
     return {
       id: 'S4_flexible',
-      title: 'Гибкий — докупка дефицита без продажи глубоких просадок',
+      title,
       changes,
       structureDeviationPct: dev,
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
       realizedPnLRub: result.realizedPnLRub,
+      totalPnLRub: totalPnL,
+      pnlDeltaVsBaselineRub,
+      structureImproved: improved,
+      estimatedRealizedTaxRub,
       pnlCalculationStatus: flexiblePnlStatus,
       fundingStatus: flexibleFunding.status,
       remainingCashRub: flexibleFunding.remainingCash,
@@ -815,18 +936,26 @@ export class ScenarioAgent extends AgentBase {
     };
   }
 
-  /** Выбрать лучший сценарий: макс. улучшение структуры при отсутствии глубокого убытка */
-  private pickBest(scenarios: ScenarioResult[]): ScenarioResult | null {
-    const candidates = scenarios.filter((s) => s.id !== 'S1_hold');
+  /**
+   * Выбрать лучший сценарий: макс. улучшение структуры при отсутствии
+   * ухудшения совокупного P&L (unrealized + realized) относительно baseline.
+   * Сценарий, который красиво улучшает структуру, но теряет деньги,
+   * не должен получать метку «Рекомендуем».
+   */
+  private pickBest(
+    scenarios: ScenarioResult[],
+    baselinePnL: number,
+  ): ScenarioResult | null {
+    const candidates = scenarios.filter((s) => {
+      if (s.id === 'S1_hold') return false;
+      if (s.verdict === 'WORSENS') return false;
+      return s.totalPnLRub >= baselinePnL - 1000;
+    });
     if (candidates.length === 0) return null;
 
-    return candidates.reduce((best, cur) => {
-      if (cur.verdict === 'WORSENS') return best;
-      if (best.verdict === 'WORSENS') return cur;
-      return cur.structureDeviationPct < best.structureDeviationPct
-        ? cur
-        : best;
-    });
+    return candidates.reduce((best, cur) =>
+      cur.structureDeviationPct < best.structureDeviationPct ? cur : best,
+    );
   }
 
   // ── P&L data validation ──
@@ -883,6 +1012,22 @@ export class ScenarioAgent extends AgentBase {
 
   private fmtRub(v: number): string {
     return new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
+  }
+
+  /**
+   * Сумма с копейками для остатка кэша: |v| < 0.005 → 0,00 ₽,
+   * отрицательные — с типографским минусом (−0,01 ₽).
+   */
+  private fmtRubPrecise(v: number): string {
+    const normalized = Math.abs(v) < 0.005 ? 0 : v;
+    const formatted = new Intl.NumberFormat('ru-RU', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(normalized);
+    return (
+      (formatted.startsWith('-') ? formatted.replace('-', '−') : formatted) +
+      ' ₽'
+    );
   }
 
   private emptyResult(): ScenarioAgentOutput {

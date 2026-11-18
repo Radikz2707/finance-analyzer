@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ResearchAgentV2 — глубокое исследование активов с кросс-проверкой,
  * историческим анализом и экспортом.
  */
@@ -9,7 +9,10 @@ import { PortfolioConfig } from '../../../../../config/portfolio-config.js';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { AggressiveTokenizerRu } = require('natural');
-import type { AssetResearchSnapshot, AssetType } from '../../../../research/types.js';
+import type {
+  AssetResearchSnapshot,
+  AssetType,
+} from '../../../../research/types.js';
 import { RssNewsSource } from '../../gatekeeper/rss-source.js';
 import { SentimentAnalyzer } from '../../../../research/news/nlp/sentiment-analyzer.js';
 import { fetchHistoricalBatch } from '../../../../data/data-fetcher/index.js';
@@ -40,35 +43,167 @@ import type { DirectorFactsContext } from '../../director/director-types.js';
 
 /** Позитивные слова (рус + англ) */
 const POSITIVE_WORDS = new Set([
-  'рост', 'выручка', 'прибыль', 'прогресс', 'успех', 'отлично', 'позитив',
-  'оптимизм', 'покупать', 'бычий', 'восстановление', 'развитие', 'инвестиция',
-  'дивиденд', 'доход', 'преимущество', 'лидер', 'инновация', 'спрос',
-  'good', 'great', 'positive', 'growth', 'profit', 'gain', 'bullish',
-  'upgrade', 'outperform', 'strong', 'recover', 'optimistic', 'surge',
-  'beacon', 'buy', 'rise', 'gain', 'benefit', 'advantage', 'boost',
-  'расширение', 'стабильность', 'надёжность', 'качество', 'эффективность',
-  'expansion', 'stable', 'reliable', 'quality', 'efficiency', 'benefit',
+  'рост',
+  'выручка',
+  'прибыль',
+  'прогресс',
+  'успех',
+  'отлично',
+  'позитив',
+  'оптимизм',
+  'покупать',
+  'бычий',
+  'восстановление',
+  'развитие',
+  'инвестиция',
+  'дивиденд',
+  'доход',
+  'преимущество',
+  'лидер',
+  'инновация',
+  'спрос',
+  'good',
+  'great',
+  'positive',
+  'growth',
+  'profit',
+  'gain',
+  'bullish',
+  'upgrade',
+  'outperform',
+  'strong',
+  'recover',
+  'optimistic',
+  'surge',
+  'beacon',
+  'buy',
+  'rise',
+  'gain',
+  'benefit',
+  'advantage',
+  'boost',
+  'расширение',
+  'стабильность',
+  'надёжность',
+  'качество',
+  'эффективность',
+  'expansion',
+  'stable',
+  'reliable',
+  'quality',
+  'efficiency',
+  'benefit',
 ]);
 
 /** Негативные слова (рус + англ) */
 const NEGATIVE_WORDS = new Set([
-  'падение', 'убыток', 'кризис', 'риск', 'спад', 'негатив', 'пессимизм',
-  'продавать', 'медвежий', 'деградация', 'рецессия', 'потеря', 'долг',
-  'банкрот', 'санкция', 'штраф', 'расследование', 'конкуренция', 'угроза',
-  'bad', 'poor', 'negative', 'loss', 'decline', 'bearish',
-  'downgrade', 'underperform', 'weak', 'crisis', 'pessimistic', 'crash',
-  'plunge', 'sell', 'fall', 'drop', 'risk', 'danger', 'threat', 'loss',
-  'сокращение', 'инфляция', 'дефолт', 'уход', 'закрытие', 'проблема',
-  'reduction', 'inflation', 'default', 'exit', 'closure', 'problem',
+  'падение',
+  'убыток',
+  'кризис',
+  'риск',
+  'спад',
+  'негатив',
+  'пессимизм',
+  'продавать',
+  'медвежий',
+  'деградация',
+  'рецессия',
+  'потеря',
+  'долг',
+  'банкрот',
+  'санкция',
+  'штраф',
+  'расследование',
+  'конкуренция',
+  'угроза',
+  'bad',
+  'poor',
+  'negative',
+  'loss',
+  'decline',
+  'bearish',
+  'downgrade',
+  'underperform',
+  'weak',
+  'crisis',
+  'pessimistic',
+  'crash',
+  'plunge',
+  'sell',
+  'fall',
+  'drop',
+  'risk',
+  'danger',
+  'threat',
+  'loss',
+  'сокращение',
+  'инфляция',
+  'дефолт',
+  'уход',
+  'закрытие',
+  'проблема',
+  'reduction',
+  'inflation',
+  'default',
+  'exit',
+  'closure',
+  'problem',
 ]);
 
 /** Стоп-слова для фильтрации при TF-IDF */
 const STOP_WORDS = new Set([
-  'и', 'в', 'не', 'на', 'с', 'по', 'для', 'из', 'о', 'к', 'у', 'а',
-  'но', 'или', 'что', 'это', 'как', 'все', 'так', 'при', 'от', 'до',
-  'the', 'is', 'at', 'which', 'on', 'a', 'an', 'and', 'or', 'to', 'of',
-  'in', 'for', 'it', 'this', 'that', 'with', 'as', 'be', 'are', 'was',
-  'were', 'been', 'has', 'have', 'had', 'not', 'but', 'by', 'from',
+  'и',
+  'в',
+  'не',
+  'на',
+  'с',
+  'по',
+  'для',
+  'из',
+  'о',
+  'к',
+  'у',
+  'а',
+  'но',
+  'или',
+  'что',
+  'это',
+  'как',
+  'все',
+  'так',
+  'при',
+  'от',
+  'до',
+  'the',
+  'is',
+  'at',
+  'which',
+  'on',
+  'a',
+  'an',
+  'and',
+  'or',
+  'to',
+  'of',
+  'in',
+  'for',
+  'it',
+  'this',
+  'that',
+  'with',
+  'as',
+  'be',
+  'are',
+  'was',
+  'were',
+  'been',
+  'has',
+  'have',
+  'had',
+  'not',
+  'but',
+  'by',
+  'from',
 ]);
 
 const CACHE_TTL_MS = PortfolioConfig.pipelineConfig.cacheTtlMs;
@@ -132,8 +267,15 @@ export class ResearchAgentV2 extends AgentBase {
 
   // ── Deep Research ──
 
-  private async deepResearch(params: DeepResearchParams): Promise<ResearchAgentV2Output> {
-    const { tickers, depth = DEFAULT_DEPTH, includeHistorical = true, includeSentiment = true } = params;
+  private async deepResearch(
+    params: DeepResearchParams,
+  ): Promise<ResearchAgentV2Output> {
+    const {
+      tickers,
+      depth = DEFAULT_DEPTH,
+      includeHistorical = true,
+      includeSentiment = true,
+    } = params;
     const snapshots: DeepAssetSnapshot[] = [];
 
     for (const ticker of tickers) {
@@ -153,13 +295,17 @@ export class ResearchAgentV2 extends AgentBase {
       };
 
       if (includeHistorical) {
-        snapshot.historicalAnalysis = await this.simulateHistoricalAnalysis(ticker);
+        snapshot.historicalAnalysis =
+          await this.simulateHistoricalAnalysis(ticker);
         snapshot.dataSources.push('historical');
       }
 
       if (includeSentiment) {
         const sources = await this.collectTextSources(ticker);
-        snapshot.sentimentAnalysis = await this.analyzeSentiment(ticker, sources);
+        snapshot.sentimentAnalysis = await this.analyzeSentiment(
+          ticker,
+          sources,
+        );
         snapshot.dataSources.push('news', 'social');
       }
 
@@ -176,7 +322,9 @@ export class ResearchAgentV2 extends AgentBase {
 
   // ── Cross Check ──
 
-  private async crossCheck(params: CrossCheckParams): Promise<ResearchAgentV2Output> {
+  private async crossCheck(
+    params: CrossCheckParams,
+  ): Promise<ResearchAgentV2Output> {
     const { tickers, types = ['price', 'volume', 'fundamentals'] } = params;
     const results = await this.performCrossChecks(tickers, types);
 
@@ -272,7 +420,8 @@ export class ResearchAgentV2 extends AgentBase {
 
       const closes = bars.map((b: { date: string; close: number }) => b.close);
       const lastPrice = closes[closes.length - 1]!;
-      const prevClose = closes.length > 1 ? closes[closes.length - 2]! : lastPrice;
+      const prevClose =
+        closes.length > 1 ? closes[closes.length - 2]! : lastPrice;
 
       // Среднее дневное изменение
       const dailyChanges: number[] = [];
@@ -286,13 +435,21 @@ export class ResearchAgentV2 extends AgentBase {
 
       // Волатильность (стандартное отклонение дневных изменений)
       const variance =
-        dailyChanges.reduce((sum, c) => sum + Math.pow(c - averageChange, 2), 0) /
-        dailyChanges.length;
+        dailyChanges.reduce(
+          (sum, c) => sum + Math.pow(c - averageChange, 2),
+          0,
+        ) / dailyChanges.length;
       const volatility = Math.sqrt(variance) * Math.sqrt(252); // годовая
 
       // Тренд: SMA20 vs SMA50
-      const sma20 = this.calculateSMAFromData(closes, Math.min(20, closes.length));
-      const sma50 = this.calculateSMAFromData(closes, Math.min(50, closes.length));
+      const sma20 = this.calculateSMAFromData(
+        closes,
+        Math.min(20, closes.length),
+      );
+      const sma50 = this.calculateSMAFromData(
+        closes,
+        Math.min(50, closes.length),
+      );
       let trend: 'up' | 'down' | 'neutral' = 'neutral';
       if (sma20 > sma50 && lastPrice > sma20) trend = 'up';
       else if (sma20 < sma50 && lastPrice < sma20) trend = 'down';
@@ -317,7 +474,8 @@ export class ResearchAgentV2 extends AgentBase {
           date: b.date,
           price: b.close,
           volume: 0,
-          changePercent: prevClose > 0 ? ((b.close - prevClose) / prevClose) * 100 : 0,
+          changePercent:
+            prevClose > 0 ? ((b.close - prevClose) / prevClose) * 100 : 0,
         })),
         averageChange: Math.round(averageChange * 10000) / 10000,
         volatility: Math.round(volatility * 100) / 100,
@@ -326,7 +484,10 @@ export class ResearchAgentV2 extends AgentBase {
         sharpeRatio: Math.round(sharpeRatio * 100) / 100,
       };
     } catch (error) {
-      console.warn(`[ResearchAgentV2] Ошибка исторического анализа ${ticker}:`, error);
+      console.warn(
+        `[ResearchAgentV2] Ошибка исторического анализа ${ticker}:`,
+        error,
+      );
       // Fallback на заглушку
       return {
         ticker,
@@ -385,7 +546,8 @@ export class ResearchAgentV2 extends AgentBase {
       const sourcesMap = new Map<string, string[]>();
       for (const news of tickerNews.slice(0, 10)) {
         const metadata = news.metadata as Record<string, string> | undefined;
-        const sourceName = metadata?.sourceName || metadata?.category || 'unknown';
+        const sourceName =
+          metadata?.sourceName || metadata?.category || 'unknown';
         if (!sourcesMap.has(sourceName)) {
           sourcesMap.set(sourceName, []);
         }
@@ -396,10 +558,15 @@ export class ResearchAgentV2 extends AgentBase {
       for (const [sourceName, texts] of sourcesMap) {
         const combinedText = texts.join('. ');
         const sourceType: TextSentimentSource['sourceType'] =
-          sourceName.includes('habr') ? 'blog' :
-          sourceName.includes('investing') ? 'news' :
-          sourceName.includes('рбк') || sourceName.includes('интерфакс') || sourceName.includes('коммерсантъ') ? 'news' :
-          'news';
+          sourceName.includes('habr')
+            ? 'blog'
+            : sourceName.includes('investing')
+              ? 'news'
+              : sourceName.includes('рбк') ||
+                  sourceName.includes('интерфакс') ||
+                  sourceName.includes('коммерсантъ')
+                ? 'news'
+                : 'news';
 
         sources.push({
           title: `${sourceName} — ${texts.length} новостей`,
@@ -412,7 +579,9 @@ export class ResearchAgentV2 extends AgentBase {
       // Если нет новостей по тикеру, добавляем общий контекст
       if (sources.length === 0) {
         const recentNews = allNews.slice(0, 5);
-        const combinedText = recentNews.map((n) => n.title + ' ' + n.description).join('. ');
+        const combinedText = recentNews
+          .map((n) => n.title + ' ' + n.description)
+          .join('. ');
 
         sources.push({
           title: 'Общий финансовый контекст',
@@ -506,7 +675,9 @@ export class ResearchAgentV2 extends AgentBase {
     let newsCount = 0;
 
     for (const source of sources) {
-      const parts = source.text.split(/[.!?]+/).filter((p) => p.trim().length > 10);
+      const parts = source.text
+        .split(/[.!?]+/)
+        .filter((p) => p.trim().length > 10);
       for (const part of parts.slice(0, 5)) {
         try {
           const result = await sentimentAnalyzer.analyze(part.trim(), '');
@@ -531,10 +702,18 @@ export class ResearchAgentV2 extends AgentBase {
 
     // 4. Определение метки
     const label: SentimentAnalysis['label'] =
-      clampedScore < -0.15 ? 'bearish' : clampedScore > 0.15 ? 'bullish' : 'neutral';
+      clampedScore < -0.15
+        ? 'bearish'
+        : clampedScore > 0.15
+          ? 'bullish'
+          : 'neutral';
 
     // 5. TF-IDF для извлечения ключевых фраз
-    const keyPhrases = this.extractKeyPhrases(sources, foundPositive, foundNegative);
+    const keyPhrases = this.extractKeyPhrases(
+      sources,
+      foundPositive,
+      foundNegative,
+    );
 
     return {
       ticker,
@@ -657,15 +836,17 @@ export class ResearchAgentV2 extends AgentBase {
         'sentiment_label',
         'completedAt',
       ];
-      const rows = snapshots.map((s) => [
-        s.ticker,
-        s.researchDepth,
-        s.historicalAnalysis?.trend ?? '',
-        s.historicalAnalysis?.volatility ?? '',
-        s.sentimentAnalysis?.score ?? '',
-        s.sentimentAnalysis?.label ?? '',
-        s.completedAt,
-      ].join(','));
+      const rows = snapshots.map((s) =>
+        [
+          s.ticker,
+          s.researchDepth,
+          s.historicalAnalysis?.trend ?? '',
+          s.historicalAnalysis?.volatility ?? '',
+          s.sentimentAnalysis?.score ?? '',
+          s.sentimentAnalysis?.label ?? '',
+          s.completedAt,
+        ].join(','),
+      );
       return {
         success: true,
         message: 'Экспортировано ' + snapshots.length,
@@ -686,7 +867,12 @@ export class ResearchAgentV2 extends AgentBase {
         md += '- **Trend**: ' + s.historicalAnalysis.trend + '\n';
       }
       if (s.sentimentAnalysis) {
-        md += '- **Sentiment**: ' + s.sentimentAnalysis.label + ' (' + s.sentimentAnalysis.score + ')\n';
+        md +=
+          '- **Sentiment**: ' +
+          s.sentimentAnalysis.label +
+          ' (' +
+          s.sentimentAnalysis.score +
+          ')\n';
       }
       md += '\n';
     }
@@ -778,15 +964,30 @@ export class ResearchAgentV2 extends AgentBase {
           ? `ResearchAgentV2: ${alertsText}. Новости: ${newsSummary}. Тикер: ${tickers[0]}.`
           : `ResearchAgentV2: ${alertsText}. Новости: ${newsSummary}. Факты переданы без изменения.`;
 
-      // Генерируем базовые snapshots для всех тикеров из assetsAnalysis
-      // assetsAnalysis содержит assetType, необходимый для InvestmentThesisEngine
+      // DEPRECATED: V1-совместимый этап `facts` не создаёт research snapshots
+      // в прогоне конвейера. Причина: он выполняется параллельно с
+      // AnalysisAgent, поэтому `facts.assetsAnalysis` ещё не существует
+      // (DataAgent отдаёт только `assets`). Как следствие, AiAgent получает
+      // пустую Map и формирует thesis=0 из N. InvestmentThesisEngine при этом
+      // остаётся заглушкой. Этап сохранён только для обратной совместимости;
+      // новые потребители должны вызывать deep-research/cross-check явно.
       const snapshots = new Map<string, { snapshot: unknown }>();
       const assetsToAnalyze =
         tickers.length > 0
-          ? facts.assetsAnalysis?.filter((a) =>
+          ? (facts.assetsAnalysis?.filter((a) =>
               tickers.some((t) => a.ticker.toUpperCase() === t.toUpperCase()),
-            ) ?? []
-          : facts.assetsAnalysis ?? [];
+            ) ?? [])
+          : (facts.assetsAnalysis ?? []);
+
+      if (assetsToAnalyze.length === 0) {
+        console.warn(
+          '[ResearchAgentV2] DEPRECATED action=facts snapshots=0 ' +
+            `reason=no_assetsAnalysis input.assetsAnalysis=${facts.assetsAnalysis?.length ?? 0} ` +
+            `input.assets=${facts.assets?.length ?? 0}. ` +
+            'Этап выполняется до AnalysisAgent и не может построить snapshots; ' +
+            'InvestmentThesisEngine — заглушка.',
+        );
+      }
 
       for (const asset of assetsToAnalyze) {
         const ticker = asset.ticker;

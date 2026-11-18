@@ -1,3 +1,5 @@
+import { vi } from 'vitest';
+
 import {
   MAX_PERCENT_PRICE,
   resolveCompanionPrice,
@@ -122,6 +124,24 @@ describe('resolvePrice', () => {
     expect(result.priceRub).toBe(0);
     expect(result.priceNormalized).toBe(false);
     expect(result.priceWarning).toContain('не найдена');
+  });
+
+  it('отрицательная цена валидируется как <= 0, а не как рыночная', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = resolvePrice({
+      rawPrice: -5,
+      isBond: true,
+      source: 'QUIK_PRICE',
+    });
+
+    expect(result.priceRub).toBe(0);
+    expect(result.priceNormalized).toBe(false);
+    expect(result.priceWarning).toContain('<= 0');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('[BOND_PRICE_INVALID]'),
+    );
+    warn.mockRestore();
   });
 
   it('Стоимость / Позиция (rawIsRub) не конвертируется', () => {

@@ -2,88 +2,69 @@
 # 🚫 ИГНОРИРУЕМЫЕ РЕСУРСЫ (НЕ КЛАДЕМ В ВЕТКУ MAIN)
 # =========================================================================
 
-# Системные зависимости проекта (тяжелый мусор)
+# 📦 Зависимости и системные пакеты
 node_modules/
+__pycache__/
+*.py[cod]
+
+# 🔐 Секреты и переменные окружения
+.env*
+!.env.example
 src/js/env-config.js
 
-# 📦 СКОМПИЛИРОВАННЫЙ КОД (Скрываем от main целиком!)
+# 🏗 Скомпилированный код и сборки (Web & Electron)
 dist/
 release/
+release-new/
+electron/dist/
+electron/build/
 
-# Временные файлы сквозного аудита системы и бэкапы
+# 📊 Сгенерированные отчёты и дашборды
+report.html
+report.md
+report.pdf
+reports/last-run.log
+src/components/dashboard/dashboard.html
+
+# 💾 Базы данных, бэкапы и данные расчётов
+backups/
+data/**/*.db
+data/**/*.sqlite
+data/**/*.json
+data/**/*-shm
+data/**/*-wal
+data/**/*-journal
+!data/.gitkeep
+
+# Модульные данные (бэктестинг и оптимизация)
+src/js/modules/backtesting/data/
+src/js/modules/backtesting/results/
+src/js/modules/portfolio-optimizer/data/
+
+# 🧪 Тесты и покрытие кода
+coverage/
+.vitest/
+
+# 🧰 Кэши, временные файлы и инструменты разработки
 .audit/
 archives/
 .cache/
 .tmp/
 .gigacode/
+.gigacode_vsc/
+gulp/system/gulp.cache.js
 
-# Логи операционных систем и программ
+# 💻 Настройки IDE, ОС и логи
+.vscode/
+.idea/
+.clinerules
 *.log
 .DS_Store
 Thumbs.db
-.clinerules
+/nul
 
-# Настройки локальных редакторов кода
-.vscode/
-.idea/
-.env
-
-# 📊 Сгенерированные отчёты (обновляются при каждом запуске)
-report.html
-report.md
-
-# 🧪 Временные файлы тестов
-coverage/
-.vitest/
-
-# 📁 Данные и базы
-data/*.db
-data/*.sqlite
-data/*.json
-!data/.gitkeep
-data/*-shm
-data/*-wal
-data/*-journal
-
-# 💾 Резервные копии data/ (npm run backup / restore)
-backups/
-
-# Python runtime artifacts
-__pycache__/
-*.py[cod]
-
-
-# 📦 Локальные конфиги и скрипты автоматизации
+# 🔧 Локальные модули, скрипты и автогенерируемый исходный код
 create-modules.js
-
-# 🌐 HTML-дашборды (если генерируются)
-src/components/dashboard/dashboard.html
-
-# 📱 Telegram-бот (локальные файлы)
 src/js/modules/telegram-bot/
-
-# 📊 Бэктестинг (данные)
-src/js/modules/backtesting/data/
-src/js/modules/backtesting/results/
-
-# 📈 Оптимизация портфеля (данные)
-src/js/modules/portfolio-optimizer/data/
-
-# 📊 Dashboard (стили и данные)
-src/scss/dashboard.scss
-
-# 🔧 Интеграционные файлы (не для репозитория)
 src/js/app-integration.ts
-nul
-
-# 🖥 Electron-сборки и артефакты десктопа
-release-new/
-electron/dist/
-electron/build/
-
-# 📄 Сгенерированные отчёты (дополнительно)
-report.pdf
-
-# 🧰 Локальные инструменты и кэши
-.gigacode_vsc/
-gulp/system/gulp.cache.js
+src/scss/dashboard.scss

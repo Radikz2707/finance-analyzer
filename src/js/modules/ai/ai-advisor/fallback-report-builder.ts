@@ -237,6 +237,19 @@ export function buildFallbackReport(
       );
     }
     parts.push('');
+  } else if (
+    inc.dividendDataStatus === 'UNAVAILABLE' ||
+    inc.dividendDataStatus === 'EMPTY'
+  ) {
+    // Fail-closed: нельзя молчать о дивидендах и нельзя подставлять 0 ₽.
+    parts.push('<strong>7. ДИВИДЕНДНАЯ СТРАТЕГИЯ</strong>');
+    parts.push('');
+    parts.push(
+      inc.dividendDataStatus === 'UNAVAILABLE'
+        ? '• Дивиденды LTM: <strong>недоступно</strong> (источники MOEX ISS / smart-lab не ответили) — 0 ₽ не подставляется'
+        : '• Дивиденды LTM: <strong>нет данных</strong> (источники ответили, подтверждённых выплат за 13 мес нет)',
+    );
+    parts.push('');
   }
 
   // ============================================================

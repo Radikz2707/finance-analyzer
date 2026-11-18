@@ -80,7 +80,20 @@ export interface BondAnalysisResult {
     effectiveYield: number | null;
     annualCouponIncome: number | null;
     couponType: string;
+    /** Причина UNKNOWN-классификации купона (конфликт/пробел источника). */
+    couponTypeReason?:
+      'excel_conflict' | 'ofz_no_coupon' | 'type_unconfirmed' | null;
+    /** «Excel FIXED, ISS FLOATER (ОФЗ-ПК)» — конкретная причина. */
+    couponTypeReasonDetail?: string | null;
+    /** Источник подтверждения типа: ISS / SERIES / EXCEL. */
+    couponTypeSource?: string | null;
+    /** Методика YTM (обязательна к подписи в карточке). */
+    ytmMethod?: string | null;
     dataQuality: string;
+    /** Ближайшая купонная выплата (для карточки флоатера). */
+    nextCouponDate?: string | null;
+    /** Источник даты: EXCEL (дата файла) / MOEX_ISS / SMART_LAB. */
+    nextCouponDateSource?: 'EXCEL' | 'MOEX_ISS' | 'SMART_LAB' | null;
   };
   durationAnalysis: {
     duration: number | null;
@@ -98,6 +111,10 @@ export interface BondAnalysisResult {
   creditAssessment: {
     quality: string;
     source: string;
+    /** Дата отчётности/рейтинга — обязательна для пометки «(источник, дата)». */
+    asOfDate?: string | null;
+    /** Кредитный рейтинг с прогнозом (DEFAULT = дефолт). */
+    rating?: { agency: string; rating: string; outlook: string } | null;
     summary: string;
   };
   recommendation: string;
@@ -148,10 +165,20 @@ export interface TechnicalIndicators {
   ticker: string;
   /** Индекс относительной силы (14 периодов) */
   rsi: number | null;
-  /** Простое скользящее среднее 20 периодов */
+  /** Legacy: SMA(20), заполняется только если период есть в конфиге */
   sma20: number | null;
-  /** Простое скользящее среднее 50 периодов */
+  /** Legacy: SMA(50), заполняется только если период есть в конфиге */
   sma50: number | null;
+  /** Периоды SMA из PortfolioConfig.moexQuotes.smaPeriods */
+  smaPeriods?: number[];
+  /** Значения SMA по периодам (ключ — период) */
+  smaValues?: Record<string, number | null>;
+  /** 52-недельный максимум по истории MOEX ISS */
+  high52w?: number | null;
+  /** 52-недельный минимум по истории MOEX ISS */
+  low52w?: number | null;
+  /** Дата последнего бара истории (ISO) */
+  technicalAsOf?: string | null;
   /** Тренд: восходящий / нисходящий / боковик */
   trend: 'up' | 'down' | 'flat' | null;
   /** Годовая волатильность (доля, например 0.35 = 35%) */
@@ -306,15 +333,18 @@ function metricText(metric: SourcedValue, digits = 2, suffix = ''): string {
   return `${fmtNumber(metric.value, digits)}${suffix}`;
 }
 
-/** Тег «(источник, дата)», если он отличается от тега строки. */
-function metricSourceTag<T>(
-  metric: SourcedValue<T>,
-  lineSource: string | null,
-  lineAsOf: string | null,
-): string {
+/**
+ * Тег «(источник, дата)» ТОЛЬКО для собственного значения метрики.
+ *
+ * Ранее сюда передавались source/asOf «первой доступной» метрики строки,
+ * из-за чего показатель без своего источника получал чужую отметку и
+ * выглядел подтверждённым. Подстановка запрещена: нет своего источника —
+ * пишем «источник не указан / дата не указана», а не заимствуем доверие
+ * у соседнего показателя.
+ */
+function metricSourceTag<T>(metric: SourcedValue<T>): string {
   if (metric.value === null) return '';
   const source = metric.source ?? 'источник не указан';
-  if (source === lineSource && (metric.asOf ?? null) === lineAsOf) return '';
   return ` (${source}, ${fmtAsOf(metric.asOf)})`;
 }
 
@@ -334,12 +364,8 @@ interface FundamentalMetricSpec {
 function renderAssetFundamentalsCompact(asset: StockFundamentals): string {
   const lines: string[] = [`--- ${asset.ticker} (${asset.name}) ---`];
 
-  const priceTag = metricSourceTag(asset.price, null, null);
-  const capTag = metricSourceTag(
-    asset.marketCap,
-    asset.price.source,
-    asset.price.asOf,
-  );
+  const priceTag = metricSourceTag(asset.price);
+  const capTag = metricSourceTag(asset.marketCap);
   const capText =
     asset.marketCap.value !== null
       ? fmtRub(asset.marketCap.value)
@@ -370,19 +396,14 @@ function renderAssetFundamentalsCompact(asset: StockFundamentals): string {
     },
   ];
 
-  const primary = specs.find((spec) => spec.metric.value !== null)?.metric;
-  const primarySource = primary?.source ?? null;
-  const primaryAsOf = primary?.asOf ?? null;
-
   const parts = specs.map(
     (spec) =>
       `${spec.label} ${metricText(spec.metric, spec.digits ?? 2, spec.suffix ?? '')}` +
-      metricSourceTag(spec.metric, primarySource, primaryAsOf),
+      metricSourceTag(spec.metric),
   );
-  const lineTag = primarySource
-    ? ` (${primarySource}, ${fmtAsOf(primaryAsOf)})`
-    : '';
-  lines.push(`${parts.join(' | ')}${lineTag}`);
+  // Источник и дата стоят у КАЖДОЙ метрики, а не один раз в конце строки:
+  // общий тег строки создавал видимость подтверждения у неподтверждённых полей.
+  lines.push(parts.join(' | '));
 
   const conflicts = specs
     .filter(
@@ -421,7 +442,7 @@ function renderAssetFundamentalsCompact(asset: StockFundamentals): string {
 
   lines.push(
     asset.nextDividendDate.value !== null
-      ? `Следующая отсечка: ${asset.nextDividendDate.value}${metricSourceTag(asset.nextDividendDate, null, null)}`
+      ? `Следующая отсечка: ${asset.nextDividendDate.value}${metricSourceTag(asset.nextDividendDate)}`
       : `Следующая отсечка: недоступно (${asset.nextDividendDate.note ?? 'нет данных'})`,
   );
 
@@ -446,18 +467,78 @@ function renderAssetFundamentalsCompact(asset: StockFundamentals): string {
 }
 
 /**
+ * Компактная строка технических индикаторов для JSON-only промпта.
+ *
+ * Формат — одна строка на тикер: модель не должна терять привязку
+ * «тикер → числа → дата». Недоступные значения пишутся словом
+ * «недоступно», а не нулём (fail-closed).
+ */
+function renderTechnicalIndicatorsCompact(ind: TechnicalIndicators): string {
+  const smaPeriods = ind.smaPeriods ?? [];
+  const smaValues = ind.smaValues ?? {};
+  const smaParts =
+    smaPeriods.length > 0
+      ? smaPeriods.map((period) => {
+          const value = smaValues[String(period)] ?? null;
+          return `SMA${period} ${value !== null ? value.toFixed(2) : 'недоступно'}`;
+        })
+      : [
+          `SMA20 ${ind.sma20 !== null ? ind.sma20.toFixed(2) : 'недоступно'}`,
+          `SMA50 ${ind.sma50 !== null ? ind.sma50.toFixed(2) : 'недоступно'}`,
+        ];
+
+  const range =
+    ind.high52w != null && ind.low52w != null
+      ? `52w ${ind.low52w.toFixed(2)}–${ind.high52w.toFixed(2)}`
+      : '52w недоступно';
+
+  const trend =
+    ind.trend === 'up'
+      ? 'восходящий'
+      : ind.trend === 'down'
+        ? 'нисходящий'
+        : ind.trend === 'flat'
+          ? 'боковик'
+          : 'недоступно';
+
+  const volatility =
+    ind.volatilityAnnual !== null
+      ? `${(ind.volatilityAnnual * 100).toFixed(1)}%`
+      : 'недоступно';
+
+  const asOf = ind.technicalAsOf ? `на ${ind.technicalAsOf}` : 'дата н/д';
+
+  return (
+    `• ${ind.ticker}: RSI ${ind.rsi !== null ? ind.rsi.toFixed(1) : 'недоступно'}; ` +
+    `${smaParts.join('; ')}; ${range}; тренд ${trend}; ` +
+    `волатильность ${volatility}; ${asOf}`
+  );
+}
+
+/**
  * Компактный системный промпт для ПОВТОРНОГО запроса: только JSON-массив.
  * Используется, когда основной ответ модели не дал валидного JSON.
+ *
+ * Технические индикаторы передаются, чтобы повторный ответ не терял
+ * 52w/SMA и не писал «технические индикаторы недоступны» при их наличии.
  */
 export function buildJsonOnlySystemPrompt(
   assetTickers: string[],
   portfolioFundamentals?: CanonicalPortfolioFundamentalsContext,
+  technicalIndicators?: TechnicalIndicators[],
 ): string {
   const fundamentals =
     portfolioFundamentals && portfolioFundamentals.assets.length > 0
       ? `\n=== ФУНДАМЕНТАЛЬНЫЕ ДАННЫЕ ===\n${portfolioFundamentals.assets
           .map(renderAssetFundamentalsCompact)
           .join('\n\n')}\n`
+      : '';
+
+  const technical =
+    technicalIndicators && technicalIndicators.length > 0
+      ? '\n=== ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ (MOEX ISS) ===\n' +
+        `${technicalIndicators.map(renderTechnicalIndicatorsCompact).join('\n')}\n` +
+        'Используй только эти значения; недоступные показатели не заменяй нулём.\n'
       : '';
 
   return (
@@ -471,9 +552,14 @@ export function buildJsonOnlySystemPrompt(
     'Правила: используй только данные из сообщения; каждое число — с источником и датой; ' +
     'если данных нет — recommendedAction HOLD, agreementWithPortfolioMath UNCERTAIN, ' +
     'в rationale «нет данных». Не выдумывай P/E, ROE, дивиденды и суммы. ' +
+    'Для активов из блока GUARDRAILS с пометкой no-sell ЗАПРЕЩЕНЫ директивы ' +
+    'продажи/сокращения (продать, продавайте, сократить, снизить, зафиксировать, ' +
+    'выйти из позиции) — разрешено только упоминание блокировки. ' +
+    'Свободные числовые цели доли в директивных конструкциях («с 17,4% до ~12%») запрещены. ' +
     'ticker — только символы тикера (например TATN).\n' +
     `Активы (верни объект для каждого): ${assetTickers.join(', ')}.\n` +
-    fundamentals
+    fundamentals +
+    technical
   );
 }
 
@@ -640,6 +726,20 @@ export function buildSystemPrompt(
     'должны 100% совпадать по направлению (BUY, HOLD, REDUCE, EXIT). ' +
     'Если Math=REDUCE — запрещено ставить BUY ни в одном из полей. ' +
     'Если Math=STABLE — запрещено ставить REDUCE/EXIT без обоснования из правил выше.\n' +
+    '• ПОЛИТИКА NO-SELL В ТЕКСТЕ: для актива из блока GUARDRAILS с пометкой ' +
+    'no-sell ЗАПРЕЩЕНЫ любые директивы продажи/сокращения (продать, продавайте, ' +
+    'сократить, снизить, зафиксировать, выйти из позиции), в том числе с суммой ' +
+    'или процентом. Разрешено только упоминание самой блокировки: ' +
+    '«продажа/сокращение заблокированы политикой no-sell».\n' +
+    '• НЕ ПОВТОРЯЙ СТРОКИ ПОЛИТИКИ В rationale: служебный текст ' +
+    '«продажа/сокращение заблокированы политикой no-sell» выводится ' +
+    'конвейером один раз (баннер карточки). В rationale — только обоснование ' +
+    'по активу, без повтора этой фразы и без её искажений ' +
+    '(«поsell», «по-sell», «no sell»).\n' +
+    '• ЗАПРЕТ СВОБОДНЫХ ЧИСЛОВЫХ ЦЕЛЕЙ ДОЛИ: в директивных конструкциях нельзя ' +
+    'писать «с 17,4% до ~12%» или иные целевые проценты, которых нет в данных ' +
+    'конвейера. Число в тексте либо совпадает с переданными данными (с источником ' +
+    'и датой), либо отсутствует.\n' +
     buildDeepAnalysisRules() +
     '\n' +
     '=== ИНВЕСТИЦИОННЫЙ REASONING ===\n' +
@@ -796,27 +896,49 @@ ${fundamentalMetrics.dividendYield !== undefined ? `• Дивидендная �
     (technicalIndicators && technicalIndicators.length > 0
       ? `
 === ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ И ИСТОРИЧЕСКИЕ ДАННЫЕ ===
-Для каждого актива рассчитаны индикаторы на основе 180 дней исторических котировок:
+Для каждого актива рассчитаны индикаторы на основе дневной истории MOEX ISS:
 
 ${technicalIndicators
-  .map(
-    (ind) => `
+  .map((ind) => {
+    const smaPeriods = ind.smaPeriods ?? [];
+    const smaValues = ind.smaValues ?? {};
+    const smaLines =
+      smaPeriods.length > 0
+        ? smaPeriods
+            .map((period) => {
+              const value = smaValues[String(period)] ?? null;
+              return `• SMA${period}: ${
+                value !== null ? value.toFixed(2) : 'недоступно'
+              }`;
+            })
+            .join('\n')
+        : `• SMA20: ${ind.sma20 !== null ? ind.sma20.toFixed(2) : 'недоступно'}\n• SMA50: ${
+            ind.sma50 !== null ? ind.sma50.toFixed(2) : 'недоступно'
+          }`;
+    const rangeLine =
+      ind.high52w != null && ind.low52w != null
+        ? `• 52-недельный диапазон: ${ind.low52w.toFixed(2)}–${ind.high52w.toFixed(2)}${
+            ind.technicalAsOf ? ` (MOEX ISS, ${ind.technicalAsOf})` : ''
+          }`
+        : '• 52-недельный диапазон: недоступно';
+
+    return `
 --- ${ind.ticker} ---
 • RSI(14): ${ind.rsi !== null ? ind.rsi.toFixed(1) : 'нет данных'}${ind.rsi !== null ? (ind.rsi < 30 ? ' (перепроданность)' : ind.rsi > 70 ? ' (перекупленность)' : '') : ''}
-• SMA20: ${ind.sma20 !== null ? ind.sma20.toFixed(2) : 'нет данных'}
-• SMA50: ${ind.sma50 !== null ? ind.sma50.toFixed(2) : 'нет данных'}
+${smaLines}
+${rangeLine}
 • Тренд: ${ind.trend !== null ? (ind.trend === 'up' ? 'восходящий' : ind.trend === 'down' ? 'нисходящий' : 'боковик') : 'нет данных'}
 • Волатильность (годовая): ${ind.volatilityAnnual !== null ? (ind.volatilityAnnual * 100).toFixed(1) + '%' : 'нет данных'}
 • Риск: ${ind.riskLevel !== null ? (ind.riskLevel === 'low' ? 'низкий' : ind.riskLevel === 'medium' ? 'средний' : 'высокий') : 'нет данных'}
 • Z-score: ${ind.zScoreLast !== null ? ind.zScoreLast.toFixed(2) : 'нет данных'}${ind.zScoreLast !== null && Math.abs(ind.zScoreLast) > 2 ? ' (аномалия)' : ''}
 ${ind.isLastAnomaly ? '⚠️ Аномалия на последнем баре!' : ''}
-`,
-  )
+`;
+  })
   .join('\n')}
 
 ИСПОЛЬЗУЙ эти данные для рекомендации оптимальных точек входа/выхода:
-• RSI < 30 + цена ниже SMA20/SMA50 → потенциальная точка покупки (перепроданность)
-• RSI > 70 + цена выше SMA20/SMA50 → потенциальная точка продажи (перекупленность)
+• RSI < 30 + цена ниже короткой/длинной SMA → потенциальная точка покупки (перепроданность)
+• RSI > 70 + цена выше короткой/длинной SMA → потенциальная точка продажи (перекупленность)
 • Восходящий тренд + низкая волатильность → благоприятная среда для покупки
 • Нисходящий тренд + высокая волатильность → осторожность с покупками
 • Z-score > 2 или < -2 → аномальное движение, требует внимания
@@ -911,13 +1033,28 @@ ${asset.advice ? '• 💡 ' + asset.advice : ''}
     '  ...\n' +
     ']\n' +
     '```\n' +
-    '⚠️ ticker: ТОЛЬКО символы тикера (например: "PLZL", "SBER"). НЕ "PLZL (Полюс)", НЕ "PLZL — Полюс", НЕ "IRAO — ИнтерРАОао".\n' +
+    '⚠️ ticker: ТОЛЬКО символы тикера (например: "SBER", "GAZP"). НЕ "SBER (Сбербанк)", НЕ "SBER — Сбербанк", НЕ "IRAO — ИнтерРАОао".\n' +
     '⚠️ Если тикер содержит пробелы, скобки, тире — JSON будет отброшен.\n' +
     '⚠️ ОБЯЗАТЕЛЬНО верни JSON-объект ДЛЯ КАЖДОГО актива из списка активов. Не пропускай ни один.\n' +
     '⚠️ Если нет данных для актива — верни {"ticker":"ТИКЕР","recommendedAction":"HOLD","confidence":null,"rationale":"нет данных","targetReason":"нет данных","keyRisks":[],"keyCatalysts":[],"agreementWithPortfolioMath":"UNCERTAIN"}.\n' +
     '⚠️ НЕ включай в JSON: price, quantity, deficit, liquidationValue.\n' +
     '⚠️ Проценты: 47.7%, не 47.739999%.\n' +
     '⚠️ ОБЯЗАТЕЛЬНО заполни targetReason для КАЖДОГО актива. Если нет причины — напиши "целевая доля не меняется".\n' +
+    '=== JSON-БЛОК ЦЕНОВЫХ ТРИГГЕРОВ (ОТДЕЛЬНЫМ БЛОКОМ) ===\n' +
+    'Если по активу есть уровни цены — выведи РОВНО ОДИН ОТДЕЛЬНЫЙ блок такого вида ' +
+    '(пример с реальными полями; значения — образец структуры, не данные):\n' +
+    '```json\n' +
+    '{"priceTriggers":[{"ticker":"SBER","levels":[{"price":280,"direction":"below"},{"price":320,"direction":"above"}],"action":"HOLD"}]}\n' +
+    '```\n' +
+    '⚠️ Схема неизменна: ticker — строка только из символов тикера; ' +
+    'levels — непустой массив объектов ровно с полями price (положительное число) и ' +
+    'direction ("above" | "below"); action — строка действия (BUY/SELL/HOLD/REDUCE/EXIT/AVOID).\n' +
+    '⚠️ НЕ добавляй других полей, НЕ оборачивай каждый уровень в отдельный блок, ' +
+    'НЕ выводи несколько блоков priceTriggers — только один блок на весь ответ.\n' +
+    '⚠️ "above" — сигнал при росте до уровня или выше, "below" — при падении до уровня или ниже.\n' +
+    '⚠️ Уровни задавай ТОЛЬКО числами в этом блоке; в свободном тексте уровни не описывай.\n' +
+    '⚠️ Если подтверждённых уровней нет — НЕ выводи этот блок вообще: выдуманные цены запрещены.\n' +
+    '⚠️ Для активов под no-sell политикой action не может быть SELL/REDUCE/EXIT — ставь HOLD.\n' +
     '=== ТЕКСТОВЫЙ ОТВЕТ (5 секций, ПОСЛЕ JSON) ===\n' +
     '1. Макро и структура\n' +
     '2. План ребалансировки\n' +

@@ -15,7 +15,14 @@ import {
 } from '../gatekeeper/index.js';
 import { QuikNewsSource } from '../../../api/quik-gateway/index.js';
 import type { GatekeeperResult } from '../gatekeeper/types.js';
-import { fetchHistoricalBatch } from '../../../data/data-fetcher/index.js';
+import {
+  buildTechnicalFacts,
+  type TechnicalFacts,
+} from '../../../api/moex-quotes/technical-facts.js';
+import { loadTechnicalHistory } from '../../../api/moex-quotes/technical-history.js';
+import { MoexQuotesClient } from '../../../api/moex-quotes/moex-quotes.js';
+import { mergeIssQuotes } from '../../../api/moex-quotes/quote-merge.js';
+import { PortfolioConfig } from '../../../../config/portfolio-config.js';
 import { AnomalyDetector } from '../../../shared/python-engine/index.js';
 import type {
   AnomalyDetectionResult,
@@ -33,6 +40,15 @@ import { fetchSmartLabBondByIsin } from '../../../api/smart-lab-api/smart-lab-ap
 // ──────────────────────────────────────────────
 // 0. Хелперы персиста новостей
 // ──────────────────────────────────────────────
+
+/**
+ * Похож ли идентификатор на ISIN (2 буквы + 9 букв/цифр + контрольная цифра).
+ * Нужен, чтобы облигация не попала в запрос котировок акций даже при
+ * нераспознанном assetType.
+ */
+function isIsinLike(value: string): boolean {
+  return /^[A-Z]{2}[A-Z0-9]{9}\d$/.test(value.trim().toUpperCase());
+}
 
 /** Приоритет Gatekeeper → важность в БД */
 function toNewsImportance(
@@ -129,6 +145,13 @@ export interface AssetQuote {
   dailyDynamicsPercent: number;
   /** Дневной оборот в рублях (из Excel, MOEX VALTODAY или Smart-Lab) */
   volumeTodayRub?: number;
+  /**
+   * Источник котировки: MOEX ISS (основной), EXCEL (фолбэк),
+   * PYTHON_ISS (резерв для облигаций).
+   */
+  source?: string;
+  /** Время среза (ISO), если источник его даёт */
+  asOf?: string | null;
 }
 
 /** Данные о вложенных средствах */
@@ -189,6 +212,12 @@ export interface DataAgentOutput {
   news: GatekeeperResult | null;
   /** Статистические аномалии цен (Python Engine) */
   anomalies: AnomalyDetectionResult[];
+  /**
+   * Технические факты карточки: 52w high/low и SMA по периодам из
+   * PortfolioConfig.moexQuotes.smaPeriods. Строятся из той же истории,
+   * что и аномалии; нет истории → показатели недоступны.
+   */
+  technicalFacts?: TechnicalFacts[];
   /** Ключевая ставка ЦБ РФ */
   keyRate: number;
   /** Дата обновления ключевой ставки */
@@ -334,46 +363,56 @@ export class DataAgent extends AgentBase {
             currentPrice: value.currentPrice,
             dailyDynamicsPercent: value.dailyDynamicsPercent ?? 0,
             volumeTodayRub: value.volumeTodayRub ?? undefined,
+            source: 'EXCEL',
+            asOf: null,
           },
         ]),
     );
 
-    // Шаг 5.1: Резервные котировки MOEX (Python Engine) — дополняем ТОЛЬКО
-    // отсутствующие тикеры. Excel остаётся основным источником; Moex — fallback.
-    // Любая ошибка (нет Python, сеть, пустой ответ) не прерывает конвейер.
+    // Шаг 5.1: MOEX ISS — ОСНОВНОЙ источник котировок акций.
+    // Excel остаётся фолбэком: если ISS не подтвердил тикер, цена берётся
+    // из Excel с явной подписью 'EXCEL (фолбэк)'. Облигации здесь не
+    // трогаем: цена облигации в ISS — процент от номинала (шаг 5.2).
     try {
-      const missingTickers = assets
-        .map((a) => a.ticker.toUpperCase())
-        .filter(
-          (ticker) => !quotes[ticker] || quotes[ticker].currentPrice <= 0,
-        );
-      if (missingTickers.length > 0) {
-        const moexProvider = new MoexQuoteProvider();
-        const moexQuotes = await moexProvider.fetchQuotes(missingTickers);
-        let added = 0;
-        for (const [ticker, quote] of Object.entries(moexQuotes)) {
-          const key = ticker.toUpperCase();
-          if (quote.price > 0 && !quotes[key]) {
-            quotes[key] = {
-              ticker: key,
-              name: key,
-              shortName: key,
-              currentPrice: quote.price,
-              dailyDynamicsPercent: quote.changePct,
-              volumeTodayRub: quote.volumeTodayRub,
-            };
-            added++;
-          }
-        }
-        if (added > 0) {
-          this.log.info(
-            `[DataAgent] ✅ MOEX fallback: дополнено котировок по ${added} тикерам`,
+      const stockTickers = assets
+        .filter((a) => {
+          const type = a.assetType ?? '';
+          // «О» — короткий тип облигации из QUIK/Excel. Без него облигации
+          // уходили в запрос котировок акций и давали failed=10 шума.
+          return (
+            type !== 'BOND' &&
+            type !== 'Облигация' &&
+            type !== 'О' &&
+            !type.includes('Облиг') &&
+            type !== 'CASH'
           );
-        }
+        })
+        .map((a) => a.ticker.toUpperCase())
+        // ISIN-подобный идентификатор — это облигация, даже если тип не распознан.
+        .filter((ticker) => ticker.length > 0 && !isIsinLike(ticker));
+
+      if (stockTickers.length > 0) {
+        const snapshot = await new MoexQuotesClient().fetchCurrentQuotes(
+          stockTickers,
+        );
+        const merged = mergeIssQuotes(quotes, snapshot);
+        for (const ticker of Object.keys(quotes)) delete quotes[ticker];
+        Object.assign(quotes, merged.quotes);
+        this.log.info(
+          `[MOEX_QUOTES] applied=${merged.applied.length} ` +
+            `excelFallback=${merged.excelFallback.length} ` +
+            `unavailable=[${merged.issUnavailable.join(', ')}]`,
+        );
       }
     } catch (err) {
+      // ISS недоступен целиком: Excel остаётся, но честно подписан фолбэком.
+      for (const quote of Object.values(quotes)) {
+        if (quote.source === 'EXCEL') quote.source = 'EXCEL (фолбэк)';
+      }
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.log.warn(`[DataAgent] ⚠️ MOEX-котировки недоступны: ${errorMsg}`);
+      this.log.warn(
+        `[MOEX_QUOTES] ⚠️ ISS недоступен, используется Excel-фолбэк: ${errorMsg}`,
+      );
     }
 
     // Шаг 5.2: Котировки облигаций с доски EQOB (MOEX) — оборот и цена.
@@ -412,6 +451,8 @@ export class DataAgent extends AgentBase {
                 currentPrice: quote.price,
                 dailyDynamicsPercent: quote.changePct,
                 volumeTodayRub: quote.volumeTodayRub,
+                source: 'PYTHON_ISS',
+                asOf: new Date().toISOString(),
               };
             } else {
               // Дополняем отсутствующий оборот
@@ -669,30 +710,58 @@ export class DataAgent extends AgentBase {
 
     // Шаг 10: Python Engine — статистические аномалии цен
     let anomalies: AnomalyDetectionResult[] = [];
+    const technicalFacts: TechnicalFacts[] = [];
     try {
       const anomalyTickers = assets.map((a) => a.ticker);
       const toDate = new Date().toISOString().slice(0, 10);
-      const fromDate = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000)
+      // Окно истории — из конфига: то же окно питает 52w-диапазон и SMA.
+      const fromDate = new Date(
+        Date.now() -
+          PortfolioConfig.moexQuotes.historyWindowDays * 24 * 60 * 60 * 1000,
+      )
         .toISOString()
         .slice(0, 10);
 
-      const history = await fetchHistoricalBatch(
+      // История грузится по тикерам: сбой одного (нет доски, сеть) больше не
+      // обнуляет техфакты у всех. Единственный источник — MoexQuotesClient
+      // (MOEX ISS). Ветка data-fetcher удалена: в прогоне 19:35 UTC она давала
+      // primary=0 при fallback=4, то есть была мёртвой.
+      const quotesClient = new MoexQuotesClient();
+      const history = await loadTechnicalHistory(
         anomalyTickers,
         fromDate,
         toDate,
-        'D',
+        {
+          load: (ticker, from, to) =>
+            quotesClient.fetchDailyHistory(ticker, from, to),
+        },
+        {
+          info: (message) => this.log.info(message),
+          warn: (message) => this.log.warn(message),
+        },
       );
 
       const series: PriceSeriesInput[] = [];
-      for (const [ticker, bars] of history) {
-        if (bars.length >= 21) {
+      for (const item of history) {
+        if (item.bars.length >= 21) {
           series.push({
-            ticker,
-            prices: bars.map((b) => b.close),
-            dates: bars.map((b) => b.date),
+            ticker: item.ticker,
+            prices: item.bars.map((b) => b.close),
+            dates: item.bars.map((b) => b.date),
           });
         }
       }
+
+      for (const item of history) {
+        technicalFacts.push(buildTechnicalFacts(item.ticker, item.bars));
+      }
+      const facts52w = technicalFacts.filter(
+        (facts) => facts.high52w !== null && facts.low52w !== null,
+      ).length;
+      this.log.info(
+        `[TECH_FACTS] tickers=${technicalFacts.length} with52w=${facts52w} ` +
+          `smaPeriods=${PortfolioConfig.moexQuotes.smaPeriods.join('/')}`,
+      );
 
       if (series.length > 0) {
         const detector = new AnomalyDetector();
@@ -764,6 +833,7 @@ export class DataAgent extends AgentBase {
       },
       news: newsResult,
       anomalies,
+      technicalFacts,
       keyRate,
       keyRateDate,
       cbrRateData: cbrRateDataResult,

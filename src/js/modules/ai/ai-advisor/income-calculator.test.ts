@@ -3,6 +3,7 @@ import {
   calculatePortfolioIncome,
   type CalculatedIncome,
 } from './income-calculator.js';
+import type { DividendLtmResult } from './dividend-ltm.js';
 
 const {
   mockExistsSync,
@@ -101,8 +102,8 @@ describe('calculatePortfolioIncome — QUIK dividends', () => {
     expect(income.totalDivsNet).toBe(4350);
     expect(income.stocks).toHaveLength(1);
     expect(income.stocks[0]?.rate).toBe(50);
-    expect(income.stocks[0]?.source).toBe('EXCEL_DIVIDENDS');
-    expect(income.dividendSource).toBe('EXCEL_DIVIDENDS');
+    expect(income.stocks[0]?.source).toBe('BROKER');
+    expect(income.dividendSource).toBe('BROKER');
     expect(income.excelAsOf).toBe('2026-11-17T00:00:00.000Z');
   });
 
@@ -199,20 +200,20 @@ describe('buildExcelDividendYields — слой якоря', () => {
         grossIncome: 5000,
         netIncome: 4350,
         kind: 'LTM',
-        source: 'EXCEL_DIVIDENDS',
+        source: 'BROKER',
         asOf: '2026-11-17T00:00:00.000Z',
       },
     ],
     excelAsOf: '2026-11-17T00:00:00.000Z',
   };
 
-  it('LTM: yield = сумма/кол-во/цена, source=EXCEL_DIVIDENDS', () => {
+  it('LTM: yield = сумма/кол-во/цена, source=BROKER', () => {
     const result = buildExcelDividendYields(baseIncome, [
       { ticker: 'SBER', currentPrice: 100 },
     ]);
 
     expect(result.yields.SBER).toBe(50);
-    expect(result.meta.SBER?.source).toBe('EXCEL_DIVIDENDS');
+    expect(result.meta.SBER?.source).toBe('BROKER');
     expect(result.meta.SBER?.asOf).toBe('2026-11-17T00:00:00.000Z');
   });
 
@@ -257,5 +258,178 @@ describe('buildExcelDividendYields — слой якоря', () => {
     );
     expect(high.yields.SBER).toBeUndefined();
     expect(high.warnings[0]).toContain('status=PARSE_ERROR');
+  });
+});
+
+describe('calculatePortfolioIncome — LTM из MOEX ISS', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('заполненный Excel — приоритетный override BROKER, ISS не вызывается', async () => {
+    setupWorkbook(
+      makeSheet(
+        [...baseHeaders, 'Дивиденды LTM'],
+        [['SBER', 'А', 'Сбербанк', 100, 0, 5000]],
+      ),
+    );
+    const fetchLtm = vi.fn();
+
+    const income = await calculatePortfolioIncome(undefined, {
+      moexLtm: true,
+      fetchLtm,
+    });
+
+    expect(income.stocks[0]?.source).toBe('BROKER');
+    expect(income.dividendSource).toBe('BROKER');
+    expect(fetchLtm).not.toHaveBeenCalled();
+  });
+
+  it('пустой Excel + ISS → MOEX_ISS, НДФЛ из конфига', async () => {
+    setupWorkbook(
+      makeSheet(
+        [...baseHeaders, 'Дивиденды LTM'],
+        [['PLZL', 'А', 'Полюс', 10, 0, 0]],
+      ),
+    );
+    const fetchLtm = vi.fn(
+      async (ticker: string): Promise<DividendLtmResult> => ({
+        ticker,
+        secid: ticker,
+        ltmPerShare: 121.85,
+        count: 2,
+        asOf: '2026-07-10',
+        source: 'MOEX_ISS',
+        status: 'OK',
+        diagnostics: {
+          iss: 'OK',
+          smartLab: 'SKIPPED',
+          smartLabSecid: null,
+        },
+      }),
+    );
+
+    const income = await calculatePortfolioIncome(undefined, {
+      moexLtm: true,
+      fetchLtm,
+    });
+
+    expect(fetchLtm).toHaveBeenCalledWith('PLZL', 'Полюс');
+    expect(income.totalDivs).toBe(1218.5);
+    expect(income.totalDivsNet).toBeCloseTo(1218.5 * 0.87, 2);
+    expect(income.stocks).toHaveLength(1);
+    expect(income.stocks[0]?.source).toBe('MOEX_ISS');
+    expect(income.stocks[0]?.rate).toBe(121.85);
+    expect(income.stocks[0]?.asOf).toBe('2026-07-10');
+    expect(income.dividendSource).toBe('MOEX_ISS');
+    expect(income.dividendDataStatus).toBe('OK');
+  });
+
+  it('источники недоступны → «недоступно», не 0 и не «нет выплат»', async () => {
+    setupWorkbook(
+      makeSheet(
+        [...baseHeaders, 'Дивиденды LTM'],
+        [['TATN', 'А', 'Татнефть', 10, 0, 0]],
+      ),
+    );
+    const fetchLtm = vi.fn(
+      async (ticker: string): Promise<DividendLtmResult> => ({
+        ticker,
+        secid: ticker,
+        ltmPerShare: null,
+        count: 0,
+        asOf: null,
+        source: 'UNAVAILABLE',
+        status: 'UNAVAILABLE',
+        diagnostics: {
+          iss: 'UNAVAILABLE',
+          smartLab: 'UNAVAILABLE',
+          smartLabSecid: ticker,
+        },
+      }),
+    );
+
+    const income = await calculatePortfolioIncome(undefined, {
+      moexLtm: true,
+      fetchLtm,
+    });
+
+    expect(income.totalDivs).toBe(0);
+    expect(income.totalDivsNet).toBe(0);
+    expect(income.stocks).toHaveLength(0);
+    expect(income.dividendDataStatus).toBe('UNAVAILABLE');
+    expect(income.dividendWarnings).toContain(
+      'TATN: дивиденды LTM недоступны — источники не ответили (MOEX ISS, smart-lab)',
+    );
+  });
+
+  it('источники ответили без выплат → EMPTY («нет данных»), не 0 ₽ в плитке', async () => {
+    setupWorkbook(
+      makeSheet(
+        [...baseHeaders, 'Дивиденды LTM'],
+        [['TATN', 'А', 'Татнефть', 10, 0, 0]],
+      ),
+    );
+    const fetchLtm = vi.fn(
+      async (ticker: string): Promise<DividendLtmResult> => ({
+        ticker,
+        secid: ticker,
+        ltmPerShare: null,
+        count: 0,
+        asOf: null,
+        source: 'UNAVAILABLE',
+        status: 'EMPTY',
+        diagnostics: { iss: 'EMPTY', smartLab: 'EMPTY', smartLabSecid: ticker },
+      }),
+    );
+
+    const income = await calculatePortfolioIncome(undefined, {
+      moexLtm: true,
+      fetchLtm,
+    });
+
+    expect(income.dividendDataStatus).toBe('EMPTY');
+    expect(income.dividendWarnings).toContain(
+      'TATN: нет подтверждённых дивидендов LTM за 13 мес (MOEX ISS, smart-lab)',
+    );
+  });
+
+  it('BROKER + MOEX_ISS в одном портфеле → dividendSource=MIXED', async () => {
+    setupWorkbook(
+      makeSheet(
+        [...baseHeaders, 'Дивиденды LTM'],
+        [
+          ['SBER', 'А', 'Сбербанк', 100, 0, 5000],
+          ['PLZL', 'А', 'Полюс', 10, 0, 0],
+        ],
+      ),
+    );
+    const fetchLtm = vi.fn(
+      async (ticker: string): Promise<DividendLtmResult> => ({
+        ticker,
+        secid: ticker,
+        ltmPerShare: 121.85,
+        count: 2,
+        asOf: '2026-07-10',
+        source: 'MOEX_ISS',
+        status: 'OK',
+        diagnostics: {
+          iss: 'OK',
+          smartLab: 'SKIPPED',
+          smartLabSecid: null,
+        },
+      }),
+    );
+
+    const income = await calculatePortfolioIncome(undefined, {
+      moexLtm: true,
+      fetchLtm,
+    });
+
+    expect(income.dividendSource).toBe('MIXED');
+    expect(income.stocks.map((stock) => stock.source)).toEqual([
+      'BROKER',
+      'MOEX_ISS',
+    ]);
   });
 });

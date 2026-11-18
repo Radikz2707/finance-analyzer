@@ -11,8 +11,13 @@ import {
   type PriceSource,
   type PriceUnit,
 } from './bond-price-normalizer.js';
-import { fetchMoexBondQuote } from '../../api/moex-api/bond-api.js';
+import {
+  fetchMoexBondQuote,
+  fetchMoexBondQuoteByQuery,
+  type CouponType,
+} from '../../api/moex-api/bond-api.js';
 import { fetchSmartLabBondByIsin } from '../../api/smart-lab-api/smart-lab-api.js';
+import { parseCalendarDate } from '../../shared/date-utils.js';
 
 export type {
   BondPriceReference,
@@ -34,7 +39,14 @@ export type BondQuoteResolver = (
 async function defaultBondQuoteResolver(
   isin: string,
 ): Promise<BondPriceReference | null> {
-  const moex = await fetchMoexBondQuote(isin);
+  // Прямой запрос по ISIN/SECID. Если бумага не открывается напрямую
+  // (например, ОФЗ 29027 / SU29027RMFS8 или ВИС Ф БП17 / RU000A10GC20),
+  // пробуем поиск MOEX по идентификатору — он находит SECID/ISIN.
+  let moex = await fetchMoexBondQuote(isin);
+  if (!moex || ((moex.nominal ?? 0) <= 0 && moex.pricePct === null)) {
+    const byQuery = await fetchMoexBondQuoteByQuery(isin);
+    if (byQuery) moex = byQuery;
+  }
   if (moex && (moex.pricePct !== null || (moex.nominal ?? 0) > 0)) {
     return {
       nominal: moex.nominal ?? undefined,
@@ -126,6 +138,11 @@ export interface BondReferenceData {
    */
   nextCouponDate: Date | null;
   /**
+   * Источник даты купона: EXCEL (лист «Облигации», дата файла),
+   * MOEX_ISS (NEXTCOUPON из каталога), SMART_LAB (фолбэк).
+   */
+  nextCouponDateSource?: 'EXCEL' | 'MOEX_ISS' | 'SMART_LAB';
+  /**
    * K: НКД — накопленный купонный доход на одну облигацию.
    * Единица: RUB.
    */
@@ -146,10 +163,14 @@ export interface BondReferenceData {
    */
   issuer: string;
   /**
-   * Тип купона из MOEX (FIXED / FLOATER / MICROFIX / ZERO_COUPON).
-   * Если не загружен с MOEX — определяется эвристикой в yield-calculator.
+   * Тип купона, подтверждённый description MOEX ISS (основной путь)
+   * или не подтверждённый (UNKNOWN — эвристика в yield-calculator).
    */
-  couponType?: 'FIXED' | 'FLOATER' | 'MICROFIX' | 'ZERO_COUPON';
+  couponType?: CouponType;
+  /** Источник подтверждения типа купона. */
+  couponTypeSource?: 'EXCEL' | 'MOEX_DESCRIPTION';
+  /** Сырое значение типа из ISS (например, «ОФЗ-ПК»). */
+  couponTypeRaw?: string | null;
   /**
    * Внутренний рейтинг МОEX (ICBRR).
    * Используется для кредитного скоринга.
@@ -454,6 +475,10 @@ export class XlsxParserModule {
   ): Promise<Map<string, BondPriceReference[]>> {
     const result = new Map<string, BondPriceReference[]>();
     const needsQuote = new Set<string>();
+    // Только облигации ПОРТФЕЛЯ (строки позиций), а не весь справочник
+    // листа «Облигации»: подтверждение типа купона по description ISS
+    // не должно превращаться в тысячи запросов.
+    const portfolioBonds = new Set<string>();
 
     for (const row of rows) {
       const ticker = String(row['Код инструмента'] || row['Код'] || '')
@@ -488,6 +513,9 @@ export class XlsxParserModule {
       if (suspicious && this.looksLikeIsin(ticker)) {
         needsQuote.add(ticker);
       }
+      if (this.looksLikeIsin(ticker)) {
+        portfolioBonds.add(ticker);
+      }
     }
 
     await Promise.all(
@@ -503,6 +531,35 @@ export class XlsxParserModule {
         }
       }),
     );
+
+    // Тип купона — из description ISS, только по бумагам портфеля.
+    // Справочник листа «Облигации» содержит тысячи выпусков: запрос по
+    // каждому превращал enrich в бесконечный цикл. Здесь — десятки позиций,
+    // а fetchMoexBondQuote кэширует ответ.
+    let couponConfirmed = 0;
+    await Promise.all(
+      Array.from(portfolioBonds).map(async (isin) => {
+        const bond = bondsMap.get(isin);
+        if (!bond) return;
+        if (bond.couponType && bond.couponType !== 'UNKNOWN') return;
+        try {
+          const quote = await fetchMoexBondQuote(isin);
+          const info = quote?.couponTypeInfo;
+          if (!info || info.type === 'UNKNOWN') return;
+          bond.couponType = info.type;
+          bond.couponTypeSource = 'MOEX_DESCRIPTION';
+          bond.couponTypeRaw = info.raw;
+          couponConfirmed++;
+        } catch {
+          // Ошибка одной бумаги не блокирует разбор остальных.
+        }
+      }),
+    );
+    if (portfolioBonds.size > 0) {
+      console.log(
+        `[BondEnrich] тип купона подтверждён ISS: ${couponConfirmed}/${portfolioBonds.size}`,
+      );
+    }
 
     return result;
   }
@@ -765,6 +822,18 @@ export class XlsxParserModule {
           : undefined) ??
         nominalFromQuik ??
         nominalFromReference;
+
+      if (
+        isBond &&
+        nominalFromReference !== undefined &&
+        !(nominalFromBondsRef && nominalFromBondsRef > 0) &&
+        nominalFromQuik === undefined
+      ) {
+        console.log(
+          `[BOND_NOMINAL_FALLBACK] ${ticker}: номинал ${nominalFromReference} ₽ ` +
+            'получен с MOEX ISS (в Excel/QUIK отсутствует)',
+        );
+      }
 
       const resolvedCurrent = resolvePrice({
         rawPrice: rawPrice.value,
@@ -1036,6 +1105,18 @@ export class XlsxParserModule {
         nominalFromQuik ??
         nominalFromReference;
 
+      if (
+        isBond &&
+        nominalFromReference !== undefined &&
+        !(nominalFromBondsRef && nominalFromBondsRef > 0) &&
+        nominalFromQuik === undefined
+      ) {
+        console.log(
+          `[BOND_NOMINAL_FALLBACK] ${ticker}: номинал ${nominalFromReference} ₽ ` +
+            'получен с MOEX ISS (в Excel/QUIK отсутствует)',
+        );
+      }
+
       const rawPrice = this.extractRawPrice(row, position);
       const resolvedCurrent = resolvePrice({
         rawPrice: rawPrice.value,
@@ -1082,9 +1163,9 @@ export class XlsxParserModule {
    * Сначала агрегируем liquidationValue (руб.), затем пересчитываем проценты.
    *
    * Пример:
-   *   IIS:   PLZL = 100 000 ₽, IIS total = 500 000 ₽  → 20%
-   *   BROKER: PLZL = 100 000 ₽, BROKER total = 1 000 000 ₽ → 10%
-   *   ИТОГО:  PLZL = 200 000 ₽, Portfolio total = 1 500 000 ₽ → 13.33%
+   *   IIS:   SBER = 100 000 ₽, IIS total = 500 000 ₽  → 20%
+   *   BROKER: SBER = 100 000 ₽, BROKER total = 1 000 000 ₽ → 10%
+   *   ИТОГО:  SBER = 200 000 ₽, Portfolio total = 1 500 000 ₽ → 13.33%
    *   НЕ 20% + 10% = 30%!
    */
   public async parseAggregatedPortfolio(): Promise<AggregatedAsset[]> {
@@ -1611,7 +1692,7 @@ export class XlsxParserModule {
   /**
    * Парсинг листа "Акции" — котировки всех акций Московской биржи.
    * Структура таблицы:
-   *   L: Код инструмента (тикер: SELG, PLZL, SBER...)
+   *   L: Код инструмента (тикер: SELG, GAZP, SBER...)
    *   M: Инструмент сокр. (Селигдар, Полюс, Сбербанк...)
    *   O: Цена послед.
    *   Q: % измен.закр.
@@ -1822,6 +1903,69 @@ export class XlsxParserModule {
   }
 
   /**
+   * Нормализовать заголовок колонки: регистр, ё→е, точки и лишние пробелы.
+   * «Дата выпл. куп.» и «Дата выплаты купона» должны сравниваться одинаково.
+   */
+  private normalizeHeaderLabel(value: string): string {
+    return value
+      .toLowerCase()
+      .replace(/ё/g, 'е')
+      .replace(/[.\s]+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * Найти строку заголовков листа «Облигации».
+   *
+   * В файле пользователя заголовок стоит на ВТОРОЙ строке таблицы, поэтому
+   * sheet_to_json без range принимал бы первую строку за шапку и все
+   * заголовки превращались бы в __EMPTY. Ищем первую строку с ячейкой ISIN
+   * в первых 10 строках.
+   */
+  private findBondsHeaderRow(sheet: Record<string, unknown>): number {
+    const aoa = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      raw: true,
+      blankrows: false,
+    });
+    const limit = Math.min(Array.isArray(aoa) ? aoa.length : 0, 10);
+    for (let index = 0; index < limit; index++) {
+      const row = aoa[index];
+      if (!Array.isArray(row)) continue;
+      if (
+        row.some(
+          (cell) =>
+            String(cell ?? '')
+              .trim()
+              .toUpperCase() === 'ISIN',
+        )
+      ) {
+        return index;
+      }
+    }
+    return 0;
+  }
+
+  /** Найти ключ строки по вариантам заголовка (с нормализацией). */
+  private resolveRowKey(
+    row: Record<string, unknown>,
+    variants: readonly string[],
+    fuzzy?: (normalizedKey: string) => boolean,
+  ): string | undefined {
+    const keys = Object.keys(row);
+    const normalized = new Map(
+      keys.map((key) => [this.normalizeHeaderLabel(key), key]),
+    );
+    for (const variant of variants) {
+      const found = normalized.get(this.normalizeHeaderLabel(variant));
+      if (found) return found;
+    }
+    return fuzzy
+      ? keys.find((key) => fuzzy(this.normalizeHeaderLabel(key)))
+      : undefined;
+  }
+
+  /**
    * Парсинг листа «Облигации» — полные рыночные данные по облигационным выпускам.
    *
    * Структура таблицы (динамический поиск заголовков):
@@ -1863,17 +2007,22 @@ export class XlsxParserModule {
       return bondsMap;
     }
 
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+    // Заголовок в файле пользователя — на второй строке таблицы.
+    const headerRow = this.findBondsHeaderRow(sheet);
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      range: headerRow,
+    });
+    let inactiveWithoutDate = 0;
 
     for (const row of rows) {
-      // ISIN из любой из допустимых колонок
-      const isin = String(
-        row[config.BONDS_COLUMN_ISIN] ||
-          row[config.BONDS_COLUMN_ISIN_ALT1] ||
-          row[config.BONDS_COLUMN_ISIN_ALT2] ||
-          row[config.BONDS_COLUMN_ISIN_ALT3] ||
-          '',
-      )
+      // ISIN из любой из допустимых колонок (по вариантам заголовка)
+      const isinKey = this.resolveRowKey(row, [
+        config.BONDS_COLUMN_ISIN,
+        config.BONDS_COLUMN_ISIN_ALT1,
+        config.BONDS_COLUMN_ISIN_ALT2,
+        config.BONDS_COLUMN_ISIN_ALT3,
+      ]);
+      const isin = String(isinKey ? row[isinKey] : '')
         .trim()
         .toUpperCase();
       if (!isin || isin.length < 10) continue;
@@ -1910,15 +2059,41 @@ export class XlsxParserModule {
         row[config.BONDS_COLUMN_COUPON_PERIOD],
       );
 
-      // J: Дата выплаты купона
+      // J: Дата выплаты купона. Заголовок «Дата выпл. куп.» + вариации,
+      // значение — дата Excel или строка ДД.ММ.ГГГГ.
+      const couponDateKey = this.resolveRowKey(
+        row,
+        [
+          config.BONDS_COLUMN_COUPON_DATE,
+          config.BONDS_COLUMN_COUPON_DATE_ALT1,
+          config.BONDS_COLUMN_COUPON_DATE_ALT2,
+          config.BONDS_COLUMN_COUPON_DATE_ALT3,
+        ],
+        (key) =>
+          key.includes('дата') && (key.includes('куп') || key.includes('выпл')),
+      );
+      const rawCouponDate = couponDateKey ? row[couponDateKey] : undefined;
       let nextCouponDate: Date | null = null;
-      const rawCouponDate = row[config.BONDS_COLUMN_COUPON_DATE];
       if (
         rawCouponDate !== undefined &&
         rawCouponDate !== null &&
-        rawCouponDate !== ''
+        String(rawCouponDate).trim() !== ''
       ) {
         nextCouponDate = this.parseExcelDate(rawCouponDate);
+      }
+
+      if (!nextCouponDate) {
+        // Пустая дата у неактивной бумаги (нулевые цена/доходность/купон) —
+        // не ошибка маппинга: такие строки пропускаем пачкой, без шквала логов.
+        const inactive = lastPrice === 0 && yield_ === 0 && couponAmount === 0;
+        if (inactive) {
+          inactiveWithoutDate++;
+        } else {
+          console.log(
+            `[BOND_CARD] isin=${isin} nextCouponDate=not_in_excel ` +
+              `reason=${rawCouponDate ? 'unparsed_value' : 'empty_cell'}`,
+          );
+        }
       }
 
       // K: НКД
@@ -1964,12 +2139,20 @@ export class XlsxParserModule {
         couponAmount,
         couponPeriodDays,
         nextCouponDate,
+        nextCouponDateSource: nextCouponDate ? 'EXCEL' : undefined,
         nkd,
         maturityDate,
         duration,
         issuer,
         asOfDate: null, // Дата актуальности определяется при загрузке книги
       });
+    }
+
+    if (inactiveWithoutDate > 0) {
+      console.log(
+        `[BOND_CARD] nextCouponDate=not_in_excel inactiveRows=${inactiveWithoutDate} ` +
+          '(пустая дата у неактивных бумаг — не ошибка маппинга)',
+      );
     }
 
     // Сохраняем в кэш
@@ -2029,11 +2212,20 @@ export class XlsxParserModule {
             bond.issuer = moex.issuerName;
           }
 
-          // Обновляем тип купона
-          if (!bond.couponType && moex.couponType) {
-            bond.couponType = moex.couponType;
-            enriched++;
+          // Дата купона: приоритет Excel → ISS (NEXTCOUPON из каталога,
+          // он уже запрошен). Excel-дату не перезаписываем.
+          if (!bond.nextCouponDate && moex.nextCouponDate) {
+            const parsed = parseCalendarDate(moex.nextCouponDate);
+            if (parsed) {
+              bond.nextCouponDate = parsed;
+              bond.nextCouponDateSource = 'MOEX_ISS';
+              enriched++;
+            }
           }
+
+          // Тип купона из каталога /securities.json не подтверждён:
+          // COUPONPERIOD — число дней, а не тип. Подтверждение — ниже,
+          // отдельным запросом description /iss/securities/{ISIN}.json.
 
           // Обновляем рейтинг МОEX
           if (!bond.icbrrRating && moex.icbrrRating) {
@@ -2100,23 +2292,13 @@ export class XlsxParserModule {
 
   /**
    * Безопасная конвертация значения Excel в Date.
-   * Поддерживает: число (serial date), строку, объект Date.
+   *
+   * Делегирует единому парсеру календарных дат: он разбирает ДД.ММ.ГГГГ
+   * явно (V8 иначе меняет местами месяц и день), Excel serial и ISO.
+   * Все точки входа с датами из Excel обязаны идти через него.
    */
   private parseExcelDate(val: unknown): Date | null {
-    if (val instanceof Date && !isNaN(val.getTime())) {
-      return val;
-    }
-    if (typeof val === 'number') {
-      // Excel serial date: days since 1899-12-30
-      const ms = (val - 25569) * 86400 * 1000;
-      const d = new Date(ms);
-      return isNaN(d.getTime()) ? null : d;
-    }
-    if (typeof val === 'string') {
-      const d = new Date(val.trim());
-      return isNaN(d.getTime()) ? null : d;
-    }
-    return null;
+    return parseCalendarDate(val);
   }
 
   /**
@@ -2940,9 +3122,11 @@ export class XlsxParserModule {
     let lastYearDeposits = 0;
     const allDeposits: Array<{ value: number; date: Date }> = [];
 
+    // Календарные даты листа — UTC-полночь, поэтому и «сегодня» берём в UTC,
+    // чтобы сравнение года/месяца не зависело от часового пояса машины.
     const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth();
+    const currentYear = now.getUTCFullYear();
+    const currentMonth = now.getUTCMonth();
     const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
     const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
 
@@ -2978,15 +3162,10 @@ export class XlsxParserModule {
       const dateVal = cellB.v;
       if (!dateVal) continue;
 
-      let parsedDate: Date;
-      if (typeof dateVal === 'number') {
-        // Excel date serial number
-        parsedDate = new Date((dateVal - 25569) * 86400 * 1000);
-      } else {
-        parsedDate = new Date(String(dateVal));
-      }
-
-      if (isNaN(parsedDate.getTime())) continue;
+      // Единый парсер: Excel serial, ДД.ММ.ГГГГ, ISO. Свой разбор здесь
+      // повторял ошибку V8 «11.02.2027 → 2 ноября».
+      const parsedDate = parseCalendarDate(dateVal);
+      if (!parsedDate) continue;
 
       const depositVal = this.parseValue(cellD?.v || 0);
 
@@ -2996,19 +3175,19 @@ export class XlsxParserModule {
       }
 
       if (
-        parsedDate.getFullYear() === currentYear &&
-        parsedDate.getMonth() === currentMonth
+        parsedDate.getUTCFullYear() === currentYear &&
+        parsedDate.getUTCMonth() === currentMonth
       ) {
         currentMonthDeposits += depositVal;
       } else if (
-        parsedDate.getFullYear() === lastMonthYear &&
-        parsedDate.getMonth() === lastMonth
+        parsedDate.getUTCFullYear() === lastMonthYear &&
+        parsedDate.getUTCMonth() === lastMonth
       ) {
         lastMonthDeposits += depositVal;
       }
-      if (parsedDate.getFullYear() === currentYear) {
+      if (parsedDate.getUTCFullYear() === currentYear) {
         currentYearDeposits += depositVal;
-      } else if (parsedDate.getFullYear() === currentYear - 1) {
+      } else if (parsedDate.getUTCFullYear() === currentYear - 1) {
         lastYearDeposits += depositVal;
       }
     }

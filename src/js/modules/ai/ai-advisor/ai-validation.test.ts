@@ -537,3 +537,30 @@ describe('DIRECTION_CONFLICT: нормализованные предупреж�
     expect(result.valid).toBe(false);
   });
 });
+
+describe('postProcessAiText: DIRECTION_CONFLICT — advisory, не смена действия', () => {
+  it('помечает конфликт role=advisory и указывает источник итогового действия', () => {
+    const assets: AssetAnalysis[] = [
+      createMockAsset({
+        ticker: 'SBER',
+        status: 'BUY',
+        deficitRub: 100000,
+      }),
+    ];
+
+    const result = postProcessAiText(
+      'SBER: рекомендуется снизить позицию.',
+      assets,
+    );
+
+    const conflict = result.warnings.find((warning) =>
+      warning.startsWith('[DIRECTION_CONFLICT]'),
+    );
+    expect(conflict).toBeDefined();
+    expect(conflict).toContain('role=advisory');
+    expect(conflict).toContain('PortfolioMath=BUY');
+    expect(conflict).toContain('AI=REDUCE');
+    expect(conflict).toContain('действие карточки из PortfolioMath');
+    expect(conflict).toContain('направление ИИ справочное');
+  });
+});

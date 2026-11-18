@@ -42,7 +42,8 @@ export interface PortfolioIncome {
     grossIncome: number;
     netIncome: number;
     kind?: 'LTM' | 'DECLARED' | 'UNKNOWN';
-    source?: 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED';
+    source?:
+      'BROKER' | 'MOEX_ISS' | 'SMARTLAB' | 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED';
     asOf?: string;
   }>;
   totalNkd: number;
@@ -58,13 +59,23 @@ export interface PortfolioIncome {
     grossIncome: number;
     netIncome: number;
     kind?: 'LTM' | 'DECLARED' | 'UNKNOWN';
-    source?: 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED';
+    source?:
+      'BROKER' | 'MOEX_ISS' | 'SMARTLAB' | 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED';
     asOf?: string;
   }>;
   dividendKind?: 'LTM' | 'DECLARED' | 'UNKNOWN' | 'MIXED';
-  dividendSource?: 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED' | 'MIXED' | null;
+  dividendSource?:
+    | 'BROKER'
+    | 'MOEX_ISS'
+    | 'SMARTLAB'
+    | 'EXCEL_DIVIDENDS'
+    | 'EXCEL_DECLARED'
+    | 'MIXED'
+    | null;
   excelAsOf?: string | null;
   dividendWarnings?: string[];
+  /** OK / EMPTY / UNAVAILABLE / MIXED — статус подтверждения LTM-дивидендов. */
+  dividendDataStatus?: 'OK' | 'EMPTY' | 'UNAVAILABLE' | 'MIXED' | null;
 }
 
 /** Проверка ценовых алертов */
@@ -183,8 +194,9 @@ export class AnalysisAgent extends AgentBase {
     const validator = new PortfolioValidator();
     const riskValidation = validator.validateLimits(macroGoals, assets);
 
-    // Шаг 3: Расчёт доходов (дивиденды + купоны)
-    const income = await calculatePortfolioIncome(assets);
+    // Шаг 3: Расчёт доходов (дивиденды + купоны).
+    // LTM-дивиденды из MOEX ISS догружаются только там, где Excel пуст.
+    const income = await calculatePortfolioIncome(assets, { moexLtm: true });
 
     // Шаг 4: Проверка ценовых алертов
     const alertsModule = new PriceAlertsModule();

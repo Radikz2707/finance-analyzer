@@ -82,7 +82,10 @@ function toLegacyStockFundamentals(
       detailed.sourcesUsed.length > 0
         ? detailed.sourcesUsed.join(' + ')
         : 'недоступно',
-    lastUpdated: detailed.price.asOf ?? new Date().toISOString(),
+    // Дата данных — только фактическая. Ранее при отсутствии asOf
+    // подставлялось «сейчас», из-за чего неподтверждённая цифра получала
+    // свежую дату и выглядела проверенной. Нет даты — нет отметки.
+    lastUpdated: detailed.price.asOf ?? undefined,
     fundamentalHealth: detailed.fundamentalHealth,
     summary: detailed.summary,
   };

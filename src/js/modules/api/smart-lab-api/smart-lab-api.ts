@@ -1,4 +1,4 @@
-﻿/**
+/**
  * SmartLabApi — получение справочных данных по облигациям с Smart-Lab.
  *
  * Используется как дополнительный источник данных для облигаций,
@@ -100,6 +100,14 @@ const SMARTLAB_BASE = 'https://smart-lab.ru';
 /** Таймаут запросов (мс) */
 const REQUEST_TIMEOUT = 15000;
 
+/** Счётчик реальных сетевых запросов по облигациям за прогон. */
+let bondRequestCount = 0;
+
+/** Сколько smart-lab-запросов по облигациям ушло за прогон. */
+export function getSmartLabBondRequestCount(): number {
+  return bondRequestCount;
+}
+
 /**
  * Выполнить запрос к Smart-Lab.
  * Возвращает HTML-страницу.
@@ -112,16 +120,26 @@ async function fetchSmartLab(url: string): Promise<string> {
     const response = await fetch(url, {
       signal: controller.signal,
       headers: {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'User-Agent': 'FinanceAnalyzer/1.0',
       },
     });
 
     if (!response.ok) {
-      throw new Error(`Smart-Lab API error: ${response.status} ${response.statusText}`);
+      console.warn(
+        `[SmartLabApi] HTTP ${response.status} ${response.statusText} url=${url}`,
+      );
+      throw new Error(
+        `Smart-Lab API error: ${response.status} ${response.statusText}`,
+      );
     }
 
-    return await response.text();
+    const html = await response.text();
+    console.log(
+      `[SmartLabApi] HTTP ${response.status} bytes=${html.length} url=${url}`,
+    );
+    return html;
   } finally {
     clearTimeout(timeoutId);
   }
@@ -136,7 +154,8 @@ function parseBondsTable(html: string): SmartLabBond[] {
 
   // Извлекаем таблицу котировок облигаций
   // Smart-Lab использует структуру: table > tbody > tr > td
-  const tableRegex = /<table[^>]*class="[^"]*quotes-table[^"]*"[^>]*>([\s\S]*?)<\/table>/i;
+  const tableRegex =
+    /<table[^>]*class="[^"]*quotes-table[^"]*"[^>]*>([\s\S]*?)<\/table>/i;
   const tableMatch = html.match(tableRegex);
 
   if (!tableMatch) {
@@ -225,19 +244,19 @@ function parseBondRow(cells: string[]): SmartLabBond | null {
   const offerDateText = getText(10);
   const offerDate = parseDate(offerDateText);
 
-   return {
-     ticker,
-     isin: '',
-     maturityDate,
-     yield: yield_,
-     price,
-     volume,
-     couponAmount,
-     nkd,
-     durationDays,
-     nextCouponDate,
-     offerDate,
-   };
+  return {
+    ticker,
+    isin: '',
+    maturityDate,
+    yield: yield_,
+    price,
+    volume,
+    couponAmount,
+    nkd,
+    durationDays,
+    nextCouponDate,
+    offerDate,
+  };
 }
 
 /**
@@ -296,29 +315,102 @@ function parseDate(str: string): string | undefined {
 // ──────────────────────────────────────────────
 
 /**
+ * Кэш страницы облигации за прогон: один fetch на ISIN.
+ *
+ * Rating, volume и nextCouponDate берутся из одного HTML, поэтому
+ * повторные обращения (data-agent → next-coupon fallback → карточка)
+ * не тратят квоту Smart-Lab и не дублируют сетевые запросы.
+ */
+const bondCache = new Map<string, SmartLabBond | null>();
+const bondInFlight = new Map<string, Promise<SmartLabBond | null>>();
+
+/** Сброс кэша облигаций (для тестов). */
+export function __resetSmartLabBondCacheForTests(): void {
+  bondCache.clear();
+  bondInFlight.clear();
+  bondRequestCount = 0;
+}
+
+/**
  * Загрузить данные по конкретной облигации с Smart-Lab.
  *
  * @param isin — ISIN облигации (например, RU000A10GC20)
  * @returns данные облигации или null
  */
-export async function fetchSmartLabBondByIsin(isin: string): Promise<SmartLabBond | null> {
-  try {
-    const normalizedIsin = isin.trim().toUpperCase();
-    console.log(`[SmartLabApi] Загрузка данных по облигации ${normalizedIsin}...`);
+export async function fetchSmartLabBondByIsin(
+  isin: string,
+): Promise<SmartLabBond | null> {
+  const normalizedIsin = isin.trim().toUpperCase();
+  if (!normalizedIsin) return null;
 
-    const html = await fetchSmartLab(`${SMARTLAB_BASE}/q/bonds/${normalizedIsin}/`);
-    const bond = parseBondPage(html, normalizedIsin);
+  if (bondCache.has(normalizedIsin)) {
+    return bondCache.get(normalizedIsin) ?? null;
+  }
 
-    if (bond) {
-      console.log(`[SmartLabApi] ✅ Загружены данные: ${bond.ticker} (доходность: ${bond.yield}%), цена: ${bond.price}%`);
-    } else {
-      console.warn(`[SmartLabApi] ⚠️ Не удалось распарсить страницу для ${normalizedIsin}`);
+  const pending = bondInFlight.get(normalizedIsin);
+  if (pending) return pending;
+
+  const task = (async (): Promise<SmartLabBond | null> => {
+    try {
+      bondRequestCount++;
+      console.log(
+        `[SmartLabApi] request=#${bondRequestCount} isin=${normalizedIsin} ` +
+          `url=${SMARTLAB_BASE}/q/bonds/${normalizedIsin}/`,
+      );
+
+      const html = await fetchSmartLab(
+        `${SMARTLAB_BASE}/q/bonds/${normalizedIsin}/`,
+      );
+      const bond = parseBondPage(html, normalizedIsin);
+
+      if (bond) {
+        console.log(
+          `[SmartLabApi] ✅ isin=${normalizedIsin} ticker=${bond.ticker} ` +
+            `nextCouponDate=${bond.nextCouponDate ?? 'null'} ` +
+            `rating=${bond.rating ?? 'null'} volume=${bond.volume ?? 'null'} ` +
+            `yield=${bond.yield ?? 'null'} price=${bond.price ?? 'null'}`,
+        );
+      } else {
+        console.warn(
+          `[SmartLabApi] ⚠️ Не удалось распарсить страницу для ${normalizedIsin}`,
+        );
+      }
+
+      if (bond && !bond.nextCouponDate) {
+        // Диагностика 29027: видно, есть ли на странице метка даты купона
+        // и что именно лежит рядом с ней.
+        const couponLabel =
+          /Дата\s+(?:след\.?|следующей)\s+(?:выплаты|купона)/i.test(html);
+        const snippet =
+          html
+            .match(
+              /Дата\s+(?:след\.?|следующей)\s+(?:выплаты|купона)[\s\S]{0,240}/i,
+            )?.[0]
+            ?.replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 200) ?? '';
+        console.warn(
+          `[SmartLabApi] nextCouponDate=not_found isin=${normalizedIsin} ` +
+            `hasCouponLabel=${couponLabel} snippet="${snippet}"`,
+        );
+      }
+
+      return bond;
+    } catch (error) {
+      console.error(`[SmartLabApi] ❌ Ошибка загрузки ${isin}:`, error);
+      return null;
     }
+  })();
 
+  bondInFlight.set(normalizedIsin, task);
+  try {
+    const bond = await task;
+    // Кэшируем и null: повторный запрос в том же прогоне не имеет смысла.
+    bondCache.set(normalizedIsin, bond);
     return bond;
-  } catch (error) {
-    console.error(`[SmartLabApi] ❌ Ошибка загрузки ${isin}:`, error);
-    return null;
+  } finally {
+    bondInFlight.delete(normalizedIsin);
   }
 }
 
@@ -338,7 +430,10 @@ function parseBondPage(html: string, isin: string): SmartLabBond | null {
       bond.ticker = nameMatch[1]?.trim() || '';
       bond.bondType = nameMatch[2]?.trim() || '';
     } else {
-      bond.ticker = title.replace(/\s*с\s+.*$/, '').replace(/\s*Доходность.*$/, '').trim();
+      bond.ticker = title
+        .replace(/\s*с\s+.*$/, '')
+        .replace(/\s*Доходность.*$/, '')
+        .trim();
     }
   }
 
@@ -357,11 +452,18 @@ function parseBondPage(html: string, isin: string): SmartLabBond | null {
       'i',
     );
     const match = html.match(regex);
-    return match?.[1] ? match[1].replace(/&amp;/g, '&').replace(/&mdash;/g, '—').replace(/&nbsp;/g, ' ').trim() : '';
+    return match?.[1]
+      ? match[1]
+          .replace(/&amp;/g, '&')
+          .replace(/&mdash;/g, '—')
+          .replace(/&nbsp;/g, ' ')
+          .trim()
+      : '';
   };
 
   // Основные характеристики
-  const priceText = extractFromRow('Котировка облигации') || extractFromRow('Котировка');
+  const priceText =
+    extractFromRow('Котировка облигации') || extractFromRow('Котировка');
   bond.price = parseNumber(priceText);
 
   const yieldText = extractFromRow('Доходность');
@@ -370,10 +472,17 @@ function parseBondPage(html: string, isin: string): SmartLabBond | null {
   const dailyChangeText = extractFromRow('Изм за день');
   bond.dailyChange = parsePercent(dailyChangeText);
 
-  const volumeText = extractFromRow('Объем день, млн') || extractFromRow('Объем за день') || extractFromRow('Объем, млн') || extractFromRow('Объем') || extractFromRow('Объем за сегодня');
+  const volumeText =
+    extractFromRow('Объем день, млн') ||
+    extractFromRow('Объем за день') ||
+    extractFromRow('Объем, млн') ||
+    extractFromRow('Объем') ||
+    extractFromRow('Объем за сегодня');
   bond.volume = parseMillion(volumeText);
   if (bond.volume) {
-    console.log(`[SmartLabApi] ✅ Volume для ${bond.ticker}: ${bond.volume} млн руб`);
+    console.log(
+      `[SmartLabApi] ✅ Volume для ${bond.ticker}: ${bond.volume} млн руб`,
+    );
   }
 
   const volumeSharesText = extractFromRow('Объем день, штук');
@@ -389,7 +498,8 @@ function parseBondPage(html: string, isin: string): SmartLabBond | null {
   bond.maturityDate = parseDate(maturityText);
 
   const offerText = extractFromRow('Дата оферты');
-  bond.offerDate = offerText === '—' || offerText === '' ? undefined : parseDate(offerText);
+  bond.offerDate =
+    offerText === '—' || offerText === '' ? undefined : parseDate(offerText);
 
   const durationText = extractFromRow('Дюрация, дней');
   bond.durationDays = parseNumber(durationText);
@@ -400,35 +510,48 @@ function parseBondPage(html: string, isin: string): SmartLabBond | null {
   const currencyText = extractFromRow('Валюта');
   bond.currency = currencyText || 'RUB';
 
-  let ratingText = extractFromRow('Кредитный рейтинг') || extractFromRow('Рейтинг') || extractFromRow('рейтинг') || extractFromRow('ICBRR') || extractFromRow('рейтинг ICBRR') || extractFromRow('рейтинг МОEX');
-  
+  let ratingText =
+    extractFromRow('Кредитный рейтинг') ||
+    extractFromRow('Рейтинг') ||
+    extractFromRow('рейтинг') ||
+    extractFromRow('ICBRR') ||
+    extractFromRow('рейтинг ICBRR') ||
+    extractFromRow('рейтинг МОEX');
+
   // Fallback 1: ищем «Кредитный рейтинг» через простой regex по всему HTML
   if (!ratingText) {
-    const ratingFallback1 = html.match(/Кредитный\s+рейтинг[\s\S]{0,200}?>([^<]+)/i);
+    const ratingFallback1 = html.match(
+      /Кредитный\s+рейтинг[\s\S]{0,200}?>([^<]+)/i,
+    );
     if (ratingFallback1?.[1]) {
       ratingText = ratingFallback1[1].replace(/&[^;]+;/g, '').trim();
     }
   }
-  
+
   // Fallback 2: ищем паттерн "Кредитный рейтинг" + значение в скобках или после двоеточия
   if (!ratingText) {
     const ratingFallback2 = html.match(/Кредитный\s+рейтинг[^>]*>([^<]*)/i);
     if (ratingFallback2?.[1]) {
-      const cleaned = ratingFallback2[1].replace(/&[^;]+;/g, '').replace(/[\s]+/g, ' ').trim();
+      const cleaned = ratingFallback2[1]
+        .replace(/&[^;]+;/g, '')
+        .replace(/[\s]+/g, ' ')
+        .trim();
       if (cleaned && cleaned.length > 0 && cleaned !== '—') {
         ratingText = cleaned;
       }
     }
   }
-  
+
   // Fallback 3: ищем评级 (рейтинг) с значением типа "A+", "BBB", "AAA" и т.д.
   if (!ratingText) {
-    const ratingFallback3 = html.match(/Кредитный\s+рейтинг[\s\S]{0,300}?>\s*<[^>]*>\s*([A-Z]{1,4}\+?|-)/i);
+    const ratingFallback3 = html.match(
+      /Кредитный\s+рейтинг[\s\S]{0,300}?>\s*<[^>]*>\s*([A-Z]{1,4}\+?|-)/i,
+    );
     if (ratingFallback3?.[1]) {
       ratingText = ratingFallback3[1].trim();
     }
   }
-  
+
   bond.rating = ratingText && ratingText !== '—' ? ratingText : undefined;
   if (bond.rating) {
     console.log(`[SmartLabApi] ✅ Rating для ${bond.ticker}: ${bond.rating}`);
@@ -437,7 +560,10 @@ function parseBondPage(html: string, isin: string): SmartLabBond | null {
     // Debug: выводим часть HTML для отладки
     const ratingHtmlMatch = html.match(/Кредитный\s+рейтинг[\s\S]{0,500}/i);
     if (ratingHtmlMatch) {
-      console.log('[SmartLabApi] 🔍 HTML вокруг "Кредитный рейтинг":', ratingHtmlMatch[0].substring(0, 300));
+      console.log(
+        '[SmartLabApi] 🔍 HTML вокруг "Кредитный рейтинг":',
+        ratingHtmlMatch[0].substring(0, 300),
+      );
     }
   }
 
@@ -459,7 +585,13 @@ function parseBondPage(html: string, isin: string): SmartLabBond | null {
   const qualifiedText = extractFromRow('Только для квалов');
   bond.isQualifiedOnly = qualifiedText.toLowerCase().includes('да');
 
-  const nextCouponText = extractFromRow('Дата след. выплаты');
+  // Метка на страницах разных выпусков отличается: ОФЗ/корпораты используют
+  // «Дата след. выплаты», «Дата следующей выплаты» или «Дата след. купона».
+  const nextCouponText =
+    extractFromRow('Дата след. выплаты') ||
+    extractFromRow('Дата следующей выплаты') ||
+    extractFromRow('Дата след. купона') ||
+    extractFromRow('Следующая выплата');
   bond.nextCouponDate = parseDate(nextCouponText);
 
   const nkdText = extractFromRow('НКД');
@@ -558,11 +690,26 @@ export function findBondByTicker(
  * @returns обогащённый Map с дополнительными полями
  */
 export async function enrichBondsFromSmartLab(
-  excelBonds: Map<string, import('../../data/xlsx-parser/xlsx-parser.js').BondReferenceData>,
-): Promise<Map<string, import('../../data/xlsx-parser/xlsx-parser.js').BondReferenceData & { smartlab: SmartLabBond | null }>> {
+  excelBonds: Map<
+    string,
+    import('../../data/xlsx-parser/xlsx-parser.js').BondReferenceData
+  >,
+): Promise<
+  Map<
+    string,
+    import('../../data/xlsx-parser/xlsx-parser.js').BondReferenceData & {
+      smartlab: SmartLabBond | null;
+    }
+  >
+> {
   const smartlabBonds = await fetchSmartLabBonds();
 
-  const enriched = new Map<string, import('../../data/xlsx-parser/xlsx-parser.js').BondReferenceData & { smartlab: SmartLabBond | null }>();
+  const enriched = new Map<
+    string,
+    import('../../data/xlsx-parser/xlsx-parser.js').BondReferenceData & {
+      smartlab: SmartLabBond | null;
+    }
+  >();
 
   for (const [isin, bond] of excelBonds) {
     // Ищем по ISIN и по имени

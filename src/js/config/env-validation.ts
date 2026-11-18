@@ -173,7 +173,7 @@ export const ENV_SCHEMA: Readonly<Record<string, EnvKeySpec>> = {
     description:
       'Тикеры, которые запрещено продавать (csv; альтернатива noSellTickers в user-policy.json)',
     format: 'csv',
-    example: 'PLZL',
+    example: 'SBER',
   },
   PORTFOLIO_NO_SELL_ASSET_TYPES: {
     description:

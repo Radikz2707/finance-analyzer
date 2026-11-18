@@ -269,8 +269,19 @@ export function resolvePrice(params: ResolvePriceParams): PriceResolution {
     };
   }
 
+  // Валидация: отрицательная/нулевая цена — это не «дёшево», а отсутствие
+  // данных. Если внешнего ориентира нет, фиксируем диагностику явно.
+  const zeroOrNegativePrice = Number.isFinite(raw) && raw <= 0;
+  if (params.isBond && zeroOrNegativePrice) {
+    console.warn(
+      `[BOND_PRICE_INVALID] ${params.source}: цена ${formatRub(raw)} <= 0, ` +
+        'внешний ориентир отсутствует — стоимость позиции не учтена',
+    );
+  }
+
   return unknownResolution(
-    'Цена отсутствует в Excel и не найдена на MOEX/Smart-Lab — ' +
+    (zeroOrNegativePrice ? 'Цена <= 0: ' : '') +
+      'Цена отсутствует в Excel и не найдена на MOEX/Smart-Lab — ' +
       'стоимость позиции не учтена.',
   );
 }

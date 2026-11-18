@@ -654,7 +654,7 @@ function validateAssetReferences(text: string, knownTickers: string[]): string {
  * Правила:
  * - AI НЕ должен генерировать собственные суммы сделок ("продать SBRB на 95 295 ₽")
  * - AI НЕ должен рассчитывать собственную доходность портфеля ("Убыток: -32.24%")
- * - AI НЕ должен выводить ticker + amount ("PLZL: 44 266 ₽")
+ * - AI НЕ должен выводить ticker + amount ("TICKER: 44 266 ₽")
  * - Все числовые значения в отчёте должны приходить из deterministic source
  *
  * Не трогает deterministic числа в таблицах и карточках — только свободный текст AI.

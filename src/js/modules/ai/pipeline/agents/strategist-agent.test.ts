@@ -56,7 +56,7 @@ describe('StrategistAgent', () => {
     expect(data.decisions[0]!.drawdownPercent).toBeCloseTo(-58, 1);
   });
 
-  it('якорь берёт EXCEL_DIVIDENDS и дату Excel из метаданных', async () => {
+  it('якорь берёт BROKER и дату Excel из метаданных', async () => {
     const agent = new StrategistAgent();
     const result = await agent.execute({
       assetsAnalysis: [
@@ -79,7 +79,7 @@ describe('StrategistAgent', () => {
       dividendYields: { SBER: 50 },
       dividendYieldsMeta: {
         SBER: {
-          source: 'EXCEL_DIVIDENDS',
+          source: 'BROKER',
           asOf: '2026-11-17T00:00:00.000Z',
           kind: 'LTM',
         },
@@ -87,9 +87,9 @@ describe('StrategistAgent', () => {
     });
 
     const anchor = (dataOf(result).strategies ?? [])[0]?.incomeAnchor;
-    expect(anchor?.dividendSource).toBe('EXCEL_DIVIDENDS');
+    expect(anchor?.dividendSource).toBe('BROKER');
     expect(anchor?.dividendAsOf).toBe('2026-11-17T00:00:00.000Z');
-    expect(anchor?.text).toContain('EXCEL_DIVIDENDS');
+    expect(anchor?.text).toContain('BROKER');
   });
 
   it('НЕ блокирует EXIT при просадке 70%', async () => {

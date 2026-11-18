@@ -8,6 +8,7 @@
  * Это гарантирует, что pipeline работает даже без установленного Python.
  */
 
+import { PortfolioConfig } from '../../../config/portfolio-config.js';
 import { PythonBridge } from './python-bridge.js';
 import type {
   AnomalyDetectionResult,
@@ -23,6 +24,56 @@ const DEFAULT_CONFIG: AnomalyDetectorConfig = {
   volatilityWindow: 20,
   rsiPeriod: 14,
 };
+
+/**
+ * Периоды SMA — единый источник с техфактами карточки.
+ * Хардкод 20/50 в коде детектора запрещён: меняется только конфиг.
+ */
+const SMA_PERIODS: readonly number[] = PortfolioConfig.moexQuotes.smaPeriods;
+
+/** Значение SMA на последнем баре (null — истории меньше периода). */
+function smaLastValue(
+  prices: readonly number[],
+  period: number,
+): number | null {
+  if (period <= 0 || prices.length < period) return null;
+  const tail = prices.slice(-period);
+  const sum = tail.reduce((acc, value) => acc + value, 0);
+  return Number((sum / period).toFixed(4));
+}
+
+/** Значения SMA по всем периодам конфига. */
+function buildSmaValues(
+  prices: readonly number[],
+): Record<string, number | null> {
+  const values: Record<string, number | null> = {};
+  for (const period of SMA_PERIODS) {
+    values[String(period)] = smaLastValue(prices, period);
+  }
+  return values;
+}
+
+/**
+ * Дополнить результат Python-движка значениями SMA по конфигу.
+ *
+ * Python-паритет считает SMA20/SMA50; карточка и промпт должны видеть
+ * периоды из `moexQuotes.smaPeriods`, поэтому значения пересчитываются
+ * на TS из той же серии — источник периодов один.
+ */
+function enrichWithConfigSma(
+  results: AnomalyDetectionResult[],
+  series: PriceSeriesInput[],
+): AnomalyDetectionResult[] {
+  const pricesByTicker = new Map(
+    series.map((item) => [item.ticker, item.prices] as const),
+  );
+
+  return results.map((result) => ({
+    ...result,
+    smaPeriods: [...SMA_PERIODS],
+    smaValues: buildSmaValues(pricesByTicker.get(result.ticker) ?? []),
+  }));
+}
 
 /**
  * AnomalyDetector — высокоуровневый сервис анализа аномалий.
@@ -59,7 +110,7 @@ export class AnomalyDetector {
           config: { ...this.config },
           payload: { series },
         });
-        return data;
+        return enrichWithConfigSma(data, series);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(
@@ -195,26 +246,34 @@ function annualizedVolatility(
   return Number((stddev(tail) * Math.sqrt(periodsPerYear)).toFixed(4));
 }
 
-/** Определение тренда по SMA20/SMA50 */
+/**
+ * Определение тренда по двум SMA из конфига (короткая/длинная).
+ * При одном периоде в конфиге тренд не строится — 'flat'.
+ */
 function detectTrend(
   values: number[],
-  sma20: (number | null)[],
-  sma50: (number | null)[],
+  smaShort: readonly (number | null)[],
+  smaLong: readonly (number | null)[],
 ): AnomalyDetectionResult['trend'] {
   const last = values.length - 1;
   if (last < 0) {
     return 'flat';
   }
-  const s20 = sma20[last];
-  const s50 = sma50[last];
+  const shortValue = smaShort[last];
+  const longValue = smaLong[last];
 
-  if (s20 !== undefined && s20 !== null && s50 !== undefined && s50 !== null) {
+  if (
+    shortValue !== undefined &&
+    shortValue !== null &&
+    longValue !== undefined &&
+    longValue !== null
+  ) {
     const lastValue = values[last];
     if (lastValue !== undefined) {
-      if (s20 > s50 && lastValue > s20) {
+      if (shortValue > longValue && lastValue > shortValue) {
         return 'up';
       }
-      if (s20 < s50 && lastValue < s20) {
+      if (shortValue < longValue && lastValue < shortValue) {
         return 'down';
       }
     }
@@ -257,6 +316,8 @@ export function detectAnomaliesInTypeScript(
       rsi: 50,
       sma20: null,
       sma50: null,
+      smaPeriods: [...SMA_PERIODS],
+      smaValues: buildSmaValues([]),
       trend: 'flat',
       riskLevel: 'low',
       anomaliesCount: 0,
@@ -266,11 +327,23 @@ export function detectAnomaliesInTypeScript(
   }
 
   const zPoints = rollingZScore(prices, cfg.window, cfg.zScoreThreshold);
-  const sma20 = sma(prices, 20);
-  const sma50 = sma(prices, 50);
+  const smaValues = buildSmaValues(prices);
+  const smaByPeriod = new Map<number, (number | null)[]>();
+  for (const period of SMA_PERIODS) {
+    smaByPeriod.set(period, sma(prices, period));
+  }
+  const shortPeriod = SMA_PERIODS[0];
+  const longPeriod = SMA_PERIODS[1];
+  const trend =
+    shortPeriod !== undefined && longPeriod !== undefined
+      ? detectTrend(
+          prices,
+          smaByPeriod.get(shortPeriod) ?? [],
+          smaByPeriod.get(longPeriod) ?? [],
+        )
+      : 'flat';
   const volatility = annualizedVolatility(prices, cfg.volatilityWindow);
   const rsiValue = rsi(prices, cfg.rsiPeriod);
-  const trend = detectTrend(prices, sma20, sma50);
 
   const anomalies: AnomalyPoint[] = [];
   for (let i = 0; i < zPoints.length; i++) {
@@ -294,8 +367,10 @@ export function detectAnomaliesInTypeScript(
     isLastAnomaly,
     volatilityAnnual: volatility,
     rsi: rsiValue,
-    sma20: sma20[lastIdx] !== null ? Number(sma20[lastIdx]!.toFixed(4)) : null,
-    sma50: sma50[lastIdx] !== null ? Number(sma50[lastIdx]!.toFixed(4)) : null,
+    sma20: smaValues['20'] ?? null,
+    sma50: smaValues['50'] ?? null,
+    smaPeriods: [...SMA_PERIODS],
+    smaValues,
     trend,
     riskLevel: riskLevel(volatility, lastZ, cfg.zScoreThreshold),
     anomaliesCount: anomalies.length,

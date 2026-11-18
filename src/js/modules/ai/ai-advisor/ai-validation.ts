@@ -329,6 +329,67 @@ export function normalizeAiDirection(raw: string): string | null {
  * @param assetsAnalysis — данные анализа активов из PortfolioMath
  * @returns результат валидации
  */
+/**
+ * Найти противоречие между действием карточки и её текстом.
+ *
+ * `validateDirections` намеренно пропускал HOLD/STABLE и работал по
+ * свободному тексту всего отчёта. Из-за этого кейс «Действие: Держать,
+ * а в тексте „рекомендуется покупка“» не диагностировался вообще.
+ * Отрицания («не покупать») конфликтом не считаются.
+ */
+export function findCardDirectionConflicts(
+  action: string | null,
+  fields: Array<string | null | undefined>,
+): string[] {
+  if (!action) return [];
+
+  const text = fields
+    .filter((value): value is string => Boolean(value))
+    .join(' ')
+    .toLowerCase();
+  if (!text) return [];
+
+  // Глаголы + noun-формы: AI часто пишет «Рекомендуется покупка»,
+  // «Покупка при любой коррекции», а не «покупать».
+  const buyWords =
+    /(?<!не\s)(покупать|купить|покупк|наращивать|докупать|увеличить позицию|рекомендуется\s+покупк[а-яё]*|покупк[а-яё]*\s+при\s+любой\s+коррекции)/;
+  const sellWords =
+    /(?<!не\s)(продавать|продать|сократить|сокраща|выйти из позиции|зафиксировать прибыль|рекомендуется\s+продаж[а-яё]*|продаж[а-яё]*\s+при\s+любой\s+коррекции|продать\s+(?:перв|втор)[а-яё]*\s+част[а-яё]*)/;
+  // «Первая часть — немедленно» — торговая директива без глагола направления.
+  const trancheDirective =
+    /(?:перв|втор)[а-яё]*\s+част[а-яё]*\s*[—–-]\s*(?:немедленно|сейчас)|част[а-яё]*\s*[—–-]\s*(?:немедленно|сейчас)/;
+
+  const conflicts: string[] = [];
+  const isHoldLike =
+    action === 'HOLD' || action === 'STABLE' || action === 'AVOID';
+  const isBuyLike = action === 'BUY' || action === 'AVERAGE';
+  const isSellLike =
+    action === 'REDUCE' || action === 'EXIT' || action === 'SELL';
+
+  if (isHoldLike && buyWords.test(text)) {
+    conflicts.push(`текст рекомендует покупку при действии ${action}`);
+  }
+  if (isHoldLike && sellWords.test(text)) {
+    conflicts.push(`текст рекомендует продажу при действии ${action}`);
+  }
+  if (
+    isHoldLike &&
+    !buyWords.test(text) &&
+    !sellWords.test(text) &&
+    trancheDirective.test(text)
+  ) {
+    conflicts.push(`текст содержит торговую директиву при действии ${action}`);
+  }
+  if (isBuyLike && sellWords.test(text)) {
+    conflicts.push(`текст рекомендует продажу при действии ${action}`);
+  }
+  if (isSellLike && buyWords.test(text)) {
+    conflicts.push(`текст рекомендует покупку при действии ${action}`);
+  }
+
+  return conflicts;
+}
+
 export function validateDirections(
   aiText: string,
   assetsAnalysis: AssetAnalysis[],
@@ -580,7 +641,7 @@ export function postProcessAiText(
   const warnings: string[] = [];
 
   // 0. Политика no-sell применяется к тексту ДО валидации направлений:
-  // иначе «Продавайте PLZL» остаётся в отчёте и порождает ложный конфликт.
+  // иначе «Продавайте <тикер>» остаётся в отчёте и порождает ложный конфликт.
   const policySafeText = applyPolicyToNarrative(aiText, assetsAnalysis, policy);
 
   // 1. Валидация направлений
@@ -591,9 +652,14 @@ export function postProcessAiText(
   );
   if (!directionValidation.valid) {
     for (const d of directionValidation.discrepancies) {
+      // role=advisory: расхождение направлений не меняет итоговое действие
+      // карточки — оно берётся из PortfolioMath. Предупреждение лишь
+      // фиксирует мнение модели для ручной проверки.
       warnings.push(
-        `[DIRECTION_CONFLICT] ${d.ticker}: PortfolioMath=${d.portfolioMathStatus}, ` +
-          `AI=${d.aiSuggestedDirection} (severity=${d.severity})`,
+        `[DIRECTION_CONFLICT] role=advisory ${d.ticker}: ` +
+          `PortfolioMath=${d.portfolioMathStatus}, AI=${d.aiSuggestedDirection} ` +
+          `(severity=${d.severity}) — действие карточки из PortfolioMath, ` +
+          'направление ИИ справочное',
       );
     }
   }

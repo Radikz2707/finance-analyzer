@@ -254,10 +254,20 @@ export async function fetchMoexHistory(
 /**
  * Дивиденды по бумаге.
  *
+ * ВАЖНО (диагностика 2026-11-18): публичный ISS больше не отдаёт таблицу
+ * `dividends` по пути `securities/{SECID}/dividends.json` — на запрос
+ * приходит HTTP 200 с таблицами `description` и `boards` (карточка бумаги).
+ * Это НЕ сетевая ошибка: подресурс удалён из публичного контура, данные
+ * дивидендов остались только в закрытом `/iss/cci/corp-actions/dividends`
+ * (отдаёт HTML, анонимно недоступен).
+ *
+ * Поэтому отсутствие таблицы `dividends` трактуется как UNAVAILABLE (null),
+ * а вызывающий код обязан использовать резервный источник (smart-lab).
+ *
  * Возвращает:
  * - массив записей, если ISS отдал таблицу `dividends`;
  * - [] — если таблица есть, но выплат нет;
- * - null — если endpoint недоступен/формат изменился.
+ * - null — если endpoint недоступен/подресурс удалён/формат изменился.
  */
 export async function fetchMoexDividends(
   secid: string,
@@ -271,7 +281,19 @@ export async function fetchMoexDividends(
   if (!payload) return null;
 
   const table = getIssTable(payload, 'dividends');
-  if (!table) return null;
+  if (!table) {
+    // ISS вернул карточку бумаги вместо дивидендов — подресурс удалён.
+    const hasSecurityCard =
+      getIssTable(payload, 'description') !== null ||
+      getIssTable(payload, 'boards') !== null;
+    console.warn(
+      `[MOEX ISS] dividends/${ticker}: таблица "dividends" отсутствует` +
+        (hasSecurityCard
+          ? ' (ISS вернул description/boards — подресурс удалён из публичного API)'
+          : ' (неожиданный формат ответа)'),
+    );
+    return null;
+  }
 
   const records: MoexDividendRecord[] = [];
   for (const row of issRows(table)) {

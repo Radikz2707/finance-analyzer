@@ -168,6 +168,138 @@ describe('ScenarioAgent', () => {
     ).toBe(true);
   });
 
+  it('S4 честно называет источник: свободный кэш без продаж', async () => {
+    const agent = new ScenarioAgent();
+    const result = await agent.execute(
+      createInput([], {
+        freeCashRub: 15000,
+        totalPortfolioValue: 500000,
+      }),
+    );
+
+    const flexible = dataOf(result).scenarios.find(
+      (s) => s.id === 'S4_flexible',
+    );
+    expect(flexible).toBeDefined();
+    expect(flexible!.title).toContain('на свободный кэш');
+    expect(flexible!.changes.some((c) => c.action === 'SELL')).toBe(false);
+    expect(flexible!.rationale).toContain('свободный кэш');
+  });
+
+  it('S4 называет продажу прибыльной позиции и учитывает no-sell политику', async () => {
+    const agent = new ScenarioAgent();
+    const assetsWithProfit = [
+      createAsset(),
+      createAsset({
+        ticker: 'SBER',
+        name: 'Сбер',
+        currentPercent: 5,
+        targetPercent: 10,
+        deficitRub: 20000,
+        status: 'BUY',
+        quantity: 100,
+        balancePrice: 250,
+        currentPrice: 280,
+        unrealizedProfitRub: 3000,
+      }),
+      createAsset({
+        ticker: 'GAZP',
+        name: 'Газпром',
+        currentPercent: 20,
+        targetPercent: 10,
+        deficitRub: -50000,
+        status: 'REDUCE',
+        quantity: 50,
+        balancePrice: 200,
+        currentPrice: 250,
+        unrealizedProfitRub: 2500,
+      }),
+    ];
+
+    // Продажа разрешена — источник назван прямо.
+    const allowed = await agent.execute(
+      createInput([], {
+        freeCashRub: 0,
+        totalPortfolioValue: 500000,
+        assetsAnalysis: assetsWithProfit,
+      }),
+    );
+    const allowedFlexible = dataOf(allowed).scenarios.find(
+      (s) => s.id === 'S4_flexible',
+    );
+    expect(allowedFlexible).toBeDefined();
+    expect(allowedFlexible!.title).toContain('с продажей прибыльных позиций');
+    expect(allowedFlexible!.rationale).toContain('продажа GAZP');
+
+    // Продажа GAZP запрещена политикой и кэша нет — сценарий не строится.
+    const blocked = await agent.execute(
+      createInput([], {
+        freeCashRub: 0,
+        totalPortfolioValue: 500000,
+        assetsAnalysis: assetsWithProfit,
+        noSellTickers: ['GAZP'],
+      }),
+    );
+    const blockedFlexible = dataOf(blocked).scenarios.find(
+      (s) => s.id === 'S4_flexible',
+    );
+    expect(blockedFlexible).toBeUndefined();
+  });
+
+  it('S4 сравнивает совокупный P&L (unrealized + realized) с baseline', async () => {
+    const agent = new ScenarioAgent();
+    const assetsWithProfit = [
+      createAsset(),
+      createAsset({
+        ticker: 'SBER',
+        name: 'Сбер',
+        currentPercent: 5,
+        targetPercent: 10,
+        deficitRub: 20000,
+        status: 'BUY',
+        quantity: 100,
+        balancePrice: 250,
+        currentPrice: 280,
+        unrealizedProfitRub: 3000,
+      }),
+      createAsset({
+        ticker: 'GAZP',
+        name: 'Газпром',
+        currentPercent: 20,
+        targetPercent: 10,
+        deficitRub: -50000,
+        status: 'REDUCE',
+        quantity: 50,
+        balancePrice: 200,
+        currentPrice: 250,
+        unrealizedProfitRub: 2500,
+      }),
+    ];
+
+    const result = await agent.execute(
+      createInput([], {
+        freeCashRub: 0,
+        totalPortfolioValue: 500000,
+        assetsAnalysis: assetsWithProfit,
+      }),
+    );
+    const data = dataOf(result);
+    const flexible = data.scenarios.find((s) => s.id === 'S4_flexible');
+    const baseline = data.scenarios.find((s) => s.id === 'S1_hold');
+    expect(flexible).toBeDefined();
+    expect(baseline).toBeDefined();
+
+    // Продажа прибыльной позиции уменьшает unrealized, но увеличивает
+    // realized — совокупный P&L не должен стать хуже baseline.
+    const totalPnL =
+      flexible!.projectedUnrealizedPnL + flexible!.realizedPnLRub;
+    expect(totalPnL).toBeGreaterThanOrEqual(
+      baseline!.projectedUnrealizedPnL - 1000,
+    );
+    expect(flexible!.verdict).not.toBe('WORSENS');
+    expect(flexible!.rationale).toContain('P&L (unrealized + realized)');
+  });
+
   it('вердикт лучшего сценария выбирается по улучшению структуры', async () => {
     const agent = new ScenarioAgent();
     const result = await agent.execute(
@@ -943,6 +1075,63 @@ describe('ScenarioAgent', () => {
           expect(baseline!.pnlCalculationStatus).toBe('CALCULATED');
         });
       });
+    });
+  });
+
+  // ─── Единый совокупный P&L, НДФЛ и копейки (дожим 15:12) ───
+
+  describe('Единый совокупный P&L и издержки', () => {
+    it('totalPnLRub = projectedUnrealizedPnL + realizedPnLRub во всех сценариях', async () => {
+      const agent = new ScenarioAgent();
+      const result = await agent.execute(createInput());
+      const data = dataOf(result);
+      const baselineTotal = data.scenarios[0]!.totalPnLRub;
+
+      for (const s of data.scenarios) {
+        expect(s.totalPnLRub).toBe(s.projectedUnrealizedPnL + s.realizedPnLRub);
+        expect(s.pnlDeltaVsBaselineRub).toBe(s.totalPnLRub - baselineTotal);
+      }
+    });
+
+    it('baseline: total = P&L, delta = 0, structureImproved = false', async () => {
+      const agent = new ScenarioAgent();
+      const result = await agent.execute(createInput());
+      const baseline = dataOf(result).scenarios.find((s) => s.id === 'S1_hold');
+
+      expect(baseline).toBeDefined();
+      expect(baseline!.totalPnLRub).toBe(baseline!.projectedUnrealizedPnL);
+      expect(baseline!.pnlDeltaVsBaselineRub).toBe(0);
+      expect(baseline!.structureImproved).toBe(false);
+    });
+
+    it('реализованная прибыль → НДФЛ 13% и пометка в rationale', async () => {
+      const agent = new ScenarioAgent();
+      const result = await agent.execute(
+        createInput([{ ticker: 'SBER', action: 'SELL', amountRub: 5000 }], {
+          freeCashRub: 0,
+        }),
+      );
+      const s2 = dataOf(result).scenarios.find((s) => s.id === 'S2_ai');
+
+      expect(s2).toBeDefined();
+      expect(s2!.realizedPnLRub).toBeGreaterThan(0);
+      expect(s2!.estimatedRealizedTaxRub).toBeGreaterThan(0);
+      expect(s2!.rationale).toContain('НДФЛ 13%');
+      expect(s2!.rationale).toContain('комиссия не учтены');
+    });
+
+    it('кэш в rationale — с копейками и типографским минусом', async () => {
+      const agent = new ScenarioAgent();
+      const result = await agent.execute(
+        createInput([{ ticker: 'SBER', action: 'BUY', amountRub: 20000 }], {
+          freeCashRub: 0.01,
+        }),
+      );
+      const s2 = dataOf(result).scenarios.find((s) => s.id === 'S2_ai');
+
+      expect(s2).toBeDefined();
+      expect(s2!.rationale).toContain('−');
+      expect(s2!.rationale).toContain(',99 ₽');
     });
   });
 });

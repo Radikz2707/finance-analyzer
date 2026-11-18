@@ -11,7 +11,11 @@
 
 import type { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
 import type { StockFundamentals } from '../../api/fundamentals/types.js';
-import { validateFundamentalTextForTicker } from './fundamentals-guard.js';
+import {
+  validateFundamentalTextForTicker,
+  type FundamentalSibling,
+} from './fundamentals-guard.js';
+import type { BondAnalysisResult } from './prompt-templates.js';
 import type {
   AiAction,
   PortfolioMathStatus,
@@ -122,6 +126,62 @@ export interface StrategistOverride {
   reason: string;
 }
 
+/**
+ * Детерминированные данные облигации для карточки.
+ *
+ * Нужны, чтобы тип купона и кредитный статус показывались из источника,
+ * а не из свободного текста модели. Для флоатера YTM здесь — проекция,
+ * поэтому карточка обязана подписывать его иначе.
+ */
+export interface BondCardInfo {
+  isin: string;
+  couponType: string;
+  /** Причина UNKNOWN-классификации купона (конфликт/пробел источника). */
+  couponTypeReason:
+    'excel_conflict' | 'ofz_no_coupon' | 'type_unconfirmed' | null;
+  /** «Excel FIXED, ISS FLOATER (ОФЗ-ПК)» — конкретная причина конфликта. */
+  couponTypeReasonDetail: string | null;
+  /** Источник подтверждения типа: ISS / SERIES / EXCEL. */
+  couponTypeSource: string | null;
+  /** Методика YTM — карточка подписывает её рядом со значением. */
+  ytmMethod: string | null;
+  currentYield: number | null;
+  ytm: number | null;
+  nextCouponDate: string | null;
+  /** Источник даты купона: EXCEL (дата файла) / MOEX_ISS / SMART_LAB. */
+  nextCouponDateSource: 'EXCEL' | 'MOEX_ISS' | 'SMART_LAB' | null;
+  floatIndex: string | null;
+  floatSpreadPct: number | null;
+  creditQuality: string;
+  creditSource: string;
+  creditAsOf: string | null;
+  creditRating: { agency: string; rating: string; outlook: string } | null;
+  recommendation: string;
+}
+
+/** Собрать bond-блок карточки из структурированного анализа облигации. */
+export function buildBondCardInfo(bond: BondAnalysisResult): BondCardInfo {
+  return {
+    isin: bond.isin,
+    couponType: bond.yieldAnalysis.couponType,
+    couponTypeReason: bond.yieldAnalysis.couponTypeReason ?? null,
+    couponTypeReasonDetail: bond.yieldAnalysis.couponTypeReasonDetail ?? null,
+    couponTypeSource: bond.yieldAnalysis.couponTypeSource ?? null,
+    ytmMethod: bond.yieldAnalysis.ytmMethod ?? null,
+    currentYield: bond.yieldAnalysis.currentYield,
+    ytm: bond.yieldAnalysis.ytm,
+    nextCouponDate: bond.yieldAnalysis.nextCouponDate ?? null,
+    nextCouponDateSource: bond.yieldAnalysis.nextCouponDateSource ?? null,
+    floatIndex: bond.moexData.floatIndex ?? null,
+    floatSpreadPct: bond.moexData.floatSpreadPct ?? null,
+    creditQuality: bond.creditAssessment.quality,
+    creditSource: bond.creditAssessment.source,
+    creditAsOf: bond.creditAssessment.asOfDate ?? null,
+    creditRating: bond.creditAssessment.rating ?? null,
+    recommendation: bond.recommendation,
+  };
+}
+
 export interface StructuredAIAssetRecommendation {
   // IDENTITY
   ticker: string;
@@ -158,6 +218,11 @@ export interface StructuredAIAssetRecommendation {
   nextCouponDate?: Date | null;
   maturityDate?: Date | null;
   marketNkd?: number;
+  /**
+   * Детерминированный bond-блок для карточки: тип купона, индекс флоатера,
+   * кредитное качество с источником и датой. Заполняется в AiAgent.
+   */
+  bondCard?: BondCardInfo | null;
 
   // STRATEGIST (детерминированные правила защиты портфеля)
   /** Переопределение действия стратегом (если было применено) */
@@ -192,6 +257,15 @@ export interface StructuredAIAssetRecommendation {
   policyTextBlocked?: boolean;
   /** Пояснение для отчёта */
   policyNote?: string | null;
+
+  // ─── Constraint: BUY отложен до пополнения ───
+  /**
+   * BUY заблокирован нехваткой свободного кэша. Сумма дефицита, ₽.
+   * Карточка показывает «Докупать из ежемесячного взноса», а не «Держать».
+   */
+  deferredBuyRub?: number | null;
+  /** Средний ежемесячный взнос (investedFunds.averageMonthlyDeposit), ₽/мес. */
+  monthlyContributionRub?: number | null;
 
   // ─── Fallback (заполняется ТОЛЬКО когда AI не ответил) ───
   /** Причина fallback (для отладки и объяснений) */
@@ -670,6 +744,11 @@ export function buildStructuredAIRecommendation(
   validation: ValidationResult | null,
   fallbackReason: FallbackReason = 'NO_AI_JSON',
   fundamentals?: StockFundamentals,
+  /**
+   * Фундаментал других активов прогона. Нужен, чтобы отличить «просто
+   * неверное число» от контаминации соседним тикером (кейс TATN/IRAO).
+   */
+  fundamentalSiblings: FundamentalSibling[] = [],
 ): StructuredAIAssetRecommendation {
   // Если AI JSON невалиден или отсутствует — используем fallback
   if (!aiJson || !validation || !validation.valid) {
@@ -727,6 +806,7 @@ export function buildStructuredAIRecommendation(
       aiJson.fundamentalAnalysis,
       det.ticker,
       fundamentals,
+      fundamentalSiblings,
     ),
     technicalTiming: aiJson.technicalTiming || null,
     entryStrategy: aiJson.entryStrategy || null,
@@ -734,6 +814,7 @@ export function buildStructuredAIRecommendation(
       aiJson.issuerContext,
       det.ticker,
       fundamentals,
+      fundamentalSiblings,
     ),
     dataSources: aiJson.dataSources || [],
   };

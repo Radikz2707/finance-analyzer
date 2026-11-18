@@ -48,6 +48,7 @@ import { isBondAssetType } from './agents/strategy-validator.js';
 import { SelfImprovementLoop } from './self-improvement/self-improvement-loop.js';
 import { LearningAgent } from './agents/learning-agent.js';
 import { fetchHistoricalBatch } from '../../data/data-fetcher/index.js';
+import { installRunLogger } from '../../shared/run-logger.js';
 
 // ──────────────────────────────────────────────
 // Helper: SELL vs REDUCE — полный выход vs частичное сокращение
@@ -306,8 +307,11 @@ export class PipelineCoordinator {
   ) {
     this._state = createPipelineState();
     // Инициализация guardrail-политики (по умолчанию moderate)
+    // Пользовательские пороги задаются через config.guardrailPolicy.
+    // Хардкод тикера в коде запрещён: иначе политика живёт в исходниках,
+    // а не в конфиге пользователя.
     this.guardrailPolicy =
-      config.guardrailPolicy ?? createGuardrailPolicy('moderate', { PLZL: 50 });
+      config.guardrailPolicy ?? createGuardrailPolicy('moderate');
     this.dataAgent = new DataAgent(this.config.data);
     this.researchAgent = new ResearchAgentV2({
       name: 'ResearchAgentV2',
@@ -351,6 +355,12 @@ export class PipelineCoordinator {
    * @param sharedData — начальные данные, передаваемые между агентами
    */
   async run(sharedData: Record<string, unknown> = {}): Promise<PipelineResult> {
+    // Инвариант наблюдаемости: ЛЮБОЙ путь прогона (npm run pipeline,
+    // scripts/pipeline-report.ts, Electron/desktop IPC, планировщик,
+    // прямой вызов) создаёт reports/last-run.log до первой диагностической
+    // строки. В браузере/Electron-renderer ФС недоступна — логгер отключён.
+    const runLogPath = installRunLogger();
+
     // Один прогон = один fundamentals-контекст для карточек и стратега.
     resetPortfolioFundamentalsOnce();
     this._state = createPipelineState();
@@ -368,6 +378,9 @@ export class PipelineCoordinator {
     this.agentSummaries = {};
 
     console.log('[Pipeline] 🚀 Конвейер запущен');
+    console.log(
+      `[Pipeline] run log: ${runLogPath ?? 'disabled (нет доступа к ФС)'}`,
+    );
 
     // Живой мониторинг агентов: сторож стартует на каждый run().
     this.watchdog.start();
@@ -528,8 +541,23 @@ export class PipelineCoordinator {
         }
       }
       console.log('');
+      const dividendStatusNote =
+        income.dividendDataStatus === 'UNAVAILABLE'
+          ? ' — недоступно (источники MOEX ISS / smart-lab не ответили)'
+          : income.dividendDataStatus === 'EMPTY'
+            ? ' — нет подтверждённых выплат за 13 мес'
+            : income.dividendDataStatus === 'MIXED'
+              ? ' — часть тикеров без подтверждённых данных'
+              : '';
       console.log(
-        `  Доходы: НКД ${income.totalNkd.toLocaleString('ru-RU')} ₽ | Дивиденды ${income.totalDivsNet.toLocaleString('ru-RU')} ₽ (чистые)`,
+        `  Доходы: НКД ${income.totalNkd.toLocaleString('ru-RU')} ₽ | ` +
+          `Дивиденды ${
+            income.dividendDataStatus === 'UNAVAILABLE'
+              ? 'недоступно'
+              : income.dividendDataStatus === 'EMPTY'
+                ? 'нет данных'
+                : `${income.totalDivsNet.toLocaleString('ru-RU')} ₽ (чистые)`
+          }${dividendStatusNote}`,
       );
       if (priceAlerts.length > 0) {
         console.log(`  ⚠️ Ценовые алерты: ${priceAlerts.length}`);
@@ -638,33 +666,46 @@ export class PipelineCoordinator {
         }
 
         // ── Диагностика: сверка баз расчёта ──
-        const excelTotal = macroGoalsJson.totalBalance ?? 0;
+        // Рыночная стоимость портфеля — C9 (бумаги + кэш), а не C11
+        // (totalBalance = C12 + C11, чистый итог). Σ(qty×price) — только
+        // бумаги, поэтому к ней добавляется свободный кэш.
+        const excelLiquidationTotal = macroGoalsJson.totalLiquidationValue ?? 0;
+        const excelTotalBalance = macroGoalsJson.totalBalance ?? 0;
+        const baseForComparison =
+          excelLiquidationTotal > 0 ? excelLiquidationTotal : excelTotalBalance;
         const totalLiqForDeficit = assetsAnalysisList.reduce(
           (sum, a) => sum + (a.quantity ?? 0) * (a.currentPrice ?? 0),
           0,
         );
-        const baseDiff = excelTotal - totalLiqForDeficit;
+        const liquidAssetsWithCash =
+          totalLiqForDeficit + (macroGoalsJson.freeCash ?? 0);
+        const baseDiff = baseForComparison - liquidAssetsWithCash;
         if (Math.abs(baseDiff) > 1000) {
           console.error(
             '═══════════════════════════════════════════════════════',
           );
           console.error(
-            '[BASE MISMATCH] Excel totalBalance=' +
-              Math.round(excelTotal).toLocaleString('ru-RU') +
-              '₽ vs Σ(qty×price)=' +
-              Math.round(totalLiqForDeficit).toLocaleString('ru-RU') +
+            '[BASE MISMATCH] Excel C9 totalLiquidationValue=' +
+              Math.round(excelLiquidationTotal).toLocaleString('ru-RU') +
+              '₽ vs Σ(qty×price)+freeCash=' +
+              Math.round(liquidAssetsWithCash).toLocaleString('ru-RU') +
               '₽ | Разница=' +
               Math.round(baseDiff).toLocaleString('ru-RU') +
               '₽ (' +
-              ((baseDiff / excelTotal) * 100).toFixed(1) +
+              (baseForComparison > 0
+                ? ((baseDiff / baseForComparison) * 100).toFixed(1)
+                : '0.0') +
               '%)',
           );
           console.error(
-            '[BASE MISMATCH] deficitRub рассчитан от ' +
+            '[BASE MISMATCH] C11 totalBalance=' +
+              Math.round(excelTotalBalance).toLocaleString('ru-RU') +
+              '₽ не используется: это чистый итог (C12 + C11), ' +
+              'а не рыночная стоимость. deficitRub рассчитан от ' +
               Math.round(totalLiqForDeficit).toLocaleString('ru-RU') +
-              '₽, но totalPortfolioValue=' +
-              Math.round(excelTotal).toLocaleString('ru-RU') +
-              '₽',
+              '₽ бумаг + ' +
+              Math.round(macroGoalsJson.freeCash ?? 0).toLocaleString('ru-RU') +
+              '₽ кэша',
           );
           console.error(
             '[BASE MISMATCH] Топ-5 активов: ' +
@@ -704,6 +745,10 @@ export class PipelineCoordinator {
             action: c.action === 'SELL' ? 'SELL' : c.action,
             amountRub: Math.abs(c.amountRub),
           })),
+          // Политика no-sell должна работать и в S4: запрещённые к продаже
+          // тикеры не могут финансировать покупки. Источник — user-policy.json
+          // или env; хардкода тикеров в коде нет.
+          noSellTickers: loadUserPolicyWithMeta().policy.noSellTickers,
         };
 
         console.log(
@@ -788,7 +833,7 @@ export class PipelineCoordinator {
         }
         const userPolicy = userPolicyLoad.policy;
 
-        // Слой 1 — EXCEL_DIVIDENDS/EXCEL_DECLARED из листа QUIK.
+        // Слой 1 — BROKER/MOEX_ISS/EXCEL_DECLARED из листа QUIK.
         // Слой 2 — fundamentals (smart-lab) как fallback по тикерам.
         const excelDividendLayer = buildExcelDividendYields(
           income,
@@ -808,7 +853,12 @@ export class PipelineCoordinator {
         const dividendYieldsMeta: Record<
           string,
           {
-            source: 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED' | 'SMART_LAB';
+            source:
+              | 'BROKER'
+              | 'MOEX_ISS'
+              | 'EXCEL_DIVIDENDS'
+              | 'EXCEL_DECLARED'
+              | 'SMART_LAB';
             asOf: string | null;
             kind: 'LTM' | 'DECLARED' | 'UNKNOWN';
           }
@@ -827,7 +877,11 @@ export class PipelineCoordinator {
           }
         }
         for (const [ticker, meta] of Object.entries(excelDividendLayer.meta)) {
-          dividendYieldsMeta[ticker] = meta;
+          dividendYieldsMeta[ticker] = {
+            ...meta,
+            // В ExcelDividendYieldMeta источник smart-lab называется SMART_LAB.
+            source: meta.source === 'SMARTLAB' ? 'SMART_LAB' : meta.source,
+          };
         }
 
         const stockTickers = assetsAnalysisJson
@@ -841,7 +895,7 @@ export class PipelineCoordinator {
           (ticker) => dividendYields[ticker] === undefined,
         );
         console.log(
-          '[DIVIDEND_YIELDS_PIPELINE] source=excel+fundamentals ' +
+          '[DIVIDEND_YIELDS_PIPELINE] source=broker+iss+fundamentals ' +
             `excel=${Object.keys(excelDividendLayer.yields).join(',') || 'none'} ` +
             `fundamentals=${Object.keys(fundamentalsYields).join(',') || 'none'} ` +
             `count=${Object.keys(dividendYields).length} ` +

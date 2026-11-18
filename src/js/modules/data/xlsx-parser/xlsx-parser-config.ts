@@ -58,8 +58,11 @@ export const BONDS_COLUMN_TURNOVER = 'Оборот';
 export const BONDS_COLUMN_COUPON_AMOUNT = 'Размер купона';
 // Столбец I
 export const BONDS_COLUMN_COUPON_PERIOD = 'Длительность купона';
-// Столбец J
-export const BONDS_COLUMN_COUPON_DATE = 'Дата выплаты купона';
+// Столбец J — заголовок в файле пользователя «Дата выпл. куп.»
+export const BONDS_COLUMN_COUPON_DATE = 'Дата выпл. куп.';
+export const BONDS_COLUMN_COUPON_DATE_ALT1 = 'Дата выплаты купона';
+export const BONDS_COLUMN_COUPON_DATE_ALT2 = 'Следующий купон';
+export const BONDS_COLUMN_COUPON_DATE_ALT3 = 'Дата следующего купона';
 // Столбец K
 export const BONDS_COLUMN_NKD = 'НКД';
 // Столбец L
@@ -157,7 +160,8 @@ export const QUIK_COLUMN_TICKER_ALT1 = 'Код инструмента';
 export const QUIK_COLUMN_TICKER_ALT2 = 'Код';
 export const QUIK_COLUMN_ASSET_TYPE = 'Вид активов';
 export const QUIK_COLUMN_ASSET_TYPE_ALT = 'Тип';
-export const QUIK_COLUMN_LIQ_PERCENT = '%, активов, по ликвидационной стоимости';
+export const QUIK_COLUMN_LIQ_PERCENT =
+  '%, активов, по ликвидационной стоимости';
 export const QUIK_COLUMN_LIQ_PERCENT_ALT = 'Доля';
 export const QUIK_COLUMN_BAL_PERCENT = '%, активов, по балансовой стоимости';
 export const QUIK_COLUMN_TARGET_PCT = 'Target Percent';

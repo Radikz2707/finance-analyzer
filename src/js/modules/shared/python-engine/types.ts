@@ -42,8 +42,18 @@ export interface AnomalyDetectionResult {
   isLastAnomaly: boolean;
   volatilityAnnual: number;
   rsi: number;
+  /**
+   * Legacy-поля Python-паритета: значение SMA(20)/SMA(50).
+   * Заполняются только если период есть в
+   * `PortfolioConfig.moexQuotes.smaPeriods`, иначе null.
+   * Новый код читает `smaValues`.
+   */
   sma20: number | null;
   sma50: number | null;
+  /** Периоды SMA из PortfolioConfig.moexQuotes.smaPeriods. */
+  smaPeriods?: number[];
+  /** Значения SMA по периодам (ключ — период в виде строки). */
+  smaValues?: Record<string, number | null>;
   trend: 'up' | 'down' | 'flat';
   riskLevel: 'low' | 'medium' | 'high';
   anomaliesCount: number;

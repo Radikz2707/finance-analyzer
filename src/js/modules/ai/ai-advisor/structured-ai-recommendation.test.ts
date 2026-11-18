@@ -1,5 +1,6 @@
 ﻿import type { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
 import {
+  buildBondCardInfo,
   buildDeterministicAssetData,
   buildStructuredAIRecommendation,
   buildFallbackStructuredRecommendation,
@@ -7,6 +8,7 @@ import {
   type RawAIJson,
   type DeterministicAssetData,
 } from './structured-ai-recommendation.js';
+import type { BondAnalysisResult } from './prompt-templates.js';
 import { stripJsonBlockFromAiText } from './json-sanitizer.js';
 import { assertFinalAiDisplaySafe } from './ollama-manager.js';
 
@@ -887,7 +889,8 @@ describe('StructuredAIRecommendation', () => {
     });
 
     it('stripJsonBlockFromAiText удаляет inline JSON {"ticker": ...}', () => {
-      const rawAiText = 'Рекомендация: {"ticker": "PLZL", "recommendedTargetPercent": 0, "recommendedAction": "EXIT"} — закрыть позицию.';
+      const rawAiText =
+        'Рекомендация: {"ticker": "PLZL", "recommendedTargetPercent": 0, "recommendedAction": "EXIT"} — закрыть позицию.';
       const cleaned = stripJsonBlockFromAiText(rawAiText);
 
       expect(cleaned).not.toContain('"ticker"');
@@ -1004,6 +1007,80 @@ describe('StructuredAIRecommendation', () => {
       expect(cleaned).not.toContain('"recommendedTargetPercent"');
       expect(cleaned).toContain('Текст между блоками');
       expect(cleaned).toContain('Финальный текст');
+    });
+  });
+
+  describe('BondCardInfo: атрибуция даты купона (задача «Дата выпл. куп.»)', () => {
+    function createBondResult(
+      overrides: Partial<BondAnalysisResult['yieldAnalysis']> = {},
+    ): BondAnalysisResult {
+      return {
+        isin: 'RU000A10GF83',
+        name: 'Облигация',
+        issuer: 'Эмитент',
+        quantity: 10,
+        currentPrice: 1000,
+        balanceValue: 10000,
+        yieldAnalysis: {
+          currentYield: 12.5,
+          ytm: 13.1,
+          effectiveYield: 13.1,
+          annualCouponIncome: 1250,
+          couponType: 'FIXED',
+          dataQuality: 'OK',
+          ...overrides,
+        },
+        durationAnalysis: {
+          duration: 2.1,
+          durationType: 'MACAULEY',
+          dv01: 21,
+          scenarios: [],
+          dataQuality: 'OK',
+          derivedDataQuality: 'OK',
+        },
+        creditAssessment: {
+          quality: 'HIGH',
+          source: 'MOEX',
+          summary: 'Рейтинг подтверждён',
+        },
+        recommendation: 'Держать',
+        rationale: '',
+        moexData: {},
+        missingData: [],
+        mathAgreement: 'AGREE',
+        portfolioImpact: 'Нейтральное',
+      };
+    }
+
+    it('дата из Excel: карточка получает 11.02.2027 и источник EXCEL', () => {
+      const card = buildBondCardInfo(
+        createBondResult({
+          nextCouponDate: '2027-02-11',
+          nextCouponDateSource: 'EXCEL',
+        }),
+      );
+
+      expect(card.nextCouponDate).toBe('2027-02-11');
+      expect(card.nextCouponDateSource).toBe('EXCEL');
+    });
+
+    it('дата из ISS помечается MOEX_ISS', () => {
+      const card = buildBondCardInfo(
+        createBondResult({
+          nextCouponDate: '2026-12-11',
+          nextCouponDateSource: 'MOEX_ISS',
+        }),
+      );
+
+      expect(card.nextCouponDate).toBe('2026-12-11');
+      expect(card.nextCouponDateSource).toBe('MOEX_ISS');
+    });
+
+    it('нет даты и источника → null (fail-closed, без выдуманной даты)', () => {
+      const card = buildBondCardInfo(createBondResult());
+
+      expect(card.nextCouponDate).toBeNull();
+      expect(card.nextCouponDateSource).toBeNull();
     });
   });
 });

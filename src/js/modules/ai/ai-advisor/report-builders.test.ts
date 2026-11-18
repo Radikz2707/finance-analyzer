@@ -1,6 +1,7 @@
 // P2: Тесты для buildFinalConclusion — итоговое заключение (4 элемента)
 import type { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
 import {
+  buildActiveStockPositionsText,
   buildAssetsTablesAndBars,
   buildFinalConclusion,
 } from './report-builders.js';
@@ -412,6 +413,108 @@ describe('buildFinalConclusion — итоговое заключение', () =>
         expect(result.rebalanceBlock).toContain('3 позиции');
         expect(result.rebalanceBlock).not.toContain('2 позиций');
       });
+
+      it('полная стратегия 13:42: IRAO + TATN + ОФЗ = 3 позиции и 105 646 ₽', () => {
+        const result = buildAssetsTablesAndBars([
+          createAsset({
+            ticker: 'IRAO',
+            name: 'Интер РАО',
+            status: 'BUY',
+            currentPercent: 5.6,
+            targetPercent: 15,
+            deficitRub: 57_202,
+          }),
+          createAsset({
+            ticker: 'TATN',
+            name: 'Татнефть',
+            status: 'BUY',
+            currentPercent: 2.9,
+            targetPercent: 10,
+            deficitRub: 43_483,
+          }),
+          createAsset({
+            ticker: 'SU29027RMFS8',
+            name: 'ОФЗ 29027',
+            assetType: 'О',
+            status: 'NEW',
+            currentPercent: 9.5,
+            targetPercent: 10,
+            deficitRub: 4_961,
+          }),
+        ]);
+
+        expect(result.rebalanceBlock).toMatch(/105[\s\u00A0]?646/);
+        expect(result.rebalanceBlock).toContain('3 позиции');
+        expect(result.priorityBlock).toContain('ОФЗ 29027');
+      });
     });
+  });
+});
+
+describe('buildActiveStockPositionsText — долевые позиции из портфеля', () => {
+  it('берёт акции с quantity > 0, исключает облигации и нулевые позиции', () => {
+    const text = buildActiveStockPositionsText([
+      createAsset({
+        ticker: 'IRAO',
+        name: 'Интер РАО',
+        assetType: 'А',
+        quantity: 1000,
+      }),
+      createAsset({
+        ticker: 'SU29027RMFS8',
+        name: 'ОФЗ 29027',
+        assetType: 'О',
+        quantity: 5,
+      }),
+      createAsset({
+        ticker: 'TATN',
+        name: 'Татнефть',
+        assetType: 'STOCK',
+        quantity: 0,
+      }),
+    ]);
+
+    expect(text).toContain('Интер РАО (IRAO): 1000 шт.');
+    expect(text).not.toContain('SU29027RMFS8');
+    expect(text).not.toContain('TATN');
+  });
+});
+
+describe('5b: реальный прогон 15:12 — шаги стратега добавляют NEW-ОФЗ', () => {
+  it('2 дефицита PortfolioMath + шаг ОФЗ = 3 позиции и 105 646 ₽', () => {
+    const result = buildAssetsTablesAndBars(
+      [
+        createAsset({
+          ticker: 'IRAO',
+          name: 'Интер РАО',
+          status: 'BUY',
+          currentPercent: 5.6,
+          targetPercent: 15,
+          deficitRub: 57_202,
+        }),
+        createAsset({
+          ticker: 'TATN',
+          name: 'Татнефть',
+          status: 'BUY',
+          currentPercent: 2.9,
+          targetPercent: 10,
+          deficitRub: 43_483,
+        }),
+      ],
+      [
+        { ticker: 'IRAO', action: 'Купить', amountRub: 57_202 },
+        { ticker: 'TATN', action: 'Купить', amountRub: 43_483 },
+        {
+          ticker: 'SU29027RMFS8',
+          action: 'Купить',
+          amountRub: 4_961,
+          name: 'ОФЗ 29027',
+        },
+      ],
+    );
+
+    expect(result.rebalanceBlock).toMatch(/105[\s\u00A0]?646/);
+    expect(result.rebalanceBlock).toContain('3 позиции');
+    expect(result.priorityBlock).toContain('ОФЗ 29027');
   });
 });

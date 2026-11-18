@@ -2,6 +2,7 @@ import {
   buildJsonOnlySystemPrompt,
   buildSystemPrompt,
 } from './prompt-templates.js';
+import type { TechnicalIndicators } from './prompt-templates.js';
 import type {
   FundamentalsSource,
   SourcedValue,
@@ -25,6 +26,25 @@ describe('buildSystemPrompt', () => {
 
   it('contains JSON-BLOCK format', () => {
     expect(basePrompt).toContain('=== JSON-МАССИВ');
+  });
+
+  it('требует машинный JSON-блок ценовых триггеров (задача 4Г)', () => {
+    expect(basePrompt).toContain('=== JSON-БЛОК ЦЕНОВЫХ ТРИГГЕРОВ');
+    expect(basePrompt).toContain('"priceTriggers"');
+    // Точный пример схемы: модель выдавала 4 блока не по схеме.
+    expect(basePrompt).toContain(
+      '{"priceTriggers":[{"ticker":"SBER","levels":[{"price":280,"direction":"below"},{"price":320,"direction":"above"}],"action":"HOLD"}]}',
+    );
+    expect(basePrompt).toContain(
+      'levels — непустой массив объектов ровно с полями price',
+    );
+    expect(basePrompt).toContain('только один блок на весь ответ');
+    expect(basePrompt).toContain(
+      'Если подтверждённых уровней нет — НЕ выводи этот блок вообще',
+    );
+    expect(basePrompt).toContain(
+      'Для активов под no-sell политикой action не может быть SELL/REDUCE/EXIT',
+    );
   });
 
   it('instructs model to output JSON block FIRST (before narrative)', () => {
@@ -349,6 +369,49 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('P/E недоступно (источник не отвечает)');
     expect(prompt).toContain('smart-lab.ru не отвечает');
   });
+
+  it('рендерит 52w и SMA из конфига, недоступные — честно (задача 4Д)', () => {
+    const prompt = buildSystemPrompt(
+      18,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [
+        {
+          ticker: 'SBER',
+          rsi: 55,
+          sma20: null,
+          sma50: 300,
+          smaPeriods: [50, 200],
+          smaValues: { '50': 300, '200': null },
+          high52w: 350,
+          low52w: 250,
+          technicalAsOf: '2026-11-18',
+          trend: 'up',
+          volatilityAnnual: 0.2,
+          riskLevel: 'low',
+          zScoreLast: 0.5,
+          isLastAnomaly: false,
+        },
+      ],
+    );
+
+    expect(prompt).toContain('SMA50: 300.00');
+    expect(prompt).toContain('SMA200: недоступно');
+    expect(prompt).toContain(
+      '52-недельный диапазон: 250.00–350.00 (MOEX ISS, 2026-11-18)',
+    );
+    expect(prompt).not.toContain('на основе 180 дней');
+  });
 });
 
 describe('buildJsonOnlySystemPrompt', () => {
@@ -422,5 +485,88 @@ describe('buildJsonOnlySystemPrompt', () => {
     expect(prompt).toContain('P/E 5,13');
     expect(prompt).toContain('(smart-lab.ru, 17.11.2026)');
     expect(prompt).toContain('Медиана 5 лет');
+  });
+
+  it('передаёт техфакты (SMA/52w) с датой — повторный JSON не теряет индикаторы', () => {
+    const indicator: TechnicalIndicators = {
+      ticker: 'TATN',
+      rsi: 54.2,
+      sma20: null,
+      sma50: null,
+      smaPeriods: [20, 50],
+      smaValues: { '20': 301.25, '50': 298.4 },
+      high52w: 340,
+      low52w: 250,
+      technicalAsOf: '2026-11-18',
+      trend: 'up',
+      volatilityAnnual: 0.35,
+      riskLevel: 'medium',
+      zScoreLast: 0.4,
+      isLastAnomaly: false,
+    };
+
+    const prompt = buildJsonOnlySystemPrompt(['TATN'], undefined, [indicator]);
+
+    expect(prompt).toContain('=== ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ (MOEX ISS) ===');
+    expect(prompt).toContain('• TATN: RSI 54.2');
+    expect(prompt).toContain('SMA20 301.25');
+    expect(prompt).toContain('SMA50 298.40');
+    expect(prompt).toContain('52w 250.00–340.00');
+    expect(prompt).toContain('тренд восходящий');
+    expect(prompt).toContain('волатильность 35.0%');
+    expect(prompt).toContain('на 2026-11-18');
+  });
+
+  it('недоступные техфакты пишет словом «недоступно», а не нулём', () => {
+    const indicator: TechnicalIndicators = {
+      ticker: 'PLZL',
+      rsi: null,
+      sma20: null,
+      sma50: null,
+      high52w: null,
+      low52w: null,
+      technicalAsOf: null,
+      trend: null,
+      volatilityAnnual: null,
+      riskLevel: null,
+      zScoreLast: null,
+      isLastAnomaly: false,
+    };
+
+    const prompt = buildJsonOnlySystemPrompt(['PLZL'], undefined, [indicator]);
+
+    expect(prompt).toContain('RSI недоступно');
+    expect(prompt).toContain('SMA20 недоступно');
+    expect(prompt).toContain('52w недоступно');
+    expect(prompt).toContain('тренд недоступно');
+    expect(prompt).toContain('дата н/д');
+    expect(prompt).not.toContain('RSI 0.0');
+  });
+
+  it('без техфактов блока технических индикаторов нет', () => {
+    const prompt = buildJsonOnlySystemPrompt(['SBER']);
+
+    expect(prompt).not.toContain('=== ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ');
+  });
+});
+
+describe('prompt-templates: политика no-sell в тексте (задача 1)', () => {
+  it('buildSystemPrompt запрещает sell-директивы и свободные числовые цели доли', () => {
+    const prompt = buildSystemPrompt(18);
+
+    expect(prompt).toContain('ПОЛИТИКА NO-SELL В ТЕКСТЕ');
+    expect(prompt).toContain('ЗАПРЕТ СВОБОДНЫХ ЧИСЛОВЫХ ЦЕЛЕЙ ДОЛИ');
+    expect(prompt).toContain('с 17,4% до ~12%');
+    expect(prompt).toContain(
+      'продажа/сокращение заблокированы политикой no-sell',
+    );
+  });
+
+  it('buildJsonOnlySystemPrompt тоже запрещает sell-директивы по no-sell', () => {
+    const prompt = buildJsonOnlySystemPrompt(['PLZL']);
+
+    expect(prompt).toContain('пометкой no-sell');
+    expect(prompt).toContain('ЗАПРЕЩЕНЫ директивы');
+    expect(prompt).toContain('Свободные числовые цели доли');
   });
 });

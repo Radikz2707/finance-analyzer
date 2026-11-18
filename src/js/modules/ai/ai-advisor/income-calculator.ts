@@ -3,10 +3,32 @@ import * as fs from 'fs';
 import { CurrentAsset } from '../../data/xlsx-parser/xlsx-parser.js';
 import * as config from '../../data/xlsx-parser/xlsx-parser-config.js';
 import { PortfolioConfig } from '../../../config/portfolio-config.js';
+import {
+  fetchDividendLtm,
+  type DividendLtmResult,
+  type DividendLtmStatus,
+} from './dividend-ltm.js';
 
 /** Семантика дивидендной колонки QUIK. */
 export type DividendKind = 'LTM' | 'DECLARED' | 'UNKNOWN';
-export type DividendSource = 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED';
+/**
+ * Источник дивидендных данных:
+ * - BROKER — заполненный лист Excel (приоритетный override);
+ * - MOEX_ISS — автодогрузка LTM из ISS;
+ * - SMARTLAB — резервная автодогрузка LTM со smart-lab.ru;
+ * - EXCEL_DIVIDENDS — legacy-значение (совместимость);
+ * - EXCEL_DECLARED — объявленные будущие выплаты из Excel.
+ */
+export type DividendSource =
+  'BROKER' | 'MOEX_ISS' | 'SMARTLAB' | 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED';
+
+/** Опции расчёта дохода. */
+export interface IncomeCalculationOptions {
+  /** Догружать LTM из MOEX ISS, когда Excel-дивиденды пусты. */
+  moexLtm?: boolean;
+  /** Инжекция загрузчика (тесты/офлайн). */
+  fetchLtm?: (ticker: string, name?: string) => Promise<DividendLtmResult>;
+}
 
 export interface StockIncomeResult {
   name: string;
@@ -41,6 +63,15 @@ export interface CalculatedIncome {
   dividendSource?: DividendSource | 'MIXED' | null;
   excelAsOf?: string | null;
   dividendWarnings?: string[];
+  /**
+   * Статус подтверждения LTM-дивидендов для визуального слоя:
+   * - OK — суммы подтверждены источником;
+   * - EMPTY — источники ответили, но выплат в окне нет;
+   * - UNAVAILABLE — источники недоступны (показывать «недоступно», не 0 ₽);
+   * - MIXED — часть тикеров подтверждена, часть нет;
+   * - null — автодогрузка не запрашивалась (данные Excel / опция выключена).
+   */
+  dividendDataStatus?: DividendLtmStatus | 'MIXED' | null;
 }
 
 const STOCK_TYPES = new Set(['А', 'АКЦИЯ', 'АКЦИИ', 'A', 'STOCK', 'STOCKS']);
@@ -182,6 +213,7 @@ function resolvePositionalDividendColumn(
  */
 export async function calculatePortfolioIncome(
   assets?: CurrentAsset[],
+  options: IncomeCalculationOptions = {},
 ): Promise<CalculatedIncome> {
   if (assets) {
     void assets;
@@ -195,6 +227,12 @@ export async function calculatePortfolioIncome(
   const stocksResults: StockIncomeResult[] = [];
   const declaredStocks: StockIncomeResult[] = [];
   const dividendWarnings: string[] = [];
+  // Акции, для которых Excel не дал LTM — кандидаты на догрузку из MOEX ISS.
+  const pendingLtm: Array<{
+    ticker: string;
+    name: string;
+    quantity: number;
+  }> = [];
 
   if (!fs.existsSync(config.EXCEL_FILE_PATH)) {
     throw new Error('Файл не найден по пути: ' + config.EXCEL_FILE_PATH);
@@ -440,7 +478,7 @@ export async function calculatePortfolioIncome(
         grossIncome: Math.round(ltmGross * 100) / 100,
         netIncome: Math.round(net * 100) / 100,
         kind: 'LTM',
-        source: 'EXCEL_DIVIDENDS',
+        source: 'BROKER',
         asOf: excelAsOf,
       });
 
@@ -448,6 +486,12 @@ export async function calculatePortfolioIncome(
         `[DIVIDENDS] ticker=${ticker} kind=LTM gross=${ltmGross} ` +
           `qty=${qty} perShare=${(ltmGross / qty).toFixed(2)}`,
       );
+    } else if (qty > 0) {
+      // Excel не дал LTM — кандидат на автодогрузку из MOEX ISS.
+      // X5 в QUIK может приходить как «Х5» — для ISS это FIVE.
+      const pendingTicker =
+        ticker === 'Х5' || ticker === 'X5' ? 'FIVE' : ticker;
+      pendingLtm.push({ ticker: pendingTicker, name, quantity: qty });
     }
 
     // Объявленные будущие выплаты — отдельная плитка, не в totalDivs.
@@ -479,6 +523,78 @@ export async function calculatePortfolioIncome(
     }
   }
 
+  // ── LTM из MOEX ISS / smart-lab: только там, где Excel не дал выплат ───
+  const enableMoexLtm = options.moexLtm ?? false;
+  let dividendDataStatus: DividendLtmStatus | 'MIXED' | null = null;
+  if (enableMoexLtm && pendingLtm.length > 0) {
+    const loader = options.fetchLtm ?? fetchDividendLtm;
+    const ltmResults = await Promise.all(
+      pendingLtm.map((item) => loader(item.ticker, item.name)),
+    );
+
+    const statuses: DividendLtmStatus[] = [];
+
+    for (let index = 0; index < ltmResults.length; index++) {
+      const result = ltmResults[index]!;
+      const item = pendingLtm[index]!;
+      const status: DividendLtmStatus =
+        result.status ?? (result.ltmPerShare !== null ? 'OK' : 'UNAVAILABLE');
+      statuses.push(status);
+
+      if (result.ltmPerShare === null || result.ltmPerShare <= 0) {
+        // Контракт метрики: нет истории → «нет подтверждённых данных», не 0.
+        // UNAVAILABLE (сеть/формат) и EMPTY (источник ответил, выплат нет)
+        // различаются в тексте — это видно и в логе, и в плитке.
+        dividendWarnings.push(
+          status === 'EMPTY'
+            ? `${item.ticker}: нет подтверждённых дивидендов LTM за 13 мес (MOEX ISS, smart-lab)`
+            : `${item.ticker}: дивиденды LTM недоступны — источники не ответили (MOEX ISS, smart-lab)`,
+        );
+        console.log(
+          `[DIVIDENDS_LTM_SKIPPED] ticker=${item.ticker} status=${status} ` +
+            `iss=${result.diagnostics?.iss ?? 'n/a'} ` +
+            `smartlab=${result.diagnostics?.smartLab ?? 'n/a'} ` +
+            `slSecid=${result.diagnostics?.smartLabSecid ?? 'n/a'}`,
+        );
+        continue;
+      }
+
+      const gross = result.ltmPerShare * item.quantity;
+      const net = gross * (1 - PortfolioConfig.tax.dividendNdflRate);
+      totalDivs += gross;
+      totalDivsNet += net;
+
+      stocksResults.push({
+        name: item.name || item.ticker,
+        ticker: item.ticker,
+        quantity: item.quantity,
+        rate: Math.round(result.ltmPerShare * 100) / 100,
+        grossIncome: Math.round(gross * 100) / 100,
+        netIncome: Math.round(net * 100) / 100,
+        kind: 'LTM',
+        source: result.source === 'SMARTLAB' ? 'SMARTLAB' : 'MOEX_ISS',
+        asOf: result.asOf ?? undefined,
+      });
+
+      console.log(
+        `[DIVIDENDS_LTM_APPLIED] ticker=${item.ticker} ` +
+          `perShare=${result.ltmPerShare} qty=${item.quantity} ` +
+          `gross=${gross.toFixed(2)} asOf=${result.asOf ?? 'n/a'} ` +
+          `source=${result.source}`,
+      );
+    }
+
+    const hasOk = statuses.includes('OK');
+    const hasNonOk = statuses.some((item) => item !== 'OK');
+    dividendDataStatus = hasOk
+      ? hasNonOk
+        ? 'MIXED'
+        : 'OK'
+      : statuses.includes('EMPTY')
+        ? 'EMPTY'
+        : 'UNAVAILABLE';
+  }
+
   if (
     (COL_DIVIDENDS >= 0 || COL_DECLARED >= 0) &&
     stocksResults.length === 0 &&
@@ -497,11 +613,18 @@ export async function calculatePortfolioIncome(
         : hasDeclared
           ? 'DECLARED'
           : 'UNKNOWN';
+  const ltmSources = new Set(
+    stocksResults
+      .map((stock) => stock.source)
+      .filter((source): source is DividendSource => Boolean(source)),
+  );
   const dividendSource: DividendSource | 'MIXED' | null =
     hasLtm && hasDeclared
       ? 'MIXED'
       : hasLtm
-        ? 'EXCEL_DIVIDENDS'
+        ? ltmSources.size === 1
+          ? [...ltmSources][0]!
+          : 'MIXED'
         : hasDeclared
           ? 'EXCEL_DECLARED'
           : null;
@@ -510,7 +633,8 @@ export async function calculatePortfolioIncome(
     `[DIVIDENDS_TILE] nkd=${totalNkd.toFixed(2)} gross=${totalDivs.toFixed(2)} ` +
       `net=${totalDivsNet.toFixed(2)} totalNet=${(totalNkd + totalDivsNet).toFixed(2)} ` +
       `declaredGross=${declaredDivs.toFixed(2)} declaredNet=${declaredDivsNet.toFixed(2)} ` +
-      `source=${dividendSource ?? 'none'} asOf=${excelAsOf}`,
+      `source=${dividendSource ?? 'none'} status=${dividendDataStatus ?? 'none'} ` +
+      `asOf=${excelAsOf}`,
   );
 
   return {
@@ -525,6 +649,7 @@ export async function calculatePortfolioIncome(
     dividendSource,
     excelAsOf,
     dividendWarnings,
+    dividendDataStatus,
   };
 }
 
@@ -581,11 +706,15 @@ export function buildExcelDividendYields(
       const perShare = stock.grossIncome / stock.quantity;
       const yieldPercent = (perShare / asset.currentPrice) * 100;
 
+      // Источник конкретной строки важнее слоя: MOEX_ISS не должен
+      // превращаться в BROKER при построении якоря.
+      const rowSource = stock.source ?? source;
+
       if (yieldPercent < 0.5 || yieldPercent > 100) {
         const message =
           `[DIVIDEND_YIELD_ANOMALY] ticker=${ticker} value=${yieldPercent.toFixed(2)} ` +
           `gross=${stock.grossIncome} qty=${stock.quantity} price=${asset.currentPrice} ` +
-          `status=PARSE_ERROR source=${source}`;
+          `status=PARSE_ERROR source=${rowSource}`;
         warnings.push(message);
         console.warn(message);
         continue;
@@ -593,12 +722,12 @@ export function buildExcelDividendYields(
 
       yields[ticker] = Math.round(yieldPercent * 100) / 100;
       meta[ticker] = {
-        source,
+        source: rowSource,
         asOf: stock.asOf ?? income.excelAsOf ?? null,
         kind,
       };
       console.log(
-        `[DIVIDEND_YIELDS] source=${source} ticker=${ticker} ` +
+        `[DIVIDEND_YIELDS] source=${rowSource} ticker=${ticker} ` +
           `value=${yields[ticker]} asOf=${meta[ticker].asOf ?? 'n/a'} kind=${kind}`,
       );
     }
@@ -606,7 +735,7 @@ export function buildExcelDividendYields(
 
   // Сначала объявленные, затем LTM: полученные данные приоритетнее форвардных.
   addLayer(income.declaredStocks, 'EXCEL_DECLARED', 'DECLARED');
-  addLayer(income.stocks, 'EXCEL_DIVIDENDS', 'LTM');
+  addLayer(income.stocks, 'BROKER', 'LTM');
 
   return { yields, meta, warnings };
 }

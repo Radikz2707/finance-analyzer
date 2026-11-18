@@ -5,6 +5,7 @@ import {
   buildAssetsTablesAndBars,
   buildQuotesBlock,
   StockQuote,
+  type RebalanceStep,
 } from '../../js/modules/ai/ai-advisor/report-builders.js';
 
 /**
@@ -24,6 +25,8 @@ export interface DashboardKpiData {
   dateStr: string;
   timeStr: string;
   aiBoxHtml: string;
+  /** Идентификатор сборки для шапки отчёта */
+  buildId?: string;
   /** true — рыночная стоимость недоступна (C9/C11 отображаются как «—») */
   marketValueUnavailable?: boolean;
   /** HTML-блок предупреждения о недоступной рыночной стоимости */
@@ -88,13 +91,20 @@ export interface DashboardReportData {
   dateStr: string;
   timeStr: string;
   aiBoxHtml: string;
+  /** Идентификатор сборки: версия + коммит + время */
+  buildId: string;
   barRows: string;
   tableRows: string;
   ordersRows: string;
   priorityBlock: string;
   concentrationBlock: string;
   rebalanceBlock: string;
+  stocksPositionsBlock: string;
   quotesTableRows: string;
+  /** Атрибуция таблицы котировок: источник и время среза. */
+  quotesSourceNote?: string;
+  /** Пометка «движение на низкой ликвидности, не сигнал». */
+  lowLiquidityNote?: string;
   topGainers: string;
   topLosers: string;
   fundsGridHtml?: string;
@@ -127,10 +137,14 @@ export class DashboardReportBuilder {
       profitC11,
       c10Color,
       c11Color,
+      buildId,
       priorityBlock,
       concentrationBlock,
       rebalanceBlock,
+      stocksPositionsBlock,
       quotesTableRows,
+      quotesSourceNote = '',
+      lowLiquidityNote = '',
       topGainers,
       topLosers,
       fundsGridHtml,
@@ -333,14 +347,14 @@ export class DashboardReportBuilder {
       '<!-- 📊 ИСТОРИЧЕСКИЕ КАРТОЧКИ ЭФФЕКТИВНОСТИ -->' +
       "<div class='header-panel'>" +
       "<div class='card'>" +
-      "<div class='card-title'>Текущие активы (C9)</div>" +
+      "<div class='card-title'>Текущие активы (C9: бумаги + кэш)</div>" +
       "<div class='card-value' style='color: #e3b341;'>" +
       totalVal +
       (totalVal === '—' ? '' : ' ₽') +
       '</div>' +
       "<div class='card-sub'>Свободный кэш: " +
       freeCash +
-      ' ₽</div>' +
+      ' ₽ (входит в C9)</div>' +
       '</div>' +
       "<div class='card'>" +
       "<div class='card-title'>Лично внесено (C12)</div>" +
@@ -402,7 +416,17 @@ export class DashboardReportBuilder {
           quotesTableRows +
           '</tbody>' +
           '</table>' +
-          '</div>'
+          '</div>' +
+          (quotesSourceNote
+            ? "<div style='color: #8b949e; font-size: 11px; margin-top: 6px;'>" +
+              quotesSourceNote +
+              '</div>'
+            : '') +
+          (lowLiquidityNote
+            ? "<div style='color: #e3b341; font-size: 11px; margin-top: 4px;'>" +
+              lowLiquidityNote +
+              '</div>'
+            : '')
         : "<div style='color: #8b949e; text-align: center; padding: 20px;'>Данные о котировках недоступны</div>") +
       topGainers +
       topLosers +
@@ -420,6 +444,7 @@ export class DashboardReportBuilder {
       "<div class='block-box'>" +
       priorityBlock +
       concentrationBlock +
+      stocksPositionsBlock +
       rebalanceBlock +
       '</div>' +
       '</div>' +
@@ -434,6 +459,8 @@ export class DashboardReportBuilder {
       ' в ' +
       timeStr +
       ' | finance-analyzer v2.1.0' +
+      ' | build: ' +
+      buildId +
       '</div>' +
       '</div>' +
       '</body>' +
@@ -471,12 +498,19 @@ export class DashboardReportBuilder {
     assetsAnalysis: AssetAnalysis[],
     quotes?: StockQuote[],
     kpiData?: DashboardKpiData,
+    strategySteps?: RebalanceStep[],
   ): DashboardReportBuilder {
     const ordersResult = buildOrdersHtmlAndMd(orders);
-    const uiTables = buildAssetsTablesAndBars(assetsAnalysis);
+    const uiTables = buildAssetsTablesAndBars(assetsAnalysis, strategySteps);
     const quotesBlock = quotes
       ? buildQuotesBlock(quotes)
-      : { quotesTableRows: '', topGainers: '', topLosers: '' };
+      : {
+          quotesTableRows: '',
+          topGainers: '',
+          topLosers: '',
+          quotesSourceNote: '',
+          lowLiquidityNote: '',
+        };
 
     // Вычисляем фактические доли акций/облигаций из математического ядра
     const { stocksPct, bondsPct } = computeAssetPercents(assetsAnalysis);
@@ -514,6 +548,7 @@ export class DashboardReportBuilder {
     const dateStr = kpiData?.dateStr ?? '';
     const timeStr = kpiData?.timeStr ?? '';
     const aiBoxHtml = kpiData?.aiBoxHtml ?? '';
+    const buildId = kpiData?.buildId ?? 'dev';
 
     // Генерируем HTML для плиток взносов
     let fundsGridHtml = '';
@@ -601,13 +636,17 @@ export class DashboardReportBuilder {
       dateStr,
       timeStr,
       aiBoxHtml,
+      buildId,
       barRows: uiTables.barRows,
       tableRows: uiTables.tableRows,
       ordersRows: ordersResult.html,
       priorityBlock: uiTables.priorityBlock,
       concentrationBlock: uiTables.concentrationBlock,
       rebalanceBlock: uiTables.rebalanceBlock,
+      stocksPositionsBlock: uiTables.stocksPositionsBlock,
       quotesTableRows: quotesBlock.quotesTableRows,
+      quotesSourceNote: quotesBlock.quotesSourceNote,
+      lowLiquidityNote: quotesBlock.lowLiquidityNote,
       topGainers: quotesBlock.topGainers,
       topLosers: quotesBlock.topLosers,
       fundsGridHtml,

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * BondApi — получение справочных данных по облигациям с MOEX ISS API.
  *
  * Бесплатный API без регистрации и ключей:
@@ -11,12 +11,24 @@
  * - Кэширование данных
  */
 
+import {
+  formatCalendarDate,
+  parseCalendarDate,
+} from '../../shared/date-utils.js';
+
 // ──────────────────────────────────────────────
 // 1. Types
 // ──────────────────────────────────────────────
 
-/** Тип купона облигации */
-export type CouponType = 'FIXED' | 'FLOATER' | 'MICROFIX' | 'ZERO_COUPON';
+/** Тип купона облигации (включая серии ОФЗ и неподтверждённый). */
+export type CouponType =
+  | 'FIXED'
+  | 'FLOATER'
+  | 'FIXED_AMORTIZING'
+  | 'INFLATION_LINKED'
+  | 'MICROFIX'
+  | 'ZERO_COUPON'
+  | 'UNKNOWN';
 
 /** Структурированные данные по облигации из MOEX */
 export interface BondInfo {
@@ -32,6 +44,10 @@ export interface BondInfo {
   couponRatePct: number;
   /** Тип купона */
   couponType: CouponType;
+  /** Источник типа купона: description ISS или не подтверждён. */
+  couponTypeSource: 'MOEX_DESCRIPTION' | 'UNKNOWN';
+  /** Сырое значение типа из ISS (например, «ОФЗ-ПК»). */
+  couponTypeRaw: string | null;
   /** Частота купонов в год (2 = полугодие, 4 = квартал) */
   couponFrequency: number;
   /** Дата погашения (YYYY-MM-DD) */
@@ -54,6 +70,18 @@ export interface BondInfo {
   sector: string;
 }
 
+/** Тип купона по данным MOEX ISS (включая серии ОФЗ). */
+export type IssCouponType =
+  'FIXED' | 'FLOATER' | 'FIXED_AMORTIZING' | 'INFLATION_LINKED' | 'UNKNOWN';
+
+/** Разобранный тип купона из description MOEX ISS. */
+export interface IssCouponTypeInfo {
+  type: IssCouponType;
+  /** Сырое значение поля (например, «ОФЗ-ПК», «С плавающим купоном»). */
+  raw: string | null;
+  source: 'ISS_DESCRIPTION';
+}
+
 /** Текущая рыночная котировка облигации из MOEX ISS. */
 export interface MoexBondQuote {
   isin: string;
@@ -63,13 +91,36 @@ export interface MoexBondQuote {
   pricePct: number | null;
   /** Доходность к погашению, % годовых */
   yieldPct: number | null;
+  /** Купон на одну облигацию, RUB (если MOEX отдал значение) */
+  couponAmount: number | null;
+  /** Длительность купонного периода, дней */
+  couponPeriodDays: number | null;
   /** Основная доска, с которой взята котировка */
   board: string | null;
+  /** Тип купона из description ISS — данные, а не эвристика. */
+  couponTypeInfo: IssCouponTypeInfo;
   asOf: string;
 }
 
 /** Кэш котировок в рамках процесса (повторные вызовы не долбят ISS). */
 const bondQuoteCache = new Map<string, MoexBondQuote | null>();
+
+/**
+ * Кэш справочника облигаций в рамках процесса.
+ *
+ * Справочник TQOB — это ~3 400 выпусков; `parseBondsSheet()` вызывается за
+ * прогон несколько раз (`parseCurrentPortfolio`, `parseAggregatedPortfolio`).
+ * Без кэша каждая загрузка — отдельная волна запросов к ISS.
+ */
+let bondCatalogCache: BondInfo[] | null = null;
+
+/**
+ * Сбросить кэши MOEX-облигаций (для тестов и повторных прогонов в процессе).
+ */
+export function resetBondApiCaches(): void {
+  bondCatalogCache = null;
+  bondQuoteCache.clear();
+}
 
 // ──────────────────────────────────────────────
 // 2. MOEX ISS API Client
@@ -141,19 +192,12 @@ function parseBondFromMoex(columns: string[], row: unknown[]): BondInfo | null {
   const isin = String(get('SECID') || '').trim();
   if (!isin || !isin.startsWith('RU00')) return null;
 
-  // Определяем тип купона
-  const couponKind = String(get('COUPONPERIOD') || '')
-    .trim()
-    .toLowerCase();
-  let couponType: CouponType = 'FIXED';
-
-  if (couponKind.includes('float') || couponKind.includes('пла')) {
-    couponType = 'FLOATER';
-  } else if (couponKind.includes('micro')) {
-    couponType = 'MICROFIX';
-  } else if (couponKind.includes('zero') || couponKind.includes('бesc')) {
-    couponType = 'ZERO_COUPON';
-  }
+  // Каталог /securities.json не содержит описания выпуска, а COUPONPERIOD —
+  // это число дней, а не тип. Выводить FIXED по умолчанию нельзя: именно
+  // это давало ложный «Excel FIXED» для ОФЗ-ПК. Подтверждение типа —
+  // только через /iss/securities/{SECID}.json (description), см.
+  // parseIssCouponType / fetchMoexBondQuote.
+  const couponType: CouponType = 'UNKNOWN';
 
   // Парсим числовые значения
   const parseNum = (val: unknown): number => {
@@ -161,12 +205,10 @@ function parseBondFromMoex(columns: string[], row: unknown[]): BondInfo | null {
     return isNaN(n) ? 0 : n;
   };
 
-  // Парсим дату
+  // Парсим дату единым парсером: ISS отдаёт YYYY-MM-DD, но контракт
+  // не должен зависеть от формата источника (ДД.ММ.ГГГГ тоже поддержан).
   const parseDate = (val: unknown): string => {
-    if (!val) return '';
-    const d = new Date(val as number);
-    if (isNaN(d.getTime())) return '';
-    return d.toISOString().split('T')[0] as string;
+    return formatCalendarDate(parseCalendarDate(val)) ?? '';
   };
 
   return {
@@ -176,6 +218,8 @@ function parseBondFromMoex(columns: string[], row: unknown[]): BondInfo | null {
     nominal: parseNum(get('FACEVALUE')),
     couponRatePct: parseNum(get('YIELDATPREVWAPRICE')),
     couponType,
+    couponTypeSource: 'UNKNOWN',
+    couponTypeRaw: null,
     couponFrequency: parseNum(get('DECIMALS')) || 2,
     maturityDate: parseDate(get('MATDATE')) || '',
     nextCouponDate: parseDate(get('NEXTCOUPON')) || '',
@@ -200,6 +244,13 @@ function parseBondFromMoex(columns: string[], row: unknown[]): BondInfo | null {
  * /engines/stock/markets/bonds/securities.json
  */
 export async function fetchBondCatalog(): Promise<BondInfo[]> {
+  if (bondCatalogCache) {
+    console.log(
+      `[BondApi] справочник из кэша процесса: ${bondCatalogCache.length} облигаций`,
+    );
+    return bondCatalogCache;
+  }
+
   try {
     console.log('[BondApi] Загрузка справочника облигаций с MOEX ISS...');
 
@@ -280,6 +331,9 @@ export async function fetchBondCatalog(): Promise<BondInfo[]> {
     }
 
     console.log(`[BondApi] ✅ Загружено ${bonds.length} облигаций`);
+    if (bonds.length > 0) {
+      bondCatalogCache = bonds;
+    }
     return bonds;
   } catch (error) {
     console.error('[BondApi] ❌ Ошибка загрузки справочника:', error);
@@ -427,6 +481,61 @@ function getIssTable(
   return { columns: table.columns, rows: table.data };
 }
 
+/**
+ * Разобрать тип купона из description MOEX ISS.
+ *
+ * Основной путь классификации: описание выпуска — это данные, а не эвристика
+ * по размеру купона. Поле COUPONPERCENT здесь намеренно не используется:
+ * процент купона не различает фиксированный и плавающий тип.
+ */
+export function parseIssCouponType(
+  description: IssTable | null,
+): IssCouponTypeInfo {
+  if (!description) {
+    return { type: 'UNKNOWN', raw: null, source: 'ISS_DESCRIPTION' };
+  }
+
+  const nameIndex = description.columns.indexOf('name');
+  const valueIndex = description.columns.indexOf('value');
+  if (nameIndex < 0 || valueIndex < 0) {
+    return { type: 'UNKNOWN', raw: null, source: 'ISS_DESCRIPTION' };
+  }
+
+  const fields = new Set([
+    'COUPONTYPE',
+    'BONDTYPE',
+    'BOND_TYPE',
+    'TYPE',
+    'COUPONKIND',
+  ]);
+  let raw: string | null = null;
+
+  for (const row of description.rows) {
+    const name = String(row[nameIndex] ?? '').toUpperCase();
+    if (!fields.has(name)) continue;
+
+    const value = String(row[valueIndex] ?? '').trim();
+    if (!value) continue;
+    raw ??= value;
+
+    const normalized = value.toLowerCase();
+    if (/офз-пк|плавающ|переменн|floating|float/.test(normalized)) {
+      return { type: 'FLOATER', raw, source: 'ISS_DESCRIPTION' };
+    }
+    if (/офз-ад|амортиз|amorti/.test(normalized)) {
+      return { type: 'FIXED_AMORTIZING', raw, source: 'ISS_DESCRIPTION' };
+    }
+    if (/офз-ин|индексир|инфляц|index/.test(normalized)) {
+      return { type: 'INFLATION_LINKED', raw, source: 'ISS_DESCRIPTION' };
+    }
+    if (/офз-пд|фиксир|постоянн|fixed/.test(normalized)) {
+      return { type: 'FIXED', raw, source: 'ISS_DESCRIPTION' };
+    }
+  }
+
+  return { type: 'UNKNOWN', raw, source: 'ISS_DESCRIPTION' };
+}
+
 function tableNumber(
   table: IssTable | null,
   row: unknown[],
@@ -514,13 +623,27 @@ export async function fetchMoexBondQuote(
       tableNumber(marketData, marketRow, 'YIELD') ??
       tableNumber(securities, securityRow, 'YIELDATPREVWAPRICE');
     const faceValue = tableNumber(securities, securityRow, 'FACEVALUE');
+    const couponAmount = tableNumber(securities, securityRow, 'COUPONVALUE');
+    const couponPeriodDays = tableNumber(
+      securities,
+      securityRow,
+      'COUPONPERIOD',
+    );
 
     const result: MoexBondQuote = {
       isin: normalized,
       nominal: faceValue ?? nominal,
       pricePct: pricePct !== null && pricePct > 0 ? pricePct : null,
       yieldPct,
+      couponAmount:
+        couponAmount !== null && couponAmount > 0 ? couponAmount : null,
+      couponPeriodDays:
+        couponPeriodDays !== null && couponPeriodDays > 0
+          ? couponPeriodDays
+          : null,
       board,
+      // Тип купона — из description того же ответа ISS (без доп. запроса).
+      couponTypeInfo: parseIssCouponType(description),
       asOf: new Date().toISOString(),
     };
     bondQuoteCache.set(normalized, result);
@@ -536,6 +659,68 @@ export async function fetchMoexBondQuote(
   }
 }
 
+/**
+ * Найти котировку по произвольному идентификатору (ISIN, SECID, госрегномер
+ * или название) через поиск MOEX ISS.
+ *
+ * Нужен как фолбэк для бумаг, которые не открываются напрямую по
+ * `/securities/{id}.json`: например, ОФЗ 29027 (SU29027RMFS8) и
+ * ВИС Ф БП17 (RU000A10GC20). Если прямой запрос не дал номинала,
+ * поиск `q=` находит SECID/ISIN, после чего котировка запрашивается
+ * по каноническому идентификатору.
+ */
+export async function fetchMoexBondQuoteByQuery(
+  query: string,
+): Promise<MoexBondQuote | null> {
+  const normalized = query.trim();
+  if (!normalized) return null;
+
+  try {
+    const search = await fetchMoex('/securities.json', {
+      q: normalized,
+      'iss.meta': 'off',
+    });
+    const table = getIssTable(search, 'securities');
+    if (!table) return null;
+
+    const isinIndex = table.columns.indexOf('isin');
+    const secidIndex = table.columns.indexOf('secid');
+    const typeIndex = table.columns.indexOf('type');
+    const primaryIndex = table.columns.indexOf('is_primary');
+
+    const bondRows = table.rows.filter((row) => {
+      const type = String(row[typeIndex] ?? '').toLowerCase();
+      return !type || type.includes('bond') || type.includes('облиг');
+    });
+    const primary = bondRows.find((row) => Number(row[primaryIndex]) === 1);
+    const selected = primary ?? bondRows[0];
+    if (!selected) return null;
+
+    const isin = String(selected[isinIndex] ?? '').trim();
+    const secid = String(selected[secidIndex] ?? '').trim();
+    const identifier = isin || secid;
+    if (!identifier) return null;
+
+    const quote = await fetchMoexBondQuote(identifier);
+    if (quote) {
+      console.log(
+        `[BOND_NOMINAL_FALLBACK] ${normalized} → ${identifier}: ` +
+          `nominal=${quote.nominal ?? 'null'}, ` +
+          `pricePct=${quote.pricePct ?? 'null'}, ` +
+          `coupon=${quote.couponAmount ?? 'null'}`,
+      );
+    }
+    return quote;
+  } catch (error) {
+    console.warn(
+      `[BondApi] поиск ${normalized} недоступен: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return null;
+  }
+}
+
 // ──────────────────────────────────────────────
 // 4. Экспорт
 // ──────────────────────────────────────────────
@@ -547,4 +732,5 @@ export default {
   buildIssuerMap,
   enrichBondsFromMoex,
   fetchMoexBondQuote,
+  fetchMoexBondQuoteByQuery,
 };

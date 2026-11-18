@@ -31,6 +31,13 @@ export {
 } from './snapshot-builder.js';
 export { suggestAllAutoTargets } from './auto-target-allocator.js';
 export { PriceAlertsModule } from './price-alerts.js';
+export {
+  parsePriceTriggers,
+  evaluatePriceTriggers,
+  type PriceTriggerBlock,
+  type PriceTriggerEvaluation,
+  type PriceTriggerParseResult,
+} from '../../api/moex-quotes/price-triggers.js';
 export { calculatePortfolioIncome } from './income-calculator.js';
 export { buildOrdersHtmlAndMd } from './report-builders.js';
 export { getMarkdownTemplate } from './report-templates.js';

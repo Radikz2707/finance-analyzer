@@ -43,6 +43,7 @@ if (fs.existsSync(envPath)) {
 // silent — env загружен
 
 import { PipelineCoordinator } from '../src/js/modules/ai/pipeline/pipeline-coordinator.js';
+import { installRunLogger } from '../src/js/modules/shared/run-logger.js';
 import { PipelineScheduler } from '../src/js/modules/ai/pipeline/infrastructure/pipeline-scheduler.js';
 import { savePortfolioKpi } from '../src/js/modules/ai/pipeline/ai-memory/kpi-sink.js';
 import { aiMemoryImpl } from '../src/js/modules/ai/pipeline/ai-memory/index.js';
@@ -62,66 +63,9 @@ const kpiSink = async (
 // 1. Однократный запуск конвейера
 // ──────────────────────────────────────────────
 
-let runLoggerInstalled = false;
-
-/**
- * Дублировать консоль прогона в reports/last-run.log, чтобы диагностические
- * строки [DIVIDEND_YIELDS_*], [SCENARIO_CASH], [AI_VOTE] не терялись.
- */
-function installRunLogger(): string {
-  const logDir = path.resolve('reports');
-  const logPath = path.join(logDir, 'last-run.log');
-  fs.mkdirSync(logDir, { recursive: true });
-  fs.writeFileSync(
-    logPath,
-    `[${new Date().toISOString()}] [PIPELINE] run started\n`,
-    'utf8',
-  );
-
-  if (runLoggerInstalled) return logPath;
-  runLoggerInstalled = true;
-
-  const originalLog = console.log.bind(console);
-  const originalWarn = console.warn.bind(console);
-  const originalError = console.error.bind(console);
-
-  const write = (level: string, args: unknown[]): void => {
-    try {
-      const line = args
-        .map((arg) =>
-          typeof arg === 'string'
-            ? arg
-            : arg instanceof Error
-              ? `${arg.name}: ${arg.message}`
-              : JSON.stringify(arg),
-        )
-        .join(' ');
-      fs.appendFileSync(
-        logPath,
-        `[${new Date().toISOString()}] [${level}] ${line}\n`,
-        'utf8',
-      );
-    } catch {
-      // Лог не должен ломать прогон.
-    }
-  };
-
-  console.log = (...args: unknown[]) => {
-    originalLog(...args);
-    write('LOG', args);
-  };
-  console.warn = (...args: unknown[]) => {
-    originalWarn(...args);
-    write('WARN', args);
-  };
-  console.error = (...args: unknown[]) => {
-    originalError(...args);
-    write('ERROR', args);
-  };
-
-  return logPath;
-}
-
+// Tee-логгер общий для всех путей прогона (CLI, desktop, scheduler) —
+// см. src/js/modules/shared/run-logger.ts. Здесь вызываем явно, чтобы
+// заголовок прогона попал в файл до создания координатора.
 async function runPipeline(): Promise<void> {
   installRunLogger();
   console.log('[PIPELINE] Запуск мультиагентного конвейера');

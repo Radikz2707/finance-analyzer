@@ -6,6 +6,23 @@ import { ValidationResult } from '../../portfolio/portfolio-math/portfolio-valid
 import { BondReferenceData } from '../../data/xlsx-parser/xlsx-parser.js';
 import { fetchSmartLabBondByIsin } from '../../api/smart-lab-api/smart-lab-api.js';
 import { getPortfolioFundamentalsOnce } from '../../api/fundamentals-api.js';
+import { createNextCouponResolver } from '../../research/bond-analyzer/next-coupon-fallback.js';
+import type { OfzSeries } from '../../research/bond-analyzer/bond-yield-calculator.js';
+import { formatCalendarDate } from '../../shared/date-utils.js';
+
+/** Привести тип купона из bondData к классификации серии ОФЗ. */
+function toOfzSeries(value: unknown): OfzSeries | undefined {
+  switch (value) {
+    case 'FIXED':
+    case 'FLOATER':
+    case 'FIXED_AMORTIZING':
+    case 'INFLATION_LINKED':
+    case 'UNKNOWN':
+      return value;
+    default:
+      return undefined;
+  }
+}
 import { CalculatedIncome } from './income-calculator.js';
 import axios from 'axios';
 import https from 'https';
@@ -16,6 +33,7 @@ import {
   type MacroDataContext,
   type FundamentalMetrics,
   type BehavioralFactors,
+  type BondAnalysisResult,
   type PortfolioFundamentalsContext,
 } from './prompt-templates.js';
 import { buildFallbackReport } from './fallback-report-builder.js';
@@ -189,6 +207,11 @@ interface AiResponseResult {
    * Новых сетевых вызовов не создаёт.
    */
   fundamentalsDividendYields?: Record<string, number>;
+  /**
+   * Структурированный анализ облигаций (тип купона, кредитный статус).
+   * Нужен карточкам, чтобы показывать купон/кредит без участия модели.
+   */
+  bondAnalyses?: BondAnalysisResult[];
   /**
    * Тот же fundamentals-контекст, что использовался для промпта карточек.
    * Нужен стратегу и валидатору Д/К, чтобы не читать данные из другого места.
@@ -744,6 +767,16 @@ export class AiClient {
       rsi: number | null;
       sma20: number | null;
       sma50: number | null;
+      /** Периоды SMA из PortfolioConfig.moexQuotes.smaPeriods. */
+      smaPeriods?: number[];
+      /** Значения SMA по периодам. */
+      smaValues?: Record<string, number | null>;
+      /** 52-недельный максимум по истории MOEX ISS. */
+      high52w?: number | null;
+      /** 52-недельный минимум по истории MOEX ISS. */
+      low52w?: number | null;
+      /** Дата последнего бара истории (ISO). */
+      technicalAsOf?: string | null;
       trend: 'up' | 'down' | 'flat' | null;
       volatilityAnnual: number | null;
       riskLevel: 'low' | 'medium' | 'high' | null;
@@ -811,7 +844,7 @@ export class AiClient {
     if (_anomalyData && _anomalyData.length > 0) {
       prompt += '=== ИСТОРИЧЕСКИЕ ДАННЫЕ И ТЕХНИЧЕСКИЙ АНАЛИЗ ===\n';
       prompt +=
-        'Для каждого актива рассчитаны технические индикаторы на основе 180 дней исторических котировок:\n\n';
+        'Для каждого актива рассчитаны технические индикаторы на основе дневной истории MOEX ISS:\n\n';
 
       for (const a of _anomalyData) {
         prompt += `• ${a.ticker}:\n`;
@@ -823,13 +856,27 @@ export class AiClient {
         }
         prompt += '\n';
 
-        prompt += `  - SMA20: ${a.sma20 !== null ? a.sma20.toFixed(2) : 'нет данных'}`;
-        if (a.sma20 !== null && a.sma50 !== null) {
-          prompt += ` (цена ${a.sma20 > 0 ? (a.sma20 < (a.sma50 || 0) ? 'ниже SMA50' : 'выше SMA50') : '—'})`;
+        const smaPeriods = a.smaPeriods ?? [];
+        const smaValues = a.smaValues ?? {};
+        if (smaPeriods.length > 0) {
+          for (const period of smaPeriods) {
+            const value = smaValues[String(period)] ?? null;
+            prompt += `  - SMA${period}: ${
+              value !== null ? value.toFixed(2) : 'недоступно'
+            }\n`;
+          }
+        } else {
+          prompt += `  - SMA20: ${a.sma20 !== null ? a.sma20.toFixed(2) : 'недоступно'}\n`;
+          prompt += `  - SMA50: ${a.sma50 !== null ? a.sma50.toFixed(2) : 'недоступно'}\n`;
         }
-        prompt += '\n';
 
-        prompt += `  - SMA50: ${a.sma50 !== null ? a.sma50.toFixed(2) : 'нет данных'}\n`;
+        if (a.high52w != null && a.low52w != null) {
+          prompt += `  - 52-недельный диапазон: ${a.low52w.toFixed(2)}–${a.high52w.toFixed(2)}`;
+          if (a.technicalAsOf) prompt += ` (MOEX ISS, ${a.technicalAsOf})`;
+          prompt += '\n';
+        } else {
+          prompt += '  - 52-недельный диапазон: недоступно\n';
+        }
         prompt += `  - Тренд: ${a.trend !== null ? (a.trend === 'up' ? 'восходящий' : a.trend === 'down' ? 'нисходящий' : 'боковик') : 'нет данных'}\n`;
         prompt += `  - Волатильность (годовая): ${a.volatilityAnnual !== null ? (a.volatilityAnnual * 100).toFixed(1) + '%' : 'нет данных'}\n`;
         prompt += `  - Риск: ${a.riskLevel !== null ? (a.riskLevel === 'low' ? 'низкий' : a.riskLevel === 'medium' ? 'средний' : 'высокий') : 'нет данных'}\n`;
@@ -848,9 +895,9 @@ export class AiClient {
       prompt +=
         'ИСПОЛЬЗУЙ эти данные для рекомендации оптимальных точек входа/выхода:\n';
       prompt +=
-        '- RSI < 30 + цена ниже SMA20/SMA50 → потенциальная точка покупки (перепроданность)\n';
+        '- RSI < 30 + цена ниже короткой/длинной SMA → потенциальная точка покупки (перепроданность)\n';
       prompt +=
-        '- RSI > 70 + цена выше SMA20/SMA50 → потенциальная точка продажи (перекупленность)\n';
+        '- RSI > 70 + цена выше короткой/длинной SMA → потенциальная точка продажи (перекупленность)\n';
       prompt +=
         '- Восходящий тренд + низкая волатильность → благоприятная среда для покупки\n';
       prompt +=
@@ -1705,6 +1752,16 @@ export class AiClient {
       rsi: number | null;
       sma20: number | null;
       sma50: number | null;
+      /** Периоды SMA из PortfolioConfig.moexQuotes.smaPeriods. */
+      smaPeriods?: number[];
+      /** Значения SMA по периодам. */
+      smaValues?: Record<string, number | null>;
+      /** 52-недельный максимум по истории MOEX ISS. */
+      high52w?: number | null;
+      /** 52-недельный минимум по истории MOEX ISS. */
+      low52w?: number | null;
+      /** Дата последнего бара истории (ISO). */
+      technicalAsOf?: string | null;
       trend: 'up' | 'down' | 'flat' | null;
       volatilityAnnual: number | null;
       riskLevel: 'low' | 'medium' | 'high' | null;
@@ -1812,7 +1869,19 @@ export class AiClient {
         effectiveYield: number | null;
         annualCouponIncome: number | null;
         couponType: string;
+        /** Причина UNKNOWN-классификации купона (конфликт/пробел источника). */
+        couponTypeReason?:
+          'excel_conflict' | 'ofz_no_coupon' | 'type_unconfirmed' | null;
+        /** «Excel FIXED, ISS FLOATER (ОФЗ-ПК)» — для карточки. */
+        couponTypeReasonDetail?: string | null;
+        /** Источник подтверждения типа: ISS / SERIES / EXCEL. */
+        couponTypeSource?: string | null;
+        /** Методика YTM: QUIK / расчёт / флоатер при неизменной ставке. */
+        ytmMethod?: string | null;
         dataQuality: string;
+        nextCouponDate?: string | null;
+        /** Источник даты: EXCEL (дата файла) / MOEX_ISS / SMART_LAB. */
+        nextCouponDateSource?: 'EXCEL' | 'MOEX_ISS' | 'SMART_LAB' | null;
       };
       durationAnalysis: {
         duration: number | null;
@@ -1830,6 +1899,8 @@ export class AiClient {
       creditAssessment: {
         quality: string;
         source: string;
+        asOfDate?: string | null;
+        rating?: { agency: string; rating: string; outlook: string } | null;
         summary: string;
       };
       recommendation: string;
@@ -1934,6 +2005,15 @@ export class AiClient {
       const { buildBondFinalAssessment } =
         await import('../../research/bond-analyzer/bond-analyst-summary.js');
 
+      // Фолбэк даты купона: кэш по ISIN + лимит запросов за прогон.
+      const nextCouponResolver = createNextCouponResolver({
+        fetchSmartLab: (isin) => fetchSmartLabBondByIsin(isin),
+        logger: {
+          info: (message) => this.log.info(message),
+          warn: (message) => this.log.warn(message),
+        },
+      });
+
       for (const bondAsset of bondAssets) {
         // P0-5: Нормализация ISIN — только trim и uppercase
         const normalizedIsin = bondAsset.ticker.trim().toUpperCase();
@@ -1986,6 +2066,9 @@ export class AiClient {
               price: smartlabBond.price,
               duration: smartlabBond.durationDays,
               nkd: smartlabBond.nkd,
+              // Дата ближайшей выплаты из Smart-Lab: без неё карточка
+              // показывает «дата не указана» при доступном источнике.
+              nextCouponDate: smartlabBond.nextCouponDate,
               rating: smartlabBond.rating,
               source: 'smart-lab',
             } as unknown as Record<string, unknown>;
@@ -2034,22 +2117,66 @@ export class AiClient {
         );
 
         try {
+          // Дата ближайшего купона: Excel → ISS → smart-lab (эталон для
+          // 29027 — 11.12.2026). Фолбэк ограничен кэшем и лимитом и не
+          // тратится, если дата уже есть в Excel/ISS.
+          const rawNextCouponDate = bondData.nextCouponDate as
+            Date | string | null | undefined;
+          const parsedNextCouponDate =
+            rawNextCouponDate instanceof Date
+              ? rawNextCouponDate
+              : rawNextCouponDate
+                ? new Date(rawNextCouponDate)
+                : null;
+          const dataNextCouponDate =
+            parsedNextCouponDate &&
+            !Number.isNaN(parsedNextCouponDate.getTime())
+              ? parsedNextCouponDate
+              : null;
+          const dataSource =
+            (bondData.nextCouponDateSource as
+              'EXCEL' | 'MOEX_ISS' | 'SMART_LAB' | undefined) ??
+            (bondData.source === 'smart-lab' ? 'SMART_LAB' : 'EXCEL');
+          const nextCouponFallback = dataNextCouponDate
+            ? null
+            : await nextCouponResolver(normalizedIsin);
+          const nextCouponDate = dataNextCouponDate ?? nextCouponFallback;
+          const nextCouponDateSource = dataNextCouponDate
+            ? dataSource
+            : nextCouponFallback
+              ? 'SMART_LAB'
+              : undefined;
+          console.log(
+            `[BOND_CARD] isin=${normalizedIsin} nextCouponDate=${
+              formatCalendarDate(nextCouponDate) ?? 'not_in_excel'
+            } source=${nextCouponDateSource ?? 'none'}`,
+          );
+
           // 1. Анализ доходности
           const yieldAnalysis = analyzeYield({
             quikYield:
               bondData.yield != null ? Number(bondData.yield) : undefined,
+            // Идентификатор нужен для классификации серии ОФЗ:
+            // 24/29 — ПК, 25/26 — ПД, 46 — АД, 52 — ИН.
+            identifier: bondAsset.ticker,
             couponAmount: Number(bondData.couponAmount) || 0,
             couponPeriodDays: Number(bondData.couponPeriodDays) || 0,
             marketPrice: marketPriceInRub ?? 0,
             nominal: Number(bondData.nominal) || 1000,
             quantity: bondAsset.quantity || 0,
-            nextCouponDate: bondData.nextCouponDate as Date | null | undefined,
+            nextCouponDate,
             maturityDate: bondData.maturityDate as Date | null | undefined,
-            hasFloatingTerms:
-              bondData.couponType === 'FLOATER' ||
-              bondData.couponType === 'MICROFIX',
-            couponType: bondData.couponType as
-              'FIXED' | 'FLOATER' | 'MICROFIX' | 'ZERO_COUPON' | undefined,
+            hasFloatingTerms: bondData.couponType === 'FLOATER',
+            // Основной путь: тип из description ISS. Если тип не подтверждён
+            // (source != MOEX_DESCRIPTION), классификация — по серии/Excel.
+            issCouponType:
+              bondData.couponTypeSource === 'MOEX_DESCRIPTION'
+                ? toOfzSeries(bondData.couponType)
+                : undefined,
+            issCouponTypeRaw:
+              typeof bondData.couponTypeRaw === 'string'
+                ? bondData.couponTypeRaw
+                : null,
           });
 
           // 2. Анализ процентного риска
@@ -2145,7 +2272,12 @@ export class AiClient {
               effectiveYield: yieldAnalysis.effectiveYield,
               annualCouponIncome: yieldAnalysis.annualCouponIncome,
               couponType: yieldAnalysis.couponType,
+              couponTypeReason: yieldAnalysis.couponTypeReason,
               dataQuality: yieldAnalysis.dataQuality,
+              // Раньше здесь был жёсткий null: дата из Excel/Smart-Lab
+              // терялась, и ВСЕ облигации показывали «дата не указана».
+              nextCouponDate: yieldAnalysis.nextCouponDate,
+              nextCouponDateSource: nextCouponDateSource ?? null,
             },
             durationAnalysis: {
               duration: durationAnalysis.duration,
@@ -2159,6 +2291,8 @@ export class AiClient {
             creditAssessment: {
               quality: creditAssessment.quality,
               source: creditAssessment.source,
+              asOfDate: creditAssessment.asOfDate,
+              rating: creditAssessment.rating ?? null,
               summary: creditAssessment.summary,
             },
             recommendation: finalAssessment.recommendation,
@@ -2257,6 +2391,11 @@ export class AiClient {
       rsi: number | null;
       sma20: number | null;
       sma50: number | null;
+      smaPeriods?: number[];
+      smaValues?: Record<string, number | null>;
+      high52w?: number | null;
+      low52w?: number | null;
+      technicalAsOf?: string | null;
       trend: 'up' | 'down' | 'flat' | null;
       volatilityAnnual: number | null;
       riskLevel: 'low' | 'medium' | 'high' | null;
@@ -2796,9 +2935,16 @@ export class AiClient {
                 ),
               }
             : undefined;
+          // Технические индикаторы — только по недостающим тикерам, чтобы
+          // повторный ответ не терял 52w/SMA и не писал «недоступно» при
+          // наличии истории MOEX ISS.
+          const missingTechnical = technicalIndicators.filter((indicator) =>
+            missingSet.has(indicator.ticker.trim().toUpperCase()),
+          );
           const jsonSystemPrompt = buildJsonOnlySystemPrompt(
             missingTickers,
             missingFundamentals,
+            missingTechnical.length > 0 ? missingTechnical : undefined,
           );
           const jsonUserPrompt = `ДАННЫЕ ПОРТФЕЛЯ:\n${context}`;
           this.log.warn(
@@ -2876,6 +3022,7 @@ export class AiClient {
       structuredValidation,
       fundamentalsDividendYields,
       portfolioFundamentals,
+      bondAnalyses,
     };
   }
 

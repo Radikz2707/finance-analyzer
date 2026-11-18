@@ -73,7 +73,12 @@ export interface StrategistAgentInput {
   dividendYieldsMeta?: Record<
     string,
     {
-      source: 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED' | 'SMART_LAB';
+      source:
+        | 'BROKER'
+        | 'MOEX_ISS'
+        | 'EXCEL_DIVIDENDS'
+        | 'EXCEL_DECLARED'
+        | 'SMART_LAB';
       asOf: string | null;
       kind: 'LTM' | 'DECLARED' | 'UNKNOWN';
     }
@@ -138,7 +143,13 @@ export interface StrategyIncomeAnchor {
   unavailableReason: string | null;
   /** Источник дивидендной части якоря */
   dividendSource:
-    'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED' | 'SMART_LAB' | 'MIXED' | null;
+    | 'BROKER'
+    | 'MOEX_ISS'
+    | 'EXCEL_DIVIDENDS'
+    | 'EXCEL_DECLARED'
+    | 'SMART_LAB'
+    | 'MIXED'
+    | null;
   /** Дата источника дивидендной части */
   dividendAsOf: string | null;
   /** LTM (полученные) или DECLARED (форвардные) */
@@ -464,7 +475,7 @@ function calculateIncomeAnchor(
       return typeof value === 'number' && Number.isFinite(value) && value > 0;
     });
   const sourceSet = new Set<
-    'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED' | 'SMART_LAB'
+    'BROKER' | 'MOEX_ISS' | 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED' | 'SMART_LAB'
   >();
   const kindSet = new Set<'LTM' | 'DECLARED' | 'UNKNOWN'>();
   let dividendAsOf: string | null = null;

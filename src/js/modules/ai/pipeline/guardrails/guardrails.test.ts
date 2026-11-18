@@ -1,4 +1,4 @@
-﻿// TЗ: Тесты для guardrails — защита от опасных рекомендаций
+// TЗ: Тесты для guardrails — защита от опасных рекомендаций
 import {
   checkGuardrails,
   validateAllRecommendations,
@@ -61,7 +61,11 @@ describe('Guardrails — защита от опасных рекомендаци
   // ─── checkGuardrails: RECOVERY_ONLY ───
   it('должен заблокировать SELL для RECOVERY_ONLY актива', () => {
     const repo = createMockPositionRepo('RECOVERY_ONLY');
-    const asset = createAsset({ ticker: 'TEST', currentPrice: 80, balancePrice: 120 });
+    const asset = createAsset({
+      ticker: 'TEST',
+      currentPrice: 80,
+      balancePrice: 120,
+    });
     const result = checkGuardrails('SELL', 'TEST', repo, [asset]);
     expect(result.isSafe).toBe(false);
     expect(result.blockedActions).toHaveLength(1);
@@ -215,5 +219,18 @@ describe('Guardrails — защита от опасных рекомендаци
     expect(result).toContain('RECOVERY_ONLY');
     expect(result).toContain('Запрещено: SELL, EXIT, REDUCE');
     expect(result).toContain('Разрешено: BUY');
+  });
+
+  it('должен включить политику no-sell в промпт-контекст', () => {
+    const result = buildGuardrailsContext(
+      [],
+      createMockPositionRepo(),
+      undefined,
+      ['PLZL'],
+    );
+
+    expect(result).toContain('защищены политикой no-sell');
+    expect(result).toContain('PLZL: ПРОДАЖА/СОКРАЩЕНИЕ ЗАПРЕЩЕНЫ');
+    expect(result).toContain('Разрешено только упоминание самой блокировки');
   });
 });
