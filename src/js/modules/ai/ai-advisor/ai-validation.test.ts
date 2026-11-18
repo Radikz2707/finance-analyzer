@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Тесты для ai-validation.ts
  *
  * Проверяют:
@@ -7,7 +7,6 @@
  *  3. Проверку исключённых активов
  *  4. Полную пост-обработку
  */
-
 
 import {
   validateDirections,
@@ -22,7 +21,9 @@ import type { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-mat
 // Моки для AssetAnalysis
 // ============================================================================
 
-function createMockAsset(overrides: Partial<AssetAnalysis> = {}): AssetAnalysis {
+function createMockAsset(
+  overrides: Partial<AssetAnalysis> = {},
+): AssetAnalysis {
   return {
     name: 'Тестовый актив',
     ticker: 'TEST',
@@ -58,7 +59,8 @@ describe('validateDirections', () => {
       }),
     ];
 
-    const aiText = 'Для SBER рекомендуется докупка для достижения целевой доли.';
+    const aiText =
+      'Для SBER рекомендуется докупка для достижения целевой доли.';
     const result = validateDirections(aiText, assets);
 
     expect(result.valid).toBe(true);
@@ -203,7 +205,8 @@ describe('removeHallucinatedData', () => {
   });
 
   it('должна обрабатывать множественные галлюцинации', () => {
-    const text = 'SBER по текущей цене 100 ₽. Купить на сумму 50 000 ₽. GMKN: 50 шт.';
+    const text =
+      'SBER по текущей цене 100 ₽. Купить на сумму 50 000 ₽. GMKN: 50 шт.';
     const result = removeHallucinatedData(text);
 
     expect(result.cleanedText).not.toContain('100');
@@ -264,11 +267,14 @@ describe('postProcessAiText', () => {
       }),
     ];
 
-    const aiText = 'SBER: рекомендуется продажа по текущей цене 100 ₽. Итого портфель стоит 1 000 000 ₽.';
+    const aiText =
+      'SBER: рекомендуется продажа по текущей цене 100 ₽. Итого портфель стоит 1 000 000 ₽.';
     const result = postProcessAiText(aiText, assets);
 
     expect(result.directionValidation.valid).toBe(false);
-    expect(result.hallucinationRemoval.removedHallucinations.length).toBeGreaterThan(0);
+    expect(
+      result.hallucinationRemoval.removedHallucinations.length,
+    ).toBeGreaterThan(0);
     expect(result.warnings.length).toBeGreaterThan(0);
   });
 
@@ -496,5 +502,38 @@ describe('DIRECTION_CONFLICT: нормализованные предупреж�
     // Если бы слово было в CONFLICTING_DIRECTIONS и не нормализовалось бы,
     // оно осталось бы как есть
     expect(result.valid).toBe(true);
+  });
+
+  it('не даёт DIRECTION_CONFLICT для policy-blocked REDUCE (PLZL)', () => {
+    const assets: AssetAnalysis[] = [
+      createMockAsset({
+        ticker: 'PLZL',
+        status: 'REDUCE',
+        deficitRub: -44266,
+      }),
+    ];
+
+    const aiText = 'PLZL: покупайте больше, позиция недооценена.';
+    const result = validateDirections(aiText, assets, {
+      noSellTickers: ['PLZL'],
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.discrepancies).toHaveLength(0);
+  });
+
+  it('сохраняет DIRECTION_CONFLICT для REDUCE без политики', () => {
+    const assets: AssetAnalysis[] = [
+      createMockAsset({
+        ticker: 'PLZL',
+        status: 'REDUCE',
+        deficitRub: -44266,
+      }),
+    ];
+
+    const aiText = 'PLZL: покупайте больше, позиция недооценена.';
+    const result = validateDirections(aiText, assets);
+
+    expect(result.valid).toBe(false);
   });
 });

@@ -1,4 +1,9 @@
-﻿import { MacroGoals, CurrentAsset, PriceUnit } from '../../data/xlsx-parser/xlsx-parser.js';
+import {
+  MacroGoals,
+  CurrentAsset,
+  PriceSource,
+  PriceUnit,
+} from '../../data/xlsx-parser/xlsx-parser.js';
 import { PortfolioConfig } from '../../../config/portfolio-config.js';
 
 // ============================================================================
@@ -9,7 +14,9 @@ import { PortfolioConfig } from '../../../config/portfolio-config.js';
  * Определяет класс актива (STOCK / BOND / ETF / CASH / OTHER)
  * на основе assetType из Excel и дополнительных признаков.
  */
-export function classifyAsset(asset: CurrentAsset): 'STOCK' | 'BOND' | 'ETF' | 'CASH' | 'OTHER' {
+export function classifyAsset(
+  asset: CurrentAsset,
+): 'STOCK' | 'BOND' | 'ETF' | 'CASH' | 'OTHER' {
   const type = (asset.assetType || '').toUpperCase().trim();
 
   // Акции
@@ -23,12 +30,23 @@ export function classifyAsset(asset: CurrentAsset): 'STOCK' | 'BOND' | 'ETF' | '
   }
 
   // Фонды/ETF
-  if (type === 'Ф' || type === 'ETF' || type === 'FUND' || type.includes('ФОНД') || type.includes('ETF')) {
+  if (
+    type === 'Ф' ||
+    type === 'ETF' ||
+    type === 'FUND' ||
+    type.includes('ФОНД') ||
+    type.includes('ETF')
+  ) {
     return 'ETF';
   }
 
   // Деньги (свободный остаток)
-  if (type === 'Д' || type === 'ДЕНЬГИ' || type === 'CASH' || type === 'ВАЛЮТА') {
+  if (
+    type === 'Д' ||
+    type === 'ДЕНЬГИ' ||
+    type === 'CASH' ||
+    type === 'ВАЛЮТА'
+  ) {
     return 'CASH';
   }
 
@@ -87,10 +105,35 @@ export function generateShortName(asset: CurrentAsset): string {
  */
 export function isCoreAsset(ticker: string): boolean {
   const coreTickers = [
-    'SBER', 'GAZP', 'LKOH', 'ROSN', 'VTBR', 'MGNT', 'TATN',
-    'ALRS', 'GMKN', 'SNGS', 'FESK', 'MTLR', 'CHMF', 'NLMK',
-    'MAGN', 'PHOR', 'RSTI', 'AFLT', 'HYES', 'MOEX', 'SBGB',
-    'TCSG', 'BRSB', 'EAST', 'SBERP', 'GAZPM', 'ROSNP', 'VTBRP', 'TATNP',
+    'SBER',
+    'GAZP',
+    'LKOH',
+    'ROSN',
+    'VTBR',
+    'MGNT',
+    'TATN',
+    'ALRS',
+    'GMKN',
+    'SNGS',
+    'FESK',
+    'MTLR',
+    'CHMF',
+    'NLMK',
+    'MAGN',
+    'PHOR',
+    'RSTI',
+    'AFLT',
+    'HYES',
+    'MOEX',
+    'SBGB',
+    'TCSG',
+    'BRSB',
+    'EAST',
+    'SBERP',
+    'GAZPM',
+    'ROSNP',
+    'VTBRP',
+    'TATNP',
   ];
   return coreTickers.includes(ticker.toUpperCase());
 }
@@ -136,6 +179,10 @@ export interface AssetAnalysis {
   priceUnit?: PriceUnit;
   /** Статус нормализации currentPrice в RUB: true когда priceUnit !== 'UNKNOWN' */
   priceNormalized?: boolean;
+  /** Источник цены (QUIK, лист «Облигации», MOEX ISS, Smart-Lab) */
+  priceSource?: PriceSource;
+  /** Предупреждение о невозможности нормализовать цену */
+  priceWarning?: string;
   unrealizedProfitRub: number;
   priority: number;
   isConcentrated: boolean;
@@ -242,18 +289,18 @@ export class PortfolioMathModule {
     if (allocatedStocksPercent > macro.stocksPercent) {
       console.warn(
         `⚠️ [VALIDATION] Сумма целевых долей акций (${allocatedStocksPercent.toFixed(2)}%) ` +
-        `превышает макроцель (${macro.stocksPercent}%). ` +
-        `Избыток: ${(allocatedStocksPercent - macro.stocksPercent).toFixed(2)}%. ` +
-        'Проверьте целевые доли в Excel.',
+          `превышает макроцель (${macro.stocksPercent}%). ` +
+          `Избыток: ${(allocatedStocksPercent - macro.stocksPercent).toFixed(2)}%. ` +
+          'Проверьте целевые доли в Excel.',
       );
     }
 
     if (allocatedBondsPercent > macro.bondsPercent) {
       console.warn(
         `⚠️ [VALIDATION] Сумма целевых долей облигаций (${allocatedBondsPercent.toFixed(2)}%) ` +
-        `превышает макроцель (${macro.bondsPercent}%). ` +
-        `Избыток: ${(allocatedBondsPercent - macro.bondsPercent).toFixed(2)}%. ` +
-        'Проверьте целевые доли в Excel.',
+          `превышает макроцель (${macro.bondsPercent}%). ` +
+          `Избыток: ${(allocatedBondsPercent - macro.bondsPercent).toFixed(2)}%. ` +
+          'Проверьте целевые доли в Excel.',
       );
     }
 
@@ -297,6 +344,9 @@ export class PortfolioMathModule {
           balancePrice: asset.balancePrice ?? 0,
           currentPrice: asset.currentPrice ?? 0,
           priceUnit: asset.priceUnit,
+          priceNormalized: asset.priceNormalized,
+          priceSource: asset.priceSource,
+          priceWarning: asset.priceWarning,
           unrealizedProfitRub: asset.unrealizedProfitRub || 0,
           priority: 0,
           isConcentrated: asset.liquidationPercent > concentrationLimitPct,
@@ -324,6 +374,9 @@ export class PortfolioMathModule {
           balancePrice: asset.balancePrice ?? 0,
           currentPrice: asset.currentPrice ?? 0,
           priceUnit: asset.priceUnit,
+          priceNormalized: asset.priceNormalized,
+          priceSource: asset.priceSource,
+          priceWarning: asset.priceWarning,
           unrealizedProfitRub: asset.unrealizedProfitRub || 0,
           priority: 0,
           isConcentrated: asset.liquidationPercent > concentrationLimitPct,
@@ -338,18 +391,20 @@ export class PortfolioMathModule {
 
       // ─── Диагностика: Excel % vs фактический % ───
       const assetValue = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
-      const calculatedLiqPercent = totalLiquidationValue > 0
-        ? (assetValue / totalLiquidationValue) * 100
-        : 0;
-      const liqPercentDiscrepancy = asset.liquidationPercent - calculatedLiqPercent;
+      const calculatedLiqPercent =
+        totalLiquidationValue > 0
+          ? (assetValue / totalLiquidationValue) * 100
+          : 0;
+      const liqPercentDiscrepancy =
+        asset.liquidationPercent - calculatedLiqPercent;
       if (Math.abs(liqPercentDiscrepancy) > 0.1) {
         console.warn(
           `[DIAGNOSTIC] ${asset.ticker} (${asset.name}): ` +
-          `Excel%=${asset.liquidationPercent.toFixed(2)}%, ` +
-          `фактический%=${calculatedLiqPercent.toFixed(2)}%, ` +
-          `расхождение=${liqPercentDiscrepancy.toFixed(2)}%, ` +
-          `assetValue=${Math.round(assetValue).toLocaleString('ru-RU')}₽, ` +
-          `totalLiq=${Math.round(totalLiquidationValue).toLocaleString('ru-RU')}₽`,
+            `Excel%=${asset.liquidationPercent.toFixed(2)}%, ` +
+            `фактический%=${calculatedLiqPercent.toFixed(2)}%, ` +
+            `расхождение=${liqPercentDiscrepancy.toFixed(2)}%, ` +
+            `assetValue=${Math.round(assetValue).toLocaleString('ru-RU')}₽, ` +
+            `totalLiq=${Math.round(totalLiquidationValue).toLocaleString('ru-RU')}₽`,
         );
       }
 
@@ -362,8 +417,8 @@ export class PortfolioMathModule {
         if (asset.targetPercent === 0) {
           console.warn(
             `⚠️ [HOLD_ONLY_CONFLICT] ${asset.ticker}: ` +
-            'holdOnly=true, но targetPercent=0 (EXIT). ' +
-            'Принудительный HOLD — продажа запрещена политикой инвестора.',
+              'holdOnly=true, но targetPercent=0 (EXIT). ' +
+              'Принудительный HOLD — продажа запрещена политикой инвестора.',
           );
         }
         status = 'HOLD';
@@ -414,7 +469,12 @@ export class PortfolioMathModule {
       // Формула: (currentPrice - balancePrice) * quantity
       // Если цены доступны — рассчитываем; иначе fallback на Excel.
       let unrealizedProfitRub: number;
-      if (currentPrice > 0 && balancePrice > 0 && asset.quantity && asset.quantity > 0) {
+      if (
+        currentPrice > 0 &&
+        balancePrice > 0 &&
+        asset.quantity &&
+        asset.quantity > 0
+      ) {
         unrealizedProfitRub = (currentPrice - balancePrice) * asset.quantity;
       } else {
         // Fallback: используем значение из Excel, если цены недоступны
@@ -445,9 +505,18 @@ export class PortfolioMathModule {
       // ИСПРАВЛЕНИЕ Этап 2: диагностические поля для рублёвого дефицита
       const deficitCalcBase = totalLiquidationValue;
       // deficitPct: положительный = нужно докупить (BUY), отрицательный = можно продать (REDUCE)
-      const deficitPct = targetPercent !== undefined
-        ? targetPercent - asset.liquidationPercent
-        : 0;
+      const deficitPct =
+        targetPercent !== undefined
+          ? targetPercent - asset.liquidationPercent
+          : 0;
+      // Контракт поля deficitDeviationPct: currentPercent − targetPercent
+      // (отрицательное значение = дефицит доли, положительное = профицит).
+      // Стратег и валидатор читают именно этот знак; хранить здесь
+      // targetPercent − currentPercent нельзя — покупки перестают находиться.
+      const signedDeviationPct =
+        targetPercent !== undefined
+          ? asset.liquidationPercent - targetPercent
+          : 0;
       const deficitFormulaStr = `round((${deficitPct.toFixed(2)} / 100) * ${deficitCalcBase}) = ${deficitRub}`;
 
       assetsAnalysis.push({
@@ -467,13 +536,16 @@ export class PortfolioMathModule {
         balancePrice: balancePrice,
         currentPrice: currentPrice,
         priceUnit: asset.priceUnit,
+        priceNormalized: asset.priceNormalized,
+        priceSource: asset.priceSource,
+        priceWarning: asset.priceWarning,
         unrealizedProfitRub: unrealizedProfitRub,
         priority: deficitRub,
         isConcentrated: isConcentrated,
         riskLevel: riskLevel,
         // Диагностика рублёвого дефицита
         deficitCalculationBase: deficitCalcBase,
-        deficitDeviationPct: deficitPct,
+        deficitDeviationPct: signedDeviationPct,
         deficitFormula: deficitFormulaStr,
       });
     });
@@ -500,11 +572,15 @@ export class PortfolioMathModule {
     const cashDiscrepancy = cashReserve - actualCashPercent;
 
     // Если расхождение > 50% от стоимости портфеля → warning (не в тестовом режиме)
-    if (Math.abs(cashDiscrepancy) > 50 && typeof process !== 'undefined' && process.env?.NODE_ENV !== 'test') {
+    if (
+      Math.abs(cashDiscrepancy) > 50 &&
+      typeof process !== 'undefined' &&
+      process.env?.NODE_ENV !== 'test'
+    ) {
       console.warn(
         `[PORTFOLIO-MATH] Расхождение кэша: расчётный=${cashReserve.toFixed(2)}%, ` +
-        `фактический=${actualCashPercent.toFixed(2)}%, ` +
-        `расхождение=${cashDiscrepancy.toFixed(2)}%`,
+          `фактический=${actualCashPercent.toFixed(2)}%, ` +
+          `расхождение=${cashDiscrepancy.toFixed(2)}%`,
       );
     }
 
@@ -535,10 +611,17 @@ export class PortfolioMathModule {
       let reason = '';
 
       // Исключения:
-      if (nameUpper.includes('ИТОГО') || nameUpper.includes('БАЛАНС') || !isNaN(Number(asset.name))) {
+      if (
+        nameUpper.includes('ИТОГО') ||
+        nameUpper.includes('БАЛАНС') ||
+        !isNaN(Number(asset.name))
+      ) {
         reason = 'Суммарная строка Excel (ИТОГО/БАЛАНС)';
         excluded = true;
-      } else if (asset.targetPercent === undefined && asset.targetPercentConflict) {
+      } else if (
+        asset.targetPercent === undefined &&
+        asset.targetPercentConflict
+      ) {
         reason = 'Конфликт целевой доли — исключён';
         excluded = true;
       } else if (asset.targetPercent === 0 && asset.liquidationPercent === 0) {
@@ -549,7 +632,11 @@ export class PortfolioMathModule {
       if (excluded) {
         breakdown.excludedAssets.push({ ticker: asset.ticker, value, reason });
       } else {
-        breakdown.includedAssets.push({ ticker: asset.ticker, value, reason: 'Включён в расчёт' });
+        breakdown.includedAssets.push({
+          ticker: asset.ticker,
+          value,
+          reason: 'Включён в расчёт',
+        });
       }
     }
 
@@ -587,16 +674,19 @@ export class PortfolioMathModule {
 
     // ─── P6: Агрегация дефицитов по классам активов ───
     const stocksDeficitRub = assetsAnalysis
-      .filter(a => a.assetType === 'stocks')
+      .filter((a) => a.assetType === 'stocks')
       .reduce((sum, a) => sum + a.deficitRub, 0);
     const bondsDeficitRub = assetsAnalysis
-      .filter(a => a.assetType === 'bonds')
+      .filter((a) => a.assetType === 'bonds')
       .reduce((sum, a) => sum + a.deficitRub, 0);
     macro.stocksDeficitRub = stocksDeficitRub;
     macro.bondsDeficitRub = bondsDeficitRub;
 
     // ─── Сводная диагностика: сверка сумм долей ───
-    const totalCalculatedPercent = assetsAnalysis.reduce((sum, a) => sum + a.currentPercent, 0);
+    const totalCalculatedPercent = assetsAnalysis.reduce(
+      (sum, a) => sum + a.currentPercent,
+      0,
+    );
     const totalExcelPercent = assets.reduce((sum, a) => {
       if (a.targetPercent === undefined && a.targetPercentConflict) return sum;
       if (a.targetPercent === 0 && a.liquidationPercent === 0) return sum;
@@ -605,9 +695,9 @@ export class PortfolioMathModule {
     if (Math.abs(totalCalculatedPercent - totalExcelPercent) > 0.5) {
       console.warn(
         `[DIAGNOSTIC SUMMARY] Excel% суммарно=${totalExcelPercent.toFixed(2)}%, ` +
-        `фактический% суммарно=${totalCalculatedPercent.toFixed(2)}%, ` +
-        `расхождение=${(totalCalculatedPercent - totalExcelPercent).toFixed(2)}%, ` +
-        `totalLiquidationValue=${Math.round(totalLiquidationValue).toLocaleString('ru-RU')}₽`,
+          `фактический% суммарно=${totalCalculatedPercent.toFixed(2)}%, ` +
+          `расхождение=${(totalCalculatedPercent - totalExcelPercent).toFixed(2)}%, ` +
+          `totalLiquidationValue=${Math.round(totalLiquidationValue).toLocaleString('ru-RU')}₽`,
       );
     }
 
@@ -631,7 +721,8 @@ export class PortfolioMathModule {
         totalDeposits: 0, // Заполняется из investedFunds
         totalWithdrawals: 0, // Заполняется из investedFunds
         netInvestedCapital: 0, // Заполняется из investedFunds
-        formula: 'marketValue = netInvestedCapital + unrealizedPnL + realizedPnL + coupons + dividends − commissions − taxes',
+        formula:
+          'marketValue = netInvestedCapital + unrealizedPnL + realizedPnL + coupons + dividends − commissions − taxes',
       },
       // ─── P5: Раскрытие allocationBaseValue ───
       allocationBaseValue,
@@ -659,7 +750,8 @@ export function calculateRiskLevel(
 
   // HIGH: глубокая просадка или спутник с просадкой > 20%
   if (drawdownPct < -30) return 'HIGH';
-  if (classifyAssetRole(asset) === 'satellite' && drawdownPct < -20) return 'HIGH';
+  if (classifyAssetRole(asset) === 'satellite' && drawdownPct < -20)
+    return 'HIGH';
 
   // MEDIUM: умеренная просадка или спутник
   if (drawdownPct < -10) return 'MEDIUM';

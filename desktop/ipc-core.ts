@@ -92,7 +92,119 @@ export interface AskResult {
 }
 
 // ──────────────────────────────────────────────
-// 2. Утилиты
+// 3. API-типы (экспортируются через api-types.ts)
+// ──────────────────────────────────────────────
+
+/** Информация о последнем анализе портфеля */
+export interface LastAnalysisInfo {
+  text: string;
+  finishedAt: string;
+  elapsedMs: number;
+  sourceLabel: string;
+  totalValue: number;
+  assets: readonly Array<{
+    ticker: string;
+    name: string;
+    currentPercent: number;
+    targetPercent: number;
+    deficitRub: number;
+    status: string;
+    unrealizedProfitRub: number;
+    isConcentrated?: boolean;
+  }>;
+  alerts: readonly Array<{
+    ticker: string;
+    name?: string;
+    currentPrice?: number;
+    alertLevel?: string;
+  }>;
+}
+
+/** Статус Директора для renderer */
+export interface DirectorStatusInfo {
+  portfolioValue: number;
+  freeCash: number;
+  aiLabel: string;
+  sourceLabel: string;
+}
+
+/** Результат запроса логов */
+export interface LogResult {
+  entries: unknown[];
+  total: number;
+}
+
+/** Сводка по цели автономного цикла */
+export interface GoalSummary {
+  id: string;
+  name: string;
+  description: string;
+  status: string;
+  priority: string;
+  createdAt: string;
+}
+
+/** Результат перезагрузки портфеля */
+export interface PortfolioReloadResult {
+  success: boolean;
+  message: string;
+  sourceLabel: string;
+  assetsCount: number;
+}
+
+/** Информация о отчёте конвейера */
+export interface PipelineReportInfo {
+  ok: boolean;
+  data:
+    | {
+        success: boolean;
+        error?: string;
+        elapsedMs: number;
+        htmlPath: string;
+        htmlContent?: string;
+      }
+    | null;
+  message?: string;
+}
+
+/** Результат экспорта дашборда */
+export interface HarnessExportResult {
+  ok: boolean;
+  message?: string;
+  path?: string;
+}
+
+/** Результат запуска анализа диспетчера */
+export interface HarnessRunResult {
+  ok: boolean;
+  message?: string;
+}
+
+/** Результат переподключения Ollama */
+export interface OllamaReconnectResult {
+  success: boolean;
+  message: string;
+}
+
+/** Статус моста автономного цикла */
+export interface AutonomousBridgeStatusInfo {
+  running: boolean;
+  intervalSec: number;
+  activeGoals: number;
+  loop: {
+    totalIterations: number;
+  };
+}
+
+/** Результат разового запуска автономного цикла */
+export interface AutonomousRunOnceResult {
+  iterations: number;
+  success: boolean;
+  message?: string;
+}
+
+// ──────────────────────────────────────────────
+// 4. Утилиты
 // ──────────────────────────────────────────────
 
 function getAppDataDir(): string {

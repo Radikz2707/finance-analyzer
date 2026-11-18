@@ -88,5 +88,10 @@ export {
   type AiModelConfig,
 } from './ai-config.js';
 export { stripJsonBlockFromAiText } from './json-sanitizer.js';
+export {
+  stripRecommendationsTableFromNarrative,
+  isRecommendationsSectionHeading,
+  isAssetRecommendationsTableHeader,
+} from './narrative-sanitizer.js';
 
 export type * from './types.js';

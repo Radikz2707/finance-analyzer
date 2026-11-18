@@ -1,5 +1,3 @@
-import { describe, it, expect } from 'vitest';
-
 /**
  * Копия функции isValidIsin из ai-client.ts для изолированного тестирования.
  * Валидация ISIN по стандарту ISO 6166 с корректным разбиванием букв на цифры.
@@ -37,7 +35,6 @@ function isValidIsin(isin: string): boolean {
 }
 
 describe('ISIN validation (P0-5)', () => {
-
   // ─── Синтетические векторы пользователя (с проверкой контрольной цифры) ───
   // Пользователь указал AE0000000002, AS0000000006, AX0000000009.
   // Алгоритм Mod10 Double-Add-Double даёт контрольную цифру 0 для всех трёх.
@@ -191,13 +188,13 @@ describe('ISIN validation (P0-5)', () => {
   describe('Duplicate detection', () => {
     it('detects duplicate ISINs after normalization', () => {
       const isins = ['AE0000000000', 'ae0000000000', '  AE0000000000  '];
-      const normalized = new Set(isins.map(i => i.trim().toUpperCase()));
+      const normalized = new Set(isins.map((i) => i.trim().toUpperCase()));
       expect(normalized.size).toBe(1);
     });
 
     it('detects duplicate ISINs in array', () => {
       const isins = ['AE0000000000', 'AS0000000000', 'ae0000000000'];
-      const normalized = isins.map(i => i.trim().toUpperCase());
+      const normalized = isins.map((i) => i.trim().toUpperCase());
       const unique = new Set(normalized);
       expect(unique.size).toBe(2);
       expect(normalized.length).toBe(3);

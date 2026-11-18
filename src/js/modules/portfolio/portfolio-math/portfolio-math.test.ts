@@ -1,4 +1,4 @@
-﻿// ВНИМАНИЕ: используются глобальные API vitest (globals: true),
+// ВНИМАНИЕ: используются глобальные API vitest (globals: true),
 // т.к. явный import из 'vitest' ломает runner (vitest 5.0.x + эта конфигурация).
 import { PortfolioMathModule } from './portfolio-math';
 import { MacroGoals, CurrentAsset } from '../../data/xlsx-parser/xlsx-parser';
@@ -6,6 +6,7 @@ import { MacroGoals, CurrentAsset } from '../../data/xlsx-parser/xlsx-parser';
 describe('Инвестиционная математика и жесткие лимиты стратегии', () => {
   const mockMacro: MacroGoals = {
     totalBalance: 100000,
+    totalLiquidationValue: 95000,
     freeCash: 5000,
     stocksPercent: 52,
     bondsPercent: 48,
@@ -320,6 +321,7 @@ describe('Инвестиционная математика и жесткие л
     // totalLiquidationValue (market-value) = 569341.60
     const macroWithDifferentBases: MacroGoals = {
       totalBalance: 671139.24, // cost-basis — НЕ используется для rebalance
+      totalLiquidationValue: 569341.6, // market-value — используется для rebalance
       freeCash: 15143.05,
       stocksPercent: 52,
       bondsPercent: 48,
@@ -364,6 +366,43 @@ describe('Инвестиционная математика и жесткие л
 
     // Проверяем точное значение
     expect(result.assetsAnalysis[0]!.deficitRub).toBe(28467);
+  });
+
+  it('deficitDeviationPct хранится как current − target: дефицит отрицательный', () => {
+    const macro: MacroGoals = {
+      totalBalance: 100000,
+      totalLiquidationValue: 100000,
+      freeCash: 0,
+      stocksPercent: 100,
+      bondsPercent: 0,
+      stocksDeficitRub: 0,
+      bondsDeficitRub: 0,
+      iisOrdersSum: 0,
+      brokerOrdersSum: 0,
+      activeOrdersListText: '',
+    };
+
+    const asset: CurrentAsset[] = [
+      {
+        name: 'IRAO',
+        ticker: 'IRAO',
+        assetType: 'А',
+        targetPercent: 15,
+        liquidationPercent: 5.6,
+        balancePercent: 5.6,
+        unrealizedProfitRub: 0,
+        dynamicsPercent: 0,
+      },
+    ];
+
+    const math = new PortfolioMathModule();
+    const result = math.analyzePortfolio(macro, asset, 100000);
+    const analyzed = result.assetsAnalysis[0]!;
+
+    expect(analyzed.status).toBe('BUY');
+    expect(analyzed.deficitRub).toBeGreaterThan(0);
+    // currentPercent − targetPercent = 5.6 − 15 = −9.4
+    expect(analyzed.deficitDeviationPct).toBeCloseTo(-9.4, 5);
   });
 
   // ─── Тесты для targetPercent undefined / 0 / conflict ──────────────────────

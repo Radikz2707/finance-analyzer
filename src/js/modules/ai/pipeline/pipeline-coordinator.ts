@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   PipelineState,
   AgentResult,
   AgentSummary,
@@ -6,6 +6,7 @@
 } from './agent/types.js';
 import { createPipelineState } from './agent/types.js';
 import { PortfolioConfig } from '../../../config/portfolio-config.js';
+import { loadUserPolicyWithMeta } from '../../../config/user-policy.js';
 import { DataAgent, type DataAgentOutput } from './agents/data-agent.js';
 import { ResearchAgentV2 } from './agents/research-agent-v2/research-agent-v2.js';
 import type { ResearchV1Output } from './agents/research-agent-v2/types.js';
@@ -38,6 +39,12 @@ import {
 } from './guardrail-policy.js';
 import type { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
 import type { AiAction } from '../../research/types.js';
+import { buildDividendYieldsFromFundamentals } from '../ai-advisor/ai-client.js';
+import { buildExcelDividendYields } from '../ai-advisor/income-calculator.js';
+import type { BondReferenceData } from '../../data/xlsx-parser/xlsx-parser.js';
+import { fetchSmartLabBondByIsin } from '../../api/smart-lab-api/smart-lab-api.js';
+import { resetPortfolioFundamentalsOnce } from '../../api/fundamentals-api.js';
+import { isBondAssetType } from './agents/strategy-validator.js';
 import { SelfImprovementLoop } from './self-improvement/self-improvement-loop.js';
 import { LearningAgent } from './agents/learning-agent.js';
 import { fetchHistoricalBatch } from '../../data/data-fetcher/index.js';
@@ -57,11 +64,20 @@ function normalizeSellAction(
 ): AiAction | null {
   if (action !== 'SELL') return action;
   // Если позиция полностью закрывается (quantity=0 или currentPercent≈0) → SELL
-  if (asset && (asset.quantity === 0 || (asset.currentPercent != null && asset.currentPercent <= 0.01))) {
+  if (
+    asset &&
+    (asset.quantity === 0 ||
+      (asset.currentPercent != null && asset.currentPercent <= 0.01))
+  ) {
     return 'SELL';
   }
   // Иначе это частичная продажа → REDUCE
   return 'REDUCE';
+}
+
+/** Нормализовать название облигации для сопоставления Excel ↔ портфель. */
+function normalizeBondName(value: string | undefined): string {
+  return (value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 // ──────────────────────────────────────────────
@@ -226,7 +242,8 @@ export class PipelineCoordinator {
     recordedAt: string;
     checkedAt?: string;
   }> = [];
-  private readonly maxAiRecommendations = PortfolioConfig.pipelineConfig.maxAiRecommendations;
+  private readonly maxAiRecommendations =
+    PortfolioConfig.pipelineConfig.maxAiRecommendations;
 
   /** Подписаться на завершение стадии конвейера */
   onStageComplete(
@@ -290,8 +307,7 @@ export class PipelineCoordinator {
     this._state = createPipelineState();
     // Инициализация guardrail-политики (по умолчанию moderate)
     this.guardrailPolicy =
-      config.guardrailPolicy ??
-      createGuardrailPolicy('moderate', { PLZL: 50 });
+      config.guardrailPolicy ?? createGuardrailPolicy('moderate', { PLZL: 50 });
     this.dataAgent = new DataAgent(this.config.data);
     this.researchAgent = new ResearchAgentV2({
       name: 'ResearchAgentV2',
@@ -302,7 +318,9 @@ export class PipelineCoordinator {
     this.scenarioAgent = new ScenarioAgent(this.config.scenario);
     this.strategistAgent = new StrategistAgent(this.config.strategist);
     this.notificationAgent = new NotificationAgent(this.config.notification);
-    this.selfImprovementLoop = new SelfImprovementLoop({ name: 'SelfImprovementLoop' });
+    this.selfImprovementLoop = new SelfImprovementLoop({
+      name: 'SelfImprovementLoop',
+    });
     this.learningAgent = new LearningAgent({
       historySource: () => [],
     });
@@ -333,6 +351,8 @@ export class PipelineCoordinator {
    * @param sharedData — начальные данные, передаваемые между агентами
    */
   async run(sharedData: Record<string, unknown> = {}): Promise<PipelineResult> {
+    // Один прогон = один fundamentals-контекст для карточек и стратега.
+    resetPortfolioFundamentalsOnce();
     this._state = createPipelineState();
     this._state.stopped = false;
     this._state.sharedData = sharedData ?? {};
@@ -435,7 +455,7 @@ export class PipelineCoordinator {
       // ── Детальный лог анализа портфеля ──
       const { portfolioAnalysis, income, priceAlerts } = analysisOutput;
       const assetsList = portfolioAnalysis.assetsAnalysis;
-      const totalVal = portfolioAnalysis.macro.totalBalance;
+      const totalVal = portfolioAnalysis.macro.totalLiquidationValue;
       const freeCash = portfolioAnalysis.macro.freeCash;
 
       // Доли акций и облигаций
@@ -448,7 +468,9 @@ export class PipelineCoordinator {
 
       // Топ-5 активов по стоимости
       const topAssets = [...assetsList]
-        .sort((a, b) => b.currentPrice * b.quantity - (a.currentPrice * a.quantity))
+        .sort(
+          (a, b) => b.currentPrice * b.quantity - a.currentPrice * a.quantity,
+        )
         .slice(0, 5);
 
       // Приоритеты покупок (активы с дефицитом, отсортированные по размеру дефицита)
@@ -463,24 +485,37 @@ export class PipelineCoordinator {
       console.log('═'.repeat(60));
       console.log('📊 АНАЛИЗ ПОРТФЕЛЯ');
       console.log('═'.repeat(60));
-      console.log(`  Активов: ${assetsList.length} | Стоимость: ${Math.round(totalVal).toLocaleString('ru-RU')} ₽ | Кэш: ${Math.round(freeCash).toLocaleString('ru-RU')} ₽`);
-      console.log(`  Структура: Акции ${stocksPct.toFixed(1)}% | Облигации ${bondsPct.toFixed(1)}%`);
+      console.log(
+        `  Активов: ${assetsList.length} | Стоимость: ${Math.round(totalVal).toLocaleString('ru-RU')} ₽ | Кэш: ${Math.round(freeCash).toLocaleString('ru-RU')} ₽`,
+      );
+      console.log(
+        `  Структура: Акции ${stocksPct.toFixed(1)}% | Облигации ${bondsPct.toFixed(1)}%`,
+      );
       console.log('');
       console.log('  Топ-5 активов:');
       for (const a of topAssets) {
-        const liq = Math.round(a.currentPrice * a.quantity).toLocaleString('ru-RU');
+        const liq = Math.round(a.currentPrice * a.quantity).toLocaleString(
+          'ru-RU',
+        );
         const pnlPct =
           a.balancePrice > 0
-            ? (((a.currentPrice - a.balancePrice) / a.balancePrice) * 100)
+            ? ((a.currentPrice - a.balancePrice) / a.balancePrice) * 100
             : 0;
-        const pnl = pnlPct !== 0 ? ` (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)` : '';
-        console.log(`    • ${a.ticker} (${a.name}): ${liq} ₽ | Доля: ${a.currentPercent.toFixed(1)}% | Вход: ${a.balancePrice} ₽ | Текущая: ${a.currentPrice} ₽${pnl}`);
+        const pnl =
+          pnlPct !== 0
+            ? ` (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%)`
+            : '';
+        console.log(
+          `    • ${a.ticker} (${a.name}): ${liq} ₽ | Доля: ${a.currentPercent.toFixed(1)}% | Вход: ${a.balancePrice} ₽ | Текущая: ${a.currentPrice} ₽${pnl}`,
+        );
       }
       console.log('');
       if (buyPriorities.length > 0) {
         console.log('  Приоритеты покупок:');
         for (const a of buyPriorities) {
-          console.log(`    • ${a.ticker}: дефицит ${Math.round(a.deficitRub).toLocaleString('ru-RU')} ₽ (целевая ${a.targetPercent?.toFixed(1)}%, текущая ${a.currentPercent.toFixed(1)}%)`);
+          console.log(
+            `    • ${a.ticker}: дефицит ${Math.round(a.deficitRub).toLocaleString('ru-RU')} ₽ (целевая ${a.targetPercent?.toFixed(1)}%, текущая ${a.currentPercent.toFixed(1)}%)`,
+          );
         }
       } else {
         console.log('  Приоритеты покупок: нет (все позиции в норме)');
@@ -493,7 +528,9 @@ export class PipelineCoordinator {
         }
       }
       console.log('');
-      console.log(`  Доходы: НКД ${income.totalNkd.toLocaleString('ru-RU')} ₽ | Дивиденды ${income.totalDivsNet.toLocaleString('ru-RU')} ₽ (чистые)`);
+      console.log(
+        `  Доходы: НКД ${income.totalNkd.toLocaleString('ru-RU')} ₽ | Дивиденды ${income.totalDivsNet.toLocaleString('ru-RU')} ₽ (чистые)`,
+      );
       if (priceAlerts.length > 0) {
         console.log(`  ⚠️ Ценовые алерты: ${priceAlerts.length}`);
         for (const p of priceAlerts) {
@@ -527,7 +564,7 @@ export class PipelineCoordinator {
         // AI — необязательный этап, продолжаем с пустым результатом
       }
 
-      const aiOutput =
+      const aiOutput: AiAgentOutput =
         aiResult.result.success && aiResult.result.data
           ? aiResult.result.data
           : {
@@ -540,7 +577,11 @@ export class PipelineCoordinator {
                 error: aiResult.result.error?.message,
               },
               structuredRecommendations: new Map(),
+              mathAiAgreements: new Map(),
               validationWarnings: [],
+              newsContext: '',
+              dividendYields: {},
+              portfolioFundamentals: undefined,
             };
 
       // Сохраняем результат AI в оперативную память
@@ -551,7 +592,7 @@ export class PipelineCoordinator {
         this.aiRecommendations.push({
           pipelineId: this._state.pipelineId,
           ticker,
-          recommendedAction: rec.action ?? 'HOLD',
+          recommendedAction: rec.recommendedAction ?? 'HOLD',
           factualResult: 'pending', // будет проверено PostFactumCheck
           recordedAt: new Date().toISOString(),
         });
@@ -562,7 +603,9 @@ export class PipelineCoordinator {
       const assetsAnalysisList =
         analysisOutput.portfolioAnalysis.assetsAnalysis;
       const macroGoalsData = dataOutput.macroGoals;
-      const assetsAnalysisJson = JSON.parse(JSON.stringify(assetsAnalysisList));
+      const assetsAnalysisJson: AssetAnalysis[] = JSON.parse(
+        JSON.stringify(assetsAnalysisList),
+      );
       const macroGoalsJson = JSON.parse(JSON.stringify(macroGoalsData));
 
       // ── Stage 4.5: Scenario Agent (сценарии "что если") ──
@@ -613,7 +656,7 @@ export class PipelineCoordinator {
               '₽ | Разница=' +
               Math.round(baseDiff).toLocaleString('ru-RU') +
               '₽ (' +
-              (baseDiff / excelTotal * 100).toFixed(1) +
+              ((baseDiff / excelTotal) * 100).toFixed(1) +
               '%)',
           );
           console.error(
@@ -642,7 +685,7 @@ export class PipelineCoordinator {
                     '₽ (qty=' +
                     (a.quantity ?? 0) +
                     ', price=' +
-                    Number(((a.currentPrice ?? 0).toFixed(2))) +
+                    Number((a.currentPrice ?? 0).toFixed(2)) +
                     ')',
                 )
                 .join(' | '),
@@ -660,7 +703,7 @@ export class PipelineCoordinator {
             ticker: c.ticker,
             action: c.action === 'SELL' ? 'SELL' : c.action,
             amountRub: Math.abs(c.amountRub),
-           })),
+          })),
         };
 
         console.log(
@@ -672,7 +715,10 @@ export class PipelineCoordinator {
           console.log(
             '[Pipeline] Proposed changes:',
             scenarioInput.proposedChanges
-              .map((c) => `${c.ticker}=${c.action} ${Number(c.amountRub.toFixed(2)).toLocaleString('ru-RU')}₽`)
+              .map(
+                (c) =>
+                  `${c.ticker}=${c.action} ${Number(c.amountRub.toFixed(2)).toLocaleString('ru-RU')}₽`,
+              )
               .join(', '),
           );
         }
@@ -709,8 +755,14 @@ export class PipelineCoordinator {
         if (aiResult.result.success && aiOutput.structuredRecommendations) {
           for (const [ticker, rec] of aiOutput.structuredRecommendations) {
             // Найдём соответствующий asset для определения полного/частичного выхода
-            const asset = assetsAnalysisJson.find((a: AssetAnalysis) => a.ticker === ticker) ?? null;
-            const normalizedAction = normalizeSellAction(rec.recommendedAction, asset);
+            const asset =
+              assetsAnalysisJson.find(
+                (a: AssetAnalysis) => a.ticker === ticker,
+              ) ?? null;
+            const normalizedAction = normalizeSellAction(
+              rec.recommendedAction,
+              asset,
+            );
             proposals.push({
               ticker,
               action: normalizedAction,
@@ -720,9 +772,97 @@ export class PipelineCoordinator {
           }
         }
 
+        // Доходности облигаций из уже загруженного листа «Облигации» (QUIK yield).
+        // Ключ — тот же идентификатор, что в карточках (ISIN из asset.ticker);
+        // при отсутствии ISIN в листе используется fallback по имени и Smart-Lab.
+        const bondYields = await this.collectBondYields(
+          assetsAnalysisList,
+          dataOutput.bondMarketData,
+        );
+
+        const userPolicyLoad = loadUserPolicyWithMeta();
+        if (userPolicyLoad.warnings.length > 0) {
+          console.warn(
+            `[Pipeline] user-policy: ${userPolicyLoad.warnings.join('; ')}`,
+          );
+        }
+        const userPolicy = userPolicyLoad.policy;
+
+        // Слой 1 — EXCEL_DIVIDENDS/EXCEL_DECLARED из листа QUIK.
+        // Слой 2 — fundamentals (smart-lab) как fallback по тикерам.
+        const excelDividendLayer = buildExcelDividendYields(
+          income,
+          assetsAnalysisJson,
+        );
+        const dividendYieldsFromContext = buildDividendYieldsFromFundamentals(
+          aiOutput.portfolioFundamentals,
+        );
+        const fundamentalsYields =
+          Object.keys(dividendYieldsFromContext).length > 0
+            ? dividendYieldsFromContext
+            : (aiOutput.dividendYields ?? {});
+        const dividendYields = {
+          ...fundamentalsYields,
+          ...excelDividendLayer.yields,
+        };
+        const dividendYieldsMeta: Record<
+          string,
+          {
+            source: 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED' | 'SMART_LAB';
+            asOf: string | null;
+            kind: 'LTM' | 'DECLARED' | 'UNKNOWN';
+          }
+        > = {};
+        for (const asset of aiOutput.portfolioFundamentals?.assets ?? []) {
+          const ticker = asset.ticker.trim().toUpperCase();
+          if (fundamentalsYields[ticker] !== undefined) {
+            dividendYieldsMeta[ticker] = {
+              source: 'SMART_LAB',
+              asOf:
+                asset.dividendYield.asOf ??
+                aiOutput.portfolioFundamentals?.asOf ??
+                null,
+              kind: 'LTM',
+            };
+          }
+        }
+        for (const [ticker, meta] of Object.entries(excelDividendLayer.meta)) {
+          dividendYieldsMeta[ticker] = meta;
+        }
+
+        const stockTickers = assetsAnalysisJson
+          .filter((asset) => {
+            const type = (asset.assetType || '').toUpperCase();
+            return type === 'А' || type === 'АКЦИЯ' || type === 'STOCK';
+          })
+          .map((asset) => (asset.ticker || '').trim().toUpperCase())
+          .filter(Boolean);
+        const missingDividendTickers = stockTickers.filter(
+          (ticker) => dividendYields[ticker] === undefined,
+        );
+        console.log(
+          '[DIVIDEND_YIELDS_PIPELINE] source=excel+fundamentals ' +
+            `excel=${Object.keys(excelDividendLayer.yields).join(',') || 'none'} ` +
+            `fundamentals=${Object.keys(fundamentalsYields).join(',') || 'none'} ` +
+            `count=${Object.keys(dividendYields).length} ` +
+            `tickers=${Object.keys(dividendYields).join(',') || 'none'} ` +
+            `missing=${missingDividendTickers.join(',') || 'none'} ` +
+            `warnings=${excelDividendLayer.warnings.join(' | ') || 'none'}`,
+        );
+
         const strategistInput = {
           assetsAnalysis: assetsAnalysisJson,
           proposals,
+          // Фактический источник среднего взноса в проекте — investedFunds,
+          // а не macroGoals (поля monthlyContribution там нет).
+          monthlyContribution:
+            dataOutput.investedFunds?.averageMonthlyDeposit ?? 0,
+          noSellTickers: userPolicy.noSellTickers,
+          noSellAssetTypes: userPolicy.noSellAssetTypes,
+          policyWarnings: userPolicyLoad.warnings,
+          bondYields,
+          dividendYields,
+          dividendYieldsMeta,
         };
 
         const result = await this.strategistAgent.execute(strategistInput);
@@ -750,8 +890,14 @@ export class PipelineCoordinator {
         if (aiResult.result.success && aiOutput.structuredRecommendations) {
           for (const [ticker, rec] of aiOutput.structuredRecommendations) {
             // Используем нормализованное действие (SELL→REDUCE если частичная продажа)
-            const asset = assetsAnalysisJson.find((a: AssetAnalysis) => a.ticker === ticker) ?? null;
-            const normalizedAction = normalizeSellAction(rec.recommendedAction, asset);
+            const asset =
+              assetsAnalysisJson.find(
+                (a: AssetAnalysis) => a.ticker === ticker,
+              ) ?? null;
+            const normalizedAction = normalizeSellAction(
+              rec.recommendedAction,
+              asset,
+            );
             proposals.push({
               ticker,
               action: normalizedAction,
@@ -766,8 +912,7 @@ export class PipelineCoordinator {
           proposals,
           strategistOutput: this.strategistResultData,
           scenarioOutput: this.scenarioResultData,
-          newsContext:
-            researchOutput?.newsSummary ?? '',
+          newsContext: researchOutput?.newsSummary ?? '',
           sentimentData: researchOutput?.data?.sentimentData,
         });
 
@@ -816,27 +961,27 @@ export class PipelineCoordinator {
             }>;
           }
         ).interactiveOrders;
-        
+
         // Guardrail-проверка: продажа в убыток > порога требует подтверждения
         const validatedOrders = this.validateOrdersWithGuardrails(
           orders,
           assetsAnalysisList,
         );
-        
+
         this.interactiveOrdersData = validatedOrders.map((o) => ({
           ticker: o.ticker,
           action: o.action,
           id: o.id,
         }));
-        
+
         // Логирование guardrail-предупреждений
-        const warnings = validatedOrders.filter(
-          (o) => o.guardrailWarning,
-        );
+        const warnings = validatedOrders.filter((o) => o.guardrailWarning);
         if (warnings.length > 0) {
           console.warn(
             `[Pipeline] ⚠️ Guardrail: ${warnings.length} ордер(ов) требуют подтверждения:`,
-            warnings.map((o) => `${o.ticker}=${o.action} (${o.guardrailWarning})`).join(', '),
+            warnings
+              .map((o) => `${o.ticker}=${o.action} (${o.guardrailWarning})`)
+              .join(', '),
           );
         }
       }
@@ -856,7 +1001,14 @@ export class PipelineCoordinator {
         // execute возвращает AgentResult — извлекаем data через guard
         type ImprovementOutput = {
           message?: string;
-          patterns?: Array<{ pattern: string; description: string; accuracy: number; sampleSize: number; applicableTickers: string[]; recommendation: string }>;
+          patterns?: Array<{
+            pattern: string;
+            description: string;
+            accuracy: number;
+            sampleSize: number;
+            applicableTickers: string[];
+            recommendation: string;
+          }>;
           strategyWeights?: Record<string, number>;
         };
         const agentResult = improvementResult as AgentResult<ImprovementOutput>;
@@ -890,7 +1042,9 @@ export class PipelineCoordinator {
         }
       }
 
-      console.log(`[Pipeline] ✅ Конвейер завершён за ${(Date.now() - totalStart)}мс`);
+      console.log(
+        `[Pipeline] ✅ Конвейер завершён за ${Date.now() - totalStart}мс`,
+      );
       return result;
     } catch (err) {
       error = err instanceof Error ? err : new Error(String(err));
@@ -909,9 +1063,9 @@ export class PipelineCoordinator {
   }
 
   /**
-    * Загрузить последний результат pipeline из оперативной памяти.
-    * Возвращает null, если результат не найден.
-    */
+   * Загрузить последний результат pipeline из оперативной памяти.
+   * Возвращает null, если результат не найден.
+   */
   static async loadLastPipelineResult(): Promise<PipelineResult | null> {
     try {
       const entries = getByType('pipeline_result', 1);
@@ -1018,10 +1172,7 @@ export class PipelineCoordinator {
     // Находим рекомендации старше 30 дней, которые ещё не проверены
     const pendingRecs = this.aiRecommendations.filter((r) => {
       const recordedMs = new Date(r.recordedAt).getTime();
-      return (
-        (NOW - recordedMs) > THIRTY_DAYS_MS &&
-        r.factualResult === 'pending'
-      );
+      return NOW - recordedMs > THIRTY_DAYS_MS && r.factualResult === 'pending';
     });
 
     if (pendingRecs.length === 0) {
@@ -1051,9 +1202,7 @@ export class PipelineCoordinator {
       try {
         const bars = allBars.get(rec.ticker);
         if (!bars || bars.length === 0) {
-          console.warn(
-            `[PostFactum] Нет данных для ${rec.ticker} — пропуск`,
-          );
+          console.warn(`[PostFactum] Нет данных для ${rec.ticker} — пропуск`);
           continue;
         }
 
@@ -1078,9 +1227,7 @@ export class PipelineCoordinator {
         }
 
         // Находим свечу через 30 дней
-        const endBar = bars
-          .filter((b) => b.date <= endDateStr)
-          .pop();
+        const endBar = bars.filter((b) => b.date <= endDateStr).pop();
         if (!endBar) {
           console.warn(
             `[PostFactum] Не найдена цена через 30 дней для ${rec.ticker} — пропуск`,
@@ -1097,7 +1244,10 @@ export class PipelineCoordinator {
         let isCorrect = false;
         if (rec.recommendedAction === 'BUY') {
           isCorrect = changePct > 0;
-        } else if (rec.recommendedAction === 'SELL' || rec.recommendedAction === 'REDUCE') {
+        } else if (
+          rec.recommendedAction === 'SELL' ||
+          rec.recommendedAction === 'REDUCE'
+        ) {
           isCorrect = changePct < 0;
         } else {
           // HOLD — цена не изменилась существенно (±5%)
@@ -1140,12 +1290,14 @@ export class PipelineCoordinator {
     const beforeCount = this.aiRecommendations.length;
     this.aiRecommendations = this.aiRecommendations.filter((r) => {
       const recordedMs = new Date(r.recordedAt).getTime();
-      return (NOW - recordedMs) <= SIXTY_DAYS_MS;
+      return NOW - recordedMs <= SIXTY_DAYS_MS;
     });
     const removed = beforeCount - this.aiRecommendations.length;
 
     if (removed > 0) {
-      console.log(`[Pipeline] Cleanup: удалено ${removed} устаревших рекомендаций`);
+      console.log(
+        `[Pipeline] Cleanup: удалено ${removed} устаревших рекомендаций`,
+      );
     }
   }
 
@@ -1174,10 +1326,108 @@ export class PipelineCoordinator {
       if (rec.userFeedback === 'bad') stats.userBad++;
       if (rec.factualResult === 'correct') stats.factualCorrect++;
       if (rec.factualResult === 'incorrect') stats.factualIncorrect++;
-      if (rec.factualResult === 'pending' || !rec.factualResult) stats.pending++;
+      if (rec.factualResult === 'pending' || !rec.factualResult)
+        stats.pending++;
     }
 
     return stats;
+  }
+
+  /**
+   * Собрать доходности облигаций для купонно-дивидендного якоря.
+   *
+   * Идентификатор ключа совпадает с карточками — `asset.ticker` (ISIN).
+   * Порядок поиска повторяет ai-client:
+   *   1. прямой lookup по ISIN в листе «Облигации»;
+   *   2. fallback по названию инструмента (asset.name / shortName);
+   *   3. Smart-Lab по ISIN, если бумаги нет в Excel.
+   */
+  private async collectBondYields(
+    assetsAnalysis: AssetAnalysis[],
+    bondMarketData: Map<string, BondReferenceData> | undefined,
+  ): Promise<Record<string, number | null>> {
+    const bondYields: Record<string, number | null> = {};
+
+    const byName = new Map<string, { isin: string; bond: BondReferenceData }>();
+    if (bondMarketData) {
+      for (const [isin, bond] of bondMarketData) {
+        const name = normalizeBondName(bond.instrumentName);
+        if (name) {
+          byName.set(name, { isin, bond });
+        }
+      }
+    }
+
+    for (const asset of assetsAnalysis) {
+      const ticker = (asset.ticker ?? '').trim().toUpperCase();
+      if (!ticker || !isBondAssetType(asset.assetType)) {
+        continue;
+      }
+
+      let bond: BondReferenceData | null = bondMarketData?.get(ticker) ?? null;
+
+      if (!bond) {
+        const names = [
+          normalizeBondName(asset.name),
+          normalizeBondName(asset.shortName),
+        ].filter((name) => name.length > 0);
+
+        for (const name of names) {
+          const exact = byName.get(name);
+          if (exact) {
+            bond = exact.bond;
+            break;
+          }
+        }
+
+        if (!bond) {
+          for (const name of names) {
+            const found = [...byName.entries()].find(
+              ([referenceName]) =>
+                referenceName.includes(name) || name.includes(referenceName),
+            );
+            if (found) {
+              bond = found[1].bond;
+              break;
+            }
+          }
+        }
+
+        if (bond) {
+          console.log(
+            `[Pipeline] bondYields: ${ticker} найден по имени → ${bond.instrumentName}`,
+          );
+        }
+      }
+
+      let yieldValue: number | null =
+        bond &&
+        typeof bond.yield === 'number' &&
+        Number.isFinite(bond.yield) &&
+        bond.yield > 0
+          ? bond.yield
+          : null;
+
+      // Тот же fallback, что в карточках: Smart-Lab по ISIN.
+      if (yieldValue === null && /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(ticker)) {
+        const smartLabBond = await fetchSmartLabBondByIsin(ticker);
+        if (
+          smartLabBond &&
+          typeof smartLabBond.yield === 'number' &&
+          Number.isFinite(smartLabBond.yield) &&
+          smartLabBond.yield > 0
+        ) {
+          yieldValue = smartLabBond.yield;
+          console.log(
+            `[Pipeline] bondYields: ${ticker} из Smart-Lab — ${smartLabBond.yield}%`,
+          );
+        }
+      }
+
+      bondYields[ticker] = yieldValue;
+    }
+
+    return bondYields;
   }
 
   private async runStage<TStage extends PipelineStage, TData>(
@@ -1198,7 +1448,9 @@ export class PipelineCoordinator {
     try {
       const data = await execute();
       if (data === undefined || data === null) {
-        const emptyError = new Error(`Stage ${stage} completed but returned no data`);
+        const emptyError = new Error(
+          `Stage ${stage} completed but returned no data`,
+        );
         console.error(`[Pipeline] ❌ Stage ${stage}: empty result`, {
           stage,
           agentName,
@@ -1315,7 +1567,7 @@ export class PipelineCoordinator {
       // Рассчитываем убыток по позиции
       const balancePrice = asset.balancePrice ?? 0;
       const currentPrice = asset.currentPrice ?? 0;
-      
+
       let lossPct = 0;
       if (balancePrice > 0 && currentPrice > 0) {
         lossPct = ((currentPrice - balancePrice) / balancePrice) * 100;

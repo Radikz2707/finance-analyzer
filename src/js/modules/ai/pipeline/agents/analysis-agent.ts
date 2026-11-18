@@ -1,4 +1,4 @@
-﻿import type { DataAgentOutput } from './data-agent.js';
+import type { DataAgentOutput } from './data-agent.js';
 import type { AssetAnalysis } from '../../../portfolio/portfolio-math/portfolio-math.js';
 import { PortfolioMathModule } from '../../../portfolio/portfolio-math/portfolio-math.js';
 import { PortfolioValidator } from '../../../portfolio/portfolio-math/portfolio-validator.js';
@@ -19,6 +19,7 @@ export interface PortfolioAnalysisResult {
   /** Макро-данные */
   macro: {
     totalBalance: number;
+    totalLiquidationValue: number;
     freeCash: number;
     stocksDeficitRub: number;
     bondsDeficitRub: number;
@@ -40,10 +41,30 @@ export interface PortfolioIncome {
     rate: number;
     grossIncome: number;
     netIncome: number;
+    kind?: 'LTM' | 'DECLARED' | 'UNKNOWN';
+    source?: 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED';
+    asOf?: string;
   }>;
   totalNkd: number;
   totalDivs: number;
   totalDivsNet: number;
+  declaredDivs?: number;
+  declaredDivsNet?: number;
+  declaredStocks?: Array<{
+    name: string;
+    ticker: string;
+    quantity: number;
+    rate: number;
+    grossIncome: number;
+    netIncome: number;
+    kind?: 'LTM' | 'DECLARED' | 'UNKNOWN';
+    source?: 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED';
+    asOf?: string;
+  }>;
+  dividendKind?: 'LTM' | 'DECLARED' | 'UNKNOWN' | 'MIXED';
+  dividendSource?: 'EXCEL_DIVIDENDS' | 'EXCEL_DECLARED' | 'MIXED' | null;
+  excelAsOf?: string | null;
+  dividendWarnings?: string[];
 }
 
 /** Проверка ценовых алертов */
@@ -203,6 +224,7 @@ export class AnalysisAgent extends AgentBase {
         assetsAnalysis: [],
         macro: {
           totalBalance: 0,
+          totalLiquidationValue: 0,
           freeCash: 0,
           stocksDeficitRub: 0,
           bondsDeficitRub: 0,

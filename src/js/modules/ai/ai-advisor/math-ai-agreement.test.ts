@@ -9,8 +9,16 @@
  * 5. Отсутствие результата одного из модулей → conflict=true
  */
 
-import { agreeMathAndAi, isExecutionAllowed } from './math-ai-agreement.js';
-import type { AiAction, PortfolioMathStatus, MathAgreement } from '../../research/types.js';
+import {
+  agreeMathAndAi,
+  formatAiVoteDiagnostic,
+  isExecutionAllowed,
+} from './math-ai-agreement.js';
+import type {
+  AiAction,
+  PortfolioMathStatus,
+  MathAgreement,
+} from '../../research/types.js';
 
 describe('MathAiAgreement — согласование PortfolioMath и ИИ', () => {
   describe('PLZL сценарий: PortfolioMath=REDUCE, AI=BUY', () => {
@@ -210,12 +218,7 @@ describe('MathAiAgreement — согласование PortfolioMath и ИИ', (
     });
 
     it('Только ИИ → conflict=true, executionAllowed=false', () => {
-      const agreement = agreeMathAndAi(
-        'SBER',
-        null,
-        'BUY' as AiAction,
-        null,
-      );
+      const agreement = agreeMathAndAi('SBER', null, 'BUY' as AiAction, null);
 
       expect(agreement.conflict).toBe(true);
       expect(agreement.executionAllowed).toBe(false);
@@ -224,12 +227,7 @@ describe('MathAiAgreement — согласование PortfolioMath и ИИ', (
     });
 
     it('Нет данных от обоих → conflict=false, executionAllowed=false', () => {
-      const agreement = agreeMathAndAi(
-        'SBER',
-        null,
-        null,
-        null,
-      );
+      const agreement = agreeMathAndAi('SBER', null, null, null);
 
       expect(agreement.conflict).toBe(false);
       expect(agreement.executionAllowed).toBe(false);
@@ -274,7 +272,12 @@ describe('MathAiAgreement — согласование PortfolioMath и ИИ', (
       );
 
       expect(
-        isExecutionAllowed(agreement, false, false /* marketDataValid */, false),
+        isExecutionAllowed(
+          agreement,
+          false,
+          false /* marketDataValid */,
+          false,
+        ),
       ).toBe(false);
     });
 
@@ -473,8 +476,33 @@ describe('MathAiAgreement — согласование PortfolioMath и ИИ', (
 
       // Правильный подход: проверяем значение до умножения
       const confidenceRaw: number | null = null;
-      const correctResult = confidenceRaw === null ? 'Нет данных' : Math.round(confidenceRaw * 100) + '%';
+      const correctResult =
+        confidenceRaw === null
+          ? 'Нет данных'
+          : Math.round(confidenceRaw * 100) + '%';
       expect(correctResult).toBe('Нет данных');
     });
+  });
+});
+
+describe('formatAiVoteDiagnostic', () => {
+  it('фиксирует aiVote, mathAction и confidence для настоящего конфликта TATN', () => {
+    const line = formatAiVoteDiagnostic({
+      ticker: 'TATN',
+      aiVote: 'REDUCE',
+      mathAction: 'BUY',
+      finalAction: 'BUY',
+      confidence: 0.72,
+      deviationPp: -7.1,
+      deficitRub: 43_562,
+      severity: 'HIGH',
+    });
+
+    expect(line).toContain('[AI_VOTE] ticker=TATN');
+    expect(line).toContain('aiVote=REDUCE');
+    expect(line).toContain('mathAction=BUY');
+    expect(line).toContain('confidence=0.72');
+    expect(line).toContain('deviationPp=-7.1');
+    expect(line).toContain('severity=HIGH');
   });
 });

@@ -140,6 +140,47 @@ export const ENV_SCHEMA: Readonly<Record<string, EnvKeySpec>> = {
     format: 'number',
     example: '14',
   },
+  FUNDAMENTALS_SMARTLAB_ENABLED: {
+    description:
+      'Использовать smart-lab.ru для P/E, ROE и дивдоходности: true/false (default: true). false — режим «только MOEX ISS»',
+    format: 'boolean',
+    example: 'true',
+  },
+  FUNDAMENTALS_CACHE_TTL_HOURS: {
+    description: 'TTL кэша фундаментальных данных, часы (1–72, default: 24)',
+    format: 'number',
+    example: '24',
+  },
+  FUNDAMENTALS_SMARTLAB_INTERVAL_MS: {
+    description: 'Пауза между запросами к smart-lab.ru, мс (default: 1500)',
+    format: 'number',
+    example: '1500',
+  },
+  FUNDAMENTALS_CONFLICT_THRESHOLD: {
+    description:
+      'Порог расхождения источников (0.2 = 20%); при превышении приоритет у MOEX ISS',
+    format: 'number',
+    example: '0.2',
+  },
+  FUNDAMENTALS_REQUEST_TIMEOUT_MS: {
+    description: 'Таймаут HTTP-запроса к источникам фундаментала, мс',
+    format: 'number',
+    example: '15000',
+  },
+
+  // ===== Пользовательская политика продаж =====
+  PORTFOLIO_NO_SELL_TICKERS: {
+    description:
+      'Тикеры, которые запрещено продавать (csv; альтернатива noSellTickers в user-policy.json)',
+    format: 'csv',
+    example: 'PLZL',
+  },
+  PORTFOLIO_NO_SELL_ASSET_TYPES: {
+    description:
+      'Типы активов, которые запрещено продавать (csv: О,Облигация,BOND)',
+    format: 'csv',
+    example: 'О,Облигация',
+  },
 
   // ===== Логирование =====
   LOG_TO_FILE: {

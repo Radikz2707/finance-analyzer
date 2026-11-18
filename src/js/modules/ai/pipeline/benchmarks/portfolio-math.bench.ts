@@ -17,6 +17,7 @@ const TOTAL_LIQUIDATION_VALUE = 5_000_000;
 function makeMacro(): MacroGoals {
   return {
     totalBalance: 4_800_000,
+    totalLiquidationValue: 5_000_000,
     freeCash: 200_000,
     stocksPercent: 60,
     bondsPercent: 35,

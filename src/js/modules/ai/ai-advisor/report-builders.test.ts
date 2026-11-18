@@ -1,5 +1,31 @@
-// P2: Тесты для buildFinalConclusion — итоговое заключение (7 элементов)
-import { buildFinalConclusion } from './report-builders.js';
+// P2: Тесты для buildFinalConclusion — итоговое заключение (4 элемента)
+import type { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
+import {
+  buildAssetsTablesAndBars,
+  buildFinalConclusion,
+} from './report-builders.js';
+
+function createAsset(o: Partial<AssetAnalysis>): AssetAnalysis {
+  return {
+    name: o.ticker ?? 'Актив',
+    ticker: 'TEST',
+    assetType: 'А',
+    currentPercent: 0,
+    targetPercent: 10,
+    deficitRub: 0,
+    status: 'HOLD',
+    dynamicsPercent: 0,
+    nkdRub: 0,
+    nominal: 0,
+    quantity: 1,
+    balancePrice: 100,
+    currentPrice: 100,
+    unrealizedProfitRub: 0,
+    priority: 0,
+    isConcentrated: false,
+    ...o,
+  };
+}
 
 describe('buildFinalConclusion — итоговое заключение', () => {
   const baseAsset = {
@@ -17,8 +43,8 @@ describe('buildFinalConclusion — итоговое заключение', () =>
     quantity: 50,
   };
 
-  // ─── Тест 1: 7 элементов присутствуют ───
-  it('должен вернуть все 7 элементов заключения', () => {
+  // ─── Тест 1: 4 элемента присутствуют ───
+  it('должен вернуть все 4 элемента заключения', () => {
     const conclusion = buildFinalConclusion(baseAsset, null);
 
     expect(conclusion.action).toBe('REDUCE');
@@ -26,45 +52,23 @@ describe('buildFinalConclusion — итоговое заключение', () =>
     expect(conclusion.reasons.length).toBeGreaterThan(0);
     expect(conclusion.risks).toBeInstanceOf(Array);
     expect(conclusion.risks.length).toBeGreaterThan(0);
-    expect(conclusion.dataStatus).toBeDefined();
-    expect(typeof conclusion.dataStatus).toBe('string');
-    expect(conclusion.source).toBeDefined();
-    expect(['MATH_ONLY', 'AI_ONLY', 'BOTH_AGREED', 'BOTH_CONFLICT', 'NO_DATA']).toContain(conclusion.source);
-    expect(conclusion.mathAiAgreement).toBeDefined();
-    expect(typeof conclusion.mathAiAgreement).toBe('string');
     expect(conclusion.executionLimitations).toBeInstanceOf(Array);
   });
 
-  // ─── Тест 2: MATH_ONLY когда AI нет ───
-  it('должен установить source=MATH_ONLY когда AI нет', () => {
+  // ─── Тест 2: Причины для REDUCE ───
+  it('должен показать причины для REDUCE', () => {
     const conclusion = buildFinalConclusion(baseAsset, null);
-    expect(conclusion.source).toBe('MATH_ONLY');
-    expect(conclusion.mathAiAgreement).toContain('PortfolioMath');
+    expect(conclusion.reasons.some((r) => r.includes('Профицит'))).toBe(true);
   });
 
-  // ─── Тест 3: Конфликт BUY/EXIT ───
-  it('должен обнаружить конфликт BUY/EXIT', () => {
-    const mathAsset = {
-      ...baseAsset,
-      ticker: 'IRAO',
-      name: 'ИнтерРАО',
-      status: 'BUY' as const,
-      targetPercent: 9.1,
-      currentPercent: 10.2,
-      deficitRub: 5000,
-      unrealizedProfitRub: 2000,
-      isConcentrated: false,
-    };
-    const aiRec = {
-      recommendedAction: 'EXIT',
-      confidence: 0.7,
-      rationale: 'Фундаментальные проблемы в секторе',
-      keyRisks: ['Падение дивидендов'],
-    };
-
-    const conclusion = buildFinalConclusion(mathAsset, aiRec);
-    expect(conclusion.source).toBe('BOTH_CONFLICT');
-    expect(conclusion.mathAiAgreement).toContain('конфликт');
+  // ─── Тест 3: Риски для концентрированной позиции ───
+  it('должен указать риски для концентрированной позиции', () => {
+    const conclusion = buildFinalConclusion(baseAsset, null);
+    expect(
+      conclusion.risks.some(
+        (r) => r.includes('концентрац') || r.includes('Просадк'),
+      ),
+    ).toBe(true);
   });
 
   // ─── Тест 4: Согласованность BUY/BUY ───
@@ -88,7 +92,8 @@ describe('buildFinalConclusion — итоговое заключение', () =>
     };
 
     const conclusion = buildFinalConclusion(mathAsset, aiRec);
-    expect(conclusion.source).toBe('BOTH_AGREED');
+    expect(conclusion.action).toBe('BUY');
+    expect(conclusion.reasons.length).toBeGreaterThan(0);
   });
 
   // ─── Тест 5: Ограничения holdOnly ───
@@ -104,14 +109,14 @@ describe('buildFinalConclusion — итоговое заключение', () =>
     };
 
     const conclusion = buildFinalConclusion(holdAsset, null);
-    const hasHoldOnlyLimit = conclusion.executionLimitations.some((l) =>
-      l.includes('holdOnly') || l.includes('запрещена'),
+    const hasHoldOnlyLimit = conclusion.executionLimitations.some(
+      (l) => l.includes('holdOnly') || l.includes('запрещена'),
     );
     expect(hasHoldOnlyLimit).toBe(true);
   });
 
   // ─── Тест 6: Отсутствие данных ───
-  it('должен указать неполные данные при currentPrice=0', () => {
+  it('должен указать риск при currentPrice=0', () => {
     const noDataAsset = {
       ...baseAsset,
       ticker: 'TEST',
@@ -126,9 +131,13 @@ describe('buildFinalConclusion — итоговое заключение', () =>
     };
 
     const conclusion = buildFinalConclusion(noDataAsset, null);
-    expect(conclusion.dataStatus).toContain('неполн');
-    // Риск "отсутствует" должен быть в списке
-    expect(conclusion.risks.some((r) => r.toLowerCase().includes('отсутствует') || r.toLowerCase().includes('нет'))).toBe(true);
+    expect(
+      conclusion.risks.some(
+        (r) =>
+          r.toLowerCase().includes('отсутствует') ||
+          r.toLowerCase().includes('нет'),
+      ),
+    ).toBe(true);
   });
 
   // ─── Тест 7: AI рекомендация с null confidence ───
@@ -145,7 +154,6 @@ describe('buildFinalConclusion — итоговое заключение', () =>
       isConcentrated: false,
     };
     const aiRec = {
-      // HOLD и STABLE — после нормализации оба → HOLD, поэтому согласованы
       recommendedAction: 'HOLD',
       confidence: null,
       rationale: 'Стабильная позиция',
@@ -153,16 +161,15 @@ describe('buildFinalConclusion — итоговое заключение', () =>
     };
 
     const conclusion = buildFinalConclusion(mathAsset, aiRec);
-    // STABLE нормализуется в HOLD → согласованы
-    expect(conclusion.source).toBe('BOTH_AGREED');
+    expect(conclusion.action).toBe('STABLE');
   });
 
   // ========================================================================
-  // ИСПРАВЛЕНИЯ ЭТАПА 2: Источник рекомендации и consistency
+  // ИСПРАВЛЕНИЯ ЭТАПА 2: Консистентность действий
   // ========================================================================
 
-  describe('Этап 2: Источник рекомендации — корректное определение', () => {
-    it('IRAO: Math=BUY, AI=null → source=MATH_ONLY', () => {
+  describe('Консистентность действий', () => {
+    it('IRAO: Math=BUY → action=BUY', () => {
       const mathAsset = {
         ...baseAsset,
         ticker: 'IRAO',
@@ -174,13 +181,11 @@ describe('buildFinalConclusion — итоговое заключение', () =>
         unrealizedProfitRub: 2000,
         isConcentrated: false,
       };
-      // AI не вернул рекомендацию → null
       const conclusion = buildFinalConclusion(mathAsset, null);
-      expect(conclusion.source).toBe('MATH_ONLY');
-      expect(conclusion.mathAiAgreement).toContain('PortfolioMath');
+      expect(conclusion.action).toBe('BUY');
     });
 
-    it('TATN: Math=BUY, AI=null → source=MATH_ONLY, не BOTH_AGREED', () => {
+    it('TATN: Math=BUY → action=BUY', () => {
       const mathAsset = {
         ...baseAsset,
         ticker: 'TATN',
@@ -193,10 +198,10 @@ describe('buildFinalConclusion — итоговое заключение', () =>
         isConcentrated: false,
       };
       const conclusion = buildFinalConclusion(mathAsset, null);
-      expect(conclusion.source).toBe('MATH_ONLY');
+      expect(conclusion.action).toBe('BUY');
     });
 
-    it('PLZL: Math=REDUCE, AI=null → source=MATH_ONLY, не BOTH_AGREED', () => {
+    it('PLZL: Math=REDUCE → action=REDUCE', () => {
       const mathAsset = {
         ...baseAsset,
         ticker: 'PLZL',
@@ -209,12 +214,10 @@ describe('buildFinalConclusion — итоговое заключение', () =>
         isConcentrated: true,
       };
       const conclusion = buildFinalConclusion(mathAsset, null);
-      expect(conclusion.source).toBe('MATH_ONLY');
-      // Ключевое: не BOTH_AGREED
-      expect(conclusion.source).not.toBe('BOTH_AGREED');
+      expect(conclusion.action).toBe('REDUCE');
     });
 
-    it('PLZL: Math=REDUCE, AI=BUY → source=BOTH_CONFLICT', () => {
+    it('PLZL: Math=REDUCE, AI=BUY → action=REDUCE (математика приоритет)', () => {
       const mathAsset = {
         ...baseAsset,
         ticker: 'PLZL',
@@ -233,10 +236,10 @@ describe('buildFinalConclusion — итоговое заключение', () =>
         keyRisks: ['Низкая цена'],
       };
       const conclusion = buildFinalConclusion(mathAsset, aiRec);
-      expect(conclusion.source).toBe('BOTH_CONFLICT');
+      expect(conclusion.action).toBe('REDUCE');
     });
 
-    it('SBER: Math=BUY, AI=BUY → source=BOTH_AGREED', () => {
+    it('SBER: Math=BUY, AI=BUY → action=BUY', () => {
       const mathAsset = {
         ...baseAsset,
         ticker: 'SBER',
@@ -255,12 +258,10 @@ describe('buildFinalConclusion — итоговое заключение', () =>
         keyRisks: [],
       };
       const conclusion = buildFinalConclusion(mathAsset, aiRec);
-      expect(conclusion.source).toBe('BOTH_AGREED');
+      expect(conclusion.action).toBe('BUY');
     });
 
     it('validation warning и итоговая карточка должны быть консистентны', () => {
-      // Симуляция: AI вернул BUY, но guardrails заблокировали → HOLD
-      // И warning, и итоговая карточка должны отражать HOLD
       const mathAsset = {
         ...baseAsset,
         ticker: 'IRAO',
@@ -280,24 +281,27 @@ describe('buildFinalConclusion — итоговое заключение', () =>
         keyRisks: [],
       };
       const conclusion = buildFinalConclusion(mathAsset, aiRec);
-      // Итоговое действие — из mathAsset.status (BUY), но ограничение holdOnly
-      expect(conclusion.executionLimitations.some((l) => l.includes('запрещена') || l.includes('holdOnly'))).toBe(true);
+      expect(
+        conclusion.executionLimitations.some(
+          (l) => l.includes('запрещена') || l.includes('holdOnly'),
+        ),
+      ).toBe(true);
     });
   });
 
-  describe('Этап 2: Статистика рекомендаций — корректный подсчёт', () => {
-    // Симуляция решений стратега
+  describe('Статистика рекомендаций — корректный подсчёт', () => {
     interface StrategistDecision {
       ticker: string;
       finalAction: string;
     }
 
     function countRecommendations(decisions: StrategistDecision[]) {
-      const buyCount = decisions.filter(
-        (d) => d.finalAction === 'BUY',
-      ).length;
+      const buyCount = decisions.filter((d) => d.finalAction === 'BUY').length;
       const sellCount = decisions.filter(
-        (d) => d.finalAction === 'SELL' || d.finalAction === 'REDUCE' || d.finalAction === 'EXIT',
+        (d) =>
+          d.finalAction === 'SELL' ||
+          d.finalAction === 'REDUCE' ||
+          d.finalAction === 'EXIT',
       ).length;
       const holdCount = decisions.filter(
         (d) => d.finalAction === 'HOLD' || d.finalAction === 'STABLE',
@@ -344,6 +348,70 @@ describe('buildFinalConclusion — итоговое заключение', () =>
       expect(counts.buyCount).toBe(2);
       expect(counts.sellCount).toBe(1);
       expect(counts.holdCount).toBe(11);
+    });
+
+    describe('buildAssetsTablesAndBars — знаки и итог ребалансировки', () => {
+      it('показывает профицит положительным, дефицит отрицательным', () => {
+        const result = buildAssetsTablesAndBars([
+          createAsset({
+            ticker: 'PLZL',
+            name: 'Полюс',
+            status: 'REDUCE',
+            currentPercent: 19.8,
+            targetPercent: 10,
+            deficitRub: -59_805,
+          }),
+          createAsset({
+            ticker: 'IRAO',
+            name: 'Ирао',
+            status: 'BUY',
+            currentPercent: 5.6,
+            targetPercent: 15,
+            deficitRub: 57_467,
+          }),
+        ]);
+
+        // PLZL: профицит → плюс и зелёный
+        expect(result.tableRows).toContain('+59');
+        expect(result.tableRows).toContain('#56d364');
+        // IRAO: дефицит → минус и красный
+        expect(result.tableRows).toContain('-57');
+        expect(result.tableRows).toContain('#ff7b72');
+      });
+
+      it('включает NEW-ОФЗ в итог и считает 3 позиции', () => {
+        const result = buildAssetsTablesAndBars([
+          createAsset({
+            ticker: 'IRAO',
+            name: 'Ирао',
+            status: 'BUY',
+            currentPercent: 5.6,
+            targetPercent: 15,
+            deficitRub: 57_467,
+          }),
+          createAsset({
+            ticker: 'TATN',
+            name: 'Татнефть',
+            status: 'BUY',
+            currentPercent: 2.9,
+            targetPercent: 10,
+            deficitRub: 43_562,
+          }),
+          createAsset({
+            ticker: 'SU26238RMFS4',
+            name: 'ОФЗ 26238',
+            assetType: 'О',
+            status: 'NEW',
+            currentPercent: 9.5,
+            targetPercent: 10,
+            deficitRub: 5_168,
+          }),
+        ]);
+
+        expect(result.rebalanceBlock).toContain('106');
+        expect(result.rebalanceBlock).toContain('3 позиции');
+        expect(result.rebalanceBlock).not.toContain('2 позиций');
+      });
     });
   });
 });

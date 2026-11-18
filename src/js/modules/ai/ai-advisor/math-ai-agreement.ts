@@ -14,16 +14,48 @@
  * 4. Один из модулей не вернул результат → conflict=true, requiresReview=true
  */
 
-import type { AiAction, PortfolioMathStatus, MathAgreement } from '../../research/types.js';
+import type {
+  AiAction,
+  PortfolioMathStatus,
+  MathAgreement,
+} from '../../research/types.js';
+
+/**
+ * Диагностика голоса AI для настоящих конфликтов.
+ * Не подавляет конфликт — только фиксирует исходное направление модели,
+ * чтобы в следующих прогонах оценить стабильность.
+ */
+export interface AiVoteDiagnosticInput {
+  ticker: string;
+  aiVote: string | null;
+  mathAction: string;
+  finalAction: string | null;
+  confidence: number;
+  deviationPp?: number;
+  deficitRub?: number;
+  severity?: string;
+}
+
+export function formatAiVoteDiagnostic(input: AiVoteDiagnosticInput): string {
+  return (
+    `[AI_VOTE] ticker=${input.ticker} aiVote=${input.aiVote ?? 'HOLD'} ` +
+    `mathAction=${input.mathAction} finalAction=${input.finalAction ?? 'HOLD'} ` +
+    `confidence=${input.confidence.toFixed(2)} ` +
+    `deviationPp=${input.deviationPp ?? 'n/a'} ` +
+    `deficitRub=${input.deficitRub ?? 'n/a'} ` +
+    `severity=${input.severity ?? 'n/a'}`
+  );
+}
 
 /** Статус согласования */
 export type AgreementStatus =
-  | 'AGREED'           // Оба модуля согласны
-  | 'CONFLICT'         // Конфликт действий
-  | 'MATH_ONLY'        // Только PortfolioMath вернул результат
-  | 'AI_ONLY'          // Только ИИ вернул результат
-  | 'AI_OVERRIDE'      // ИИ перевесил Math при высокой уверенности
-  | 'NO_DATA';         // Нет данных от обоих модулей
+  | 'AGREED' // Оба модуля согласны
+  | 'CONFLICT' // Конфликт действий
+  | 'MATH_ONLY' // Только PortfolioMath вернул результат
+  | 'AI_ONLY' // Только ИИ вернул результат
+  | 'AI_OVERRIDE' // ИИ перевесил Math при высокой уверенности
+  | 'POLICY_BLOCKED' // Действие Math/AI заблокировано политикой no-sell
+  | 'NO_DATA'; // Нет данных от обоих модулей
 
 /**
  * Единый результат согласования PortfolioMath и ИИ.
@@ -55,6 +87,11 @@ export interface MathAiAgreement {
 
   /** Тикер актива, к которому относится согласование */
   ticker: string;
+
+  /** Действие было заблокировано пользовательской политикой no-sell */
+  policyBlocked?: boolean;
+  /** Пояснение политики для отчёта */
+  policyNote?: string | null;
 
   /** Детали конфликта (если conflict=true) */
   conflictDetails?: {
@@ -194,9 +231,7 @@ function determineConflictSeverity(
 /**
  * Формирует описание действия для логов.
  */
-function describeAction(
-  action: AiAction | PortfolioMathStatus | null,
-): string {
+function describeAction(action: AiAction | PortfolioMathStatus | null): string {
   if (!action) return 'НЕ ОПРЕДЕЛЕНО';
   return action.toUpperCase();
 }
@@ -262,7 +297,8 @@ export function agreeMathAndAi(
       aiAction,
       finalAction: aiAction,
       conflict: true,
-      conflictReason: 'ИИ рекомендовал действие, но PortfolioMath не вернул результат',
+      conflictReason:
+        'ИИ рекомендовал действие, но PortfolioMath не вернул результат',
       requiresReview: true,
       executionAllowed: false,
       status: 'AI_ONLY',
@@ -273,10 +309,7 @@ export function agreeMathAndAi(
   if (areActionsCompatible(normalizedMath, normalizedAi)) {
     // Действия совместимы — используем действие ИИ (оно более конкретное)
     // или PortfolioMath (если ИИ вернул HOLD — нейтральное действие)
-    const finalAction =
-      normalizedAi === 'HOLD'
-        ? mathAction
-        : aiAction;
+    const finalAction = normalizedAi === 'HOLD' ? mathAction : aiAction;
 
     return {
       ticker,
@@ -314,7 +347,7 @@ export function agreeMathAndAi(
   // При LOW — можно пропустить, но логируем
   const requiresReview = aiOverridesMath
     ? false
-    : (severity !== 'low' || isDisagreement);
+    : severity !== 'low' || isDisagreement;
 
   // Если AI перевешивает — используем AI-действие
   const finalAction = aiOverridesMath ? aiAction : null;

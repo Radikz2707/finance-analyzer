@@ -1,4 +1,4 @@
-﻿import type { AssetAnalysis } from '../../../portfolio/portfolio-math/portfolio-math.js';
+import type { AssetAnalysis } from '../../../portfolio/portfolio-math/portfolio-math.js';
 import {
   ScenarioAgent,
   type ScenarioAgentOutput,
@@ -64,6 +64,17 @@ function createInput(
 }
 
 describe('ScenarioAgent', () => {
+  it('S3 «Оптимизированный» явно помечен как теоретический без политики no-sell', async () => {
+    const agent = new ScenarioAgent();
+    const result = await agent.execute(createInput());
+    const optimized = dataOf(result).scenarios.find(
+      (scenario) => scenario.id === 'S3_optimized',
+    );
+
+    expect(optimized?.title).toContain('не учитывает политику no-sell');
+    expect(optimized?.rationale).toContain('не учитывает политику no-sell');
+  });
+
   it('строит baseline + сценарии и выбирает лучший', async () => {
     const agent = new ScenarioAgent();
     const result = await agent.execute(createInput());
@@ -202,9 +213,7 @@ describe('ScenarioAgent', () => {
     it('S3 автоматически продаёт позицию с концентрацией > 15% и убытком', async () => {
       const agent = new ScenarioAgent();
       const result = await agent.execute(
-        createInput([
-          { ticker: 'SBER', action: 'BUY', amountRub: 10000 },
-        ], {
+        createInput([{ ticker: 'SBER', action: 'BUY', amountRub: 10000 }], {
           // Переопределяем PLZL с концентрацией > 15%
           assetsAnalysis: [
             createAsset({
@@ -241,9 +250,7 @@ describe('ScenarioAgent', () => {
     it('S3 показывает реализованный убыток при продаже PLZL', async () => {
       const agent = new ScenarioAgent();
       const result = await agent.execute(
-        createInput([
-          { ticker: 'SBER', action: 'BUY', amountRub: 10000 },
-        ], {
+        createInput([{ ticker: 'SBER', action: 'BUY', amountRub: 10000 }], {
           assetsAnalysis: [
             createAsset({
               ticker: 'PLZL',
@@ -277,9 +284,7 @@ describe('ScenarioAgent', () => {
     it('ScenarioResult содержит stocksBeforePct и stocksAfterPct', async () => {
       const agent = new ScenarioAgent();
       const result = await agent.execute(
-        createInput([
-          { ticker: 'PLZL', action: 'SELL', amountRub: 20000 },
-        ]),
+        createInput([{ ticker: 'PLZL', action: 'SELL', amountRub: 20000 }]),
       );
 
       const data = dataOf(result);
@@ -289,15 +294,15 @@ describe('ScenarioAgent', () => {
       expect(aiScenario!.stocksBeforePct).toBeDefined();
       expect(aiScenario!.stocksAfterPct).toBeDefined();
       // После продажи PLZL доля акций должна уменьшиться
-      expect(aiScenario!.stocksAfterPct).toBeLessThanOrEqual(aiScenario!.stocksBeforePct!);
+      expect(aiScenario!.stocksAfterPct).toBeLessThanOrEqual(
+        aiScenario!.stocksBeforePct!,
+      );
     });
 
     it('ScenarioResult содержит bondsBeforePct и bondsAfterPct', async () => {
       const agent = new ScenarioAgent();
       const result = await agent.execute(
-        createInput([
-          { ticker: 'PLZL', action: 'SELL', amountRub: 20000 },
-        ]),
+        createInput([{ ticker: 'PLZL', action: 'SELL', amountRub: 20000 }]),
       );
 
       const data = dataOf(result);
@@ -312,30 +317,27 @@ describe('ScenarioAgent', () => {
   it('не должен дублировать убыток при продаже PLZL', async () => {
     const agent = new ScenarioAgent();
     const result = await agent.execute(
-      createInput(
-        [{ ticker: 'SBER', action: 'BUY', amountRub: 10000 }],
-        {
-          assetsAnalysis: [
-            createAsset({
-              ticker: 'PLZL',
-              currentPercent: 18,
-              unrealizedProfitRub: -5800,
-            }),
-            createAsset({
-              ticker: 'SBER',
-              name: 'Сбер',
-              currentPercent: 5,
-              targetPercent: 10,
-              deficitRub: 20000,
-              status: 'BUY',
-              quantity: 100,
-              balancePrice: 250,
-              currentPrice: 280,
-              unrealizedProfitRub: 3000,
-            }),
-          ],
-        },
-      ),
+      createInput([{ ticker: 'SBER', action: 'BUY', amountRub: 10000 }], {
+        assetsAnalysis: [
+          createAsset({
+            ticker: 'PLZL',
+            currentPercent: 18,
+            unrealizedProfitRub: -5800,
+          }),
+          createAsset({
+            ticker: 'SBER',
+            name: 'Сбер',
+            currentPercent: 5,
+            targetPercent: 10,
+            deficitRub: 20000,
+            status: 'BUY',
+            quantity: 100,
+            balancePrice: 250,
+            currentPrice: 280,
+            unrealizedProfitRub: 3000,
+          }),
+        ],
+      }),
     );
 
     const data = dataOf(result);
@@ -349,7 +351,8 @@ describe('ScenarioAgent', () => {
     // Исходный: -5800 (PLZL) + 3000 (SBER) = -2800
     // После продажи 50% PLZL: realized = -2900, unrealized = -2900 (PLZL) + ~3000 (SBER)
     // Итого: ~-2900 + ~100 = ~-2800
-    const totalPnL = optimized!.projectedUnrealizedPnL + optimized!.realizedPnLRub;
+    const totalPnL =
+      optimized!.projectedUnrealizedPnL + optimized!.realizedPnLRub;
     // P&L conservation: realized + remaining = original
     expect(totalPnL).toBeLessThan(-2000);
     expect(totalPnL).toBeGreaterThan(-3500);
@@ -393,17 +396,14 @@ describe('ScenarioAgent', () => {
     it('AI proposal с CALCULATED P&L не показывает "без ущерба" при INSUFFICIENT_DATA', async () => {
       const agent = new ScenarioAgent();
       const result = await agent.execute(
-        createInput(
-          [{ ticker: 'PLZL', action: 'SELL', amountRub: 10000 }],
-          {
-            assetsAnalysis: [
-              {
-                ...createAsset(),
-                balancePrice: 0, // нет данных
-              },
-            ],
-          },
-        ),
+        createInput([{ ticker: 'PLZL', action: 'SELL', amountRub: 10000 }], {
+          assetsAnalysis: [
+            {
+              ...createAsset(),
+              balancePrice: 0, // нет данных
+            },
+          ],
+        }),
       );
 
       const data = dataOf(result);
@@ -460,9 +460,7 @@ describe('ScenarioAgent', () => {
     it('сценарий продажи PLZL: структура отклонения рассчитана', async () => {
       const agent = new ScenarioAgent();
       const result = await agent.execute(
-        createInput(
-          [{ ticker: 'PLZL', action: 'SELL', amountRub: 20000 }],
-        ),
+        createInput([{ ticker: 'PLZL', action: 'SELL', amountRub: 20000 }]),
       );
 
       const data = dataOf(result);
@@ -534,7 +532,10 @@ describe('ScenarioAgent', () => {
         expect(aiScenario!.projectedUnrealizedPnL).toBeCloseTo(sberPnl, 0);
 
         // realizedPnLRub = originalUnrealizedPnL (полный убыток реализован)
-        expect(aiScenario!.realizedPnLRub).toBeCloseTo(originalUnrealizedPnL, 0);
+        expect(aiScenario!.realizedPnLRub).toBeCloseTo(
+          originalUnrealizedPnL,
+          0,
+        );
 
         // Проверка conservation: -5800 + 0 = -5800
         const remainingPnL = aiScenario!.projectedUnrealizedPnL - sberPnl;
@@ -575,30 +576,27 @@ describe('ScenarioAgent', () => {
       it('Множественные позиции — P&L conservation по каждой позиции отдельно', async () => {
         const agent = new ScenarioAgent();
         const result = await agent.execute(
-          createInput(
-            [{ ticker: 'PLZL', action: 'SELL', amountRub: 2100 }],
-            {
-              assetsAnalysis: [
-                createAsset({
-                  ticker: 'PLZL',
-                  currentPercent: 18,
-                  unrealizedProfitRub: -5800,
-                }),
-                createAsset({
-                  ticker: 'SBER',
-                  name: 'Сбер',
-                  currentPercent: 5,
-                  targetPercent: 10,
-                  deficitRub: 20000,
-                  status: 'BUY',
-                  quantity: 100,
-                  balancePrice: 250,
-                  currentPrice: 280,
-                  unrealizedProfitRub: 3000,
-                }),
-              ],
-            },
-          ),
+          createInput([{ ticker: 'PLZL', action: 'SELL', amountRub: 2100 }], {
+            assetsAnalysis: [
+              createAsset({
+                ticker: 'PLZL',
+                currentPercent: 18,
+                unrealizedProfitRub: -5800,
+              }),
+              createAsset({
+                ticker: 'SBER',
+                name: 'Сбер',
+                currentPercent: 5,
+                targetPercent: 10,
+                deficitRub: 20000,
+                status: 'BUY',
+                quantity: 100,
+                balancePrice: 250,
+                currentPrice: 280,
+                unrealizedProfitRub: 3000,
+              }),
+            ],
+          }),
         );
 
         const data = dataOf(result);
@@ -618,11 +616,15 @@ describe('ScenarioAgent', () => {
         const sberRemaining = sberOriginal; // 3000
 
         // projectedUnrealizedPnL = plzlRemaining + sberRemaining = -2900 + 3000 = 100
-        expect(aiScenario!.projectedUnrealizedPnL).toBeCloseTo(plzlRemaining + sberRemaining, 0);
+        expect(aiScenario!.projectedUnrealizedPnL).toBeCloseTo(
+          plzlRemaining + sberRemaining,
+          0,
+        );
 
         // Итоговая conservation: realized + projected = originalTotal
         // -2900 + 100 = -2800 = -5800 + 3000
-        const totalPnL = aiScenario!.projectedUnrealizedPnL + aiScenario!.realizedPnLRub;
+        const totalPnL =
+          aiScenario!.projectedUnrealizedPnL + aiScenario!.realizedPnLRub;
         const originalTotal = plzlOriginal + sberOriginal;
         expect(totalPnL).toBeCloseTo(originalTotal, 0);
       });
@@ -731,9 +733,7 @@ describe('ScenarioAgent', () => {
           // existingPnL должен остаться -5800, не -2900
           const agent = new ScenarioAgent();
           const result = await agent.execute(
-            createInput(
-              [{ ticker: 'PLZL', action: 'BUY', amountRub: 4200 }],
-            ),
+            createInput([{ ticker: 'PLZL', action: 'BUY', amountRub: 4200 }]),
           );
 
           const data = dataOf(result);
@@ -749,9 +749,7 @@ describe('ScenarioAgent', () => {
         it('BUY увеличивает стоимость позиции', async () => {
           const agent = new ScenarioAgent();
           const result = await agent.execute(
-            createInput(
-              [{ ticker: 'PLZL', action: 'BUY', amountRub: 4200 }],
-            ),
+            createInput([{ ticker: 'PLZL', action: 'BUY', amountRub: 4200 }]),
           );
 
           const data = dataOf(result);
@@ -775,9 +773,7 @@ describe('ScenarioAgent', () => {
           // Новая средняя цена покупки = (10000 + 4200) / 20 = 710
           const agent = new ScenarioAgent();
           const result = await agent.execute(
-            createInput(
-              [{ ticker: 'PLZL', action: 'BUY', amountRub: 4200 }],
-            ),
+            createInput([{ ticker: 'PLZL', action: 'BUY', amountRub: 4200 }]),
           );
 
           const data = dataOf(result);
@@ -829,7 +825,8 @@ describe('ScenarioAgent', () => {
       describe('Этап 2.2: Согласованность тестовых данных PLZL', () => {
         it('unrealizedProfitRub = (currentPrice - balancePrice) * quantity', () => {
           const asset = createAsset();
-          const expectedPnL = (asset.currentPrice - asset.balancePrice) * asset.quantity;
+          const expectedPnL =
+            (asset.currentPrice - asset.balancePrice) * asset.quantity;
           expect(asset.unrealizedProfitRub).toBe(expectedPnL);
         });
 
@@ -846,7 +843,9 @@ describe('ScenarioAgent', () => {
           expect(asset.currentPrice).toBe(420);
           expect(asset.unrealizedProfitRub).toBe(-5800);
           // Проверка: (420 - 1000) * 10 = -580 * 10 = -5800
-          expect((asset.currentPrice - asset.balancePrice) * asset.quantity).toBe(-5800);
+          expect(
+            (asset.currentPrice - asset.balancePrice) * asset.quantity,
+          ).toBe(-5800);
         });
       });
 
@@ -861,9 +860,7 @@ describe('ScenarioAgent', () => {
           // После BUY: costBasis = 10000 + 4200 = 14200
           const agent = new ScenarioAgent();
           const result = await agent.execute(
-            createInput(
-              [{ ticker: 'PLZL', action: 'BUY', amountRub: 4200 }],
-            ),
+            createInput([{ ticker: 'PLZL', action: 'BUY', amountRub: 4200 }]),
           );
 
           const data = dataOf(result);
@@ -874,7 +871,10 @@ describe('ScenarioAgent', () => {
           // averagePrice = 14200 / 20 = 710
           // marketValue = 20 * 420 = 8400
           // unrealizedPnL = 8400 - 14200 = -5800 (сохранён)
-          expect(aiScenario!.projectedUnrealizedPnL).toBeCloseTo(-5800 + 3000, 0);
+          expect(aiScenario!.projectedUnrealizedPnL).toBeCloseTo(
+            -5800 + 3000,
+            0,
+          );
         });
 
         it('SELL после BUY использует корректный costBases', async () => {
@@ -884,12 +884,10 @@ describe('ScenarioAgent', () => {
           // realizedPnL = -5800 * 0.25 = -1450
           const agent = new ScenarioAgent();
           const result = await agent.execute(
-            createInput(
-              [
-                { ticker: 'PLZL', action: 'BUY', amountRub: 4200 },
-                { ticker: 'PLZL', action: 'SELL', amountRub: 2100 },
-              ],
-            ),
+            createInput([
+              { ticker: 'PLZL', action: 'BUY', amountRub: 4200 },
+              { ticker: 'PLZL', action: 'SELL', amountRub: 2100 },
+            ]),
           );
 
           const data = dataOf(result);

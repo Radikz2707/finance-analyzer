@@ -1,11 +1,62 @@
-﻿import XLSX from 'xlsx';
+import XLSX from 'xlsx';
 import * as fs from 'fs';
 import { QuikOrder, parseQuikOrdersFile } from './quik-orders-parser.js';
 import * as config from './xlsx-parser-config.js';
 import { PortfolioConfig } from '../../../config/portfolio-config.js';
+import {
+  MAX_PERCENT_PRICE,
+  resolveCompanionPrice,
+  resolvePrice,
+  type BondPriceReference,
+  type PriceSource,
+  type PriceUnit,
+} from './bond-price-normalizer.js';
+import { fetchMoexBondQuote } from '../../api/moex-api/bond-api.js';
+import { fetchSmartLabBondByIsin } from '../../api/smart-lab-api/smart-lab-api.js';
+
+export type {
+  BondPriceReference,
+  PriceSource,
+  PriceUnit,
+} from './bond-price-normalizer.js';
+
+/** Внешний источник ориентира цены облигации (MOEX ISS → Smart-Lab) */
+export type BondQuoteResolver = (
+  isin: string,
+) => Promise<BondPriceReference | null>;
+
+/**
+ * Ориентир цены по умолчанию: MOEX ISS, при неудаче — Smart-Lab.
+ *
+ * Используется только для разрешения масштаба (рубли / % от номинала)
+ * и как фолбэк при нулевой цене. Результат кэшируется внутри API.
+ */
+async function defaultBondQuoteResolver(
+  isin: string,
+): Promise<BondPriceReference | null> {
+  const moex = await fetchMoexBondQuote(isin);
+  if (moex && (moex.pricePct !== null || (moex.nominal ?? 0) > 0)) {
+    return {
+      nominal: moex.nominal ?? undefined,
+      pricePct: moex.pricePct ?? undefined,
+      source: 'MOEX_ISS',
+    };
+  }
+  const smartLab = await fetchSmartLabBondByIsin(isin);
+  if (smartLab) {
+    return {
+      nominal: smartLab.nominal,
+      pricePct: smartLab.price,
+      priceRub: smartLab.priceRUB,
+      source: 'SMARTLAB',
+    };
+  }
+  return null;
+}
 
 export interface MacroGoals {
   totalBalance: number;
+  totalLiquidationValue: number;
   freeCash: number;
   stocksPercent: number;
   bondsPercent: number;
@@ -15,9 +66,6 @@ export interface MacroGoals {
   brokerOrdersSum: number;
   activeOrdersListText: string;
 }
-
-/** Единица текущей цены: рубль, процент от номинала или неизвестно */
-export type PriceUnit = 'RUB' | 'PERCENT_OF_NOMINAL' | 'UNKNOWN';
 
 /** Параметры инвестора */
 export interface InvestorParams {
@@ -162,6 +210,10 @@ export interface CurrentAsset {
   priceUnit?: PriceUnit;
   /** Статус нормализации currentPrice в RUB: true когда priceUnit !== 'UNKNOWN' */
   priceNormalized?: boolean;
+  /** Источник цены (QUIK, лист «Облигации», MOEX ISS, Smart-Lab) */
+  priceSource?: PriceSource;
+  /** Предупреждение о невозможности нормализовать цену */
+  priceWarning?: string;
   /** Идентификатор счёта (например, 'S04J3LB' или '403GPBT') */
   accountId?: string;
   /** Тип счёта: ИИС или брокерский */
@@ -194,6 +246,10 @@ export interface AccountPosition {
   nominal?: number;
   /** Единица currentPrice: RUB / PERCENT_OF_NOMINAL / UNKNOWN */
   priceUnit?: PriceUnit;
+  /** Источник цены (QUIK, лист «Облигации», MOEX ISS, Smart-Lab) */
+  priceSource?: PriceSource;
+  /** Предупреждение о невозможности нормализовать цену */
+  priceWarning?: string;
   /** Запрет на продажу (например, для защитных позиций) */
   holdOnly?: boolean;
   /** Исключить из расчёта stock pool */
@@ -209,6 +265,10 @@ export interface PriceLookup {
   /** Статус нормализации currentPrice в RUB: true когда priceUnit !== 'UNKNOWN' */
   priceNormalized: boolean;
   nominal?: number;
+  /** Источник цены (QUIK, лист «Облигации», MOEX ISS, Smart-Lab) */
+  priceSource?: PriceSource;
+  /** Предупреждение о невозможности нормализовать цену */
+  priceWarning?: string;
 }
 
 /** Агрегированная позиция по тикеру с детализацией по счетам */
@@ -230,6 +290,10 @@ export interface AggregatedAsset {
   nominal?: number;
   /** Единица currentPrice: RUB / PERCENT_OF_NOMINAL / UNKNOWN */
   priceUnit?: PriceUnit;
+  /** Источник цены (QUIK, лист «Облигации», MOEX ISS, Smart-Lab) */
+  priceSource?: PriceSource;
+  /** Предупреждение о невозможности нормализовать цену */
+  priceWarning?: string;
   /** Цена продажи за 1 единицу в рублях (из QUIK Ликвидационная цена) */
   liquidationPrice: number;
   /** Сумма балансовых стоимостей по всем счетам (SUM balanceValue).
@@ -288,17 +352,13 @@ export function validateTargetPercentages(
   }
 
   if (totalTargetPercent > 100) {
-    errors.push(
-      `Сумма целевых долей > 100%: ${totalTargetPercent}%`,
-    );
+    errors.push(`Сумма целевых долей > 100%: ${totalTargetPercent}%`);
   }
 
   const cashReservePercent = 100 - totalTargetPercent;
 
   if (cashReservePercent < 0) {
-    warnings.push(
-      `Расчётный кэш отрицательный: ${cashReservePercent}%`,
-    );
+    warnings.push(`Расчётный кэш отрицательный: ${cashReservePercent}%`);
   }
 
   return {
@@ -323,8 +383,128 @@ export class XlsxParserModule {
   /** Кэш справочных данных по облигациям (ISIN → nominal) */
   private bondReferenceData: Map<string, BondReferenceData> = new Map();
 
-  constructor() {
+  constructor(
+    private readonly bondQuoteResolver: BondQuoteResolver = defaultBondQuoteResolver,
+  ) {
     this.parsedActiveOrders = [];
+  }
+
+  /** Является ли тип актива облигацией (QUIK: «О» / «Облигация») */
+  private isBondAssetType(assetType: string): boolean {
+    const normalized = assetType.trim().toLowerCase();
+    return (
+      normalized === 'о' ||
+      normalized === 'облигация' ||
+      normalized === 'bond' ||
+      normalized.includes('облиг')
+    );
+  }
+
+  /** Похоже ли значение на ISIN (2 буквы + 10 букв/цифр) */
+  private looksLikeIsin(value: string): boolean {
+    return /^[A-Z]{2}[A-Z0-9]{10}$/.test(value.trim().toUpperCase());
+  }
+
+  /**
+   * Извлекает «сырую» цену из строки QUIK с указанием источника.
+   *
+   * Приоритет: «Цена» → «Стоимость» / «Позиция» → «Ликвидационная цена».
+   * `rawIsRub` = true только для «Стоимости»: там значение гарантированно
+   * в рублях, поэтому масштаб не переопределяется.
+   */
+  private extractRawPrice(
+    row: Record<string, unknown>,
+    position: number,
+  ): { value: number; source: PriceSource; rawIsRub: boolean } {
+    const priceColumn = this.parseValue(row['Цена']);
+    if (priceColumn > 0) {
+      return { value: priceColumn, source: 'QUIK_PRICE', rawIsRub: false };
+    }
+
+    const totalCost = this.parseValue(row['Стоимость']);
+    if (totalCost > 0 && position > 0) {
+      return {
+        value: totalCost / position,
+        source: 'QUIK_COST',
+        rawIsRub: true,
+      };
+    }
+
+    const liquidationPrice = this.parseValue(row['Ликвидационная цена']);
+    if (liquidationPrice > 0) {
+      return {
+        value: liquidationPrice,
+        source: 'QUIK_LIQ_PRICE',
+        rawIsRub: false,
+      };
+    }
+
+    return { value: 0, source: 'UNKNOWN', rawIsRub: false };
+  }
+
+  /**
+   * Собирает внешние ориентиры цен (лист «Облигации» → MOEX ISS → Smart-Lab)
+   * для облигаций, у которых цена или номинал вызывают сомнения.
+   *
+   * Запросы выполняются параллельно и только по валидным ISIN.
+   */
+  private async resolvePriceReferences(
+    rows: Record<string, unknown>[],
+    bondsMap: Map<string, BondReferenceData>,
+  ): Promise<Map<string, BondPriceReference[]>> {
+    const result = new Map<string, BondPriceReference[]>();
+    const needsQuote = new Set<string>();
+
+    for (const row of rows) {
+      const ticker = String(row['Код инструмента'] || row['Код'] || '')
+        .trim()
+        .toUpperCase();
+      if (!ticker) continue;
+
+      const assetType = String(row['Вид активов'] || row['Тип'] || '').trim();
+      if (!this.isBondAssetType(assetType)) continue;
+
+      const references: BondPriceReference[] = [];
+      const bondRef = bondsMap.get(ticker);
+      if (bondRef) {
+        references.push({
+          nominal: bondRef.nominal > 0 ? bondRef.nominal : undefined,
+          pricePct: bondRef.lastPrice > 0 ? bondRef.lastPrice : undefined,
+          source: 'BONDS_SHEET',
+        });
+      }
+      result.set(ticker, references);
+
+      const nominalFromBonds =
+        bondRef && bondRef.nominal > 0 ? bondRef.nominal : undefined;
+      const nominal = nominalFromBonds ?? this.parseNominalFromRow(row);
+      const position = this.parseValue(row['Позиция']);
+      const rawPrice = this.extractRawPrice(row, position);
+      const suspicious =
+        nominal === undefined ||
+        rawPrice.value <= 0 ||
+        rawPrice.value <= MAX_PERCENT_PRICE;
+
+      if (suspicious && this.looksLikeIsin(ticker)) {
+        needsQuote.add(ticker);
+      }
+    }
+
+    await Promise.all(
+      Array.from(needsQuote).map(async (isin) => {
+        try {
+          const reference = await this.bondQuoteResolver(isin);
+          if (!reference) return;
+          const references = result.get(isin) ?? [];
+          references.push(reference);
+          result.set(isin, references);
+        } catch {
+          // Внешний источник недоступен — работаем без ориентира.
+        }
+      }),
+    );
+
+    return result;
   }
 
   /**
@@ -495,7 +675,11 @@ export class XlsxParserModule {
     if (!sheet) return [];
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
 
-    rows.forEach((row) => {
+    // Внешние ориентиры цен (лист «Облигации» → MOEX ISS → Smart-Lab)
+    // нужны только для облигаций с «подозрительной» ценой/номиналом.
+    const referenceMap = await this.resolvePriceReferences(rows, bondsMap);
+
+    for (const row of rows) {
       const name = String(row['Инструмент'] || '').trim();
       if (
         !name ||
@@ -503,9 +687,9 @@ export class XlsxParserModule {
           name.toUpperCase().includes(kw),
         )
       )
-        return;
+        continue;
       if (name.startsWith('-') || !isNaN(Number(name)) || name.length > 30)
-        return;
+        continue;
 
       if (config.FREE_CASH_ROW_KEYWORDS.some((kw) => name === kw)) {
         this.cachedFreeCashFromQuikSheet = this.parseValue(
@@ -513,7 +697,7 @@ export class XlsxParserModule {
             row['Ликвидационная стоимость'] ||
             row['Балансовая стоимость'],
         );
-        return;
+        continue;
       }
 
       let liqPercent = this.parseValue(
@@ -543,14 +727,17 @@ export class XlsxParserModule {
       }
 
       const nkd = this.parseValue(row['НКД'] || row['Накопленный купон']);
-      const couponRate = this.parseValue(row['Купон, %'] || row['Ставка купона']);
+      const couponRate = this.parseValue(
+        row['Купон, %'] || row['Ставка купона'],
+      );
 
-      // Парсим цены входа и текущие цены из Excel
-      // КЛЮЧЕВОЕ ПРАВИЛО:
-      //   Балансовая цена → entryPrice (цена входа за 1 единицу)
-      //   Стоимость → currentPrice (позиция в рублях / количество = цена за 1 единицу)
-      //   Fallback: если Стоимость = 0 → Ликвидационная цена
-      const balancePrice = this.parseValue(row['Балансовая цена']);
+      // ─── Цена текущая и цена входа ─────────────────────────────────
+      // Приоритет источников: «Цена» → «Стоимость» / «Позиция» →
+      // «Ликвидационная цена» → лист «Облигации» → MOEX ISS → Smart-Lab.
+      const ticker = String(row['Код инструмента'] || row['Код'] || '').trim();
+      const assetType = String(row['Вид активов'] || row['Тип'] || '').trim();
+      const isBond = this.isBondAssetType(assetType);
+
       // Количество берётся из колонки «Позиция» (реальное имя в QUIK).
       // Fallback: колонка, содержащая «КОЛ» в названии.
       let position = this.parseValue(row['Позиция']);
@@ -561,65 +748,46 @@ export class XlsxParserModule {
         if (quantityKey) position = this.parseValue(row[quantityKey]);
       }
       const quantity = position;
-      const rawTotalCost = this.parseValue(row['Стоимость']);
-      const currentPriceRaw = (() => {
-        if (rawTotalCost > 0 && position > 0) return rawTotalCost / position;
-        return this.parseValue(row['Ликвидационная цена']);
-      })();
-      const dynamicsPercent = this.parseValue(row['Динамика актива']);
 
-      // Получаем тикер и тип актива
-      const ticker = String(row['Код инструмента'] || row['Код'] || '').trim();
-      const assetType = String(row['Вид активов'] || row['Тип'] || '').trim();
+      const rawPrice = this.extractRawPrice(row, position);
+      const references = referenceMap.get(ticker) ?? [];
 
-      // Парсим номинал динамически из колонки «Номинал»
       const nominalFromQuik = this.parseNominalFromRow(row);
+      const nominalFromBondsRef = bondsMap.get(ticker)?.nominal;
+      const nominalFromReference = references
+        .map((ref) => ref.nominal)
+        .find((value): value is number => !!value && value > 0);
 
-      // Проверяем справочник облигаций по ISIN (ticker в QUIK может быть ISIN)
-      const nominalFromBondsRef = bondsMap.has(ticker)
-        ? bondsMap.get(ticker)!.nominal
-        : undefined;
+      // Приоритет: справочник «Облигации» (учитывает амортизацию) > QUIK > MOEX
+      const nominal =
+        (nominalFromBondsRef && nominalFromBondsRef > 0
+          ? nominalFromBondsRef
+          : undefined) ??
+        nominalFromQuik ??
+        nominalFromReference;
 
-      // Приоритет: справочник «Облигации» (учитывает амортизацию) > QUIK > undefined
-      const nominal = nominalFromBondsRef ?? nominalFromQuik;
+      const resolvedCurrent = resolvePrice({
+        rawPrice: rawPrice.value,
+        nominal,
+        isBond,
+        rawIsRub: rawPrice.rawIsRub,
+        source: rawPrice.source,
+        references,
+      });
+      const finalCurrentPrice = resolvedCurrent.priceRub;
+      const priceNormalized = resolvedCurrent.priceNormalized;
+      const priceUnit = resolvedCurrent.priceUnit;
+      const priceSource = resolvedCurrent.priceSource;
+      const priceWarning = resolvedCurrent.priceWarning;
 
-      // Определяем priceUnit на основе типа актива и наличия номинала
-      const priceUnit = this.determinePriceUnit(assetType, nominal);
+      // Балансовая цена — цена входа одной единицы в рублях.
+      // Для облигаций приводим к рублям тем же арбитражем, что и текущую.
+      const balancePrice = this.parseValue(row['Балансовая цена']);
+      const finalBalancePrice = isBond
+        ? resolveCompanionPrice(balancePrice, nominal, references)
+        : balancePrice;
 
-      // finalCurrentPrice — текущая цена одной единицы в рублях
-      // Для облигаций: nominal × pricePercent / 100
-      // Для акций/ETF: currentPriceRaw = Стоимость из QUIK (без конвертации)
-      let finalCurrentPrice = currentPriceRaw;
-      let priceNormalized: boolean;
-      if (priceUnit === 'UNKNOWN') {
-        finalCurrentPrice = 0;
-        priceNormalized = false;
-      } else if (
-        priceUnit === 'PERCENT_OF_NOMINAL' &&
-        nominal !== undefined &&
-        nominal > 0
-      ) {
-        // Процент от номинала → конвертируем в рубли
-        finalCurrentPrice = (nominal * currentPriceRaw) / 100;
-        // Подтверждаем нормализацию только при успешном результате
-        priceNormalized = Number.isFinite(finalCurrentPrice) && finalCurrentPrice > 0;
-      } else {
-        // RUB — без конвертации, проверяем корректность
-        priceNormalized = Number.isFinite(currentPriceRaw) && currentPriceRaw > 0;
-      }
-
-      // finalBalancePrice — цена входа одной единицы в рублях
-      // QUIK возвращает «Балансовая цена» для облигаций В % от номинала.
-      // Для акций/ETF: balancePrice = значение из Excel (без конвертации)
-      let finalBalancePrice = balancePrice;
-      if (
-        priceUnit === 'PERCENT_OF_NOMINAL' &&
-        nominal !== undefined &&
-        nominal > 0
-      ) {
-        // Процент от номинала → конвертируем в рубли
-        finalBalancePrice = (nominal * balancePrice) / 100;
-      }
+      const dynamicsPercent = this.parseValue(row['Динамика актива']);
 
       // Ищем дневную динамику — только для акций
       const isStock =
@@ -670,11 +838,13 @@ export class XlsxParserModule {
         nominal,
         priceUnit,
         priceNormalized,
+        priceSource,
+        priceWarning,
         quantity: quantity,
         balancePrice: finalBalancePrice,
         currentPrice: finalCurrentPrice,
       });
-    });
+    }
 
     return assets;
   }
@@ -719,7 +889,9 @@ export class XlsxParserModule {
       const headerRow = rowsRaw[0] as unknown[] | undefined;
       if (headerRow) {
         for (let i = 0; i < headerRow.length; i++) {
-          const h = String(headerRow[i] ?? '').toLowerCase().trim();
+          const h = String(headerRow[i] ?? '')
+            .toLowerCase()
+            .trim();
           if (h.includes('целевая доля') || h.includes('доля, %')) {
             targetColIndex = i;
           }
@@ -739,7 +911,9 @@ export class XlsxParserModule {
 
       // Получаем name и ticker
       let name = String(row['Инструмент'] || '').trim();
-      let ticker = String(row['Код инструмента'] || row['Код'] || '').trim().toUpperCase();
+      let ticker = String(row['Код инструмента'] || row['Код'] || '')
+        .trim()
+        .toUpperCase();
 
       // Fallback: используем индексы столбцов из rowsRaw
       if (!name && instrumentColIndex >= 0) {
@@ -751,7 +925,9 @@ export class XlsxParserModule {
       if (!ticker && tickerColIndex >= 0) {
         const rawRow = rowsRaw[i + 1];
         if (rawRow) {
-          ticker = String(rawRow[tickerColIndex] || '').trim().toUpperCase();
+          ticker = String(rawRow[tickerColIndex] || '')
+            .trim()
+            .toUpperCase();
         }
       }
 
@@ -821,6 +997,7 @@ export class XlsxParserModule {
 
     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
     const priceMap: Record<string, PriceLookup> = {};
+    const referenceMap = await this.resolvePriceReferences(rows, bondsMap);
 
     for (const row of rows) {
       const name = String(row['Инструмент'] || '').trim();
@@ -841,52 +1018,55 @@ export class XlsxParserModule {
       if (!ticker) continue;
 
       const assetType = String(row['Вид активов'] || row['Тип'] || '').trim();
+      const isBond = this.isBondAssetType(assetType);
+      const position = this.parseValue(row['Позиция']);
+      const references = referenceMap.get(ticker) ?? [];
 
       // Парсим номинал
       const nominalFromQuik = this.parseNominalFromRow(row);
-      const nominalFromBondsRef = bondsMap.has(ticker)
-        ? bondsMap.get(ticker)!.nominal
-        : undefined;
-      // Приоритет: справочник «Облигации» (учитывает амортизацию) > QUIK > undefined
-      const nominal = nominalFromBondsRef ?? nominalFromQuik;
+      const nominalFromBondsRef = bondsMap.get(ticker)?.nominal;
+      const nominalFromReference = references
+        .map((ref) => ref.nominal)
+        .find((value): value is number => !!value && value > 0);
+      // Приоритет: справочник «Облигации» (учитывает амортизацию) > QUIK > MOEX
+      const nominal =
+        (nominalFromBondsRef && nominalFromBondsRef > 0
+          ? nominalFromBondsRef
+          : undefined) ??
+        nominalFromQuik ??
+        nominalFromReference;
 
-      // Определяем priceUnit
-      const priceUnit = this.determinePriceUnit(assetType, nominal);
+      const rawPrice = this.extractRawPrice(row, position);
+      const resolvedCurrent = resolvePrice({
+        rawPrice: rawPrice.value,
+        nominal,
+        isBond,
+        rawIsRub: rawPrice.rawIsRub,
+        source: rawPrice.source,
+        references,
+      });
 
-      // Читаем данные из QUIK
       const rawBalancePrice = this.parseValue(row['Балансовая цена']);
-      const rawTotalCost = this.parseValue(row['Стоимость']);
+      const balancePriceRub = isBond
+        ? resolveCompanionPrice(rawBalancePrice, nominal, references)
+        : rawBalancePrice;
+
       const rawLiquidationPrice = this.parseValue(row['Ликвидационная цена']);
-      const position = this.parseValue(row['Позиция']);
-
-      // Нормализуем цены в рубли за 1 единицу
-      const balancePriceRub = rawBalancePrice;
-      // Стоимость в QUIK = позиция в рублях → делим на количество
-      const currentPriceRub = position > 0 ? rawTotalCost / position : 0;
-      let liquidationPriceRub = rawLiquidationPrice;
-      let priceNormalized = false;
-
-      if (
-        priceUnit === 'PERCENT_OF_NOMINAL' &&
-        nominal !== undefined &&
-        nominal > 0
-      ) {
-        // QUIK возвращает «Балансовая цена» УЖЕ В РУБЛЯХ — не конвертируем.
-        // «Ликвидационная цена» — в % от номинала → конвертируем в рубли.
-        liquidationPriceRub = (nominal * rawLiquidationPrice) / 100;
-        // currentPrice уже в рублях (из Стоимость / Позиция)
-        priceNormalized = Number.isFinite(currentPriceRub) && currentPriceRub > 0;
-      } else if (priceUnit === 'RUB') {
-        priceNormalized = Number.isFinite(currentPriceRub) && currentPriceRub > 0;
-      }
-      // UNKNOWN → priceNormalized = false
+      const liquidationPriceRub =
+        rawLiquidationPrice > 0
+          ? isBond
+            ? resolveCompanionPrice(rawLiquidationPrice, nominal, references)
+            : rawLiquidationPrice
+          : resolvedCurrent.priceRub;
 
       priceMap[ticker] = {
         balancePrice: balancePriceRub,
-        currentPrice: currentPriceRub,
+        currentPrice: resolvedCurrent.priceRub,
         liquidationPrice: liquidationPriceRub,
-        priceUnit,
-        priceNormalized,
+        priceUnit: resolvedCurrent.priceUnit,
+        priceNormalized: resolvedCurrent.priceNormalized,
+        priceSource: resolvedCurrent.priceSource,
+        priceWarning: resolvedCurrent.priceWarning,
         nominal,
       };
     }
@@ -980,11 +1160,13 @@ export class XlsxParserModule {
         liquidationPrice: number;
         dynamicsPercent: number;
         dailyDynamicsPercent?: number;
-  nkdRub?: number;
-  /** Купонная ставка в рублях (для облигаций) */
-  couponRub?: number;
-  nominal?: number;
+        nkdRub?: number;
+        /** Купонная ставка в рублях (для облигаций) */
+        couponRub?: number;
+        nominal?: number;
         priceUnit?: PriceUnit;
+        priceSource?: PriceSource;
+        priceWarning?: string;
         targetPercentValues: Set<number | undefined>;
         holdOnly: boolean;
         excludeFromStockPool: boolean;
@@ -1040,6 +1222,8 @@ export class XlsxParserModule {
       const liquidationPrice = priceLookup.liquidationPrice;
       const nominal = priceLookup.nominal;
       const priceUnit = priceLookup.priceUnit;
+      const priceSource = priceLookup.priceSource;
+      const priceWarning = priceLookup.priceWarning;
 
       let liqPercent = this.parseValue(
         row['%, активов, по ликвидационной стоимости'] || row['Доля'],
@@ -1142,6 +1326,8 @@ export class XlsxParserModule {
             nkdRub: nkd,
             nominal: nominal,
             priceUnit: priceUnit,
+            priceSource: priceSource,
+            priceWarning: priceWarning,
             holdOnly: sheetHoldOnly,
             excludeFromStockPool: sheetExcludeFromStockPool,
           });
@@ -1165,6 +1351,8 @@ export class XlsxParserModule {
           nkdRub: nkd,
           nominal: nominal,
           priceUnit: priceUnit,
+          priceSource: priceSource,
+          priceWarning: priceWarning,
           holdOnly: false,
           excludeFromStockPool: false,
         });
@@ -1205,6 +1393,8 @@ export class XlsxParserModule {
           nkdRub: nkd,
           nominal: nominal,
           priceUnit: priceUnit,
+          priceSource: priceSource,
+          priceWarning: priceWarning,
           targetPercentValues: new Set([targetPct]),
           holdOnly: holdOnly,
           excludeFromStockPool: excludeFromStockPool,
@@ -1322,6 +1512,8 @@ export class XlsxParserModule {
         nkdRub: asset.nkdRub,
         nominal: asset.nominal,
         priceUnit: asset.priceUnit,
+        priceSource: asset.priceSource,
+        priceWarning: asset.priceWarning,
         totalBalanceValue: asset.totalBalanceValue,
         holdOnly: asset.holdOnly,
         excludeFromStockPool: asset.excludeFromStockPool,
@@ -1342,14 +1534,16 @@ export class XlsxParserModule {
     }
     if (targetValidation.warnings.length > 0) {
       for (const warn of targetValidation.warnings) {
-        console.warn(`[XLSX-PARSER] Предупреждение валидации целевых долей: ${warn}`);
+        console.warn(
+          `[XLSX-PARSER] Предупреждение валидации целевых долей: ${warn}`,
+        );
       }
     }
     // Логирование итоговой сводки (не влияет на бизнес-логику)
     if (targetValidation.isValid) {
       console.log(
         `[XLSX-PARSER] Целевые доли валидны: сумма=${targetValidation.totalTargetPercent.toFixed(2)}%, ` +
-        `кэш-резерв=${targetValidation.cashReservePercent.toFixed(2)}%`,
+          `кэш-резерв=${targetValidation.cashReservePercent.toFixed(2)}%`,
       );
     }
 
@@ -1385,7 +1579,7 @@ export class XlsxParserModule {
           Math.round((agg.totalBalanceValue / totalQty) * 100) / 100;
       }
 
-    return {
+      return {
         name: agg.name,
         ticker: agg.ticker,
         assetType: agg.assetType,
@@ -1398,6 +1592,10 @@ export class XlsxParserModule {
         nkdRub: agg.nkdRub,
         nominal: agg.nominal,
         priceUnit: agg.priceUnit,
+        priceNormalized:
+          agg.priceUnit !== undefined && agg.priceUnit !== 'UNKNOWN',
+        priceSource: agg.priceSource,
+        priceWarning: agg.priceWarning,
         quantity: totalQty,
         balancePrice: balancePrice,
         currentPrice: agg.currentPrice,
@@ -1527,16 +1725,16 @@ export class XlsxParserModule {
   }
 
   /**
-    * Парсинг листа «Параметры» — инвестиционный профиль пользователя.
-    *
-    * Структура таблицы:
-    *   - Инвестиционный горизонт: short / medium / long
-    *   - Цель портфеля: income / growth / preservation
-    *   - Риск-профиль: conservative / moderate / aggressive
-    *   - Максимальная просадка, %: число
-    *
-    * Возвращает InvestorParams | null (если лист не найден)
-    */
+   * Парсинг листа «Параметры» — инвестиционный профиль пользователя.
+   *
+   * Структура таблицы:
+   *   - Инвестиционный горизонт: short / medium / long
+   *   - Цель портфеля: income / growth / preservation
+   *   - Риск-профиль: conservative / moderate / aggressive
+   *   - Максимальная просадка, %: число
+   *
+   * Возвращает InvestorParams | null (если лист не найден)
+   */
   public async parseInvestorParams(): Promise<InvestorParams | null> {
     await this.loadWorkbook();
 
@@ -1545,7 +1743,9 @@ export class XlsxParserModule {
     );
     if (!sheetName || !this.workbook) {
       console.warn(
-        '⚠️ [INVESTOR_PARAMS] Лист «' + config.PARAMS_SHEET_NAME + '» не найден — используются параметры по умолчанию',
+        '⚠️ [INVESTOR_PARAMS] Лист «' +
+          config.PARAMS_SHEET_NAME +
+          '» не найден — используются параметры по умолчанию',
       );
       return null;
     }
@@ -1568,22 +1768,46 @@ export class XlsxParserModule {
     }
 
     // Парсим горизонт
-    const horizonRaw = String(params[config.PARAM_KEY_HORIZON] ?? '').toLowerCase();
+    const horizonRaw = String(
+      params[config.PARAM_KEY_HORIZON] ?? '',
+    ).toLowerCase();
     let horizon: 'short' | 'medium' | 'long' = 'medium';
-    if (horizonRaw.includes('short') || horizonRaw.includes('краткосрочн')) horizon = 'short';
-    else if (horizonRaw.includes('long') || horizonRaw.includes('долгосрочн')) horizon = 'long';
+    if (horizonRaw.includes('short') || horizonRaw.includes('краткосрочн'))
+      horizon = 'short';
+    else if (horizonRaw.includes('long') || horizonRaw.includes('долгосрочн'))
+      horizon = 'long';
 
     // Парсим цель
     const goalRaw = String(params[config.PARAM_KEY_GOAL] ?? '').toLowerCase();
     let goal: 'income' | 'growth' | 'preservation' = 'growth';
-    if (goalRaw.includes('income') || goalRaw.includes('доход') || goalRaw.includes('купо')) goal = 'income';
-    else if (goalRaw.includes('preservation') || goalRaw.includes('сохранен') || goalRaw.includes('защит')) goal = 'preservation';
+    if (
+      goalRaw.includes('income') ||
+      goalRaw.includes('доход') ||
+      goalRaw.includes('купо')
+    )
+      goal = 'income';
+    else if (
+      goalRaw.includes('preservation') ||
+      goalRaw.includes('сохранен') ||
+      goalRaw.includes('защит')
+    )
+      goal = 'preservation';
 
     // Парсим риск-профиль
     const riskRaw = String(params[config.PARAM_KEY_RISK] ?? '').toLowerCase();
     let riskProfile: 'conservative' | 'moderate' | 'aggressive' = 'moderate';
-    if (riskRaw.includes('conservative') || riskRaw.includes('консервативн') || riskRaw.includes('низк')) riskProfile = 'conservative';
-    else if (riskRaw.includes('aggressive') || riskRaw.includes('агрессивн') || riskRaw.includes('высок')) riskProfile = 'aggressive';
+    if (
+      riskRaw.includes('conservative') ||
+      riskRaw.includes('консервативн') ||
+      riskRaw.includes('низк')
+    )
+      riskProfile = 'conservative';
+    else if (
+      riskRaw.includes('aggressive') ||
+      riskRaw.includes('агрессивн') ||
+      riskRaw.includes('высок')
+    )
+      riskProfile = 'aggressive';
 
     // Парсим макс. просадку
     const maxDdRaw = params[config.PARAM_KEY_MAX_DD];
@@ -1598,288 +1822,302 @@ export class XlsxParserModule {
   }
 
   /**
-    * Парсинг листа «Облигации» — полные рыночные данные по облигационным выпускам.
-    *
-    * Структура таблицы (динамический поиск заголовков):
-    *   A: Инструмент
-    *   B: ISIN / ISIN-код / Код ISIN / ISIN код
-    *   C: Листинг
-    *   D: Цена последняя
-    *   E: Доходность
-    *   F: Оборот
-    *   G: Номинал / Номинальная стоимость / Nominal / Номинал облигации
-    *   H: Размер купона
-    *   I: Длительность купона
-    *   J: Дата выплаты купона
-    *   K: НКД
-    *   L: Дата погашения
-    *   M: Дюрация
-    *
-    * Возвращает Map<ISIN, BondReferenceData>
-    */
-   public async parseBondsSheet(): Promise<Map<string, BondReferenceData>> {
-     await this.loadWorkbook();
-     const bondsMap = new Map<string, BondReferenceData>();
+   * Парсинг листа «Облигации» — полные рыночные данные по облигационным выпускам.
+   *
+   * Структура таблицы (динамический поиск заголовков):
+   *   A: Инструмент
+   *   B: ISIN / ISIN-код / Код ISIN / ISIN код
+   *   C: Листинг
+   *   D: Цена последняя
+   *   E: Доходность
+   *   F: Оборот
+   *   G: Номинал / Номинальная стоимость / Nominal / Номинал облигации
+   *   H: Размер купона
+   *   I: Длительность купона
+   *   J: Дата выплаты купона
+   *   K: НКД
+   *   L: Дата погашения
+   *   M: Дюрация
+   *
+   * Возвращает Map<ISIN, BondReferenceData>
+   */
+  public async parseBondsSheet(): Promise<Map<string, BondReferenceData>> {
+    await this.loadWorkbook();
+    const bondsMap = new Map<string, BondReferenceData>();
 
-     const sheetName = this.workbook?.SheetNames.find(
-       (name) => name === config.BONDS_SHEET_NAME,
-     );
-     if (!sheetName || !this.workbook) {
-       console.warn(
-         '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» не найден',
-       );
-       return bondsMap;
-     }
-
-     const sheet = this.workbook.Sheets[sheetName];
-     if (!sheet || !sheet['!ref']) {
-       console.warn(
-         '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» пуст',
-       );
-       return bondsMap;
-     }
-
-      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
-
-      for (const row of rows) {
-       // ISIN из любой из допустимых колонок
-       const isin = String(
-         row[config.BONDS_COLUMN_ISIN] ||
-           row[config.BONDS_COLUMN_ISIN_ALT1] ||
-           row[config.BONDS_COLUMN_ISIN_ALT2] ||
-           row[config.BONDS_COLUMN_ISIN_ALT3] ||
-           '',
-       )
-         .trim()
-         .toUpperCase();
-       if (!isin || isin.length < 10) continue;
-
-       // Номинал из любой из допустимых колонок
-       const nominal = this.parseNominalFromRow(row) ?? 0;
-
-       // A: Инструмент
-       const instrumentName = String(
-         row[config.BONDS_COLUMN_INSTRUMENT] || '',
-       ).trim();
-
-       // C: Листинг
-       const listingLevel = String(
-         row[config.BONDS_COLUMN_LISTING] || '',
-       ).trim();
-
-       // D: Цена последняя
-       const lastPrice = this.parseValue(
-         row[config.BONDS_COLUMN_LAST_PRICE],
-       );
-
-       // E: Доходность
-       const yield_ = this.parseValue(row[config.BONDS_COLUMN_YIELD]);
-
-       // F: Оборот
-       const turnover = this.parseValue(row[config.BONDS_COLUMN_TURNOVER]);
-
-       // H: Размер купона
-       const couponAmount = this.parseValue(
-         row[config.BONDS_COLUMN_COUPON_AMOUNT],
-       );
-
-       // I: Длительность купона (дни)
-       const couponPeriodDays = this.parseValue(
-         row[config.BONDS_COLUMN_COUPON_PERIOD],
-       );
-
-       // J: Дата выплаты купона
-       let nextCouponDate: Date | null = null;
-       const rawCouponDate = row[config.BONDS_COLUMN_COUPON_DATE];
-       if (rawCouponDate !== undefined && rawCouponDate !== null && rawCouponDate !== '') {
-         nextCouponDate = this.parseExcelDate(rawCouponDate);
-       }
-
-       // K: НКД
-       const nkd = this.parseValue(row[config.BONDS_COLUMN_NKD]);
-
-       // L: Дата погашения
-       let maturityDate: Date | null = null;
-       const rawMaturityDate = row[config.BONDS_COLUMN_MATURITY_DATE];
-       if (rawMaturityDate !== undefined && rawMaturityDate !== null && rawMaturityDate !== '') {
-         maturityDate = this.parseExcelDate(rawMaturityDate);
-       }
-
-        // M: Дюрация
-        const duration = this.parseValue(row[config.BONDS_COLUMN_DURATION]);
-
-        // N: Эмитент — ищем столбец по ключу, содержащему «Эмитент» или «Issuer»
-        let issuer = '';
-        for (const key of Object.keys(row)) {
-          const keyLower = key.toLowerCase();
-          if (
-            keyLower.includes('эмитент') ||
-            keyLower.includes('issuer') ||
-            keyLower.includes('эмит')
-          ) {
-            issuer = String(row[key] || '').trim();
-            break;
-          }
-        }
-
-        bondsMap.set(isin, {
-          isin,
-          nominal,
-          source: 'EXCEL_BONDS',
-          instrumentName,
-          listingLevel,
-          lastPrice,
-          yield: yield_,
-          turnover,
-          couponAmount,
-          couponPeriodDays,
-          nextCouponDate,
-          nkd,
-          maturityDate,
-          duration,
-          issuer,
-          asOfDate: null, // Дата актуальности определяется при загрузке книги
-        });
-     }
-
-      // Сохраняем в кэш
-      this.bondReferenceData = bondsMap;
-
-      // Обогащаем данные из MOEX (эмитенты, типы купонов и т.д.)
-      await this.enrichBondsFromMoex(bondsMap);
-
+    const sheetName = this.workbook?.SheetNames.find(
+      (name) => name === config.BONDS_SHEET_NAME,
+    );
+    if (!sheetName || !this.workbook) {
+      console.warn(
+        '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» не найден',
+      );
       return bondsMap;
     }
 
-    /**
-     * Обогащение данных из Excel данными с MOEX ISS API.
-     * Загружает эмитентов, типы купонов, частоту выплат и другие поля.
-     */
-    private async enrichBondsFromMoex(
-      bondsMap: Map<string, BondReferenceData>,
-    ): Promise<void> {
-      try {
-        const isins = Array.from(bondsMap.keys());
-        if (isins.length === 0) return;
-
-        console.log(`[BondEnrich] Загрузка данных с MOEX для ${isins.length} облигаций...`);
-
-        // Загружаем справочник с MOEX
-        const { fetchBondCatalog } = await import(
-          '../../api/moex-api/bond-api.js'
-        );
-        const catalog = await fetchBondCatalog();
-
-        if (catalog.length === 0) {
-          console.warn('[BondEnrich] ⚠️ MOEX вернул пустой справочник');
-          return;
-        }
-
-        // Создаём маппинг ISIN → BondInfo
-        const moexMap = new Map<string, import('../../api/moex-api/bond-api.js').BondInfo>();
-        for (const bond of catalog) {
-          moexMap.set(bond.isin, bond);
-        }
-
-        // Обогащаем данные
-        let enriched = 0;
-        let matched = 0;
-
-        for (const [isin, bond] of bondsMap) {
-          const moex = moexMap.get(isin);
-          if (moex) {
-            matched++;
-
-            // Обновляем эмитента из MOEX (самое важное)
-            if (!bond.issuer && moex.issuerName) {
-              bond.issuer = moex.issuerName;
-            }
-
-            // Обновляем тип купона
-            if (!bond.couponType && moex.couponType) {
-              bond.couponType = moex.couponType;
-              enriched++;
-            }
-
-            // Обновляем рейтинг МОEX
-            if (!bond.icbrrRating && moex.icbrrRating) {
-              bond.icbrrRating = moex.icbrrRating;
-              enriched++;
-            }
-
-            // Обновляем сектор
-            if (!bond.sector && moex.sector) {
-              bond.sector = moex.sector;
-              enriched++;
-            }
-
-            // Обновляем спред к КС (для флоатеров)
-            if (moex.floatSpreadPct != null && moex.floatSpreadPct > 0) {
-              bond.floatSpreadPct = moex.floatSpreadPct;
-              enriched++;
-            }
-
-            // Обновляем базовый индекс
-            if (!bond.floatIndex && moex.floatIndex) {
-              bond.floatIndex = moex.floatIndex;
-              enriched++;
-            }
-
-            // Обновляем опцион
-            if (moex.hasOption && !bond.hasOption) {
-              bond.hasOption = moex.hasOption;
-              enriched++;
-            }
-
-            // Обновляем дату опциона
-            if (moex.callDate && !bond.callDate) {
-              bond.callDate = moex.callDate;
-              enriched++;
-            }
-
-            // Обновляем амортизацию
-            if (moex.hasAmortization && !bond.hasAmortization) {
-              bond.hasAmortization = moex.hasAmortization;
-              enriched++;
-            }
-
-            // Обновляем частоту купонов
-            if (!bond.couponFrequency && moex.couponFrequency && moex.couponFrequency > 0) {
-              bond.couponFrequency = moex.couponFrequency;
-              enriched++;
-            }
-          }
-        }
-
-        console.log(
-          `[BondEnrich] ✅ Совпадений: ${matched}/${isins.length}, обновлено эмитентов: ${enriched}`,
-        );
-      } catch (error) {
-        console.warn('[BondEnrich] ⚠️ Ошибка обогащения из MOEX:', error);
-        // Не блокируем парсинг, если MOEX недоступен
-      }
+    const sheet = this.workbook.Sheets[sheetName];
+    if (!sheet || !sheet['!ref']) {
+      console.warn(
+        '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» пуст',
+      );
+      return bondsMap;
     }
 
-   /**
-    * Безопасная конвертация значения Excel в Date.
-    * Поддерживает: число (serial date), строку, объект Date.
-    */
-   private parseExcelDate(val: unknown): Date | null {
-     if (val instanceof Date && !isNaN(val.getTime())) {
-       return val;
-     }
-     if (typeof val === 'number') {
-       // Excel serial date: days since 1899-12-30
-       const ms = (val - 25569) * 86400 * 1000;
-       const d = new Date(ms);
-       return isNaN(d.getTime()) ? null : d;
-     }
-     if (typeof val === 'string') {
-       const d = new Date(val.trim());
-       return isNaN(d.getTime()) ? null : d;
-     }
-     return null;
-   }
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+
+    for (const row of rows) {
+      // ISIN из любой из допустимых колонок
+      const isin = String(
+        row[config.BONDS_COLUMN_ISIN] ||
+          row[config.BONDS_COLUMN_ISIN_ALT1] ||
+          row[config.BONDS_COLUMN_ISIN_ALT2] ||
+          row[config.BONDS_COLUMN_ISIN_ALT3] ||
+          '',
+      )
+        .trim()
+        .toUpperCase();
+      if (!isin || isin.length < 10) continue;
+
+      // Номинал из любой из допустимых колонок
+      const nominal = this.parseNominalFromRow(row) ?? 0;
+
+      // A: Инструмент
+      const instrumentName = String(
+        row[config.BONDS_COLUMN_INSTRUMENT] || '',
+      ).trim();
+
+      // C: Листинг
+      const listingLevel = String(
+        row[config.BONDS_COLUMN_LISTING] || '',
+      ).trim();
+
+      // D: Цена последняя
+      const lastPrice = this.parseValue(row[config.BONDS_COLUMN_LAST_PRICE]);
+
+      // E: Доходность
+      const yield_ = this.parseValue(row[config.BONDS_COLUMN_YIELD]);
+
+      // F: Оборот
+      const turnover = this.parseValue(row[config.BONDS_COLUMN_TURNOVER]);
+
+      // H: Размер купона
+      const couponAmount = this.parseValue(
+        row[config.BONDS_COLUMN_COUPON_AMOUNT],
+      );
+
+      // I: Длительность купона (дни)
+      const couponPeriodDays = this.parseValue(
+        row[config.BONDS_COLUMN_COUPON_PERIOD],
+      );
+
+      // J: Дата выплаты купона
+      let nextCouponDate: Date | null = null;
+      const rawCouponDate = row[config.BONDS_COLUMN_COUPON_DATE];
+      if (
+        rawCouponDate !== undefined &&
+        rawCouponDate !== null &&
+        rawCouponDate !== ''
+      ) {
+        nextCouponDate = this.parseExcelDate(rawCouponDate);
+      }
+
+      // K: НКД
+      const nkd = this.parseValue(row[config.BONDS_COLUMN_NKD]);
+
+      // L: Дата погашения
+      let maturityDate: Date | null = null;
+      const rawMaturityDate = row[config.BONDS_COLUMN_MATURITY_DATE];
+      if (
+        rawMaturityDate !== undefined &&
+        rawMaturityDate !== null &&
+        rawMaturityDate !== ''
+      ) {
+        maturityDate = this.parseExcelDate(rawMaturityDate);
+      }
+
+      // M: Дюрация
+      const duration = this.parseValue(row[config.BONDS_COLUMN_DURATION]);
+
+      // N: Эмитент — ищем столбец по ключу, содержащему «Эмитент» или «Issuer»
+      let issuer = '';
+      for (const key of Object.keys(row)) {
+        const keyLower = key.toLowerCase();
+        if (
+          keyLower.includes('эмитент') ||
+          keyLower.includes('issuer') ||
+          keyLower.includes('эмит')
+        ) {
+          issuer = String(row[key] || '').trim();
+          break;
+        }
+      }
+
+      bondsMap.set(isin, {
+        isin,
+        nominal,
+        source: 'EXCEL_BONDS',
+        instrumentName,
+        listingLevel,
+        lastPrice,
+        yield: yield_,
+        turnover,
+        couponAmount,
+        couponPeriodDays,
+        nextCouponDate,
+        nkd,
+        maturityDate,
+        duration,
+        issuer,
+        asOfDate: null, // Дата актуальности определяется при загрузке книги
+      });
+    }
+
+    // Сохраняем в кэш
+    this.bondReferenceData = bondsMap;
+
+    // Обогащаем данные из MOEX (эмитенты, типы купонов и т.д.)
+    await this.enrichBondsFromMoex(bondsMap);
+
+    return bondsMap;
+  }
+
+  /**
+   * Обогащение данных из Excel данными с MOEX ISS API.
+   * Загружает эмитентов, типы купонов, частоту выплат и другие поля.
+   */
+  private async enrichBondsFromMoex(
+    bondsMap: Map<string, BondReferenceData>,
+  ): Promise<void> {
+    try {
+      const isins = Array.from(bondsMap.keys());
+      if (isins.length === 0) return;
+
+      console.log(
+        `[BondEnrich] Загрузка данных с MOEX для ${isins.length} облигаций...`,
+      );
+
+      // Загружаем справочник с MOEX
+      const { fetchBondCatalog } =
+        await import('../../api/moex-api/bond-api.js');
+      const catalog = await fetchBondCatalog();
+
+      if (catalog.length === 0) {
+        console.warn('[BondEnrich] ⚠️ MOEX вернул пустой справочник');
+        return;
+      }
+
+      // Создаём маппинг ISIN → BondInfo
+      const moexMap = new Map<
+        string,
+        import('../../api/moex-api/bond-api.js').BondInfo
+      >();
+      for (const bond of catalog) {
+        moexMap.set(bond.isin, bond);
+      }
+
+      // Обогащаем данные
+      let enriched = 0;
+      let matched = 0;
+
+      for (const [isin, bond] of bondsMap) {
+        const moex = moexMap.get(isin);
+        if (moex) {
+          matched++;
+
+          // Обновляем эмитента из MOEX (самое важное)
+          if (!bond.issuer && moex.issuerName) {
+            bond.issuer = moex.issuerName;
+          }
+
+          // Обновляем тип купона
+          if (!bond.couponType && moex.couponType) {
+            bond.couponType = moex.couponType;
+            enriched++;
+          }
+
+          // Обновляем рейтинг МОEX
+          if (!bond.icbrrRating && moex.icbrrRating) {
+            bond.icbrrRating = moex.icbrrRating;
+            enriched++;
+          }
+
+          // Обновляем сектор
+          if (!bond.sector && moex.sector) {
+            bond.sector = moex.sector;
+            enriched++;
+          }
+
+          // Обновляем спред к КС (для флоатеров)
+          if (moex.floatSpreadPct != null && moex.floatSpreadPct > 0) {
+            bond.floatSpreadPct = moex.floatSpreadPct;
+            enriched++;
+          }
+
+          // Обновляем базовый индекс
+          if (!bond.floatIndex && moex.floatIndex) {
+            bond.floatIndex = moex.floatIndex;
+            enriched++;
+          }
+
+          // Обновляем опцион
+          if (moex.hasOption && !bond.hasOption) {
+            bond.hasOption = moex.hasOption;
+            enriched++;
+          }
+
+          // Обновляем дату опциона
+          if (moex.callDate && !bond.callDate) {
+            bond.callDate = moex.callDate;
+            enriched++;
+          }
+
+          // Обновляем амортизацию
+          if (moex.hasAmortization && !bond.hasAmortization) {
+            bond.hasAmortization = moex.hasAmortization;
+            enriched++;
+          }
+
+          // Обновляем частоту купонов
+          if (
+            !bond.couponFrequency &&
+            moex.couponFrequency &&
+            moex.couponFrequency > 0
+          ) {
+            bond.couponFrequency = moex.couponFrequency;
+            enriched++;
+          }
+        }
+      }
+
+      console.log(
+        `[BondEnrich] ✅ Совпадений: ${matched}/${isins.length}, обновлено эмитентов: ${enriched}`,
+      );
+    } catch (error) {
+      console.warn('[BondEnrich] ⚠️ Ошибка обогащения из MOEX:', error);
+      // Не блокируем парсинг, если MOEX недоступен
+    }
+  }
+
+  /**
+   * Безопасная конвертация значения Excel в Date.
+   * Поддерживает: число (serial date), строку, объект Date.
+   */
+  private parseExcelDate(val: unknown): Date | null {
+    if (val instanceof Date && !isNaN(val.getTime())) {
+      return val;
+    }
+    if (typeof val === 'number') {
+      // Excel serial date: days since 1899-12-30
+      const ms = (val - 25569) * 86400 * 1000;
+      const d = new Date(ms);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    if (typeof val === 'string') {
+      const d = new Date(val.trim());
+      return isNaN(d.getTime()) ? null : d;
+    }
+    return null;
+  }
 
   /**
    * Получить справочные данные по облигации по ISIN.
@@ -1985,11 +2223,7 @@ export class XlsxParserModule {
           ).toUpperCase();
 
           const val = this.parseValue(
-            this.findColumnValue(row, [
-              'Целевая доля',
-              'Процент',
-              'Доля',
-            ]),
+            this.findColumnValue(row, ['Целевая доля', 'Процент', 'Доля']),
           );
           if (val === 0) continue;
 
@@ -2017,16 +2251,10 @@ export class XlsxParserModule {
 
         if (targetRow) {
           const bondsVal = this.parseValue(
-            this.findColumnValue(targetRow, [
-              'Облигации',
-              'Bonds',
-            ]),
+            this.findColumnValue(targetRow, ['Облигации', 'Bonds']),
           );
           const stocksVal = this.parseValue(
-            this.findColumnValue(targetRow, [
-              'Акции',
-              'Stocks',
-            ]),
+            this.findColumnValue(targetRow, ['Акции', 'Stocks']),
           );
 
           if (stocksVal > 0 && stocksPercent === undefined) {
@@ -2043,6 +2271,7 @@ export class XlsxParserModule {
     const reportSheet = this.workbook?.Sheets[config.TRADES_SHEET_NAME];
     let freeCash: number | undefined;
     let totalBalance: number | undefined;
+    let totalLiquidationValue: number | undefined;
 
     if (reportSheet && reportSheet['!ref']) {
       const reportRows =
@@ -2057,7 +2286,9 @@ export class XlsxParserModule {
             'Наименование операции',
             'Инструмент',
           ]),
-        ).trim().toUpperCase();
+        )
+          .trim()
+          .toUpperCase();
         const value = this.parseValue(
           this.findColumnValue(row, [
             'Сумма',
@@ -2070,7 +2301,10 @@ export class XlsxParserModule {
 
         if (name.includes('ЛИКВИДН') && name.includes('СРЕДСТВ')) {
           freeCash = value;
-        } else if (name.includes('ИТОГО АКТИВ') || name.includes('ВСЕГО АКТИВ')) {
+        } else if (
+          name.includes('ИТОГО АКТИВ') ||
+          name.includes('ВСЕГО АКТИВ')
+        ) {
           totalBalance = value;
         } else if (name.includes('ВНЕШ') || name.includes('ВЛОЖЕН')) {
           this.cachedInvestedFunds = value;
@@ -2078,7 +2312,10 @@ export class XlsxParserModule {
       }
 
       // Fallback: ищем по __EMPTY ключам (без заголовков)
-      if ((freeCash === undefined || freeCash === 0) && totalBalance === undefined) {
+      if (
+        (freeCash === undefined || freeCash === 0) &&
+        totalBalance === undefined
+      ) {
         for (const row of reportRows) {
           if (!row) continue;
           const rowKeys = Object.keys(row);
@@ -2089,12 +2326,17 @@ export class XlsxParserModule {
               // Ищем значение в соседнем столбце
               const idx = rowKeys.indexOf(key);
               const valKey = rowKeys[idx + 1];
-              if (valKey) freeCash = this.parseValue(row[valKey as keyof typeof row]);
+              if (valKey)
+                freeCash = this.parseValue(row[valKey as keyof typeof row]);
             }
-            if (valStr.includes('ИТОГО АКТИВ') || valStr.includes('ВСЕГО АКТИВ')) {
+            if (
+              valStr.includes('ИТОГО АКТИВ') ||
+              valStr.includes('ВСЕГО АКТИВ')
+            ) {
               const idx = rowKeys.indexOf(key);
               const valKey = rowKeys[idx + 1];
-              if (valKey) totalBalance = this.parseValue(row[valKey as keyof typeof row]);
+              if (valKey)
+                totalBalance = this.parseValue(row[valKey as keyof typeof row]);
             }
           }
         }
@@ -2126,6 +2368,11 @@ export class XlsxParserModule {
 
           if (config.FREE_CASH_ROW_KEYWORDS.some((kw) => name === kw)) continue;
 
+          // Пропускаем итоговые/служебные строки: у них нет позиции
+          // (например, строка «15» / «Итог» с суммарной стоимостью).
+          const position = this.parseValue(row['Позиция']);
+          if (!isNaN(Number(name)) || position <= 0) continue;
+
           const liqCost = this.parseValue(
             row['Ликвидационная стоимость'] ||
               row['Стоимость'] ||
@@ -2143,6 +2390,54 @@ export class XlsxParserModule {
             totalBalance = (totalBalance || 0) + liqPrice * quantity;
           } else {
             totalBalance = (totalBalance || 0) + liqCost;
+          }
+        }
+      }
+    }
+
+    // Рассчитываем totalLiquidationValue из QUIK (ликвидационная стоимость портфеля)
+    if (totalLiquidationValue === undefined || totalLiquidationValue === 0) {
+      const quikSheet = this.workbook?.Sheets[config.QUIK_SHEET_NAME];
+      if (quikSheet && quikSheet['!ref']) {
+        const quikRows =
+          XLSX.utils.sheet_to_json<Record<string, unknown>>(quikSheet);
+
+        for (const row of quikRows) {
+          const name = String(row['Инструмент'] || '').trim();
+
+          if (
+            !name ||
+            config.EXCLUDED_ROW_KEYWORDS.some((kw) =>
+              name.toUpperCase().includes(kw),
+            )
+          )
+            continue;
+
+          if (config.FREE_CASH_ROW_KEYWORDS.some((kw) => name === kw)) continue;
+
+          // Пропускаем итоговые/служебные строки: у них нет позиции
+          // (например, строка «15» / «Итог» с суммарной стоимостью).
+          const position = this.parseValue(row['Позиция']);
+          if (!isNaN(Number(name)) || position <= 0) continue;
+
+          const liqCost = this.parseValue(
+            row['Ликвидационная стоимость'] ||
+              row['Стоимость'] ||
+              row['Балансовая стоимость'],
+          );
+
+          if (liqCost === 0) {
+            const liqPrice = this.parseValue(row['Ликвидационная цена']);
+            const quantityKey = Object.keys(row).find((k) =>
+              k.toUpperCase().includes('КОЛ'),
+            );
+            const quantity = quantityKey
+              ? this.parseValue(row[quantityKey])
+              : 0;
+            totalLiquidationValue =
+              (totalLiquidationValue || 0) + liqPrice * quantity;
+          } else {
+            totalLiquidationValue = (totalLiquidationValue || 0) + liqCost;
           }
         }
       }
@@ -2174,6 +2469,7 @@ export class XlsxParserModule {
 
     return {
       totalBalance,
+      totalLiquidationValue: totalLiquidationValue || totalBalance,
       freeCash,
       stocksPercent,
       bondsPercent,
@@ -2205,7 +2501,9 @@ export class XlsxParserModule {
             'Наименование операции',
             'Инструмент',
           ]),
-        ).trim().toUpperCase();
+        )
+          .trim()
+          .toUpperCase();
         const value = this.parseValue(
           this.findColumnValue(row, [
             'Сумма',
@@ -2343,7 +2641,7 @@ export class XlsxParserModule {
     let profitC11: number | undefined;
     let tradesCount: number | undefined;
     let anomalousDepositsTotal: number = 0;
-    
+
     // Парсим таблицу "Денежные средства" для получения точных сумм ввода/вывода и всех взносов
     const cashFlow = await this.parseCashFlowSheet();
     const currentMonthDeposits = cashFlow.currentMonthDeposits;
@@ -2351,7 +2649,7 @@ export class XlsxParserModule {
     const currentYearDeposits = cashFlow.currentYearDeposits;
     const lastYearDeposits = cashFlow.lastYearDeposits;
     const allDeposits = cashFlow.allDeposits;
-    
+
     if (cashFlow.totalWithdrawals > 0) {
       totalWithdrawalsSum = cashFlow.totalWithdrawals;
     }
@@ -2370,7 +2668,9 @@ export class XlsxParserModule {
             'Наименование операции',
             'Инструмент',
           ]),
-        ).trim().toUpperCase();
+        )
+          .trim()
+          .toUpperCase();
         const value = this.parseValue(
           this.findColumnValue(row, [
             'Сумма',
@@ -2385,7 +2685,11 @@ export class XlsxParserModule {
           totalPurchasesSum = value;
         } else if (name.includes('ПРОДАЖ')) {
           totalSalesSum = value;
-        } else if (name.includes('ВЫВЕД') || name.includes('СНЯТИЕ') || name.includes('ВЫВОД')) {
+        } else if (
+          name.includes('ВЫВЕД') ||
+          name.includes('СНЯТИЕ') ||
+          name.includes('ВЫВОД')
+        ) {
           totalWithdrawalsSum += value;
         } else if (name.includes('КОМИССИ')) {
           totalHistoricalCommission = value;
@@ -2432,7 +2736,9 @@ export class XlsxParserModule {
 
     // Определяем startDate — первый новый взнос после 23.12.2021
     // 23.12.2021 — это перенос из старой таблицы, не учитываем
-    const firstValidDepositDate = allDeposits.find(d => d.date > new Date(2021, 11, 23));
+    const firstValidDepositDate = allDeposits.find(
+      (d) => d.date > new Date(2021, 11, 23),
+    );
     if (firstValidDepositDate) {
       this.startDate = firstValidDepositDate.date;
     } else {
@@ -2504,23 +2810,30 @@ export class XlsxParserModule {
 
     // Рассчитываем averageMonthlyDeposit и anomalousDepositsTotal
     // averageMonthlyDeposit = (totalDepositsSum - anomalousDepositsTotal) / months
-    const monthsSinceStart = Math.max(1, Math.floor((Date.now() - this.startDate.getTime()) / (30 * 24 * 60 * 60 * 1000)));
-    
+    const monthsSinceStart = Math.max(
+      1,
+      Math.floor(
+        (Date.now() - this.startDate.getTime()) / (30 * 24 * 60 * 60 * 1000),
+      ),
+    );
+
     // Считаем аномальные взносы: отклонение от среднего больше 2 стандартных отклонений
     if (allDeposits.length > 0) {
-      const values = allDeposits.map(d => d.value);
+      const values = allDeposits.map((d) => d.value);
       const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
-      const variance = values.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / values.length;
+      const variance =
+        values.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) /
+        values.length;
       const stdDev = Math.sqrt(variance);
       const threshold = mean + 2 * stdDev; // Аномальные — те, что больше среднего + 2σ
-      
+
       for (const deposit of allDeposits) {
         if (deposit.value > threshold) {
           anomalousDepositsTotal += deposit.value;
         }
       }
     }
-    
+
     const nonAnomalousDeposits = totalDepositsSum - anomalousDepositsTotal;
     const averageMonthlyDeposit = nonAnomalousDeposits / monthsSinceStart;
 
@@ -2563,11 +2876,11 @@ export class XlsxParserModule {
   }
 
   /**
-    * Парсинг таблицы "Денежные средства" из Excel
-    * Возвращает суммы по периодам + массив всех взносов для расчёта среднего
-    * Таблица: строка 4 - заголовок, строка 5+ - данные
-    * Столбцы: A=№, B=Дата, C=начальный, D=ввод, E=вывод, F=конечный
-    */
+   * Парсинг таблицы "Денежные средства" из Excel
+   * Возвращает суммы по периодам + массив всех взносов для расчёта среднего
+   * Таблица: строка 4 - заголовок, строка 5+ - данные
+   * Столбцы: A=№, B=Дата, C=начальный, D=ввод, E=вывод, F=конечный
+   */
   private async parseCashFlowSheet(): Promise<{
     totalDeposits: number;
     totalWithdrawals: number;
@@ -2578,20 +2891,47 @@ export class XlsxParserModule {
     allDeposits: Array<{ value: number; date: Date }>;
   }> {
     await this.loadWorkbook();
-    if (!this.workbook) return { totalDeposits: 0, totalWithdrawals: 0, currentMonthDeposits: 0, lastMonthDeposits: 0, currentYearDeposits: 0, lastYearDeposits: 0, allDeposits: [] };
-    
+    if (!this.workbook)
+      return {
+        totalDeposits: 0,
+        totalWithdrawals: 0,
+        currentMonthDeposits: 0,
+        lastMonthDeposits: 0,
+        currentYearDeposits: 0,
+        lastYearDeposits: 0,
+        allDeposits: [],
+      };
+
     // Ищем лист "Средства"
-    const sheetName = this.workbook.SheetNames.find(name => 
-      name.toLowerCase() === 'средства'
+    const sheetName = this.workbook.SheetNames.find(
+      (name) => name.toLowerCase() === 'средства',
     );
-    
-    if (!sheetName) return { totalDeposits: 0, totalWithdrawals: 0, currentMonthDeposits: 0, lastMonthDeposits: 0, currentYearDeposits: 0, lastYearDeposits: 0, allDeposits: [] };
-    
+
+    if (!sheetName)
+      return {
+        totalDeposits: 0,
+        totalWithdrawals: 0,
+        currentMonthDeposits: 0,
+        lastMonthDeposits: 0,
+        currentYearDeposits: 0,
+        lastYearDeposits: 0,
+        allDeposits: [],
+      };
+
     const sheet = this.workbook.Sheets[sheetName];
-    if (!sheet || !sheet['!ref']) return { totalDeposits: 0, totalWithdrawals: 0, currentMonthDeposits: 0, lastMonthDeposits: 0, currentYearDeposits: 0, lastYearDeposits: 0, allDeposits: [] };
-    
+    if (!sheet || !sheet['!ref'])
+      return {
+        totalDeposits: 0,
+        totalWithdrawals: 0,
+        currentMonthDeposits: 0,
+        lastMonthDeposits: 0,
+        currentYearDeposits: 0,
+        lastYearDeposits: 0,
+        allDeposits: [],
+      };
+
     const range = XLSX.utils.decode_range(sheet['!ref']);
-    
+
     let totalDeposits = 0;
     let totalWithdrawals = 0;
     let currentMonthDeposits = 0;
@@ -2599,43 +2939,45 @@ export class XlsxParserModule {
     let currentYearDeposits = 0;
     let lastYearDeposits = 0;
     const allDeposits: Array<{ value: number; date: Date }> = [];
-    
+
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
     const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
     const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
-    
+
     // Сначала ищем строку "Итог" для общих сумм
     for (let r = range.s.r; r <= range.e.r; r++) {
-      const cellA = sheet[XLSX.utils.encode_cell({r, c: 0})];
+      const cellA = sheet[XLSX.utils.encode_cell({ r, c: 0 })];
       if (!cellA) continue;
-      
-      const cellText = String(cellA.v || '').trim().toLowerCase();
+
+      const cellText = String(cellA.v || '')
+        .trim()
+        .toLowerCase();
       if (cellText === 'итог' || cellText === 'итого') {
-        const cellD = sheet[XLSX.utils.encode_cell({r, c: 3})]; // ввод средств
-        const cellE = sheet[XLSX.utils.encode_cell({r, c: 4})]; // вывод средств
+        const cellD = sheet[XLSX.utils.encode_cell({ r, c: 3 })]; // ввод средств
+        const cellE = sheet[XLSX.utils.encode_cell({ r, c: 4 })]; // вывод средств
         totalDeposits = this.parseValue(cellD?.v || 0);
         totalWithdrawals = this.parseValue(cellE?.v || 0);
         break;
       }
     }
-    
+
     // Суммируем по периодам из всех строк с 5-й (индекс 4)
     for (let r = 4; r <= range.e.r; r++) {
-      const cellA = sheet[XLSX.utils.encode_cell({r, c: 0})]; // №
-      const cellB = sheet[XLSX.utils.encode_cell({r, c: 1})]; // Дата
-      const cellD = sheet[XLSX.utils.encode_cell({r, c: 3})]; // ввод средств
-      
+      const cellA = sheet[XLSX.utils.encode_cell({ r, c: 0 })]; // №
+      const cellB = sheet[XLSX.utils.encode_cell({ r, c: 1 })]; // Дата
+      const cellD = sheet[XLSX.utils.encode_cell({ r, c: 3 })]; // ввод средств
+
       if (!cellA || !cellB) continue;
-      
+
       // Пропускаем заголовки (строки с текстом в столбце A)
       const rowNum = cellA.v;
       if (typeof rowNum !== 'number' || rowNum < 1) continue;
-      
+
       const dateVal = cellB.v;
       if (!dateVal) continue;
-      
+
       let parsedDate: Date;
       if (typeof dateVal === 'number') {
         // Excel date serial number
@@ -2643,19 +2985,25 @@ export class XlsxParserModule {
       } else {
         parsedDate = new Date(String(dateVal));
       }
-      
+
       if (isNaN(parsedDate.getTime())) continue;
-      
+
       const depositVal = this.parseValue(cellD?.v || 0);
-      
+
       // Сохраняем все взносы для расчёта среднего и аномалий
       if (depositVal > 0) {
         allDeposits.push({ value: depositVal, date: parsedDate });
       }
-      
-      if (parsedDate.getFullYear() === currentYear && parsedDate.getMonth() === currentMonth) {
+
+      if (
+        parsedDate.getFullYear() === currentYear &&
+        parsedDate.getMonth() === currentMonth
+      ) {
         currentMonthDeposits += depositVal;
-      } else if (parsedDate.getFullYear() === lastMonthYear && parsedDate.getMonth() === lastMonth) {
+      } else if (
+        parsedDate.getFullYear() === lastMonthYear &&
+        parsedDate.getMonth() === lastMonth
+      ) {
         lastMonthDeposits += depositVal;
       }
       if (parsedDate.getFullYear() === currentYear) {
@@ -2664,8 +3012,16 @@ export class XlsxParserModule {
         lastYearDeposits += depositVal;
       }
     }
-    
-    return { totalDeposits, totalWithdrawals, currentMonthDeposits, lastMonthDeposits, currentYearDeposits, lastYearDeposits, allDeposits };
+
+    return {
+      totalDeposits,
+      totalWithdrawals,
+      currentMonthDeposits,
+      lastMonthDeposits,
+      currentYearDeposits,
+      lastYearDeposits,
+      allDeposits,
+    };
   }
 
   /**
@@ -2693,11 +3049,11 @@ export class XlsxParserModule {
   }
 
   /**
-    * Поиск значения в строке Excel по нескольким возможным именам столбцов.
-    * Возвращает значение первого найденного столбца или undefined.
-    * Поддерживает case-insensitive поиск.
-    * НЕ использует __EMPTY fallback — это для реальных заголовков.
-    */
+   * Поиск значения в строке Excel по нескольким возможным именам столбцов.
+   * Возвращает значение первого найденного столбца или undefined.
+   * Поддерживает case-insensitive поиск.
+   * НЕ использует __EMPTY fallback — это для реальных заголовков.
+   */
   private findColumnValue(
     row: Record<string, unknown>,
     columnNames: string[],
@@ -2731,9 +3087,9 @@ export class XlsxParserModule {
   }
 
   /**
-    * Универсальный поиск по __EMPTY ключам в строке.
-    * Возвращает { name: string, value: number } для каждой строки.
-    */
+   * Универсальный поиск по __EMPTY ключам в строке.
+   * Возвращает { name: string, value: number } для каждой строки.
+   */
   private parseEmptyRow(row: Record<string, unknown>): {
     name: string;
     value: number;
@@ -2805,6 +3161,10 @@ export class XlsxParserModule {
       row['Номинал'];
 
     if (val === undefined || val === null || val === '') return undefined;
+    // Excel может содержать текстовую заглушку вместо номинала.
+    if (typeof val === 'string' && /данные\s+не\s+найдены/i.test(val)) {
+      return undefined;
+    }
 
     const nominal = this.parseValue(val);
     return nominal > 0 ? nominal : undefined;
@@ -2817,7 +3177,7 @@ export class XlsxParserModule {
    *   - nominal неизвестен → 'UNKNOWN'
    * Для остальных (акции, ETF) → 'RUB'
    */
-  private determinePriceUnit(
+  public determinePriceUnit(
     assetType: string,
     nominal: number | undefined,
   ): PriceUnit {
@@ -2827,24 +3187,24 @@ export class XlsxParserModule {
     return 'UNKNOWN';
   }
 
-   /**
-    * Очистка кэша и освобождение памяти.
-    *
-    * XLSX (SheetJS) загружает ВЕСЬ файл в RAM (~50-300 МБ).
-    * После парсинга нужно освободить workbook, чтобы не держать память.
-    * bondReferenceData НЕ очищается — данные нужны для AI-контекста.
-    * Вызывается после завершения всех операций с парсером.
-    */
-   public cleanup(): void {
-     this.workbook = null;
-     this.cachedActiveOrdersText = 'Заявки отсутствуют';
-     this.cachedIisOrdersSum = 0;
-     this.cachedBrokerOrdersSum = 0;
-     this.cachedFreeCashFromQuikSheet = 0;
-     this.cachedInvestedFunds = 0;
-     this.parsedActiveOrders = [];
-     this.nameToTickerMap = {};
-     // bondReferenceData НЕ очищается — BondMarketData передаётся в AI
-     console.log('[XlsxParser] 🧹 Кэш очищен, workbook освобождён');
-   }
+  /**
+   * Очистка кэша и освобождение памяти.
+   *
+   * XLSX (SheetJS) загружает ВЕСЬ файл в RAM (~50-300 МБ).
+   * После парсинга нужно освободить workbook, чтобы не держать память.
+   * bondReferenceData НЕ очищается — данные нужны для AI-контекста.
+   * Вызывается после завершения всех операций с парсером.
+   */
+  public cleanup(): void {
+    this.workbook = null;
+    this.cachedActiveOrdersText = 'Заявки отсутствуют';
+    this.cachedIisOrdersSum = 0;
+    this.cachedBrokerOrdersSum = 0;
+    this.cachedFreeCashFromQuikSheet = 0;
+    this.cachedInvestedFunds = 0;
+    this.parsedActiveOrders = [];
+    this.nameToTickerMap = {};
+    // bondReferenceData НЕ очищается — BondMarketData передаётся в AI
+    console.log('[XlsxParser] 🧹 Кэш очищен, workbook освобождён');
+  }
 }

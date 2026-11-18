@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Модуль пост-обработки и валидации AI-текста.
  *
  * Выполняет финальные проверки перед показом AI-ответа пользователю:
@@ -11,6 +11,11 @@
  */
 
 import type { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
+import {
+  applyPolicyToNarrative,
+  isSellBlockedByPolicy,
+  type PolicyLike,
+} from './policy-text-guard.js';
 
 // ============================================================================
 // Типы
@@ -81,21 +86,21 @@ const EXCLUDED_ASSET_PATTERNS: RegExp[] = [
   // Рубль — агрегатная строка
   /рубль\w*/gi,
   /руб\.(?:\s|$)/gi,
-  
+
   // ИТОГО — только как отдельное слово (с границей слова)
   // НЕ ловим в словах "подитого", "итожик" и т.п.
   /(?<![a-zа-яё])итого\w*/gi,
-  
+
   // Баланс — только в агрегатных контекстах портфеля/счетов/позиций
   /баланс\s+портфеля/gi,
   /баланс\s+счетов/gi,
   /баланс\s+позиций/gi,
   /баланс\s+активов/gi,
   /баланс\s+обязательств/gi,
-  
+
   // Общая сумма — агрегатная строка
   /общая\s+сумм[а-яё]/gi,
-  
+
   // Всего — только как метка агрегатной строки, НЕ в контексте нормального предложения
   // Negative lookbehind исключает: "доля всего", "стоимость всего", "остаток всего" и т.п.
   /(?<!доля\s|стоимость\s|остаток\s|цена\s|рост\s|изменение\s|прибыль\s|затраты\s)\s*всего\s+портфеля/gi,
@@ -155,7 +160,10 @@ export function checkExcludedTickers(
 
       // Извлекаем контекст (±50 символов)
       const contextStart = Math.max(0, match.index - 50);
-      const contextEnd = Math.min(text.length, match.index + ticker.length + 50);
+      const contextEnd = Math.min(
+        text.length,
+        match.index + ticker.length + 50,
+      );
       const context = text.slice(contextStart, contextEnd).trim();
 
       foundMentions.push({
@@ -274,7 +282,11 @@ export function normalizeAiDirection(raw: string): string | null {
   }
 
   // AVERAGE (усреднение)
-  if (/усредн[иить]|докуп[аыть]\s+для\s+усреднен[иия]|усреднен[иия]|average/i.test(normalized)) {
+  if (
+    /усредн[иить]|докуп[аыть]\s+для\s+усреднен[иия]|усреднен[иия]|average/i.test(
+      normalized,
+    )
+  ) {
     return 'AVERAGE';
   }
 
@@ -320,6 +332,7 @@ export function normalizeAiDirection(raw: string): string | null {
 export function validateDirections(
   aiText: string,
   assetsAnalysis: AssetAnalysis[],
+  policy?: PolicyLike,
 ): DirectionValidationResult {
   const discrepancies: DirectionValidationResult['discrepancies'] = [];
   const textLower = aiText.toLowerCase();
@@ -333,6 +346,16 @@ export function validateDirections(
       portfolioStatus === 'HOLD' ||
       portfolioStatus === 'STABLE' ||
       portfolioStatus === 'NO_TARGET'
+    ) {
+      continue;
+    }
+
+    // Если PortfolioMath предлагает продажу, но политика no-sell её
+    // запрещает — действие неисполнимо, DIRECTION_CONFLICT по нему
+    // вводит пользователя в заблуждение. Пропускаем проверку.
+    if (
+      (portfolioStatus === 'REDUCE' || portfolioStatus === 'EXIT') &&
+      isSellBlockedByPolicy(asset, policy)
     ) {
       continue;
     }
@@ -418,7 +441,8 @@ function tickerLower(ticker: string): string {
 export function removeHallucinatedData(
   text: string,
 ): HallucinationRemovalResult {
-  const removedHallucinations: HallucinationRemovalResult['removedHallucinations'] = [];
+  const removedHallucinations: HallucinationRemovalResult['removedHallucinations'] =
+    [];
   let cleanedText = text;
 
   // Удаляем галлюцинированные цены
@@ -499,9 +523,7 @@ function removePatterns(
  *
  * ИСПРАВЛЕНИЕ P1: улучшена точность паттернов.
  */
-export function checkExcludedAssets(
-  text: string,
-): ExcludedAssetsCheckResult {
+export function checkExcludedAssets(text: string): ExcludedAssetsCheckResult {
   const foundMentions: ExcludedAssetsCheckResult['foundMentions'] = [];
 
   for (const pattern of EXCLUDED_ASSET_PATTERNS) {
@@ -517,7 +539,10 @@ export function checkExcludedAssets(
 
       // Извлекаем контекст (±50 символов)
       const contextStart = Math.max(0, match.index - 50);
-      const contextEnd = Math.min(text.length, match.index + match[0].length + 50);
+      const contextEnd = Math.min(
+        text.length,
+        match.index + match[0].length + 50,
+      );
       const context = text.slice(contextStart, contextEnd).trim();
 
       foundMentions.push({
@@ -550,26 +575,35 @@ export function checkExcludedAssets(
 export function postProcessAiText(
   aiText: string,
   assetsAnalysis: AssetAnalysis[],
+  policy?: PolicyLike,
 ): PostProcessResult {
   const warnings: string[] = [];
 
+  // 0. Политика no-sell применяется к тексту ДО валидации направлений:
+  // иначе «Продавайте PLZL» остаётся в отчёте и порождает ложный конфликт.
+  const policySafeText = applyPolicyToNarrative(aiText, assetsAnalysis, policy);
+
   // 1. Валидация направлений
-  const directionValidation = validateDirections(aiText, assetsAnalysis);
+  const directionValidation = validateDirections(
+    policySafeText,
+    assetsAnalysis,
+    policy,
+  );
   if (!directionValidation.valid) {
     for (const d of directionValidation.discrepancies) {
       warnings.push(
         `[DIRECTION_CONFLICT] ${d.ticker}: PortfolioMath=${d.portfolioMathStatus}, ` +
-        `AI=${d.aiSuggestedDirection} (severity=${d.severity})`,
+          `AI=${d.aiSuggestedDirection} (severity=${d.severity})`,
       );
     }
   }
 
   // 2. Удаление галлюцинированных данных
-  const hallucinationRemoval = removeHallucinatedData(aiText);
+  const hallucinationRemoval = removeHallucinatedData(policySafeText);
   if (hallucinationRemoval.removedHallucinations.length > 0) {
     warnings.push(
       `[HALLUCINATION_REMOVAL] Удалено ${hallucinationRemoval.removedHallucinations.length} ` +
-      'галлюцинированных элементов (цен/количеств/сумм)',
+        'галлюцинированных элементов (цен/количеств/сумм)',
     );
   }
 

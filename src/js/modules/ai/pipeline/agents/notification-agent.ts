@@ -1,4 +1,4 @@
-﻿/**
+/**
  * NotificationAgent — фасад уведомлений для мультиагентного конвейера.
  *
  * Собирает результаты агентов (data/analysis/ai/review/scenario/
@@ -26,7 +26,13 @@ import type { StockQuote } from '../../../ai/ai-advisor/report-builders.js';
 import { DashboardReportBuilder } from '../../../../../components/dashboard/dashboard.js';
 import { getMarkdownTemplate } from '../../../ai/ai-advisor/report-templates.js';
 import { stripJsonBlockFromAiText } from '../../../ai/ai-advisor/json-sanitizer.js';
+import { stripRecommendationsTableFromNarrative } from '../../../ai/ai-advisor/narrative-sanitizer.js';
+import {
+  applyPolicyToNarrative,
+  sanitizePolicyText,
+} from '../../../ai/ai-advisor/policy-text-guard.js';
 import { PortfolioConfig } from '../../../../config/portfolio-config.js';
+import { loadUserPolicy } from '../../../../config/user-policy.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
 import type { PortfolioIncome } from './analysis-agent.js';
@@ -34,6 +40,24 @@ import {
   buildInteractiveOrders,
   type InteractiveOrder,
 } from '../orders/interactive-orders.js';
+
+/**
+ * Единая точка санации AI-нарратива для обоих рендеров (Markdown и HTML).
+ * Важно: sanitizer получает ВЕСЬ текст с сохранением переводов строк,
+ * чтобы line-context режим мог связать тикер из заголовка с sell-строками ниже.
+ */
+function sanitizeNarrativeForDisplay(
+  aiNarrative: string,
+  assets: AssetAnalysis[],
+): string {
+  return applyPolicyToNarrative(
+    stripRecommendationsTableFromNarrative(
+      stripJsonBlockFromAiText(aiNarrative),
+    ),
+    assets,
+    loadUserPolicy(),
+  );
+}
 
 // ──────────────────────────────────────────────
 // 1. Notification Agent output types
@@ -221,16 +245,29 @@ export class NotificationAgent extends AgentBase {
     );
 
     // Строим DashboardReportBuilder с KPI-данными (единый вызов, без two-phase init)
-    // ИСПРАВЛЕНИЕ P1: единый знаменатель и документирование финансовых показателей.
-    // totalBalance (totalVal) = macroGoals.totalBalance из Excel (лист «Отчет по сделкам», C10 = Итого активов).
-    // profitC10 = реализованная прибыль/убыток (исторический результат из Excel).
-    // profitC11 = нереализованная прибыль/убыток (текущий финансовый результат из Excel).
-    // investedNet = чистые вложенные средства (взносы - выводы).
-    //
-    // НИЧЕГО НЕ суммируется дважды: totalBalance включает текущую стоимость всех позиций.
-    // profitC10 и profitC11 — разные метрики, а не дубли.
-    const totalVal = data.macroGoals.totalBalance;
-    const totalNetProfitRub = data.historicalTrades.profitC11;
+    // C9 (Текущие активы) = ликвидационная (рыночная) стоимость позиций ОБОИХ счетов
+    // (обычный + ИИС) + свободный рублёвый кэш из QUIK.
+    // totalLiqValue = Σ aggregated[].totalLiquidationValue (цена × количество, все счета).
+    // macroGoals.totalBalance (балансовая стоимость из Excel) как замена НЕ используется.
+    const totalLiqValue = data.aggregated.reduce(
+      (sum, a) => sum + (a.totalLiquidationValue || 0),
+      0,
+    );
+    const marketValueUnavailable = !(totalLiqValue > 0);
+    const currentAssets = marketValueUnavailable
+      ? 0
+      : Math.round((totalLiqValue + data.macroGoals.freeCash) * 100) / 100;
+    const totalVal = currentAssets;
+    // C11 (Чистый итог) = C9 − чистые вложенные средства (пересчитывается от C9).
+    const totalNetProfitRub = marketValueUnavailable
+      ? 0
+      : Math.round((currentAssets - data.investedFunds.totalNet) * 100) / 100;
+    const marketValueWarningHtml = marketValueUnavailable
+      ? "<div style='margin-bottom:12px;padding:10px;border:1px solid #ff7b72;" +
+        "border-radius:6px;background:rgba(255,123,114,0.08);color:#ff7b72;font-size:12px;'>" +
+        '⚠️ Рыночная стоимость портфеля недоступна (нет котировок) — C9 и C11 не рассчитаны. ' +
+        'Балансовая стоимость как замена не используется.</div>'
+      : '';
     const aiBoxHtml = this.buildAiBoxHtml(analysis, ai);
 
     const reportBuilder = DashboardReportBuilder.fromOrdersAndAssets(
@@ -240,6 +277,8 @@ export class NotificationAgent extends AgentBase {
       {
         totalVal,
         freeCash: data.macroGoals.freeCash,
+        marketValueUnavailable,
+        marketValueWarningHtml,
         totalInvested: data.investedFunds.totalNet,
         resultC10: data.historicalTrades.profitC10,
         profitC11: totalNetProfitRub,
@@ -265,8 +304,20 @@ export class NotificationAgent extends AgentBase {
       },
     );
 
+    // Предупреждения о ценах, которые не удалось нормализовать.
+    const priceWarningsHtml =
+      data.priceWarnings && data.priceWarnings.length > 0
+        ? "<div style='margin-bottom:12px;padding:10px;border:1px solid #d29922;" +
+          "border-radius:6px;background:rgba(210,153,34,0.08);color:#d29922;font-size:12px;'>" +
+          '<div style="font-weight:bold;margin-bottom:4px;">⚠️ Цены требуют проверки:</div>' +
+          data.priceWarnings
+            .map((warning) => `<div>• ${this.escapeHtml(warning)}</div>`)
+            .join('') +
+          '</div>'
+        : '';
+
     // Добавляем сценарии "что если" в HTML отчет
-    let html = reportBuilder.buildHtml();
+    let html = priceWarningsHtml + reportBuilder.buildHtml();
 
     if (scenario && scenario.scenarios.length > 0) {
       const scenarioHtml = this.buildScenarioSectionHtml(scenario);
@@ -278,6 +329,8 @@ export class NotificationAgent extends AgentBase {
       const strategistHtml = this.buildStrategistSectionHtml(strategist);
       html += strategistHtml;
     }
+
+    // Новостной фон убран — не несёт практической ценности для пользователя
 
     return html;
   }
@@ -303,8 +356,13 @@ export class NotificationAgent extends AgentBase {
       )
       .join('\n');
 
-    // Формируем Markdown-шаблон
-    const totalVal = data.macroGoals.totalBalance;
+    // Формируем Markdown-шаблон. Рыночная стоимость бумаг = Σ по обоим счетам.
+    const totalLiqValue = data.aggregated.reduce(
+      (sum, a) => sum + (a.totalLiquidationValue || 0),
+      0,
+    );
+    const marketValueUnavailable = !(totalLiqValue > 0);
+    const totalVal = totalLiqValue;
     const stocksPct = this.calcStocksPercent(assetsAnalysis);
     const bondsPct = this.calcBondsPercent(assetsAnalysis);
 
@@ -314,19 +372,30 @@ export class NotificationAgent extends AgentBase {
 
     // Предупреждение о новых активах без целевой доли
     const newAssets = assetsAnalysis.filter((item) => item.status === 'NEW');
+    // Предупреждения о ценах, которые не удалось нормализовать.
+    const priceWarningsMd =
+      data.priceWarnings && data.priceWarnings.length > 0
+        ? '\n⚠️ **Цены требуют проверки:**\n\n' +
+          data.priceWarnings.map((warning) => `• ${warning}`).join('\n') +
+          '\n\n'
+        : '';
+
     let newAssetsWarningMd = '';
     if (newAssets.length > 0) {
       newAssetsWarningMd =
         '\n⚠️ ВНИМАНИЕ: Обнаружены новые активы без указанной цели в Excel:\n' +
         newAssets
-          .map((item) => `* ${item.name} (Укажите целевой % в столбце "Целевая доля, %")`)
+          .map(
+            (item) =>
+              `* ${item.name} (Укажите целевой % в столбце "Целевая доля, %")`,
+          )
           .join('\n') +
         '\n';
     }
 
     const mdData = getMarkdownTemplate(
       new Date().toLocaleDateString('ru-RU'),
-      totalVal.toLocaleString('ru-RU'),
+      marketValueUnavailable ? '—' : totalVal.toLocaleString('ru-RU'),
       macroGoals.freeCash.toLocaleString('ru-RU'),
       stocksPct,
       bondsPct,
@@ -336,9 +405,13 @@ export class NotificationAgent extends AgentBase {
         priceAlertsMd +
         '\n\n### 💰 Доходность портфеля: НКД и дивиденды\n' +
         `* НКД по облигациям (накопленный купон): **${income.totalNkd.toLocaleString('ru-RU')} ₽**\n` +
-        `* Дивиденды (грязные, до налога): **${income.totalDivs.toLocaleString('ru-RU')} ₽**\n` +
-        `* Дивиденды (чистые, после НДФЛ ${Math.round(PortfolioConfig.tax.dividendNdflRate * 100)}%): **${income.totalDivsNet.toLocaleString('ru-RU')} ₽**\n` +
-        `* Итого чистый доход (НКД + дивиденды): **${(income.totalNkd + income.totalDivsNet).toLocaleString('ru-RU')} ₽**\n` +
+        `* Дивиденды LTM (грязные, до налога): **${income.totalDivs.toLocaleString('ru-RU')} ₽**\n` +
+        `* Дивиденды LTM (чистые, после НДФЛ ${Math.round(PortfolioConfig.tax.dividendNdflRate * 100)}%): **${income.totalDivsNet.toLocaleString('ru-RU')} ₽**\n` +
+        ((income.declaredDivs ?? 0) > 0
+          ? `* Ожидаемые дивиденды (объявленные, до налога): **${(income.declaredDivs ?? 0).toLocaleString('ru-RU')} ₽**\n` +
+            `* Ожидаемые дивиденды (чистые): **${(income.declaredDivsNet ?? 0).toLocaleString('ru-RU')} ₽**\n`
+          : '') +
+        `* Итого чистый доход (НКД + дивиденды LTM): **${(income.totalNkd + income.totalDivsNet).toLocaleString('ru-RU')} ₽**\n` +
         (income.stocks.length > 0
           ? '* Дивидендные позиции:\n' +
             income.stocks
@@ -354,12 +427,24 @@ export class NotificationAgent extends AgentBase {
     );
 
     // Добавляем AI-текст в конец Markdown
-    // (очищенный от raw structured JSON — narrative приходит уже чистым,
-    // здесь повторная страховка на display-слое)
-    let md = mdData;
+    // (очищенный от raw structured JSON и от таблицы рекомендаций —
+    // narrative приходит уже чистым, здесь повторная страховка на display-слое)
+    let md = marketValueUnavailable
+      ? '⚠️ Рыночная стоимость портфеля недоступна (нет котировок) — балансовая стоимость как замена не используется.\n\n' +
+        mdData
+      : mdData;
+    md = priceWarningsMd + md;
     if (ai.aiNarrative) {
-      md += '\n\n---\n\n' + stripJsonBlockFromAiText(ai.aiNarrative);
+      const cleanedText = sanitizeNarrativeForDisplay(
+        ai.aiNarrative,
+        analysis.portfolioAnalysis.assetsAnalysis,
+      );
+      if (cleanedText) {
+        md += '\n\n---\n\n' + cleanedText;
+      }
     }
+
+    // Новостной фон убран — не несёт практической ценности для пользователя
 
     // Добавляем сценарии "что если"
     if (scenario && scenario.scenarios.length > 0) {
@@ -398,16 +483,49 @@ export class NotificationAgent extends AgentBase {
       '<h3 style="margin:0 0 12px 0;font-size:14px;color:#fff;border-bottom:1px solid #30363d;padding-bottom:8px;">' +
       '💰 Доходность портфеля: НКД и дивиденды</h3>' +
       '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px;">' +
-      card('НКД (облигации)', fmt(income.totalNkd) + ' ₽', 'накопленный купонный доход', '#e3b341') +
-      card('Дивиденды грязные', fmt(income.totalDivs) + ' ₽', 'до налога', '#fff') +
       card(
-        'Дивиденды чистые',
+        'НКД (облигации)',
+        fmt(income.totalNkd) + ' ₽',
+        'накопленный купонный доход',
+        '#e3b341',
+      ) +
+      card(
+        'Дивиденды LTM грязные',
+        fmt(income.totalDivs) + ' ₽',
+        'полученные, до налога',
+        '#fff',
+      ) +
+      card(
+        'Дивиденды LTM чистые',
         fmt(income.totalDivsNet) + ' ₽',
         `после НДФЛ ${Math.round(taxRate * 100)}%`,
         '#56d364',
       ) +
-      card('Итого чистый доход', fmt(totalNet) + ' ₽', 'НКД + дивиденды', '#58a6ff') +
+      card(
+        'Итого чистый доход',
+        fmt(totalNet) + ' ₽',
+        'НКД + дивиденды LTM',
+        '#58a6ff',
+      ) +
       '</div>';
+
+    if ((income.declaredDivs ?? 0) > 0) {
+      html +=
+        '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:12px;">' +
+        card(
+          'Ожидаемые дивиденды',
+          fmt(income.declaredDivs ?? 0) + ' ₽',
+          'объявленные форвардные выплаты, до налога',
+          '#ffd166',
+        ) +
+        card(
+          'Ожидаемые дивиденды чистые',
+          fmt(income.declaredDivsNet ?? 0) + ' ₽',
+          `после НДФЛ ${Math.round(taxRate * 100)}%, не входит в итог LTM`,
+          '#ffd166',
+        ) +
+        '</div>';
+    }
 
     if (income.stocks.length > 0) {
       const th =
@@ -442,9 +560,13 @@ export class NotificationAgent extends AgentBase {
       }
       html += '</tbody></table>';
     } else {
+      const reason =
+        (income.dividendWarnings ?? []).length > 0
+          ? (income.dividendWarnings ?? []).join('; ')
+          : 'дивидендная колонка не заполнена';
       html +=
         '<div style="color:#8b949e;font-size:12px;text-align:center;padding:8px;">' +
-        'Дивиденды не объявлены или не заполнены в Excel-файле</div>';
+        `Дивиденды LTM не объявлены или не заполнены в Excel-файле (${reason})</div>`;
     }
 
     html += '</div>';
@@ -462,13 +584,17 @@ export class NotificationAgent extends AgentBase {
 
     const stats = this.feedbackStats;
 
-    let html = '<div class="recommendations-section" style="margin-top: 20px; padding: 15px; background: rgba(86, 211, 100, 0.05); border: 1px solid rgba(86, 211, 100, 0.3); border-radius: 8px;">\n';
-    html += '<h3 style="margin: 0 0 15px 0; color: #56d364; font-size: 16px;">📊 Рекомендации ИИ-советника</h3>\n';
+    let html =
+      '<div class="recommendations-section" style="margin-top: 20px; padding: 15px; background: rgba(86, 211, 100, 0.05); border: 1px solid rgba(86, 211, 100, 0.3); border-radius: 8px;">\n';
+    html +=
+      '<h3 style="margin: 0 0 15px 0; color: #56d364; font-size: 16px;">📊 Рекомендации ИИ-советника</h3>\n';
 
     // Статистика обратной связи
     if (stats && stats.total > 0) {
-      html += '<div style="margin-bottom: 15px; padding: 10px; background: rgba(56, 139, 255, 0.08); border: 1px solid rgba(56, 139, 255, 0.2); border-radius: 6px; font-size: 12px;">\n';
-      html += '<div style="font-weight: bold; color: #58a6ff; margin-bottom: 6px;">📈 Статистика рекомендаций:</div>\n';
+      html +=
+        '<div style="margin-bottom: 15px; padding: 10px; background: rgba(56, 139, 255, 0.08); border: 1px solid rgba(56, 139, 255, 0.2); border-radius: 6px; font-size: 12px;">\n';
+      html +=
+        '<div style="font-weight: bold; color: #58a6ff; margin-bottom: 6px;">📈 Статистика рекомендаций:</div>\n';
       html += '<div style="display: flex; gap: 15px; flex-wrap: wrap;">\n';
       html += `<div>👍 <b>${stats.userGood}</b> 👎 <b>${stats.userBad}</b> <span style="color: #8b949e;">(субъективно)</span></div>\n`;
       html += `<div>✅ <b>${stats.factualCorrect}</b> ❌ <b>${stats.factualIncorrect}</b> ⏳ <b>${stats.pending}</b> <span style="color: #8b949e;">(по факту через 30 дней)</span></div>\n`;
@@ -476,7 +602,8 @@ export class NotificationAgent extends AgentBase {
       html += '</div>\n';
     }
 
-    html += '<div class="recommendations-list" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px;">\n';
+    html +=
+      '<div class="recommendations-list" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px;">\n';
 
     for (const [ticker, rec] of recs) {
       const action = rec.recommendedAction ?? 'HOLD';
@@ -490,47 +617,165 @@ export class NotificationAgent extends AgentBase {
         const pct = Math.round(confidenceRaw * 100);
         confidenceDisplay = pct + '%';
       }
-      const actionColor = action === 'BUY' ? '#56d364' : action === 'SELL' || action === 'REDUCE' ? '#ff7b72' : '#ffd166';
-      const actionLabel = action === 'BUY' ? '🟢 Покупать' : action === 'SELL' || action === 'REDUCE' ? '🔴 Продавать' : '🟡 Держать';
+      const actionColor =
+        action === 'BUY'
+          ? '#56d364'
+          : action === 'SELL' || action === 'REDUCE'
+            ? '#ff7b72'
+            : '#ffd166';
+      const actionLabel =
+        action === 'BUY'
+          ? '🟢 Покупать'
+          : action === 'SELL' || action === 'REDUCE'
+            ? '🔴 Продавать'
+            : '🟡 Держать';
+      const policyBlocked =
+        rec.policyBlocked === true || rec.policyTextBlocked === true;
 
-      html += '<div class="recommendation-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 6px; border-left: 3px solid ' + actionColor + ';">\n';
+      html +=
+        '<div class="recommendation-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 6px; border-left: 3px solid ' +
+        actionColor +
+        ';">\n';
       html += '<div style="flex: 1;">\n';
-      html += '<div style="font-weight: bold; color: #e6edf3; font-size: 14px;">' + ticker + (rec.name ? ' — ' + rec.name : '') + '</div>\n';
-      html += '<div style="color: ' + actionColor + '; font-size: 13px; margin-top: 4px;">' + actionLabel + '</div>\n';
-      html += '<div style="color: #8b949e; font-size: 12px; margin-top: 2px;">Уверенность: ' + confidenceDisplay + '</div>\n';
+      html +=
+        '<div style="font-weight: bold; color: #e6edf3; font-size: 14px;">' +
+        ticker +
+        (rec.name ? ' — ' + rec.name : '') +
+        '</div>\n';
+      html +=
+        '<div style="color: ' +
+        actionColor +
+        '; font-size: 13px; margin-top: 4px;">' +
+        actionLabel +
+        '</div>\n';
+      if (policyBlocked) {
+        html +=
+          '<div style="margin-top: 4px; padding: 4px 6px; background: rgba(255,123,114,0.08); ' +
+          'border: 1px solid rgba(255,123,114,0.25); border-radius: 4px; ' +
+          'color: #ff7b72; font-size: 11px;">⛔ Заблокировано политикой no-sell' +
+          (rec.policyNote ? ': ' + rec.policyNote : '') +
+          '</div>\n';
+      }
+      html +=
+        '<div style="color: #8b949e; font-size: 12px; margin-top: 2px;">Уверенность: ' +
+        confidenceDisplay +
+        '</div>\n';
       if (rec.rationale) {
-        html += '<div style="color: #8b949e; font-size: 11px; margin-top: 4px; font-style: italic;">' + rec.rationale + '</div>\n';
+        html +=
+          '<div style="color: #c9d1d9; font-size: 12px; margin-top: 6px; line-height: 1.4;">' +
+          rec.rationale +
+          '</div>\n';
       }
 
-      // ─── P1-3: Итоговое заключение (7 элементов) ───
-      const conclusion = (rec as { finalConclusion?: { action: string; reasons: string[]; risks: string[]; dataStatus: string; source: string; mathAiAgreement: string; executionLimitations: string[] } }).finalConclusion;
-      if (conclusion) {
-        html += '<div style="margin-top: 8px; padding: 8px; background: rgba(163, 113, 247, 0.05); border: 1px solid rgba(163, 113, 247, 0.2); border-radius: 4px; font-size: 11px;">\n';
-        html += '<div style="font-weight: bold; color: #a371f7; margin-bottom: 4px;">📝 Итоговое заключение:</div>\n';
-        html += '<div>Источник: ' + conclusion.source + '</div>\n';
-        html += '<div>Согласованность: ' + conclusion.mathAiAgreement + '</div>\n';
-        html += '<div>Данные: ' + conclusion.dataStatus + '</div>\n';
-        if (conclusion.reasons && conclusion.reasons.length > 0) {
-          html += '<div style="margin-top: 3px;">Причины: ' + conclusion.reasons.join('; ') + '</div>\n';
-        }
-        if (conclusion.risks && conclusion.risks.some((r) => !r.includes('Нет критических'))) {
-          html += '<div style="color: #ffd166; margin-top: 3px;">Риски: ' + conclusion.risks.filter((r) => !r.includes('Нет критических')).join('; ') + '</div>\n';
-        }
-        if (conclusion.executionLimitations && conclusion.executionLimitations.some((l) => !l.includes('Нет ограничений'))) {
-          html += '<div style="color: #ff7b72; margin-top: 3px;">⚠️ Ограничения: ' + conclusion.executionLimitations.filter((l) => !l.includes('Нет ограничений')).join('; ') + '</div>\n';
+      // ─── Риски (если есть) ───
+      const risks = (rec as { keyRisks?: string[] }).keyRisks;
+      if (risks && risks.length > 0) {
+        html +=
+          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(255, 123, 114, 0.05); border: 1px solid rgba(255, 123, 114, 0.15); border-radius: 4px; font-size: 11px;">\n';
+        html +=
+          '<div style="color: #ffd166; font-weight: bold; margin-bottom: 3px;">⚠️ Риски:</div>\n';
+        for (const risk of risks) {
+          html +=
+            '<div style="color: #ff7b72; margin-top: 2px;">• ' +
+            risk +
+            '</div>\n';
         }
         html += '</div>\n';
       }
+
+      // ─── Фундаментальный анализ ───
+      const fundamentalAnalysis = (
+        rec as { fundamentalAnalysis?: string | null }
+      ).fundamentalAnalysis;
+      if (fundamentalAnalysis) {
+        html +=
+          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(88, 166, 255, 0.05); border: 1px solid rgba(88, 166, 255, 0.15); border-radius: 4px; font-size: 11px;">\n';
+        html +=
+          '<div style="color: #58a6ff; font-weight: bold; margin-bottom: 3px;">📊 Фундаментал:</div>\n';
+        html +=
+          '<div style="color: #c9d1d9; line-height: 1.4;">' +
+          fundamentalAnalysis +
+          '</div>\n';
+        html += '</div>\n';
+      }
+
+      // ─── Технический timing ───
+      const technicalTiming = (rec as { technicalTiming?: string | null })
+        .technicalTiming;
+      if (technicalTiming) {
+        // Defense-in-depth: policy-blocked карточка не должна показывать
+        // «точку для фиксации части прибыли» даже если upstream не успел.
+        const displayTechnicalTiming = policyBlocked
+          ? (sanitizePolicyText(technicalTiming, ticker, loadUserPolicy(), {
+              requireTicker: false,
+            }).text ?? technicalTiming)
+          : technicalTiming;
+        html +=
+          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(227, 179, 65, 0.05); border: 1px solid rgba(227, 179, 65, 0.15); border-radius: 4px; font-size: 11px;">\n';
+        html +=
+          '<div style="color: #e3b341; font-weight: bold; margin-bottom: 3px;">🎯 Лучшая точка для сделки:</div>\n';
+        html +=
+          '<div style="color: #c9d1d9; line-height: 1.4;">' +
+          displayTechnicalTiming +
+          '</div>\n';
+        html += '</div>\n';
+      }
+
+      // ─── Стратегия входа/выхода ───
+      const entryStrategy = (rec as { entryStrategy?: string | null })
+        .entryStrategy;
+      if (entryStrategy) {
+        // Defense-in-depth: даже если upstream не успел почистить текст,
+        // для policy-blocked карточки sell-директивы не показываем.
+        const displayEntryStrategy = policyBlocked
+          ? (sanitizePolicyText(entryStrategy, ticker, loadUserPolicy(), {
+              requireTicker: false,
+            }).text ?? entryStrategy)
+          : entryStrategy;
+        html +=
+          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(163, 113, 247, 0.05); border: 1px solid rgba(163, 113, 247, 0.15); border-radius: 4px; font-size: 11px;">\n';
+        html +=
+          '<div style="color: #a371f7; font-weight: bold; margin-bottom: 3px;">📈 Как покупать/продавать:</div>\n';
+        html +=
+          '<div style="color: #c9d1d9; line-height: 1.4;">' +
+          displayEntryStrategy +
+          '</div>\n';
+        html += '</div>\n';
+      }
+
+      // ─── Контекст эмитента ───
+      const issuerContext = (rec as { issuerContext?: string | null })
+        .issuerContext;
+      if (issuerContext) {
+        html +=
+          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(86, 211, 100, 0.05); border: 1px solid rgba(86, 211, 100, 0.15); border-radius: 4px; font-size: 11px;">\n';
+        html +=
+          '<div style="color: #56d364; font-weight: bold; margin-bottom: 3px;">🏢 Контекст эмитента:</div>\n';
+        html +=
+          '<div style="color: #c9d1d9; line-height: 1.4;">' +
+          issuerContext +
+          '</div>\n';
+        html += '</div>\n';
+      }
+
       html += '</div>\n';
-      html += '<div class="feedback-buttons" style="display: flex; gap: 8px; margin-left: 15px;">\n';
-      html += '<button class="feedback-btn feedback-good" data-ticker="' + ticker + '" data-action="good" style="background: rgba(86, 211, 100, 0.1); border: 1px solid rgba(86, 211, 100, 0.4); color: #56d364; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px;">👍</button>\n';
-      html += '<button class="feedback-btn feedback-bad" data-ticker="' + ticker + '" data-action="bad" style="background: rgba(255, 123, 114, 0.1); border: 1px solid rgba(255, 123, 114, 0.4); color: #ff7b72; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px;">👎</button>\n';
+      html +=
+        '<div class="feedback-buttons" style="display: flex; gap: 8px; margin-left: 15px;">\n';
+      html +=
+        '<button class="feedback-btn feedback-good" data-ticker="' +
+        ticker +
+        '" data-action="good" style="background: rgba(86, 211, 100, 0.1); border: 1px solid rgba(86, 211, 100, 0.4); color: #56d364; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px;">👍</button>\n';
+      html +=
+        '<button class="feedback-btn feedback-bad" data-ticker="' +
+        ticker +
+        '" data-action="bad" style="background: rgba(255, 123, 114, 0.1); border: 1px solid rgba(255, 123, 114, 0.4); color: #ff7b72; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px;">👎</button>\n';
       html += '</div>\n';
       html += '</div>\n';
     }
 
     html += '</div>\n';
-    html += '<div style="margin-top: 10px; font-size: 11px; color: #8b949e;">Оцените рекомендации: 👍 если рекомендация верна, 👎 если нет. Это поможет улучшить анализ в будущем.</div>\n';
+    html +=
+      '<div style="margin-top: 10px; font-size: 11px; color: #8b949e;">Оцените рекомендации: 👍 если рекомендация верна, 👎 если нет. Это поможет улучшить анализ в будущем.</div>\n';
     html += '</div>\n';
 
     return html;
@@ -553,7 +798,6 @@ export class NotificationAgent extends AgentBase {
     });
 
     let html =
-      '<div class="ai-box-styled">' +
       this.buildIncomeWidgetHtml(analysis.income) +
       `📋 Экспертное заключение ИИ-советника (${currentMonth.charAt(0).toUpperCase() + currentMonth.slice(1)})\n` +
       `🕒 Сформировано: ${generatedAt}\n` +
@@ -594,9 +838,13 @@ export class NotificationAgent extends AgentBase {
 
     // AI-текст (raw structured JSON никогда не должен попадать в дашборд —
     // stripJsonBlockFromAiText удаляет ```json / {"ticker": ...} блоки)
-    const aiText = stripJsonBlockFromAiText(ai.aiNarrative);
+    // Таблица рекомендаций по активам тоже удаляется: её дублируют
+    // структурированные карточки, собранные из валидированного JSON.
+    const aiText = sanitizeNarrativeForDisplay(
+      ai.aiNarrative,
+      analysis.portfolioAnalysis.assetsAnalysis,
+    );
     html += this.convertMarkdownTablesToHtml(aiText);
-    html += '</div>';
 
     return html;
   }
@@ -632,7 +880,10 @@ export class NotificationAgent extends AgentBase {
 
         if (sepIdx > i + 1) {
           // Нашли таблицу: от i до sepIdx — заголовок, sepIdx+1 — тело
-          const headerLine = this.joinBrokenLines(lines[i]!, lines[i + 1] ?? '');
+          const headerLine = this.joinBrokenLines(
+            lines[i]!,
+            lines[i + 1] ?? '',
+          );
           const headers = this.parseTableRow(headerLine);
 
           // Склеиваем тело таблицы
@@ -641,7 +892,8 @@ export class NotificationAgent extends AgentBase {
           while (k < lines.length) {
             const bLine = lines[k]!;
             // Конец таблицы: строка не начинается с | или пустая
-            if (!bLine.trimStart().startsWith('|') || bLine.trim() === '') break;
+            if (!bLine.trimStart().startsWith('|') || bLine.trim() === '')
+              break;
             bodyLines.push(bLine);
             k++;
           }
@@ -759,56 +1011,78 @@ export class NotificationAgent extends AgentBase {
       new Intl.NumberFormat('ru-RU').format(Math.round(v)) + ' ₽';
     const fmtPct = (v: number): string => v.toFixed(1) + '%';
 
-    let md = '## 🎯 Сценарии «Что будет, если?»\n\n';
+    let md = '## 📊 Анализ сценариев и рекомендации\n\n';
+
+    // Введение
+    md +=
+      'Этот блок показывает, как изменения в структуре портфеля могут повлиять на ваш результат. ' +
+      'Каждый сценарий оценивает конкретное действие — покупку, продажу или удержание активов.\n\n';
 
     // Сводка
-    md += '**Сводка:**\n\n';
-    md += `- Построено сценариев: ${scenario.summary.scenariosBuilt}\n`;
-    md += `- Baseline отклонение: ${fmtPct(scenario.summary.baselineDeviationPct)}\n`;
-    md += `- Лучшее улучшение: ${fmtPct(scenario.summary.bestImprovementPct)}\n\n`;
+    md += '**Ключевые показатели:**\n\n';
+    md += `- Всего рассмотрено вариантов: ${scenario.summary.scenariosBuilt}\n`;
+    md += `- Лучшее улучшение: +${fmtPct(scenario.summary.bestImprovementPct)}\n`;
+    md += `- Текущее отклонение от цели: ${fmtPct(scenario.summary.baselineDeviationPct)}\n\n`;
 
-    // Таблица
-    md += '| Сценарий | Вердикт | Отклонение | P&L прогноз | Зафик. убыток |\n';
-    md += '|----------|---------|------------|-------------|---------------|\n';
+    // Таблица сценариев — упрощённая и понятная
+    md += '| Вариант | Что произойдёт | Влияние на портфель | Прогноз P&L |\n';
+    md += '|---------|---------------|---------------------|-------------|\n';
 
     for (const s of scenario.scenarios) {
-      const bestMarker = s.id === scenario.bestScenarioId ? ' ⭐' : '';
-      const verdictLabel =
+      const bestMarker =
+        s.id === scenario.bestScenarioId ? ' ⭐ **Рекомендуем**' : '';
+      const verdictIcon =
         s.verdict === 'IMPROVES'
-          ? 'УЛУЧШАЕТ'
+          ? '📈 Улучшает'
           : s.verdict === 'WORSENS'
-            ? 'УХУДШАЕТ'
-            : 'НЕЙТРАЛЬНЫЙ';
+            ? '📉 Ухудшает'
+            : '➡️ Нейтральный';
 
       // ИСПРАВЛЕНИЕ Этап 2.1: показываем PARTIAL/INSUFFICIENT_DATA вместо 0
       const isPnlNotCalculated = s.pnlCalculationStatus === 'INSUFFICIENT_DATA';
       const isPnlPartial = s.pnlCalculationStatus === 'PARTIAL';
-      const pnlDisplay =
-        isPnlNotCalculated
-          ? 'Нет данных'
-          : fmtRub(s.projectedUnrealizedPnL);
-      const realizedDisplay =
-        isPnlNotCalculated
-          ? 'Нет данных'
-          : fmtRub(s.realizedPnLRub);
+      const pnlDisplay = isPnlNotCalculated
+        ? 'Нет данных'
+        : fmtRub(s.projectedUnrealizedPnL);
+      const pnlColor =
+        !isPnlNotCalculated && s.projectedUnrealizedPnL >= 0 ? '✅' : '⚠️';
 
-      md += `| ${s.title}${bestMarker} | ${verdictLabel} | ${fmtPct(s.structureDeviationPct)} | ${pnlDisplay} | ${realizedDisplay}${isPnlPartial ? ' ⚠️' : ''} |\n`;
+      md += `| ${s.title}${bestMarker} | ${verdictIcon} | ${fmtPct(s.structureDeviationPct)} от цели | ${pnlColor} ${pnlDisplay}${isPnlPartial ? ' (частично)' : ''} |\n`;
 
       if (s.rationale) {
-        md += `| _${s.rationale}_ | | | | |\n`;
+        md += `| _${s.rationale}_ | | | |\n`;
       }
+    }
+
+    // Рекомендация
+    const bestScenario = scenario.scenarios.find(
+      (s) => s.id === scenario.bestScenarioId,
+    );
+    if (bestScenario) {
+      md += '\n**💡 Рекомендация:** ';
+      md += `Сценарий «${bestScenario.title}» показывает лучший результат. `;
+      if (bestScenario.rationale) {
+        md += bestScenario.rationale;
+      }
+      md += '\n';
     }
 
     md += '\n';
     return md;
   }
 
-  private buildStrategistSectionMd(
-    strategist: StrategistAgentOutput,
-  ): string {
+  private buildStrategistSectionMd(strategist: StrategistAgentOutput): string {
     let md = '## 🛡️ Стратег — Правила защиты\n\n';
 
     md += `**Цель:** ${strategist.summary.goal} | **Проверено активов:** ${strategist.summary.assetsChecked}\n\n`;
+
+    if (strategist.policyWarnings && strategist.policyWarnings.length > 0) {
+      md += '⚠️ **Пользовательская политика:**\n\n';
+      for (const warning of strategist.policyWarnings) {
+        md += `• ${warning}\n`;
+      }
+      md += '\n';
+    }
 
     md += '| Актив | Действие | Решение | Обоснование |\n';
     md += '|-------|----------|---------|-------------|\n';
@@ -818,10 +1092,59 @@ export class NotificationAgent extends AgentBase {
     }
 
     md += '\n';
+
+    // ─── 3 инвестиционные стратегии (детерминированный рендер) ───
+    const strategies = strategist.strategies;
+    if (strategies && strategies.length > 0) {
+      md += '### 🛡️ Инвестиционные стратегии\n\n';
+
+      for (const strategy of strategies) {
+        const medal =
+          strategy === strategies[0]
+            ? '🥇'
+            : strategy === strategies[1]
+              ? '🥈'
+              : '🥉';
+        md += `#### ${medal} ${strategy.name}\n\n`;
+        md += `${strategy.description}\n\n`;
+
+        md += '**Шаги:**\n\n';
+        for (const step of strategy.steps) {
+          md += `${step.order}. **${step.action}** ${step.ticker} — ${step.amount}\n`;
+          md += `   _${step.rationale}_\n\n`;
+        }
+
+        md += '**Купонно-дивидендный якорь:**\n\n';
+        md += `${strategy.incomeAnchor.text}\n\n`;
+        if (strategy.incomeAnchor.bondYieldPercent !== null) {
+          md += `• Купонная часть: ~${strategy.incomeAnchor.bondYieldPercent.toFixed(1).replace('.', ',')}% годовых\n`;
+        }
+        if (strategy.incomeAnchor.dividendYieldPercent !== null) {
+          md += `• Дивидендная часть: ~${strategy.incomeAnchor.dividendYieldPercent.toFixed(1).replace('.', ',')}% годовых\n`;
+        }
+        if (strategy.incomeAnchor.unavailableReason) {
+          md += `• Причина: ${strategy.incomeAnchor.unavailableReason}\n`;
+        }
+        md += `\n**Риск:** ${strategy.riskLevel}\n\n`;
+        md += '---\n\n';
+      }
+
+      if (
+        strategist.strategyConflicts &&
+        strategist.strategyConflicts.length > 0
+      ) {
+        md += '⚠️ **STRATEGY_CONFLICT:**\n\n';
+        for (const conflict of strategist.strategyConflicts) {
+          md += `• ${conflict.strategyName}, шаг ${conflict.stepOrder}, ${conflict.ticker}: ${conflict.reason}\n`;
+        }
+        md += '\n';
+      }
+    }
+
     return md;
   }
 
-  // ── Сценарии "что если" (HTML) ──
+  // ── Анализ сценариев (HTML) ──
 
   private buildScenarioSectionHtml(scenario: ScenarioAgentOutput): string {
     const fmtRub = (v: number): string =>
@@ -831,34 +1154,40 @@ export class NotificationAgent extends AgentBase {
     let html =
       '<div style="margin-bottom:20px;padding:20px;background:#161b22;border:1px solid #30363d;border-radius:6px;">' +
       '<h3 style="margin:0 0 15px 0;font-size:16px;color:#fff;border-bottom:1px solid #30363d;padding-bottom:8px;">' +
-      '🎯 Сценарии «Что будет, если?»</h3>';
+      '📊 Анализ сценариев и рекомендации</h3>';
+
+    // Введение
+    html +=
+      '<div style="font-size:12px;color:#8b949e;margin-bottom:12px;">' +
+      'Этот блок показывает, как изменения в структуре портфеля могут повлиять на ваш результат. ' +
+      'Каждый сценарий оценивает конкретное действие — покупку, продажу или удержание активов.</div>';
 
     // Сводка
     html +=
       '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:15px;">' +
       '<div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:10px;text-align:center;">' +
-      '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;">Построено сценариев</div>' +
+      '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;">Вариантов рассмотрено</div>' +
       `<div style="font-size:18px;font-weight:bold;color:#58a6ff;margin-top:4px;">${scenario.summary.scenariosBuilt}</div>` +
       '</div>' +
       '<div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:10px;text-align:center;">' +
-      '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;">Baseline отклонение</div>' +
-      `<div style="font-size:18px;font-weight:bold;color:#fff;margin-top:4px;">${fmtPct(scenario.summary.baselineDeviationPct)}</div>` +
+      '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;">Текущее отклонение</div>' +
+      `<div style="font-size:18px;font-weight:bold;color:#ffd166;margin-top:4px;">${fmtPct(scenario.summary.baselineDeviationPct)}</div>` +
       '</div>' +
       '<div style="background:#0d1117;border:1px solid #30363d;border-radius:4px;padding:10px;text-align:center;">' +
       '<div style="font-size:11px;color:#8b949e;text-transform:uppercase;">Лучшее улучшение</div>' +
-      `<div style="font-size:18px;font-weight:bold;color:#56d364;margin-top:4px;">${fmtPct(scenario.summary.bestImprovementPct)}</div>` +
+      `<div style="font-size:18px;font-weight:bold;color:#56d364;margin-top:4px;">+${fmtPct(scenario.summary.bestImprovementPct)}</div>` +
       '</div>' +
       '</div>';
 
-    // Таблица сценариев
-    html += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    // Таблица сценариев — упрощённая и понятная
+    html +=
+      '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
     html +=
       '<thead><tr style="border-bottom:1px solid #30363d;">' +
-      '<th style="text-align:left;padding:8px;color:#8b949e;">Сценарий</th>' +
-      '<th style="text-align:left;padding:8px;color:#8b949e;">Вердикт</th>' +
-      '<th style="text-align:right;padding:8px;color:#8b949e;">Отклонение</th>' +
-      '<th style="text-align:right;padding:8px;color:#8b949e;">P&L прогноз</th>' +
-      '<th style="text-align:right;padding:8px;color:#8b949e;">Зафикс. убыток</th>' +
+      '<th style="text-align:left;padding:8px;color:#8b949e;">Вариант</th>' +
+      '<th style="text-align:left;padding:8px;color:#8b949e;">Что произойдёт</th>' +
+      '<th style="text-align:right;padding:8px;color:#8b949e;">Влияние</th>' +
+      '<th style="text-align:right;padding:8px;color:#8b949e;">Прогноз P&L</th>' +
       '</tr></thead><tbody>';
 
     for (const s of scenario.scenarios) {
@@ -867,46 +1196,63 @@ export class NotificationAgent extends AgentBase {
         ? 'background:rgba(88,166,255,0.08);border-left:3px solid #58a6ff;'
         : '';
 
-      const verdictColor =
+      const verdictIcon =
         s.verdict === 'IMPROVES'
-          ? '#56d364'
+          ? '📈 Улучшает'
           : s.verdict === 'WORSENS'
-            ? '#ff7b72'
-            : '#8b949e';
-      const verdictLabel =
-        s.verdict === 'IMPROVES'
-          ? 'УЛУЧШАЕТ'
-          : s.verdict === 'WORSENS'
-            ? 'УХУДШАЕТ'
-            : 'НЕЙТРАЛЬНЫЙ';
+            ? '📉 Ухудшает'
+            : '➡️ Нейтральный';
 
       // ИСПРАВЛЕНИЕ Этап 2.1: показываем PARTIAL/INSUFFICIENT_DATA вместо 0
       const isPnlNotCalculated = s.pnlCalculationStatus === 'INSUFFICIENT_DATA';
       const isPnlPartial = s.pnlCalculationStatus === 'PARTIAL';
-      const pnlDisplay = isPnlNotCalculated ? 'Нет данных' : fmtRub(s.projectedUnrealizedPnL);
-      const realizedDisplay = isPnlNotCalculated ? 'Нет данных' : fmtRub(s.realizedPnLRub);
-      const pnlColor = isPnlNotCalculated ? '#8b949e' : (s.projectedUnrealizedPnL >= 0 ? '#56d364' : '#ff7b72');
-      const realizedColor = isPnlNotCalculated ? '#8b949e' : (s.realizedPnLRub >= 0 ? '#56d364' : '#ff7b72');
+      const pnlDisplay = isPnlNotCalculated
+        ? 'Нет данных'
+        : fmtRub(s.projectedUnrealizedPnL);
+      const pnlColor = isPnlNotCalculated
+        ? '#8b949e'
+        : s.projectedUnrealizedPnL >= 0
+          ? '#56d364'
+          : '#ff7b72';
+      const pnlIcon =
+        !isPnlNotCalculated && s.projectedUnrealizedPnL >= 0 ? '✅' : '⚠️';
 
       html +=
         '<tr style="border-bottom:1px solid #30363d;">' +
         `<td style="padding:8px;color:#c9d1d9;${rowStyle}"><strong>${s.title}</strong>${
-          isBest ? ' ⭐' : ''
+          isBest
+            ? ' ⭐ <span style="color:#58a6ff;font-size:11px;">Рекомендуем</span>'
+            : ''
         }</td>` +
-        `<td style="padding:8px;color:${verdictColor};${rowStyle}"><strong>${verdictLabel}</strong></td>` +
-        `<td style="padding:8px;text-align:right;color:#c9d1d9;${rowStyle}">${fmtPct(s.structureDeviationPct)}</td>` +
-        `<td style="padding:8px;text-align:right;color:${pnlColor};${rowStyle}">${pnlDisplay}</td>` +
-        `<td style="padding:8px;text-align:right;color:${realizedColor};${rowStyle}">${realizedDisplay}${isPnlPartial ? ' ⚠️' : ''}</td>` +
+        `<td style="padding:8px;color:${isBest ? '#58a6ff' : '#c9d1d9'};${rowStyle}">${verdictIcon}</td>` +
+        `<td style="padding:8px;text-align:right;color:#c9d1d9;${rowStyle}">${fmtPct(s.structureDeviationPct)} от цели</td>` +
+        `<td style="padding:8px;text-align:right;color:${pnlColor};${rowStyle}">${pnlIcon} ${pnlDisplay}${isPnlPartial ? ' (частично)' : ''}</td>` +
         '</tr>';
 
       // Rationale (если есть)
       if (s.rationale) {
-        html +=
-          `<tr><td colspan="5" style="padding:4px 8px 8px 20px;color:#8b949e;font-size:12px;${rowStyle}">${s.rationale}</td></tr>`;
+        html += `<tr><td colspan="4" style="padding:4px 8px 8px 20px;color:#8b949e;font-size:12px;${rowStyle}">${s.rationale}</td></tr>`;
       }
     }
 
-    html += '</tbody></table></div>';
+    html += '</tbody></table>';
+
+    // Рекомендация
+    const bestScenario = scenario.scenarios.find(
+      (s) => s.id === scenario.bestScenarioId,
+    );
+    if (bestScenario) {
+      html +=
+        '<div style="margin-top:12px;padding:10px;background:rgba(88,166,255,0.08);border:1px solid rgba(88,166,255,0.2);border-radius:4px;font-size:12px;">' +
+        '<div style="font-weight:bold;color:#58a6ff;margin-bottom:4px;">💡 Рекомендация:</div>' +
+        `Сценарий «${bestScenario.title}» показывает лучший результат. `;
+      if (bestScenario.rationale) {
+        html += bestScenario.rationale;
+      }
+      html += '</div>';
+    }
+
+    html += '</div>';
     return html;
   }
 
@@ -929,7 +1275,10 @@ export class NotificationAgent extends AgentBase {
       (d) => d.finalAction === 'BUY',
     ).length;
     const sellCount = strategist.decisions.filter(
-      (d) => d.finalAction === 'SELL' || d.finalAction === 'REDUCE' || d.finalAction === 'EXIT',
+      (d) =>
+        d.finalAction === 'SELL' ||
+        d.finalAction === 'REDUCE' ||
+        d.finalAction === 'EXIT',
     ).length;
     const holdCount = strategist.decisions.filter(
       (d) => d.finalAction === 'HOLD',
@@ -955,7 +1304,8 @@ export class NotificationAgent extends AgentBase {
       '</div>' +
       '</div>';
 
-    html += '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+    html +=
+      '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
     html +=
       '<thead><tr style="border-bottom:1px solid #30363d;">' +
       '<th style="text-align:left;padding:6px 8px;color:#8b949e;">Актив</th>' +
@@ -970,7 +1320,9 @@ export class NotificationAgent extends AgentBase {
       const actionColor =
         d.finalAction === 'BUY' || d.finalAction === 'HOLD'
           ? '#56d364'
-          : d.finalAction === 'SELL' || d.finalAction === 'REDUCE' || d.finalAction === 'EXIT'
+          : d.finalAction === 'SELL' ||
+              d.finalAction === 'REDUCE' ||
+              d.finalAction === 'EXIT'
             ? '#ff7b72'
             : '#8b949e';
 
@@ -1000,17 +1352,165 @@ export class NotificationAgent extends AgentBase {
     }
 
     html += '</tbody></table></div>';
+
+    if (strategist.policyWarnings && strategist.policyWarnings.length > 0) {
+      html +=
+        '<div style="margin-top: 8px; padding: 8px; background: rgba(255, 209, 102, 0.08); border: 1px solid rgba(255, 209, 102, 0.35); border-radius: 4px; font-size: 11px; color: #ffd166;">\n';
+      html +=
+        '<div style="font-weight: bold; margin-bottom: 4px;">⚠️ Пользовательская политика:</div>\n';
+      for (const warning of strategist.policyWarnings) {
+        html += '<div>• ' + warning + '</div>\n';
+      }
+      html += '</div>\n';
+    }
+
+    // ─── 3 инвестиционные стратегии (детерминированный рендер) ───
+    const strategies = strategist.strategies;
+    if (strategies && strategies.length > 0) {
+      html +=
+        '<h4 style="margin: 15px 0 10px 0; color: #58a6ff; font-size: 14px;">🛡️ Инвестиционные стратегии</h4>\n';
+
+      for (const strategy of strategies) {
+        const medal =
+          strategy === strategies[0]
+            ? '🥇'
+            : strategy === strategies[1]
+              ? '🥈'
+              : '🥉';
+        const riskColor =
+          strategy.riskLevel === 'HIGH'
+            ? '#ff7b72'
+            : strategy.riskLevel === 'MEDIUM'
+              ? '#e3b341'
+              : '#56d364';
+        const borderColor =
+          strategy.riskLevel === 'HIGH'
+            ? 'rgba(255, 123, 114, 0.3)'
+            : strategy.riskLevel === 'MEDIUM'
+              ? 'rgba(227, 179, 65, 0.3)'
+              : 'rgba(86, 211, 100, 0.3)';
+
+        html +=
+          '<div style="margin-bottom: 12px; padding: 12px; background: rgba(255,255,255,0.02); border: 1px solid ' +
+          borderColor +
+          '; border-radius: 6px;">\n';
+        html +=
+          '<div style="font-weight: bold; color: #e6edf3; font-size: 13px;">' +
+          medal +
+          ' ' +
+          strategy.name +
+          '</div>\n';
+        html +=
+          '<div style="color: #8b949e; font-size: 11px; margin-top: 2px;">' +
+          strategy.description +
+          '</div>\n';
+
+        // Шаги
+        html += '<div style="margin-top: 8px;">\n';
+        html +=
+          '<div style="color: #58a6ff; font-weight: bold; font-size: 11px; margin-bottom: 4px;">📋 Шаги:</div>\n';
+        for (const step of strategy.steps) {
+          html +=
+            '<div style="font-size: 11px; color: #c9d1d9; padding: 2px 0; border-bottom: 1px solid rgba(48, 54, 61, 0.5);">\n';
+          html +=
+            '<span style="color: #58a6ff; font-weight: bold;">' +
+            step.order +
+            '.</span> ';
+          html +=
+            '<span style="color: ' +
+            (step.action.includes('Прод')
+              ? '#ff7b72'
+              : step.action.includes('Куп')
+                ? '#56d364'
+                : '#e3b341') +
+            ';">' +
+            step.action +
+            '</span> ';
+          html += '<strong>' + step.ticker + '</strong> — ' + step.amount;
+          html +=
+            '<div style="color: #8b949e; font-size: 10px; margin-left: 16px;">→ ' +
+            step.rationale +
+            '</div>\n';
+          html += '</div>\n';
+        }
+        html += '</div>\n';
+
+        // Купонно-дивидендный якорь (только арифметика из данных)
+        html +=
+          '<div style="margin-top: 8px; padding: 6px 8px; background: rgba(88, 166, 255, 0.05); border: 1px solid rgba(88, 166, 255, 0.15); border-radius: 4px; font-size: 11px;">\n';
+        html +=
+          '<div style="color: #58a6ff; font-weight: bold; margin-bottom: 4px;">📊 Купонно-дивидендный якорь:</div>\n';
+        html += '<div>' + strategy.incomeAnchor.text + '</div>\n';
+        if (strategy.incomeAnchor.bondYieldPercent !== null) {
+          html +=
+            '<div style="color: #56d364; margin-top: 3px;">Купонная часть: ~' +
+            strategy.incomeAnchor.bondYieldPercent
+              .toFixed(1)
+              .replace('.', ',') +
+            '% годовых</div>\n';
+        }
+        if (strategy.incomeAnchor.dividendYieldPercent !== null) {
+          html +=
+            '<div style="color: #56d364; margin-top: 3px;">Дивидендная часть: ~' +
+            strategy.incomeAnchor.dividendYieldPercent
+              .toFixed(1)
+              .replace('.', ',') +
+            '% годовых</div>\n';
+        }
+        if (strategy.incomeAnchor.unavailableReason) {
+          html +=
+            '<div style="color: #ffd166; margin-top: 3px;">Причина: ' +
+            strategy.incomeAnchor.unavailableReason +
+            '</div>\n';
+        }
+        html += '</div>\n';
+
+        // Риск
+        html +=
+          '<div style="margin-top: 4px; font-size: 10px; color: ' +
+          riskColor +
+          ';">Риск: ' +
+          strategy.riskLevel +
+          '</div>\n';
+        html += '</div>\n';
+      }
+
+      if (
+        strategist.strategyConflicts &&
+        strategist.strategyConflicts.length > 0
+      ) {
+        html +=
+          '<div style="margin-top: 8px; padding: 8px; background: rgba(255, 123, 114, 0.08); border: 1px solid rgba(255, 123, 114, 0.3); border-radius: 4px; font-size: 11px; color: #ff7b72;">\n';
+        html +=
+          '<div style="font-weight: bold; margin-bottom: 4px;">⚠️ STRATEGY_CONFLICT:</div>\n';
+        for (const conflict of strategist.strategyConflicts) {
+          html +=
+            '<div>• ' +
+            conflict.strategyName +
+            ', шаг ' +
+            conflict.stepOrder +
+            ', ' +
+            conflict.ticker +
+            ': ' +
+            conflict.reason +
+            '</div>\n';
+        }
+        html += '</div>\n';
+      }
+    }
+
+    html += '</div>';
     return html;
   }
 
   /**
-    * Открыть report.html в браузере ОС по умолчанию.
-    *
-    * Внутри Electron-приложения отчёт и так показывается во вкладке
-    * «Анализ» (iframe из runPipelineReport) — внешний браузер не открываем,
-    * иначе каждый прогон анализа плодил бы лишние вкладки.
-    * Работает только в CLI-прогонах (npm run pipeline).
-    */
+   * Открыть report.html в браузере ОС по умолчанию.
+   *
+   * Внутри Electron-приложения отчёт и так показывается во вкладке
+   * «Анализ» (iframe из runPipelineReport) — внешний браузер не открываем,
+   * иначе каждый прогон анализа плодил бы лишние вкладки.
+   * Работает только в CLI-прогонах (npm run pipeline).
+   */
   private openInBrowser(filePath: string): boolean {
     // Electron: process.versions.electron определён только в его рантайме
     if (process.versions.electron) {

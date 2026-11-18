@@ -20,7 +20,6 @@
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
-import open from 'open';
 
 // Force reload .env with full parsing
 const envPath = path.resolve('.env');
@@ -49,7 +48,9 @@ import { savePortfolioKpi } from '../src/js/modules/ai/pipeline/ai-memory/kpi-si
 import { aiMemoryImpl } from '../src/js/modules/ai/pipeline/ai-memory/index.js';
 
 /** Обёртка для KPI sink: aiMemoryImpl + PipelineResult */
-const kpiSink = async (result: import('../src/js/modules/ai/pipeline/pipeline-coordinator.js').PipelineResult): Promise<void> => {
+const kpiSink = async (
+  result: import('../src/js/modules/ai/pipeline/pipeline-coordinator.js').PipelineResult,
+): Promise<void> => {
   try {
     await savePortfolioKpi(aiMemoryImpl, result);
   } catch {
@@ -61,7 +62,68 @@ const kpiSink = async (result: import('../src/js/modules/ai/pipeline/pipeline-co
 // 1. Однократный запуск конвейера
 // ──────────────────────────────────────────────
 
+let runLoggerInstalled = false;
+
+/**
+ * Дублировать консоль прогона в reports/last-run.log, чтобы диагностические
+ * строки [DIVIDEND_YIELDS_*], [SCENARIO_CASH], [AI_VOTE] не терялись.
+ */
+function installRunLogger(): string {
+  const logDir = path.resolve('reports');
+  const logPath = path.join(logDir, 'last-run.log');
+  fs.mkdirSync(logDir, { recursive: true });
+  fs.writeFileSync(
+    logPath,
+    `[${new Date().toISOString()}] [PIPELINE] run started\n`,
+    'utf8',
+  );
+
+  if (runLoggerInstalled) return logPath;
+  runLoggerInstalled = true;
+
+  const originalLog = console.log.bind(console);
+  const originalWarn = console.warn.bind(console);
+  const originalError = console.error.bind(console);
+
+  const write = (level: string, args: unknown[]): void => {
+    try {
+      const line = args
+        .map((arg) =>
+          typeof arg === 'string'
+            ? arg
+            : arg instanceof Error
+              ? `${arg.name}: ${arg.message}`
+              : JSON.stringify(arg),
+        )
+        .join(' ');
+      fs.appendFileSync(
+        logPath,
+        `[${new Date().toISOString()}] [${level}] ${line}\n`,
+        'utf8',
+      );
+    } catch {
+      // Лог не должен ломать прогон.
+    }
+  };
+
+  console.log = (...args: unknown[]) => {
+    originalLog(...args);
+    write('LOG', args);
+  };
+  console.warn = (...args: unknown[]) => {
+    originalWarn(...args);
+    write('WARN', args);
+  };
+  console.error = (...args: unknown[]) => {
+    originalError(...args);
+    write('ERROR', args);
+  };
+
+  return logPath;
+}
+
 async function runPipeline(): Promise<void> {
+  installRunLogger();
   console.log('[PIPELINE] Запуск мультиагентного конвейера');
 
   const coordinator = new PipelineCoordinator(
@@ -100,9 +162,7 @@ async function runPipeline(): Promise<void> {
   console.log('='.repeat(60));
   console.log('[PIPELINE] Результаты:');
   console.log(`  Успех: ${result.success ? '✅ Да' : '❌ Нет'}`);
-  console.log(
-    `  Время: ${(result.totalDurationMs / 1000).toFixed(1)}s`,
-  );
+  console.log(`  Время: ${(result.totalDurationMs / 1000).toFixed(1)}s`);
 
   if (result.error) {
     console.log(`  Ошибка: ${result.error.message}`);

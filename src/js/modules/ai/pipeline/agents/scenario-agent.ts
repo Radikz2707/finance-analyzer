@@ -1,4 +1,4 @@
-﻿/**
+/**
  * ScenarioAgent — агент сценарного моделирования («что если»).
  *
  * Роль: гибкость. Перед принятием решения о продаже/покупке строит
@@ -49,7 +49,8 @@ export interface ScenarioAgentInput {
 }
 
 /** Статус расчёта P&L */
-export type PnlCalculationStatus = 'CALCULATED' | 'PARTIAL' | 'INSUFFICIENT_DATA';
+export type PnlCalculationStatus =
+  'CALCULATED' | 'PARTIAL' | 'INSUFFICIENT_DATA';
 
 /** Статус финансирования сценария */
 export type FundingStatus =
@@ -77,6 +78,11 @@ export interface ScenarioResult {
   fundingStatus: FundingStatus;
   /** Остаток кэша после всех операций сценария */
   remainingCashRub: number;
+  /**
+   * Диагностика источника суммы кэша (без влияния на логику):
+   * сколько взято из свободного кэша, сколько — из продаж.
+   */
+  cashDiagnostics?: ScenarioCashDiagnostics;
   /** Оценка сценария */
   verdict: 'IMPROVES' | 'WORSENS' | 'NEUTRAL';
   /** Почему такой вердикт */
@@ -93,6 +99,24 @@ export interface ScenarioResult {
   cashBeforePct?: number;
   /** Доля кэша (%) после операции */
   cashAfterPct?: number;
+}
+
+/** Диагностика финансирования сценария (для отчёта/логов). */
+export interface ScenarioCashDiagnostics {
+  /** Свободный кэш на входе, руб */
+  inputFreeCashRub: number;
+  /** Поступления от продаж в сценарии, руб */
+  sellProceedsRub: number;
+  /** Сумма покупок в сценарии, руб */
+  buyTotalRub: number;
+  /** Доступно всего: freeCash + sellProceeds, руб */
+  availableCashRub: number;
+  /** Сколько покупок покрыто свободным кэшем, руб */
+  usedFromFreeCashRub: number;
+  /** Сколько покупок покрыто продажами, руб */
+  usedFromSalesRub: number;
+  /** Основной источник: FREE_CASH / SALES / MIXED / NONE */
+  cashSource: 'FREE_CASH' | 'SALES' | 'MIXED' | 'NONE';
 }
 
 /** Выходные данные ScenarioAgent */
@@ -122,7 +146,8 @@ export interface ScenarioAgentOutput {
  */
 export class ScenarioAgent extends AgentBase {
   // Пороги из единого конфига
-  private readonly baseChangeThresholdPct = PortfolioConfig.pipelineConfig.baseChangeThresholdPct;
+  private readonly baseChangeThresholdPct =
+    PortfolioConfig.pipelineConfig.baseChangeThresholdPct;
   private readonly minBudgetRub = PortfolioConfig.pipelineConfig.minBudgetRub;
   private readonly minBuyRub = PortfolioConfig.pipelineConfig.minBuyRub;
 
@@ -146,7 +171,11 @@ export class ScenarioAgent extends AgentBase {
   private checkFunding(
     changes: ScenarioChange[],
     freeCash: number,
-  ): { status: FundingStatus; remainingCash: number } {
+  ): {
+    status: FundingStatus;
+    remainingCash: number;
+    diagnostics: ScenarioCashDiagnostics;
+  } {
     let totalBuyRub = 0;
     let totalSellRub = 0;
 
@@ -160,23 +189,52 @@ export class ScenarioAgent extends AgentBase {
 
     const availableCash = freeCash + totalSellRub;
     const remainingCash = availableCash - totalBuyRub;
+    const usedFromFreeCashRub = Math.min(
+      Math.max(0, freeCash),
+      Math.max(0, totalBuyRub),
+    );
+    const usedFromSalesRub = Math.min(
+      Math.max(0, totalSellRub),
+      Math.max(0, totalBuyRub - usedFromFreeCashRub),
+    );
+    const cashSource: ScenarioCashDiagnostics['cashSource'] =
+      totalBuyRub <= 0
+        ? 'NONE'
+        : usedFromSalesRub <= 0
+          ? 'FREE_CASH'
+          : usedFromFreeCashRub <= 0
+            ? 'SALES'
+            : 'MIXED';
+    const diagnostics: ScenarioCashDiagnostics = {
+      inputFreeCashRub: Math.round(freeCash * 100) / 100,
+      sellProceedsRub: Math.round(totalSellRub * 100) / 100,
+      buyTotalRub: Math.round(totalBuyRub * 100) / 100,
+      availableCashRub: Math.round(availableCash * 100) / 100,
+      usedFromFreeCashRub: Math.round(usedFromFreeCashRub * 100) / 100,
+      usedFromSalesRub: Math.round(usedFromSalesRub * 100) / 100,
+      cashSource,
+    };
 
     if (totalBuyRub === 0) {
       // Нет покупок — финансирование не требуется
-      return { status: 'SUFFICIENT', remainingCash: freeCash + totalSellRub };
+      return {
+        status: 'SUFFICIENT',
+        remainingCash: freeCash + totalSellRub,
+        diagnostics,
+      };
     }
 
     if (availableCash >= totalBuyRub) {
-      return { status: 'SUFFICIENT', remainingCash };
+      return { status: 'SUFFICIENT', remainingCash, diagnostics };
     }
 
     if (totalSellRub > 0) {
       // Частично финансируется за счёт продаж
-      return { status: 'PARTIAL', remainingCash };
+      return { status: 'PARTIAL', remainingCash, diagnostics };
     }
 
     // Нет продаж и недостаточно кэша
-    return { status: 'INSUFFICIENT', remainingCash };
+    return { status: 'INSUFFICIENT', remainingCash, diagnostics };
   }
 
   protected async executeInternal(
@@ -208,6 +266,7 @@ export class ScenarioAgent extends AgentBase {
       pnlCalculationStatus: this.calcPnlStatus(assets, []),
       fundingStatus: baselineFunding.status,
       remainingCashRub: baselineFunding.remainingCash,
+      cashDiagnostics: baselineFunding.diagnostics,
       verdict: 'NEUTRAL',
       rationale: 'Базовый сценарий: текущая структура без изменений.',
     });
@@ -235,6 +294,10 @@ export class ScenarioAgent extends AgentBase {
       freeCash,
     );
     if (optimized) {
+      console.log(
+        '[SCENARIO_POLICY] id=S3_optimized policyAware=false ' +
+          'note="теоретический, не учитывает политику no-sell"',
+      );
       scenarios.push(optimized);
     }
 
@@ -247,6 +310,19 @@ export class ScenarioAgent extends AgentBase {
     );
     if (flexible && flexible.changes.length > 0) {
       scenarios.push(flexible);
+    }
+
+    // Диагностика источника кэша по каждому сценарию (логика не меняется).
+    for (const scenario of scenarios) {
+      const cash = scenario.cashDiagnostics;
+      if (cash) {
+        console.log(
+          `[SCENARIO_CASH] id=${scenario.id} source=${cash.cashSource} ` +
+            `freeCash=${cash.inputFreeCashRub} sells=${cash.sellProceedsRub} ` +
+            `buy=${cash.buyTotalRub} usedFree=${cash.usedFromFreeCashRub} ` +
+            `usedSales=${cash.usedFromSalesRub}`,
+        );
+      }
     }
 
     // Выбираем лучший сценарий (не baseline)
@@ -294,7 +370,8 @@ export class ScenarioAgent extends AgentBase {
       verdict = 'WORSENS';
       rationale += ' НЕДОСТАТОЧНО СРЕДСТВ для выполнения всех операций.';
     } else if (funding.status === 'PARTIAL') {
-      rationale += ' ЧАСТИЧНОЕ финансирование: не все покупки могут быть выполнены.';
+      rationale +=
+        ' ЧАСТИЧНОЕ финансирование: не все покупки могут быть выполнены.';
     }
 
     if (pnlStatus === 'CALCULATED' && funding.status !== 'INSUFFICIENT') {
@@ -309,7 +386,8 @@ export class ScenarioAgent extends AgentBase {
         rationale += ' Структура ухудшена относительно базовой.';
       }
     } else if (pnlStatus !== 'CALCULATED') {
-      rationale += ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
+      rationale +=
+        ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
     }
 
     return {
@@ -322,6 +400,7 @@ export class ScenarioAgent extends AgentBase {
       pnlCalculationStatus: pnlStatus,
       fundingStatus: funding.status,
       remainingCashRub: funding.remainingCash,
+      cashDiagnostics: funding.diagnostics,
       verdict,
       rationale,
       stocksBeforePct: result.stocksBeforePct,
@@ -334,12 +413,12 @@ export class ScenarioAgent extends AgentBase {
   }
 
   /**
-    * Оптимизированный сценарий: пересчитывает структуру и P&L
-    * без ограничений по просадке. AI имеет свободу выбора.
-    *
-    * Дополнительно: автоматически добавляет продажу частей позиций
-    * с концентрацией > 15% и отрицательным P&L для снижения риска.
-    */
+   * Оптимизированный сценарий: пересчитывает структуру и P&L
+   * без ограничений по просадке. AI имеет свободу выбора.
+   *
+   * Дополнительно: автоматически добавляет продажу частей позиций
+   * с концентрацией > 15% и отрицательным P&L для снижения риска.
+   */
   private buildOptimizedScenario(
     assets: AssetAnalysis[],
     total: number,
@@ -352,14 +431,11 @@ export class ScenarioAgent extends AgentBase {
     // ─── P0-1: Автоматическое снижение концентраций ───
     // Находим активы с высокой концентрацией и убыточным P&L
     const concentratedAssets = assets.filter(
-      (a) =>
-        a.currentPercent > 15 &&
-        (a.unrealizedProfitRub ?? 0) < 0,
+      (a) => a.currentPercent > 15 && (a.unrealizedProfitRub ?? 0) < 0,
     );
 
     for (const asset of concentratedAssets) {
-      const currentVal =
-        (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
+      const currentVal = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
       // Продаём 50% позиции для снижения концентрации → REDUCE (частичная продажа)
       const targetValue = currentVal * 0.5;
       optimizedChanges.push({
@@ -395,6 +471,7 @@ export class ScenarioAgent extends AgentBase {
     // Формируем подробную сводку с указанием реализованного убытка
     const realizedLossAbs = Math.max(0, -realizedPnL);
     let rationale =
+      'Теоретический сценарий: не учитывает политику no-sell. ' +
       `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
       `P&L: ${this.fmtRub(result.projectedUnrealizedPnL)}. ` +
       `Зафиксировано: ${this.fmtRub(realizedLossAbs)}. ` +
@@ -404,12 +481,13 @@ export class ScenarioAgent extends AgentBase {
         : '');
 
     if (optimizedPnlStatus === 'INSUFFICIENT_DATA') {
-      rationale += ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
+      rationale +=
+        ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
     }
 
     return {
       id: 'S3_optimized',
-      title: 'Оптимизированный — пересчёт без ограничений',
+      title: 'Оптимизированный — теоретический, не учитывает политику no-sell',
       changes: optimizedChanges,
       structureDeviationPct: dev,
       projectedUnrealizedPnL: result.projectedUnrealizedPnL,
@@ -462,7 +540,7 @@ export class ScenarioAgent extends AgentBase {
       const balancePrice = asset.balancePrice ?? 0;
       const currentPrice = asset.currentPrice ?? 0;
       const unrealizedPnL =
-        (currentPrice > 0 && balancePrice > 0)
+        currentPrice > 0 && balancePrice > 0
           ? (currentPrice - balancePrice) * (asset.quantity ?? 0)
           : asset.unrealizedProfitRub;
       pnl.set(asset.ticker.toUpperCase(), unrealizedPnL);
@@ -525,10 +603,7 @@ export class ScenarioAgent extends AgentBase {
         pnl.set(key, currentPnL * (1 - sold / Math.max(1, currentValue)));
 
         // Обновляем стоимость покупки пропорционально
-        costBases.set(
-          key,
-          costBase * (1 - sold / Math.max(1, currentValue)),
-        );
+        costBases.set(key, costBase * (1 - sold / Math.max(1, currentValue)));
       }
     }
 
@@ -554,7 +629,12 @@ export class ScenarioAgent extends AgentBase {
     const stocksBeforePct = this.calcClassPct(assets, total, 'STOCK');
     const bondsBeforePct = this.calcClassPct(assets, total, 'BOND');
     const cashBeforePct = 100 - stocksBeforePct - bondsBeforePct;
-    const stocksAfterPct = this.calcClassPctAfter(assets, total, values, 'STOCK');
+    const stocksAfterPct = this.calcClassPctAfter(
+      assets,
+      total,
+      values,
+      'STOCK',
+    );
     const bondsAfterPct = this.calcClassPctAfter(assets, total, values, 'BOND');
     const cashAfterPct = 100 - stocksAfterPct - bondsAfterPct;
 
@@ -705,11 +785,12 @@ export class ScenarioAgent extends AgentBase {
       : 'NEUTRAL';
 
     let rationale =
-        `Покупка ${buyAsset.ticker} ≈ ${this.fmtRub(amount)}. ` +
-        `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
-        `Кэш: ${this.fmtRub(flexibleFunding.remainingCash)} (${flexibleFunding.status}).`;
+      `Покупка ${buyAsset.ticker} ≈ ${this.fmtRub(amount)}. ` +
+      `Структура: ${this.fmtPct(dev)} (было ${this.fmtPct(baselineDeviation)}). ` +
+      `Кэш: ${this.fmtRub(flexibleFunding.remainingCash)} (${flexibleFunding.status}).`;
     if (flexiblePnlStatus === 'INSUFFICIENT_DATA') {
-      rationale += ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
+      rationale +=
+        ' P&L не может быть рассчитан (недостаточно данных о себестоимости).';
     }
 
     return {
@@ -722,6 +803,7 @@ export class ScenarioAgent extends AgentBase {
       pnlCalculationStatus: flexiblePnlStatus,
       fundingStatus: flexibleFunding.status,
       remainingCashRub: flexibleFunding.remainingCash,
+      cashDiagnostics: flexibleFunding.diagnostics,
       verdict,
       rationale,
       stocksBeforePct: result.stocksBeforePct,
@@ -781,10 +863,7 @@ export class ScenarioAgent extends AgentBase {
       // 3. currentPrice > 0 — текущая цена известна
       // P&L рассчитывается из (currentPrice - balancePrice) * quantity,
       // поэтому проверяем наличие price данных, а не Excel P&L.
-      if (
-        (asset.balancePrice ?? 0) > 0 &&
-        (asset.currentPrice ?? 0) > 0
-      ) {
+      if ((asset.balancePrice ?? 0) > 0 && (asset.currentPrice ?? 0) > 0) {
         calculated++;
       } else {
         insufficient++;

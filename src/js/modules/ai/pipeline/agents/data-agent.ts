@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   CurrentAsset,
   MacroGoals,
   AggregatedAsset,
@@ -16,9 +16,7 @@ import {
 import { QuikNewsSource } from '../../../api/quik-gateway/index.js';
 import type { GatekeeperResult } from '../gatekeeper/types.js';
 import { fetchHistoricalBatch } from '../../../data/data-fetcher/index.js';
-import {
-  AnomalyDetector,
-} from '../../../shared/python-engine/index.js';
+import { AnomalyDetector } from '../../../shared/python-engine/index.js';
 import type {
   AnomalyDetectionResult,
   PriceSeriesInput,
@@ -54,14 +52,46 @@ function toNewsImportance(
 
 /** Ключевые слова → сентимент (компактная эвристика, как в NewsCache) */
 const POSITIVE_WORDS = [
-  'рост', 'прибыль', 'доход', 'успех', 'развит', 'инвестиц', 'покупк',
-  'увелич', 'рекорд', 'дивиденд', 'выкуп', 'одобр', 'контракт', 'выигр',
-  'лучш', 'позитив', 'дивид',
+  'рост',
+  'прибыль',
+  'доход',
+  'успех',
+  'развит',
+  'инвестиц',
+  'покупк',
+  'увелич',
+  'рекорд',
+  'дивиденд',
+  'выкуп',
+  'одобр',
+  'контракт',
+  'выигр',
+  'лучш',
+  'позитив',
+  'дивид',
 ];
 const NEGATIVE_WORDS = [
-  'паден', 'снижен', 'убыт', 'кризис', 'риск', 'санкц', 'обвал', 'потер',
-  'долг', 'дефолт', 'банкрот', 'суд', 'арест', 'штраф', 'расслед',
-  'негатив', 'провал', 'угроз', 'сокращ', 'блокировк', 'конфискац',
+  'паден',
+  'снижен',
+  'убыт',
+  'кризис',
+  'риск',
+  'санкц',
+  'обвал',
+  'потер',
+  'долг',
+  'дефолт',
+  'банкрот',
+  'суд',
+  'арест',
+  'штраф',
+  'расслед',
+  'негатив',
+  'провал',
+  'угроз',
+  'сокращ',
+  'блокировк',
+  'конфискац',
 ];
 
 function detectNewsSentiment(
@@ -135,50 +165,58 @@ export interface HistoricalTradesData {
 }
 
 /**
-  * Полные выходные данные Data Agent.
-  * Передаются в Research Agent и Analysis Agent.
-  */
- export interface DataAgentOutput {
-   /** Агрегированный портфель */
-   aggregated: AggregatedAsset[];
-   /** Текущие активы (flattened) */
-   assets: CurrentAsset[];
-   /** Макро-цели из Excel */
-   macroGoals: MacroGoals;
-   /** Информация о счетах */
-   accounts: AccountInfo[];
-   /** Котировки */
-   quotes: Record<string, AssetQuote>;
-   /** Активные заявки QUIK */
-   activeOrders: QuikOrder[];
-   /** Исторические сделки */
-   historicalTrades: HistoricalTradesData;
-   /** Вложенные средства */
-   investedFunds: InvestedFundsData;
-   /** Отфильтрованные новости от Gatekeeper */
-   news: GatekeeperResult | null;
-   /** Статистические аномалии цен (Python Engine) */
-   anomalies: AnomalyDetectionResult[];
-   /** Ключевая ставка ЦБ РФ */
-   keyRate: number;
-   /** Дата обновления ключевой ставки */
-   keyRateDate: string;
-   /** Полные данные о ключевой ставке ЦБ (включая source, isFresh) */
-   cbrRateData: CbrRateData | null;
-   /** Параметры инвестора (горизонт, цель, риск) */
-   investorParams?: InvestorParams;
-    /**
-     * Рыночные данные по облигациям из листа «Облигации».
-     * Map<ISIN, BondReferenceData> — полный справочник ~3030 выпусков.
-     * Используется для обогащения позиций облигаций и передачи в AI.
-     */
-    bondMarketData: Map<string, import('../../../data/xlsx-parser/xlsx-parser.js').BondReferenceData>;
-    /**
-     * Анализ ликвидности портфеля на основе дневных оборотов.
-     * Содержит предупреждения и рекомендации по управлению рисками ликвидности.
-     */
-    liquidityAnalysis?: LiquidityAnalysis;
-  }
+ * Полные выходные данные Data Agent.
+ * Передаются в Research Agent и Analysis Agent.
+ */
+export interface DataAgentOutput {
+  /** Агрегированный портфель */
+  aggregated: AggregatedAsset[];
+  /** Текущие активы (flattened) */
+  assets: CurrentAsset[];
+  /** Макро-цели из Excel */
+  macroGoals: MacroGoals;
+  /** Информация о счетах */
+  accounts: AccountInfo[];
+  /** Котировки */
+  quotes: Record<string, AssetQuote>;
+  /** Активные заявки QUIK */
+  activeOrders: QuikOrder[];
+  /** Исторические сделки */
+  historicalTrades: HistoricalTradesData;
+  /** Вложенные средства */
+  investedFunds: InvestedFundsData;
+  /** Отфильтрованные новости от Gatekeeper */
+  news: GatekeeperResult | null;
+  /** Статистические аномалии цен (Python Engine) */
+  anomalies: AnomalyDetectionResult[];
+  /** Ключевая ставка ЦБ РФ */
+  keyRate: number;
+  /** Дата обновления ключевой ставки */
+  keyRateDate: string;
+  /** Полные данные о ключевой ставке ЦБ (включая source, isFresh) */
+  cbrRateData: CbrRateData | null;
+  /** Параметры инвестора (горизонт, цель, риск) */
+  investorParams?: InvestorParams;
+  /**
+   * Рыночные данные по облигациям из листа «Облигации».
+   * Map<ISIN, BondReferenceData> — полный справочник ~3030 выпусков.
+   * Используется для обогащения позиций облигаций и передачи в AI.
+   */
+  bondMarketData: Map<
+    string,
+    import('../../../data/xlsx-parser/xlsx-parser.js').BondReferenceData
+  >;
+  /**
+   * Анализ ликвидности портфеля на основе дневных оборотов.
+   * Содержит предупреждения и рекомендации по управлению рисками ликвидности.
+   */
+  liquidityAnalysis?: LiquidityAnalysis;
+  /**
+   * Предупреждения о невозможности нормализовать цены (например,
+   * облигация без номинала и без ориентира MOEX). Выводятся в отчёте.
+   */
+  priceWarnings?: string[];
+}
 
 // ──────────────────────────────────────────────
 // 2. Data Agent
@@ -212,20 +250,34 @@ export class DataAgent extends AgentBase {
     this.log.info('[DataAgent] >>> Начало парсинга Excel/QUIK');
 
     // Шаг 1: Синхронизация новых сделок
-      await this.parser.syncNewTrades();
+    await this.parser.syncNewTrades();
 
-      // Шаг 2: Агрегация портфеля
-      const aggregated = await this.parser.parseAggregatedPortfolio();
-      const assets = this.parser.aggregatedToCurrentAssets(aggregated);
+    // Шаг 2: Агрегация портфеля
+    const aggregated = await this.parser.parseAggregatedPortfolio();
+    const assets = this.parser.aggregatedToCurrentAssets(aggregated);
 
-      // Шаг 3: Макро-цели
-      const macroGoals = await this.parser.parseMacroGoals();
-
-      // Шаг 2.7: Рыночные данные по облигациям (лист «Облигации» A:M)
-      const bondMarketData = await this.parser.parseBondsSheet();
-      this.log.info(
-        `[DataAgent] ✅ BondMarketData: ${bondMarketData.size} выпусков загружено`,
+    // Предупреждения о ценах, которые не удалось нормализовать.
+    const priceWarnings = Array.from(
+      new Set(
+        assets
+          .map((asset) => asset.priceWarning)
+          .filter((warning): warning is string => Boolean(warning)),
+      ),
+    );
+    if (priceWarnings.length > 0) {
+      this.log.warn(
+        `[DataAgent] ⚠️ Проблемы нормализации цен: ${priceWarnings.length}`,
       );
+    }
+
+    // Шаг 3: Макро-цели
+    const macroGoals = await this.parser.parseMacroGoals();
+
+    // Шаг 2.7: Рыночные данные по облигациям (лист «Облигации» A:M)
+    const bondMarketData = await this.parser.parseBondsSheet();
+    this.log.info(
+      `[DataAgent] ✅ BondMarketData: ${bondMarketData.size} выпусков загружено`,
+    );
 
     // Шаг 2.5: Сохранение позиций в БД
     for (const asset of assets) {
@@ -234,9 +286,13 @@ export class DataAgent extends AgentBase {
         const currentMarketValue =
           (asset.quantity || 0) * (asset.currentPrice || 0);
 
-        const validAssetType = ['STOCK', 'BOND', 'ETF', 'CASH', 'OTHER'].includes(
-          asset.assetType.toUpperCase(),
-        )
+        const validAssetType = [
+          'STOCK',
+          'BOND',
+          'ETF',
+          'CASH',
+          'OTHER',
+        ].includes(asset.assetType.toUpperCase())
           ? (asset.assetType.toUpperCase() as
               'STOCK' | 'BOND' | 'ETF' | 'CASH' | 'OTHER')
           : 'OTHER';
@@ -335,7 +391,8 @@ export class DataAgent extends AgentBase {
         .filter(
           (ticker) =>
             !quotes[ticker] ||
-            (quotes[ticker].currentPrice <= 0 && !quotes[ticker].volumeTodayRub),
+            (quotes[ticker].currentPrice <= 0 &&
+              !quotes[ticker].volumeTodayRub),
         );
       if (bondTickers.length > 0) {
         const moexProvider = new MoexQuoteProvider();
@@ -395,11 +452,10 @@ export class DataAgent extends AgentBase {
           const quotesTurnover = quotes[a.ticker.toUpperCase()]?.volumeTodayRub;
           // Оборот из листа «Облигации» (для облигаций)
           const bondData = bondMarketData.get(a.ticker.toUpperCase());
-          const bondTurnover = bondData?.turnover != null
-            ? Number(bondData.turnover)
-            : undefined;
+          const bondTurnover =
+            bondData?.turnover != null ? Number(bondData.turnover) : undefined;
           // Приоритет: quotes (акции) → bondMarketData (облигации)
-          const dailyTurnover = quotesTurnover ?? (bondTurnover ?? null);
+          const dailyTurnover = quotesTurnover ?? bondTurnover ?? null;
           return {
             ticker: a.ticker,
             name: a.name,
@@ -448,7 +504,9 @@ export class DataAgent extends AgentBase {
 
       // 4. Smart-Lab — fallback для тех, у кого нет оборота (null ИЛИ 0)
       const smartlabTickers = missingBondTickers
-        .filter((b) => !moexTurnovers[b.ticker] || moexTurnovers[b.ticker] === 0)
+        .filter(
+          (b) => !moexTurnovers[b.ticker] || moexTurnovers[b.ticker] === 0,
+        )
         .slice(0, 50); // максимум 50, чтобы не перегружать
 
       if (smartlabTickers.length > 0) {
@@ -463,7 +521,11 @@ export class DataAgent extends AgentBase {
                 this.log.info(
                   `[DataAgent] 📊 Smart-Lab: ${b.ticker} volume=${data.volume} млн руб`,
                 );
-                return { ticker: b.ticker, isin: b.isin, volume: data.volume * 1e6 }; // млн → руб
+                return {
+                  ticker: b.ticker,
+                  isin: b.isin,
+                  volume: data.volume * 1e6,
+                }; // млн → руб
               }
               return null;
             }),
@@ -519,7 +581,9 @@ export class DataAgent extends AgentBase {
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.log.warn(`[DataAgent] ⚠️ Анализ ликвидности недоступен: ${errorMsg}`);
+      this.log.warn(
+        `[DataAgent] ⚠️ Анализ ликвидности недоступен: ${errorMsg}`,
+      );
     }
 
     // Шаг 6: Активные заявки QUIK
@@ -530,12 +594,20 @@ export class DataAgent extends AgentBase {
 
     // Шаг 8: Вложенные средства
     const investedFunds = await this.parser.parseInvestedFunds();
-    
+
     // Пересчитываем averageMonthlyDeposit: (всего внесено - аномальные) / месяцы
-    const monthsSinceStart = Math.max(1, Math.floor((Date.now() - this.parser['startDate'].getTime()) / (30 * 24 * 60 * 60 * 1000)));
+    const monthsSinceStart = Math.max(
+      1,
+      Math.floor(
+        (Date.now() - this.parser['startDate'].getTime()) /
+          (30 * 24 * 60 * 60 * 1000),
+      ),
+    );
     const totalDepositsSum = historicalTrades.totalDepositsSum || 0;
     const anomalousDepositsTotal = historicalTrades.anomalousDepositsTotal || 0;
-    const recalculatedAverageMonthlyDeposit = Math.round((totalDepositsSum - anomalousDepositsTotal) / monthsSinceStart);
+    const recalculatedAverageMonthlyDeposit = Math.round(
+      (totalDepositsSum - anomalousDepositsTotal) / monthsSinceStart,
+    );
 
     // Шаг 9: Gatekeeper — фильтрация новостей (RSS + MOEX + QUIK)
     let newsResult: GatekeeperResult | null = null;
@@ -566,9 +638,7 @@ export class DataAgent extends AgentBase {
       // desktop-Директор и NewsDriver читают реальный новостной фон из newsRepo.
       let persistedNews = 0;
       for (const item of newsResult.approvedNews) {
-        const sentiment = detectNewsSentiment(
-          `${item.title} ${item.summary}`,
-        );
+        const sentiment = detectNewsSentiment(`${item.title} ${item.summary}`);
         for (const ticker of item.relevantTickers) {
           try {
             newsRepo.addProcessed({
@@ -651,7 +721,9 @@ export class DataAgent extends AgentBase {
       );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      this.log.warn(`[DataAgent] ⚠️ Ошибка получения ключевой ставки: ${errorMsg}`);
+      this.log.warn(
+        `[DataAgent] ⚠️ Ошибка получения ключевой ставки: ${errorMsg}`,
+      );
     }
 
     const output: DataAgentOutput = {
@@ -697,6 +769,7 @@ export class DataAgent extends AgentBase {
       cbrRateData: cbrRateDataResult,
       bondMarketData,
       liquidityAnalysis,
+      priceWarnings,
     };
 
     // Парсим параметры инвестора (опционально)
@@ -704,7 +777,10 @@ export class DataAgent extends AgentBase {
       const params = await this.parser.parseInvestorParams();
       if (params) output.investorParams = params;
     } catch (e) {
-      this.log.warn('[DataAgent] ⚠️ Не удалось прочитать параметры инвестора:', e);
+      this.log.warn(
+        '[DataAgent] ⚠️ Не удалось прочитать параметры инвестора:',
+        e,
+      );
     }
 
     this.log.info(

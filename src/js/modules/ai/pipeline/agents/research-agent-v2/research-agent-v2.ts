@@ -12,6 +12,7 @@ const { AggressiveTokenizerRu } = require('natural');
 import type { AssetResearchSnapshot, AssetType } from '../../../../research/types.js';
 import { RssNewsSource } from '../../gatekeeper/rss-source.js';
 import { SentimentAnalyzer } from '../../../../research/news/nlp/sentiment-analyzer.js';
+import { fetchHistoricalBatch } from '../../../../data/data-fetcher/index.js';
 import type {
   ResearchAgentV2Input,
   ResearchAgentV2Output,
@@ -234,19 +235,118 @@ export class ResearchAgentV2 extends AgentBase {
 
   private async simulateHistoricalAnalysis(
     ticker: string,
-    _periodDays: number = DEFAULT_PERIOD_DAYS,
+    periodDays: number = DEFAULT_PERIOD_DAYS,
   ): Promise<HistoricalAnalysis> {
-    // TODO: реализовать реальный исторический анализ с рыночными данными
-    // Заглушка: возвращаем пустые данные
-    return {
-      ticker,
-      dataPoints: [],
-      averageChange: 0,
-      volatility: 0,
-      trend: 'neutral',
-      maxDrawdown: 0,
-      sharpeRatio: 0,
-    };
+    try {
+      // Загружаем исторические данные из MOEX
+      const toDate = new Date().toISOString().slice(0, 10);
+      const fromDate = new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+
+      const history = await fetchHistoricalBatch(
+        [ticker.toUpperCase()],
+        fromDate,
+        toDate,
+        'D',
+      );
+
+      const bars = history.get(ticker.toUpperCase()) ?? [];
+
+      if (bars.length < 10) {
+        return {
+          ticker,
+          dataPoints: bars.map((b: { date: string; close: number }) => ({
+            date: b.date,
+            price: b.close,
+            volume: 0,
+            changePercent: 0,
+          })),
+          averageChange: 0,
+          volatility: 0,
+          trend: 'neutral',
+          maxDrawdown: 0,
+          sharpeRatio: 0,
+        };
+      }
+
+      const closes = bars.map((b: { date: string; close: number }) => b.close);
+      const lastPrice = closes[closes.length - 1]!;
+      const prevClose = closes.length > 1 ? closes[closes.length - 2]! : lastPrice;
+
+      // Среднее дневное изменение
+      const dailyChanges: number[] = [];
+      for (let i = 1; i < closes.length; i++) {
+        const current = closes[i]!;
+        const previous = closes[i - 1]!;
+        dailyChanges.push((current - previous) / previous);
+      }
+      const averageChange =
+        dailyChanges.reduce((sum, c) => sum + c, 0) / dailyChanges.length;
+
+      // Волатильность (стандартное отклонение дневных изменений)
+      const variance =
+        dailyChanges.reduce((sum, c) => sum + Math.pow(c - averageChange, 2), 0) /
+        dailyChanges.length;
+      const volatility = Math.sqrt(variance) * Math.sqrt(252); // годовая
+
+      // Тренд: SMA20 vs SMA50
+      const sma20 = this.calculateSMAFromData(closes, Math.min(20, closes.length));
+      const sma50 = this.calculateSMAFromData(closes, Math.min(50, closes.length));
+      let trend: 'up' | 'down' | 'neutral' = 'neutral';
+      if (sma20 > sma50 && lastPrice > sma20) trend = 'up';
+      else if (sma20 < sma50 && lastPrice < sma20) trend = 'down';
+
+      // Максимальная просадка (Max Drawdown)
+      let peak = closes[0]!;
+      let maxDrawdown = 0;
+      for (const price of closes) {
+        if (price > peak) peak = price;
+        const drawdown = (peak - price) / peak;
+        if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+      }
+
+      // Коэффициент Шарпа (упрощённый)
+      const riskFreeRate = 0.16; // ~16% ключевая ставка ЦБ
+      const excessReturn = averageChange * 252 - riskFreeRate / 252;
+      const sharpeRatio = volatility > 0 ? excessReturn / volatility : 0;
+
+      return {
+        ticker,
+        dataPoints: bars.map((b: { date: string; close: number }) => ({
+          date: b.date,
+          price: b.close,
+          volume: 0,
+          changePercent: prevClose > 0 ? ((b.close - prevClose) / prevClose) * 100 : 0,
+        })),
+        averageChange: Math.round(averageChange * 10000) / 10000,
+        volatility: Math.round(volatility * 100) / 100,
+        trend,
+        maxDrawdown: Math.round(maxDrawdown * 100) / 100,
+        sharpeRatio: Math.round(sharpeRatio * 100) / 100,
+      };
+    } catch (error) {
+      console.warn(`[ResearchAgentV2] Ошибка исторического анализа ${ticker}:`, error);
+      // Fallback на заглушку
+      return {
+        ticker,
+        dataPoints: [],
+        averageChange: 0,
+        volatility: 0,
+        trend: 'neutral',
+        maxDrawdown: 0,
+        sharpeRatio: 0,
+      };
+    }
+  }
+
+  /** Расчёт SMA из массива цен */
+  private calculateSMAFromData(closes: number[], period: number): number {
+    if (closes.length < period) {
+      return closes.reduce((sum, c) => sum + c, 0) / closes.length;
+    }
+    const recent = closes.slice(-period);
+    return recent.reduce((sum, c) => sum + c, 0) / period;
   }
 
   // ── Sentiment Analysis ──

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Модуль управления моделями Ollama
  * Предоставляет функции для работы с локальными AI-моделями
  */
@@ -172,9 +172,7 @@ export async function pullModel(
 
                 if (newStatus !== currentStatus) {
                   currentStatus = newStatus;
-                  log.info(
-                    `[Ollama] ${newStatus} ${modelName}: ${percent}%`,
-                  );
+                  log.info(`[Ollama] ${newStatus} ${modelName}: ${percent}%`);
                 }
 
                 if (onProgress) {
@@ -234,10 +232,7 @@ export async function deleteModel(modelName: string): Promise<boolean> {
     return true;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    log.error(
-      `[Ollama] ❌ Ошибка удаления модели ${modelName}:`,
-      errorMessage,
-    );
+    log.error(`[Ollama] ❌ Ошибка удаления модели ${modelName}:`, errorMessage);
     return false;
   }
 }
@@ -709,6 +704,28 @@ export function sanitizeAiNarrative(text: string): string {
     );
   };
 
+  /**
+   * Прогнозы доходности в процентах за периоды запрещены: числа должны
+   * приходить только из детерминированного купонно-дивидендного якоря.
+   * Ловим диапазоны/числа с периодом и явные «ожидаемая доходность … %».
+   */
+  const hasUnsupportedReturnForecast = (norm: string): boolean => {
+    const hasReturnContext =
+      /(доходност|прибыл|рост|портфел|акци|облигаци)/i.test(norm);
+    if (!hasReturnContext) return false;
+
+    const hasRange = /\d+[\d,.]*\s*[-–—]\s*\d+[\d,.]*\s*%/i.test(norm);
+    const hasPeriod = /\b(за|через)\s+\d+\s*(мес|год|лет)/i.test(norm);
+    const hasAnnualYield =
+      /\d+[\d,.]*\s*[-–—]\s*\d+[\d,.]*\s*%\s*годовых/i.test(norm);
+    const hasExpectedYield =
+      /ожидаем\w*\s+доходност\w*[\s\S]*?\d+[\d,.]*\s*[-–—]\s*\d+[\d,.]*\s*%/i.test(
+        norm,
+      );
+
+    return (hasRange && hasPeriod) || hasAnnualYield || hasExpectedYield;
+  };
+
   const filtered = sentences.filter((s) => {
     const norm = normalize(s.trim());
     if (norm.length === 0) return true;
@@ -716,6 +733,7 @@ export function sanitizeAiNarrative(text: string): string {
     if (hasKpi(norm)) return false;
     if (hasAggregate(norm)) return false;
     if (hasTickerAmount(norm)) return false;
+    if (hasUnsupportedReturnForecast(norm)) return false;
     return true;
   });
 

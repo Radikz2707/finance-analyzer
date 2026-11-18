@@ -20,15 +20,10 @@ function isWebP(): void {
 // ==========================================
 import { dbManager } from './modules/db/db-manager/db-manager.js';
 import { memoryLayer } from './modules/db/memory-layer/memory-layer.js';
-import { initDirectorChat } from './modules/ai/pipeline/director/director-init.js';
-
-// ──────────────────────────────────────────────
-// 🧠 Director Agent — интеграция чата
-// ──────────────────────────────────────────────
 
 /**
  * Инициализация приложения.
- * Загружает все модули и инициализирует Director Chat.
+ * Загружает все модули.
  */
 const initApp = () => {
   document.body.classList.add('_js-ready');
@@ -40,9 +35,6 @@ const initApp = () => {
   // в браузерный бандл и в строгую tsc-проверку (см. tsconfig exclude).
   void importTelegramBot();
   memoryLayer();
-
-  // 🧠 Director: чат-интерфейс с инвестиционным координатором
-  initDirectorChat();
 };
 
 /** Ленивая загрузка Telegram-бота (асинхронно, ошибки не роняют приложение) */

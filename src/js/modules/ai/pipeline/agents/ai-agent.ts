@@ -1,4 +1,4 @@
-﻿import type { DataAgentOutput } from './data-agent.js';
+import type { DataAgentOutput } from './data-agent.js';
 // research-agent.ts удалён — используем research-agent-v2
 import type { ResearchV1Output } from './research-agent-v2/types.js';
 import type { AnalysisAgentOutput } from './analysis-agent.js';
@@ -25,6 +25,7 @@ import {
 import { sanitizeAiNarrative } from '../../../ai/ai-advisor/ollama-manager.js';
 import { postProcessAiText } from '../../../ai/ai-advisor/ai-validation.js';
 import { stripJsonBlockFromAiText } from '../../../ai/ai-advisor/json-sanitizer.js';
+import { stripRecommendationsTableFromNarrative } from '../../../ai/ai-advisor/narrative-sanitizer.js';
 import { buildPortfolioAssetContext } from '../../../ai/ai-advisor/snapshot-builder.js';
 import { buildFinalConclusion } from '../../../ai/ai-advisor/report-builders.js';
 import { hasValue } from '../../../research/types.js';
@@ -38,11 +39,19 @@ import {
   checkGuardrails,
 } from '../guardrails/guardrails.js';
 import { getLogger } from '../../../shared/logger/index.js';
+import type { PortfolioFundamentalsContext } from '../../../api/fundamentals/types.js';
 import {
   agreeMathAndAi,
+  formatAiVoteDiagnostic,
   isExecutionAllowed,
   type MathAiAgreement,
 } from '../../../ai/ai-advisor/math-ai-agreement.js';
+import {
+  applyPolicyToNarrative,
+  applyPolicyToRecommendation,
+  isSellBlockedByPolicy,
+} from '../../../ai/ai-advisor/policy-text-guard.js';
+import { loadUserPolicy } from '../../../../config/user-policy.js';
 
 // ──────────────────────────────────────────────
 // 1. AI Agent output types
@@ -64,6 +73,10 @@ export interface AiClientResult {
   success: boolean;
   /** Ошибка (если success=false) */
   error?: string;
+  /** Дивидендные доходности акций из уже загруженного фундаментала */
+  fundamentalsDividendYields?: Record<string, number>;
+  /** Тот же fundamentals-контекст, что использовался для промпта карточек */
+  portfolioFundamentals?: PortfolioFundamentalsContext;
   /** Структурированный JSON (если модель вернула) */
   structuredJson?: unknown;
   /** Массив структурированных JSON (один на каждый актив) */
@@ -89,6 +102,15 @@ export interface AiAgentOutput {
   mathAiAgreements: Map<string, MathAiAgreement>;
   /** Предупреждения валидации */
   validationWarnings: string[];
+  /** Сводка новостей из Gatekeeper (передаётся в LLM) */
+  newsContext: string;
+  /**
+   * Дивидендные доходности акций, уже загруженные AiClient.
+   * Используются StrategistAgent для купонно-дивидендного якоря.
+   */
+  dividendYields?: Record<string, number>;
+  /** Тот же fundamentals-контекст, что использовался для промпта карточек */
+  portfolioFundamentals?: PortfolioFundamentalsContext;
 }
 
 // ──────────────────────────────────────────────
@@ -175,9 +197,21 @@ export class AiAgent extends AgentBase {
     }
 
     const { data, research, analysis } = input;
-    const { macroGoals, historicalTrades, investedFunds, accounts, anomalies, liquidityAnalysis } = data;
+    const {
+      macroGoals,
+      historicalTrades,
+      investedFunds,
+      accounts,
+      anomalies,
+      liquidityAnalysis,
+      news,
+    } = data;
     const { snapshots = new Map() } = research;
     const { portfolioAnalysis, riskValidation, income } = analysis;
+    const userPolicy = loadUserPolicy();
+
+    // Формируем структурированную сводку новостей для AI
+    const newsContext = this.buildNewsContext(news);
 
     if (portfolioAnalysis.assetsAnalysis.length === 0) {
       console.warn('[AiAgent] Нет активов для AI-анализа');
@@ -308,7 +342,10 @@ export class AiAgent extends AgentBase {
           memoryContext,
           { stocks: actualStocksPct, bonds: actualBondsPct },
           guardrailsContext,
-          data.bondMarketData as unknown as Map<string, Record<string, unknown>>, // ← передаём bondMarketData
+          data.bondMarketData as unknown as Map<
+            string,
+            Record<string, unknown>
+          >, // ← передаём bondMarketData
           anomalies.map((a) => ({
             ticker: a.ticker,
             rsi: a.rsi,
@@ -321,6 +358,7 @@ export class AiAgent extends AgentBase {
             isLastAnomaly: a.isLastAnomaly,
           })),
           liquidityAnalysis,
+          newsContext, // ← новостной контекст
         );
 
         if (aiClientResult.success) {
@@ -342,16 +380,28 @@ export class AiAgent extends AgentBase {
       }
     }
 
-    // Если все попытки неудачны — используем пустой результат
+    // Если все попытки неудачны — используем пустой результат.
+    // ВАЖНО: сохраняем fundamentalsDividendYields, если AiClient успел их
+    // собрать до fallback — иначе StrategistAgent теряет дивидендную часть якоря.
     if (!aiClientResult || !aiClientResult.success) {
       this.log.error(
         `[AiAgent] ❌ AiClient не успешен после ${maxRetries} попыток: ${lastError?.message}`,
+      );
+      const preservedDividendYields =
+        aiClientResult?.fundamentalsDividendYields ?? {};
+      const preservedFundamentals = aiClientResult?.portfolioFundamentals;
+      this.log.info(
+        `[AI_FALLBACK] reason=${lastError?.message ?? 'unknown'} ` +
+          `dividendYieldsPreserved=${Object.keys(preservedDividendYields).length > 0} ` +
+          `fundamentalsPreserved=${Boolean(preservedFundamentals)}`,
       );
       aiClientResult = {
         text: '',
         modelUsed: 'FAILED',
         success: false,
         error: lastError?.message ?? 'Unknown error',
+        fundamentalsDividendYields: preservedDividendYields,
+        portfolioFundamentals: preservedFundamentals,
       };
     }
 
@@ -367,11 +417,19 @@ export class AiAgent extends AgentBase {
       const postProcessResult = postProcessAiText(
         sanitized,
         portfolioAnalysis.assetsAnalysis,
+        userPolicy,
       );
 
       // Финальная очистка от raw structured JSON (```json, {"ticker": ...})
-      // перед передачей narrative в дашборд/Markdown/Telegram
-      aiNarrative = stripJsonBlockFromAiText(postProcessResult.cleanedText);
+      // и от раздела «Рекомендации по каждому активу» (таблица дублирует
+      // структурированные карточки, которые рендерятся из валидированного JSON).
+      aiNarrative = applyPolicyToNarrative(
+        stripRecommendationsTableFromNarrative(
+          stripJsonBlockFromAiText(postProcessResult.cleanedText),
+        ),
+        portfolioAnalysis.assetsAnalysis,
+        userPolicy,
+      );
       validationWarnings.push(...postProcessResult.warnings);
     }
 
@@ -383,36 +441,52 @@ export class AiAgent extends AgentBase {
     const mathAiAgreements = new Map<string, MathAiAgreement>();
 
     // Извлекаем массив JSON от AI (один объект на каждый актив)
-    const aiJsonArray = (aiClientResult.structuredJsonArray as RawAIJson[]) ?? [];
+    const aiJsonArray =
+      (aiClientResult.structuredJsonArray as RawAIJson[]) ?? [];
     const aiJsonMap = new Map<string, RawAIJson>();
     for (const item of aiJsonArray) {
       aiJsonMap.set(item.ticker?.toUpperCase() ?? '', item);
     }
 
     // Создаём список тикеров для валидации
-    const assetTickers = portfolioAnalysis.assetsAnalysis.map(a => a.ticker.toUpperCase());
+    const assetTickers = portfolioAnalysis.assetsAnalysis.map((a) =>
+      a.ticker.toUpperCase(),
+    );
 
     for (const asset of portfolioAnalysis.assetsAnalysis) {
       const assetTicker = asset.ticker.toUpperCase();
 
       // ─── Изоляция по тикеру ───
       // Ищем JSON для конкретного тикера в массиве
-      const aiJsonForAsset: RawAIJson | null = aiJsonMap.get(assetTicker) ?? null;
+      const aiJsonForAsset: RawAIJson | null =
+        aiJsonMap.get(assetTicker) ?? null;
 
       const det = buildDeterministicAssetData(asset, []);
 
       // ─── Валидируем JSON для КАЖДОГО тикера отдельно ───
       let assetValidation: ValidationResult | null = null;
       if (aiJsonForAsset) {
-        assetValidation = validateStructuredAIJson(aiJsonForAsset, assetTickers);
+        assetValidation = validateStructuredAIJson(
+          aiJsonForAsset,
+          assetTickers,
+        );
       }
 
       // Определяем причину fallback
-      let fallbackReason: 'NO_AI_JSON' | 'INVALID_JSON_PARSE' | 'MISSING_REQUIRED_FIELDS' = 'NO_AI_JSON';
+      let fallbackReason:
+        'NO_AI_JSON' | 'INVALID_JSON_PARSE' | 'MISSING_REQUIRED_FIELDS' =
+        'NO_AI_JSON';
       if (aiJsonForAsset) {
-        if (assetValidation && !assetValidation.valid && assetValidation.errors.length > 0) {
-          const missingFields = assetValidation.errors.map(e => e.field);
-          if (missingFields.includes('recommendedAction') || missingFields.includes('confidence')) {
+        if (
+          assetValidation &&
+          !assetValidation.valid &&
+          assetValidation.errors.length > 0
+        ) {
+          const missingFields = assetValidation.errors.map((e) => e.field);
+          if (
+            missingFields.includes('recommendedAction') ||
+            missingFields.includes('confidence')
+          ) {
             fallbackReason = 'MISSING_REQUIRED_FIELDS';
           } else {
             fallbackReason = 'INVALID_JSON_PARSE';
@@ -427,6 +501,10 @@ export class AiAgent extends AgentBase {
         aiJsonForAsset,
         assetValidation,
         fallbackReason,
+        aiClientResult.portfolioFundamentals?.assets.find(
+          (fundamental) =>
+            fundamental.ticker.toUpperCase() === asset.ticker.toUpperCase(),
+        ),
       );
 
       // ИСПРАВЛЕНИЕ Этап 2: НЕ подставляем Math Recommendation вместо отсутствующего AI Recommendation.
@@ -442,8 +520,12 @@ export class AiAgent extends AgentBase {
         structured.confidence = null;
         // rationale уже содержит fallback-объяснение из buildFallbackStructuredRecommendation
         // НЕ перезаписываем его, если там уже есть подробное объяснение
-        if (!structured.rationale || structured.rationale === 'AI analysis unavailable') {
-          structured.rationale = 'Рекомендация на основе PortfolioMath (AI не вернул рекомендацию)';
+        if (
+          !structured.rationale ||
+          structured.rationale === 'AI analysis unavailable'
+        ) {
+          structured.rationale =
+            'Рекомендация на основе PortfolioMath (AI не вернул рекомендацию)';
         }
       }
 
@@ -466,7 +548,10 @@ export class AiAgent extends AgentBase {
               `доступно ${macroGoals.freeCash.toFixed(0)} ₽ → HOLD`,
           );
           structured.recommendedAction = 'HOLD';
-          if (!structured.rationale || structured.rationale === 'AI analysis unavailable') {
+          if (
+            !structured.rationale ||
+            structured.rationale === 'AI analysis unavailable'
+          ) {
             structured.rationale = `BUY рекомендован, но недоступен: требуется ${deficit.toFixed(0)} ₽, доступно ${macroGoals.freeCash.toFixed(0)} ₽. Рекомендуется дождаться пополнения.`;
           }
         }
@@ -501,8 +586,20 @@ export class AiAgent extends AgentBase {
         }
       }
 
+      // ─── Пользовательская политика no-sell: действия И тексты ───
+      // aiVote сохраняем для диагностики: подавление конфликта не должно
+      // скрывать исходное направление голоса AI.
+      const aiVote = structured.recommendedAction;
+      Object.assign(
+        structured,
+        applyPolicyToRecommendation(structured, asset, userPolicy),
+      );
+      const policyBlocksMathSell =
+        isSellBlockedByPolicy(asset, userPolicy) &&
+        (asset.status === 'REDUCE' || asset.status === 'EXIT');
+
       // ─── Согласование PortfolioMath и ИИ ───
-      const mathAction = asset.status; // PortfolioMathStatus
+      const mathAction = policyBlocksMathSell ? 'HOLD' : asset.status;
       const aiAction = structured.recommendedAction; // AiAction | null
       const mathAgreement = structured.agreementWithPortfolioMath;
       const aiConfidence = structured.confidence ?? 0;
@@ -514,6 +611,23 @@ export class AiAgent extends AgentBase {
         mathAgreement,
         aiConfidence,
       );
+
+      if (policyBlocksMathSell) {
+        // PortfolioMath предлагал REDUCE/EXIT, но политика запрещает продажу.
+        // Это не DIRECTION_CONFLICT: действие неисполнимо по политике.
+        agreement.policyBlocked = true;
+        agreement.policyNote =
+          'Продажа/сокращение заблокированы политикой no-sell';
+        agreement.conflict = false;
+        agreement.requiresReview = false;
+        agreement.executionAllowed = false;
+        agreement.finalAction = 'HOLD';
+        agreement.status = 'POLICY_BLOCKED';
+        this.log.info(
+          `[POLICY_OVERRIDE_AI] ${asset.ticker} aiVote=${aiVote ?? 'HOLD'} ` +
+            `mathAction=${asset.status} effectiveAction=HOLD`,
+        );
+      }
 
       // Проверяем исполнение с учётом защитных ограничений
       const executionAllowed = isExecutionAllowed(
@@ -528,9 +642,23 @@ export class AiAgent extends AgentBase {
       // Логируем результат согласования
       if (agreement.conflict) {
         this.log.warn(
+          formatAiVoteDiagnostic({
+            ticker: asset.ticker,
+            aiVote,
+            mathAction: asset.status,
+            finalAction: agreement.finalAction,
+            confidence: aiConfidence,
+            deviationPp: asset.deficitDeviationPct,
+            deficitRub: asset.deficitRub,
+            severity: agreement.conflictDetails?.severity,
+          }),
+        );
+        this.log.warn(
           `[AiAgent] [CONFLICT] ${asset.ticker}: ` +
             `math=${agreement.conflictDetails?.mathDescription}, ` +
             `ai=${agreement.conflictDetails?.aiDescription}, ` +
+            `aiVote=${aiVote ?? 'HOLD'}, ` +
+            `confidence=${aiConfidence.toFixed(2)}, ` +
             `severity=${agreement.conflictDetails?.severity}, ` +
             'executionAllowed=false',
         );
@@ -565,7 +693,11 @@ export class AiAgent extends AgentBase {
       );
 
       // Сохраняем заключение в structured recommendation
-      (structured as StructuredAIAssetRecommendation & { finalConclusion?: unknown }).finalConclusion = conclusion;
+      (
+        structured as StructuredAIAssetRecommendation & {
+          finalConclusion?: unknown;
+        }
+      ).finalConclusion = conclusion;
     }
 
     this.log.info(
@@ -580,10 +712,158 @@ export class AiAgent extends AgentBase {
       structuredRecommendations,
       mathAiAgreements,
       validationWarnings,
+      newsContext,
+      dividendYields: aiClientResult.fundamentalsDividendYields ?? {},
+      portfolioFundamentals: aiClientResult.portfolioFundamentals,
     };
   }
 
   // ── Helpers ──
+
+  /** Формирует структурированную сводку новостей из данных Gatekeeper */
+  private buildNewsContext(
+    news: import('../gatekeeper/types.js').GatekeeperResult | null,
+  ): string {
+    this.log.info(
+      `[AiAgent] buildNewsContext: news=${news !== null}, approved=${news?.approvedNews.length ?? 0}, filtered=${news?.filteredOut.total ?? 0}`,
+    );
+    if (!news || news.approvedNews.length === 0) {
+      // Новости были, но все отфильтрованы — покажем только релевантные (с тикерами портфеля)
+      if (news && news.filteredOut.total > 0) {
+        let context = `Новостной фон: собрано ${news.filteredOut.total} новостей, 0 одобрено.\n`;
+        context += 'Причины фильтрации:\n';
+        for (const [reason, count] of Object.entries(
+          news.filteredOut.byReason,
+        )) {
+          context += `- ${reason}: ${count}\n`;
+        }
+
+        // Фильтруем примеры: только те, что содержат тикеры портфеля
+        const examples = news.filteredOut.examples;
+        const relevantExamples: Array<{
+          reason: string;
+          item: {
+            title: string;
+            description: string;
+            url: string;
+            source: string;
+            relevantTickers: string[];
+          };
+        }> = [];
+        if (examples) {
+          for (const [reason, items] of Object.entries(examples)) {
+            for (const item of items) {
+              if (item.relevantTickers.length > 0) {
+                relevantExamples.push({ reason, item });
+              }
+            }
+          }
+        }
+
+        if (relevantExamples.length > 0) {
+          // Группируем по тикеру
+          const byTicker = new Map<
+            string,
+            Array<{
+              reason: string;
+              title: string;
+              description: string;
+              url: string;
+              source: string;
+            }>
+          >();
+          for (const { reason, item } of relevantExamples) {
+            for (const ticker of item.relevantTickers) {
+              if (!byTicker.has(ticker)) byTicker.set(ticker, []);
+              byTicker.get(ticker)!.push({
+                reason,
+                title: item.title,
+                description: item.description,
+                url: item.url,
+                source: item.source,
+              });
+            }
+          }
+
+          context += '\nРелевантные новости (по тикерам портфеля):\n';
+          for (const [ticker, newsList] of byTicker) {
+            context += `\n### ${ticker} (${newsList.length} новостей)\n`;
+            for (const n of newsList) {
+              context += `- [${n.reason}] ${n.title}\n`;
+              if (n.description)
+                context += `  Описание: ${n.description.slice(0, 200)}\n`;
+              context += `  Источник: ${n.source} | ${n.url}\n`;
+            }
+          }
+        } else {
+          context +=
+            '\nОтфильтрованные новости не содержат тикеров из портфеля.\n';
+        }
+        return context;
+      }
+      return 'Новостной фон: нет релевантных новостей.';
+    }
+
+    // Подсчёт по приоритетам
+    const byPriority = { critical: 0, high: 0, medium: 0, low: 0 };
+    const bySentiment = { POSITIVE: 0, NEGATIVE: 0, NEUTRAL: 0 };
+
+    for (const item of news.approvedNews) {
+      if (item.priority in byPriority) {
+        byPriority[item.priority as keyof typeof byPriority]++;
+      }
+      // Определяем сентимент по приоритету
+      if (item.priority === 'critical') {
+        bySentiment.NEGATIVE++;
+      } else if (item.priority === 'high') {
+        // Определяем по ключевым словам
+        const text = `${item.title} ${item.summary}`.toLowerCase();
+        const positiveWords = [
+          'рост',
+          'прибыль',
+          'покупк',
+          'одобр',
+          'контракт',
+        ];
+        const negativeWords = ['паден', 'убыт', 'санкц', 'штраф', 'риск'];
+        const hasPos = positiveWords.some((w) => text.includes(w));
+        const hasNeg = negativeWords.some((w) => text.includes(w));
+        if (hasNeg && !hasPos) bySentiment.NEGATIVE++;
+        else if (hasPos && !hasNeg) bySentiment.POSITIVE++;
+        else bySentiment.NEUTRAL++;
+      } else {
+        bySentiment.NEUTRAL++;
+      }
+    }
+
+    // Общий сентимент
+    let overallSentiment = 'НЕЙТРАЛЬНЫЙ';
+    if (bySentiment.POSITIVE > bySentiment.NEGATIVE + 1)
+      overallSentiment = 'ПОЗИТИВНЫЙ';
+    else if (bySentiment.NEGATIVE > bySentiment.POSITIVE + 1)
+      overallSentiment = 'НЕГАТИВНЫЙ';
+
+    // Формируем сводку
+    let context = `Новостной фон (${news.approvedNews.length} новостей):\n`;
+    context += `- Критических: ${byPriority.critical}, высокой важности: ${byPriority.high}, средней: ${byPriority.medium}, низкой: ${byPriority.low}\n`;
+    context += `Сентимент: ${overallSentiment} (Позитив: ${bySentiment.POSITIVE}, Нейтрально: ${bySentiment.NEUTRAL}, Негатив: ${bySentiment.NEGATIVE})\n\n`;
+
+    // Топ-новости (максимум 5)
+    const topNews = news.approvedNews
+      .filter((n) => n.priority === 'critical' || n.priority === 'high')
+      .slice(0, 5);
+
+    if (topNews.length > 0) {
+      context += 'Топ-новости:\n';
+      for (const item of topNews) {
+        context += `- [${item.priority.toUpperCase()}] ${item.title}\n`;
+      }
+    } else {
+      context += 'Значимых новостей нет.\n';
+    }
+
+    return context;
+  }
 
   private async callAiClient(
     portfolioReportData: PortfolioReportData,
@@ -617,8 +897,8 @@ export class AiAgent extends AgentBase {
       isLastAnomaly: boolean;
     }>,
     _liquidityAnalysis?: import('../../../ai/ai-advisor/liquidity-analyzer.js').LiquidityAnalysis,
+    newsContext?: string,
   ): Promise<AiClientResult> {
-
     const aiClient = new AiClient();
 
     // Строим MacroDataContext
@@ -652,7 +932,7 @@ export class AiAgent extends AgentBase {
         }, // portfolioSnapshot — placeholder
         aiMacroData,
         thesisResults,
-        undefined, // newsContext
+        newsContext, // ← новостной контекст
         assetClassPercents, // assetClassPercents
         {
           profitC10: historicalTrades.profitC10,
@@ -681,6 +961,10 @@ export class AiAgent extends AgentBase {
         structuredJson: result.structuredJson,
         structuredJsonArray: result.structuredJsonArray,
         structuredValidation: result.structuredValidation,
+        // Без этих двух полей StrategistAgent теряет дивидендный якорь,
+        // хотя AiClient уже загрузил fundamentals и посчитал yields.
+        fundamentalsDividendYields: result.fundamentalsDividendYields,
+        portfolioFundamentals: result.portfolioFundamentals,
       };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
@@ -702,7 +986,9 @@ export class AiAgent extends AgentBase {
     isFresh: boolean;
   } {
     const keyRate = hasValue(macroResearch.keyRate)
-      ? (macroResearch.keyRate.status === 'VALUE' ? macroResearch.keyRate.value ?? 0 : 0)
+      ? macroResearch.keyRate.status === 'VALUE'
+        ? (macroResearch.keyRate.value ?? 0)
+        : 0
       : 0;
 
     return {
@@ -726,6 +1012,8 @@ export class AiAgent extends AgentBase {
       structuredRecommendations: new Map(),
       mathAiAgreements: new Map(),
       validationWarnings: [],
+      newsContext: 'Новостной фон: нет релевантных новостей.',
+      dividendYields: {},
     };
   }
 }

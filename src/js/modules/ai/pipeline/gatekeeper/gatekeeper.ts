@@ -44,15 +44,6 @@ function generateId(source: NewsSource, contentHash: string): string {
   return `gate-${source}-${contentHash}`;
 }
 
-/** Проверка, содержит ли текст хотя бы одно ключевое слово */
-function containsKeywords(
-  text: string,
-  keywords: string[],
-): boolean {
-  const lowerText = text.toLowerCase();
-  return keywords.some((kw) => lowerText.includes(kw));
-}
-
 /** Извлечение тикеров из текста */
 function extractTickersFromText(
   text: string,
@@ -157,6 +148,14 @@ export class Gatekeeper {
     // Шаг 2: Нормализация и фильтрация
     const approvedNews: GatekeeperNewsItem[] = [];
     const filteredByReason: Record<string, number> = {};
+    const filteredExamples: Record<string, Array<{
+      title: string;
+      description: string;
+      url: string;
+      source: string;
+      relevantTickers: string[];
+    }>> = {};
+    const maxExamplesPerReason = 3;
 
     for (const raw of allRawNews) {
       if (!this._running) break;
@@ -166,10 +165,26 @@ export class Gatekeeper {
       // Нормализация
       const normalized = this.normalizeRaw(raw);
 
+      // Извлекаем тикеры сразу (нужен для всех фильтров)
+      const relevantTickers = extractTickersFromText(
+        `${normalized.title} ${normalized.summary}`,
+        this.config.monitoredTickers,
+      );
+
       // Дедупликация
       if (this.processedHashes.has(normalized.contentHash)) {
         this.stats.duplicates++;
         filteredByReason['duplicate'] = (filteredByReason['duplicate'] ?? 0) + 1;
+        if (!filteredExamples['duplicate']) filteredExamples['duplicate'] = [];
+        if (filteredExamples['duplicate'].length < maxExamplesPerReason) {
+          filteredExamples['duplicate'].push({
+            title: normalized.title,
+            description: normalized.summary,
+            url: normalized.url,
+            source: normalized.source,
+            relevantTickers,
+          });
+        }
         continue;
       }
       this.processedHashes.add(normalized.contentHash);
@@ -178,37 +193,64 @@ export class Gatekeeper {
       if (this.isExpired(normalized.publishedAt)) {
         this.stats.filtered++;
         filteredByReason['expired'] = (filteredByReason['expired'] ?? 0) + 1;
+        if (!filteredExamples['expired']) filteredExamples['expired'] = [];
+        if (filteredExamples['expired'].length < maxExamplesPerReason) {
+          filteredExamples['expired'].push({
+            title: normalized.title,
+            description: normalized.summary,
+            url: normalized.url,
+            source: normalized.source,
+            relevantTickers,
+          });
+        }
         continue;
       }
 
       // Определение приоритета (нужен для проверки шума)
-      const priority = this.calculatePriority(normalized, []);
+      const priority = this.calculatePriority(normalized, relevantTickers);
 
       // Отсечение шума (до проверки тикеров — шум не пропускается)
       if (priority === 'noise') {
         this.stats.noise++;
         filteredByReason['noise'] = (filteredByReason['noise'] ?? 0) + 1;
+        if (!filteredExamples['noise']) filteredExamples['noise'] = [];
+        if (filteredExamples['noise'].length < maxExamplesPerReason) {
+          filteredExamples['noise'].push({
+            title: normalized.title,
+            description: normalized.summary,
+            url: normalized.url,
+            source: normalized.source,
+            relevantTickers,
+          });
+        }
         continue;
       }
 
       // Фильтрация по тикерам
-      const relevantTickers = extractTickersFromText(
-        `${normalized.title} ${normalized.summary}`,
-        this.config.monitoredTickers,
-      );
-
       if (relevantTickers.length === 0) {
         this.stats.filtered++;
         filteredByReason['not_relevant'] = (filteredByReason['not_relevant'] ?? 0) + 1;
+        if (!filteredExamples['not_relevant']) filteredExamples['not_relevant'] = [];
+        if (filteredExamples['not_relevant'].length < maxExamplesPerReason) {
+          filteredExamples['not_relevant'].push({
+            title: normalized.title,
+            description: normalized.summary,
+            url: normalized.url,
+            source: normalized.source,
+            relevantTickers,
+          });
+        }
         continue;
       }
 
       // Одобрение
+      const temporalWeight = this.calculateTemporalDecay(normalized.publishedAt);
       const approvedItem: GatekeeperNewsItem = {
         ...normalized,
         relevantTickers,
         priority,
         filterStatus: 'approved',
+        temporalWeight,
       };
 
       approvedNews.push(approvedItem);
@@ -232,6 +274,7 @@ export class Gatekeeper {
       filteredOut: {
         total: this.stats.totalProcessed - approvedNews.length,
         byReason: filteredByReason,
+        examples: filteredExamples,
       },
       sourceStats,
       processedTickers: this.config.monitoredTickers,
@@ -298,56 +341,123 @@ export class Gatekeeper {
     return ageMinutes > (ttl ?? 60);
   }
 
-  /** Вычисляет приоритет новости */
+  /**
+   * Расчёт временного затухания новости.
+   * Свежие новости имеют больший вес.
+   */
+  private calculateTemporalDecay(publishedAt: string): number {
+    const pubDate = new Date(publishedAt);
+    if (isNaN(pubDate.getTime())) return 0.1;
+
+    const now = new Date();
+    const ageHours = (now.getTime() - pubDate.getTime()) / (1000 * 60 * 60);
+
+    // Экспоненциальное затухание
+    if (ageHours <= 1) return 1.0;       // 0-1 час: полный вес
+    if (ageHours <= 6) return 0.8;       // 1-6 часов: 80%
+    if (ageHours <= 24) return 0.5;      // 6-24 часа: 50%
+    if (ageHours <= 72) return 0.3;      // 24-72 часа: 30%
+    return 0.1;                          // 72+ часов: 10%
+  }
+
+  /** Вычисляет приоритет новости с взвешиванием и учётом отрицания */
   private calculatePriority(
     news: NormalizedNewsItem,
     _relevantTickers: string[],
   ): NewsPriority {
     const text = `${news.title} ${news.summary}`.toLowerCase();
 
-    // Критические слова
+    // Взвешенные ключевые слова: [слова, вес]
     const criticalKeywords = [
       'банкрот', 'дефолт', 'санкц', 'запрет', 'экспорти',
       'embargo', 'fine', 'penalt', 'raid', 'suspension',
       'dividend_cut', 'debt_default', 'bankruptcy',
     ];
+    const criticalWeight = 10;
 
-    // Высокий приоритет
     const highKeywords = [
       'дивиденд', 'прибыл', 'покупк', 'продаж', 'слиян',
-      'акци', 'эмисси', 'growth', 'earnings', 'buyback',
+      'акц', 'эмисси', 'growth', 'earnings', 'buyback',
       'rating_upgrade', 'rating_downgrade',
     ];
+    const highWeight = 5;
 
-    // Средний приоритет
     const mediumKeywords = [
       'отчёт', 'план', 'стратег', 'инвестиц', 'расшир',
       'contract', 'deal', 'agreement', 'revenue',
     ];
+    const mediumWeight = 2;
 
-    // Шум
+    // Шум — только явно нерелевантные слова
     const noiseKeywords = [
       'анонс', 'скоро', 'ожидается', 'анализ_рынка', 'обзор',
-      'prognosis', 'forecast', 'general_market',
+      // 'prognosis', 'forecast', 'general_market' — удалены:
+      // это важные финансовые слова, а не шум
     ];
 
-    // Проверка на критический
-    if (containsKeywords(text, criticalKeywords)) {
+    // Подсчёт общего веса с учётом отрицания
+    let totalWeight = 0;
+    let hasCritical = false;
+    let hasHigh = false;
+    let hasNoise = false;
+
+    // Проверка критических слов (с учётом отрицания)
+    for (const kw of criticalKeywords) {
+      if (text.includes(kw)) {
+        // Проверяем, не стоит ли перед словом отрицание
+        const negationPattern = new RegExp(`(не|no|не[а-яё]*)\\s{1,3}${kw}`, 'i');
+        if (!negationPattern.test(text)) {
+          totalWeight += criticalWeight;
+          hasCritical = true;
+        }
+      }
+    }
+
+    // Проверка высоких слов
+    for (const kw of highKeywords) {
+      if (text.includes(kw)) {
+        const negationPattern = new RegExp(`(не|no|не[а-яё]*)\\s{1,3}${kw}`, 'i');
+        if (!negationPattern.test(text)) {
+          totalWeight += highWeight;
+          hasHigh = true;
+        }
+      }
+    }
+
+    // Проверка средних слов
+    for (const kw of mediumKeywords) {
+      if (text.includes(kw)) {
+        const negationPattern = new RegExp(`(не|no|не[а-яё]*)\\s{1,3}${kw}`, 'i');
+        if (!negationPattern.test(text)) {
+          totalWeight += mediumWeight;
+        }
+      }
+    }
+
+    // Проверка на шум
+    for (const kw of noiseKeywords) {
+      if (text.includes(kw)) {
+        hasNoise = true;
+      }
+    }
+
+    // Критический: есть хотя бы одно критическое слово
+    if (hasCritical) {
       return 'critical';
     }
 
-    // Проверка на высокий
-    if (containsKeywords(text, highKeywords)) {
+    // Высокий: сумма весов >= 5 или есть хотя бы одно высокое слово
+    if (hasHigh || totalWeight >= 5) {
       return 'high';
     }
 
-    // Проверка на шум (только если нет других приоритетов)
-    if (containsKeywords(text, noiseKeywords)) {
+    // Шум: только если нет других приоритетов и есть шумовые слова
+    if (hasNoise && totalWeight < 2) {
       return 'noise';
     }
 
-    // Проверка на средний
-    if (containsKeywords(text, mediumKeywords)) {
+    // Средний: есть средние слова или вес >= 2
+    if (totalWeight >= 2) {
       return 'medium';
     }
 

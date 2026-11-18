@@ -57,6 +57,7 @@ function createMockAnalysis(assets: AssetAnalysis[]): PortfolioReportData {
       stocksPercent: 40,
       bondsPercent: 40,
       totalBalance: 1000000,
+      totalLiquidationValue: 950000,
       freeCash: 100000,
       stocksDeficitRub: 50000,
       bondsDeficitRub: 30000,

@@ -35,6 +35,7 @@ function makeDataOutput(
     ],
     macroGoals: {
       totalBalance: 500000,
+      totalLiquidationValue: 480000,
       freeCash: 10000,
       stocksPercent: 60,
       bondsPercent: 30,
@@ -113,6 +114,7 @@ function makeAnalysisOutput(
       assetsAnalysis: [],
       macro: {
         totalBalance: 500000,
+        totalLiquidationValue: 500000,
         freeCash: 10000,
         stocksDeficitRub: 10000,
         bondsDeficitRub: 5000,

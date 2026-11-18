@@ -5,7 +5,7 @@
  */
 
 import type { LastAnalysisInfo } from '../api-types.js';
-import type { DirectorAuditEvent } from '../../src/js/modules/pipeline/director/director-types.js';
+import type { DirectorAuditEvent } from '../../src/js/modules/ai/pipeline/director/director-types.js';
 
 // ──────────────────────────────────────────────
 // escapeHtmlReport

@@ -1,10 +1,10 @@
-﻿import { PortfolioReportData } from '../../portfolio/portfolio-math/portfolio-math.js';
+import { PortfolioReportData } from '../../portfolio/portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../../portfolio/portfolio-math/portfolio-validator.js';
 import { CalculatedIncome } from './income-calculator.js';
 import { UIOrdersData } from './types.js';
 import { PortfolioSnapshot } from '../../portfolio/portfolio-snapshot/portfolio-snapshot.js';
 import { CbrRateData } from './cbr-rate.js';
-import { AiClient } from './ai-client.js';
+import { AiClient, extractJsonArrayFromAiResponse } from './ai-client.js';
 import type { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
 import type { InvestmentThesisResult } from '../../research/types.js';
 
@@ -52,6 +52,7 @@ function createMockAnalysis(assets: AssetAnalysis[]): PortfolioReportData {
       stocksPercent: 40,
       bondsPercent: 40,
       totalBalance: 1000000,
+      totalLiquidationValue: 950000,
       freeCash: 100000,
       stocksDeficitRub: 50000,
       bondsDeficitRub: 30000,
@@ -200,5 +201,39 @@ describe('Тестирование изоляции данных в AI user prom
 
     // Проверяем наличие блока заявок отдельно от позиций
     expect(context).toContain('ЗАЯВКИ');
+  });
+});
+
+describe('extractJsonArrayFromAiResponse', () => {
+  it('извлекает массив из ```json``` блока', () => {
+    const text =
+      '```json\n[{"ticker":"TATN","recommendedAction":"HOLD"},' +
+      '{"ticker":"IRAO","recommendedAction":"BUY"}]\n```';
+    const result = extractJsonArrayFromAiResponse(text);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.ticker).toBe('TATN');
+  });
+
+  it('извлекает голый массив без ``` (модель не обернула)', () => {
+    const text =
+      'Вот результат: [{"ticker":"TATN","recommendedAction":"HOLD"},' +
+      '{"ticker":"IRAO","recommendedAction":"BUY"}] — готово.';
+    const result = extractJsonArrayFromAiResponse(text);
+    expect(result).toHaveLength(2);
+  });
+
+  it('корректно пропускает скобки и кавычки внутри строк', () => {
+    const text =
+      '[{"ticker":"SBER","rationale":"рост ] и \\"кавычки\\" [скобки]"},' +
+      '{"ticker":"PLZL","rationale":"ok"}]';
+    const result = extractJsonArrayFromAiResponse(text);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.rationale).toContain(']');
+  });
+
+  it('не восстанавливает обрезанный массив без закрывающей скобки', () => {
+    const text = '```json\n[{"ticker":"TATN","recommendedAction":"HOLD"';
+    const result = extractJsonArrayFromAiResponse(text);
+    expect(result).toHaveLength(0);
   });
 });

@@ -5,7 +5,6 @@
  * Все тестируемые функции не зависят от DOM и работают в чистом Node.
  */
 
-import { describe, it, expect } from 'vitest';
 import {
   escapeHtmlReport,
   renderAnalysisReport,
@@ -13,7 +12,7 @@ import {
   formatLocalTime,
 } from './utils.js';
 import type { LastAnalysisInfo } from '../api-types.js';
-import type { DirectorAuditEvent } from '../src/js/modules/pipeline/director/director-types.js';
+import type { DirectorAuditEvent } from '../src/js/modules/ai/pipeline/director/director-types.js';
 
 // ──────────────────────────────────────────────
 // escapeHtmlReport
@@ -143,36 +142,40 @@ describe('renderAnalysisReport', () => {
   });
 
   it('отрицательный P&L получает класс neg', () => {
-    const html = renderAnalysisReport(makeSampleInfo({
-      assets: [
-        {
-          ticker: 'SBER',
-          name: 'Сбербанк',
-          currentPercent: 30,
-          targetPercent: 30,
-          deficitRub: 0,
-          status: 'ok',
-          unrealizedProfitRub: -50_000,
-        },
-      ],
-    }));
+    const html = renderAnalysisReport(
+      makeSampleInfo({
+        assets: [
+          {
+            ticker: 'SBER',
+            name: 'Сбербанк',
+            currentPercent: 30,
+            targetPercent: 30,
+            deficitRub: 0,
+            status: 'ok',
+            unrealizedProfitRub: -50_000,
+          },
+        ],
+      }),
+    );
     expect(html).toContain('card-value neg');
   });
 
   it('нулевой P&L без классов pos/neg', () => {
-    const html = renderAnalysisReport(makeSampleInfo({
-      assets: [
-        {
-          ticker: 'SBER',
-          name: 'Сбербанк',
-          currentPercent: 30,
-          targetPercent: 30,
-          deficitRub: 0,
-          status: 'ok',
-          unrealizedProfitRub: 0,
-        },
-      ],
-    }));
+    const html = renderAnalysisReport(
+      makeSampleInfo({
+        assets: [
+          {
+            ticker: 'SBER',
+            name: 'Сбербанк',
+            currentPercent: 30,
+            targetPercent: 30,
+            deficitRub: 0,
+            status: 'ok',
+            unrealizedProfitRub: 0,
+          },
+        ],
+      }),
+    );
     // totalPnl = 0, значит класс не должен добавляться
     expect(html).toContain('card-value');
     // Проверяем что нет "card-value pos" или "card-value neg" для P&L
@@ -204,19 +207,21 @@ describe('renderAnalysisReport', () => {
   });
 
   it('нейтрализует XSS в тикере/имени/статусе', () => {
-    const html = renderAnalysisReport(makeSampleInfo({
-      assets: [
-        {
-          ticker: '<script>alert(1)</script>',
-          name: 'Злобная <b>акция</b>',
-          currentPercent: 10,
-          targetPercent: 10,
-          deficitRub: 0,
-          status: '"ok"',
-          unrealizedProfitRub: 0,
-        },
-      ],
-    }));
+    const html = renderAnalysisReport(
+      makeSampleInfo({
+        assets: [
+          {
+            ticker: '<script>alert(1)</script>',
+            name: 'Злобная <b>акция</b>',
+            currentPercent: 10,
+            targetPercent: 10,
+            deficitRub: 0,
+            status: '"ok"',
+            unrealizedProfitRub: 0,
+          },
+        ],
+      }),
+    );
     expect(html).toContain('&lt;script&gt;');
     expect(html).toContain('&lt;b&gt;акция&lt;/b&gt;');
     expect(html).toContain('&quot;ok&quot;');
@@ -232,18 +237,22 @@ describe('renderAnalysisReport', () => {
   });
 
   it('алерты без currentPrice не показывают цену', () => {
-    const html = renderAnalysisReport(makeSampleInfo({
-      alerts: [{ ticker: 'VTBR', alertLevel: 'alert' }],
-    }));
+    const html = renderAnalysisReport(
+      makeSampleInfo({
+        alerts: [{ ticker: 'VTBR', alertLevel: 'alert' }],
+      }),
+    );
     expect(html).toContain('<b>VTBR</b>');
     expect(html).not.toContain('цена');
   });
 
   it('пустые активы и алерты — только карточки', () => {
-    const html = renderAnalysisReport(makeSampleInfo({
-      assets: [],
-      alerts: [],
-    }));
+    const html = renderAnalysisReport(
+      makeSampleInfo({
+        assets: [],
+        alerts: [],
+      }),
+    );
     expect(html).toContain('Стоимость портфеля');
     expect(html).toContain('Активов');
     expect(html).toContain('0');
@@ -252,11 +261,13 @@ describe('renderAnalysisReport', () => {
   });
 
   it('undefined поля обрабатываются корректно', () => {
-    const html = renderAnalysisReport(makeSampleInfo({
-      totalValue: undefined as unknown as number,
-      assets: undefined as unknown as readonly any[],
-      alerts: undefined as unknown as readonly any[],
-    }));
+    const html = renderAnalysisReport(
+      makeSampleInfo({
+        totalValue: undefined as unknown as number,
+        assets: undefined as unknown as readonly never[],
+        alerts: undefined as unknown as readonly never[],
+      }),
+    );
     expect(html).toContain('0 ₽');
     expect(html).toContain('Активов');
     expect(html).toContain('0');
@@ -282,31 +293,45 @@ describe('activityCssClass', () => {
   }
 
   it('plan_created → type-plan', () => {
-    expect(activityCssClass(makeEvent('director.plan_created'))).toBe('type-plan');
+    expect(activityCssClass(makeEvent('director.plan_created'))).toBe(
+      'type-plan',
+    );
   });
 
   it('consilium_started → type-consilium', () => {
-    expect(activityCssClass(makeEvent('director.consilium_started'))).toBe('type-consilium');
+    expect(activityCssClass(makeEvent('director.consilium_started'))).toBe(
+      'type-consilium',
+    );
   });
 
   it('consilium_round_completed → type-consilium', () => {
-    expect(activityCssClass(makeEvent('director.consilium_round_completed'))).toBe('type-consilium');
+    expect(
+      activityCssClass(makeEvent('director.consilium_round_completed')),
+    ).toBe('type-consilium');
   });
 
   it('consilium_completed → type-consilium', () => {
-    expect(activityCssClass(makeEvent('director.consilium_completed'))).toBe('type-consilium');
+    expect(activityCssClass(makeEvent('director.consilium_completed'))).toBe(
+      'type-consilium',
+    );
   });
 
   it('agent_result_received → type-agent', () => {
-    expect(activityCssClass(makeEvent('director.agent_result_received'))).toBe('type-agent');
+    expect(activityCssClass(makeEvent('director.agent_result_received'))).toBe(
+      'type-agent',
+    );
   });
 
   it('task_delegated → type-agent', () => {
-    expect(activityCssClass(makeEvent('director.task_delegated'))).toBe('type-agent');
+    expect(activityCssClass(makeEvent('director.task_delegated'))).toBe(
+      'type-agent',
+    );
   });
 
   it('recommendation_formed → type-error', () => {
-    expect(activityCssClass(makeEvent('director.recommendation_formed'))).toBe('type-error');
+    expect(activityCssClass(makeEvent('director.recommendation_formed'))).toBe(
+      'type-error',
+    );
   });
 
   it('неизвестный тип возвращает пустую строку', () => {

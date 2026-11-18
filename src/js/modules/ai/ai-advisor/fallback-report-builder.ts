@@ -1,8 +1,10 @@
-﻿import { PortfolioReportData } from '../../portfolio/portfolio-math/portfolio-math.js';
+import { PortfolioReportData } from '../../portfolio/portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../../portfolio/portfolio-math/portfolio-validator.js';
 import { UIOrdersData } from './types.js';
 import { CalculatedIncome } from './income-calculator.js';
 import { PortfolioConfig } from '../../../config/portfolio-config.js';
+import { loadUserPolicy } from '../../../config/user-policy.js';
+import { isSellBlockedByPolicy, type PolicyLike } from './policy-text-guard.js';
 
 /**
  * Усиленный генератор локального отчёта при недоступности API.
@@ -15,6 +17,7 @@ export function buildFallbackReport(
   validation: ValidationResult,
   orders: UIOrdersData,
   cbrRate: number,
+  policy: PolicyLike = loadUserPolicy(),
 ): string {
   const { assetsAnalysis, macro } = analysis;
   const parts: string[] = [];
@@ -39,15 +42,30 @@ export function buildFallbackReport(
   parts.push('');
 
   // Текущая структура vs целевая
-  parts.push(`<strong>Текущая структура:</strong> Акции ${macro.stocksPercent}%, Облигации ${macro.bondsPercent}%`);
-  parts.push(`<strong>Общая стоимость портфеля:</strong> ${macro.totalBalance.toLocaleString('ru-RU')} ₽`);
-  parts.push(`<strong>Свободный кэш:</strong> ${macro.freeCash.toLocaleString('ru-RU')} ₽`);
+  parts.push(
+    `<strong>Текущая структура:</strong> Акции ${macro.stocksPercent}%, Облигации ${macro.bondsPercent}%`,
+  );
+  parts.push(
+    `<strong>Общая стоимость портфеля:</strong> ${macro.totalBalance.toLocaleString('ru-RU')} ₽`,
+  );
+  parts.push(
+    `<strong>Свободный кэш:</strong> ${macro.freeCash.toLocaleString('ru-RU')} ₽`,
+  );
   parts.push('');
 
   // ============================================================
   // СЕКЦИЯ 2: Ребалансировка — активы на покупку
   // ============================================================
-  const buyAssets = assetsAnalysis.filter((a) => a.status === 'BUY' && (a.targetPercent ?? 0) > 0);
+  const buyAssets = assetsAnalysis.filter(
+    (a) => (a.status === 'BUY' || a.status === 'NEW') && a.deficitRub > 0,
+  );
+  if (buyAssets.length > 0) {
+    console.log(
+      `[REBALANCE_TOTAL] render=fallback positions=${buyAssets.length} ` +
+        `totalRub=${buyAssets.reduce((sum, a) => sum + a.deficitRub, 0)} ` +
+        `tickers=${buyAssets.map((a) => a.ticker).join(',')}`,
+    );
+  }
   if (buyAssets.length > 0) {
     parts.push('<strong>2. РЕКОМЕНДАЦИИ ПО ПОКУПКЕ</strong>');
     parts.push('');
@@ -57,13 +75,17 @@ export function buildFallbackReport(
       const gapAbs = Math.abs(gap).toFixed(1);
       parts.push(
         `• <strong>${a.name} (${a.ticker}):</strong> ` +
-        `дефицит ${gapAbs}% (цель ${tp.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
-        `→ необходимо докупить на <strong>${a.deficitRub.toLocaleString('ru-RU')} ₽</strong>`
+          `дефицит ${gapAbs}% (цель ${tp.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
+          `→ необходимо докупить на <strong>${a.deficitRub.toLocaleString('ru-RU')} ₽</strong>`,
       );
       if (a.dynamicsPercent < -10) {
-        parts.push(`  ⚡ Актив упал на ${a.dynamicsPercent.toFixed(1)}% — возможность купить дешевле. Дробить покупку на 2-3 транша.`);
+        parts.push(
+          `  ⚡ Актив упал на ${a.dynamicsPercent.toFixed(1)}% — возможность купить дешевле. Дробить покупку на 2-3 транша.`,
+        );
       } else if (a.dynamicsPercent > 10) {
-        parts.push(`  Актив вырос на ${a.dynamicsPercent.toFixed(1)}% — возможно, стоит купить частями, чтобы усреднить цену.`);
+        parts.push(
+          `  Актив вырос на ${a.dynamicsPercent.toFixed(1)}% — возможно, стоит купить частями, чтобы усреднить цену.`,
+        );
       }
       parts.push('');
     });
@@ -72,7 +94,9 @@ export function buildFallbackReport(
   // ============================================================
   // СЕКЦИЯ 3: Ребалансировка — активы на снижение
   // ============================================================
-  const reduceAssets = assetsAnalysis.filter((a) => a.status === 'REDUCE');
+  const reduceAssets = assetsAnalysis.filter(
+    (a) => a.status === 'REDUCE' && !isSellBlockedByPolicy(a, policy),
+  );
   if (reduceAssets.length > 0) {
     parts.push('<strong>3. РЕКОМЕНДАЦИИ ПО СНИЖЕНИЮ ПОЗИЦИЙ</strong>');
     parts.push('');
@@ -82,11 +106,13 @@ export function buildFallbackReport(
       const excessAbs = Math.abs(excess).toFixed(1);
       parts.push(
         `• <strong>${a.name} (${a.ticker}):</strong> ` +
-        `профицит ${excessAbs}% (цель ${tp.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
-        `→ рекомендуется сократить на <strong>${Math.abs(a.deficitRub).toLocaleString('ru-RU')} ₽</strong>`
+          `профицит ${excessAbs}% (цель ${tp.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
+          `→ рекомендуется сократить на <strong>${Math.abs(a.deficitRub).toLocaleString('ru-RU')} ₽</strong>`,
       );
       if (a.dynamicsPercent > 15) {
-        parts.push(`  💰 Актив вырос на ${a.dynamicsPercent.toFixed(1)}% — фиксируем прибыль. Часть позиций можно продать сейчас.`);
+        parts.push(
+          `  💰 Актив вырос на ${a.dynamicsPercent.toFixed(1)}% — фиксируем прибыль. Часть позиций можно продать сейчас.`,
+        );
       }
       parts.push('');
     });
@@ -95,22 +121,49 @@ export function buildFallbackReport(
   // ============================================================
   // СЕКЦИЯ 4: Активы на выход
   // ============================================================
-  const exitAssets = assetsAnalysis.filter((a) => a.targetPercent === 0 && a.currentPercent > 0);
+  const exitAssets = assetsAnalysis.filter(
+    (a) =>
+      a.targetPercent === 0 &&
+      a.currentPercent > 0 &&
+      !isSellBlockedByPolicy(a, policy),
+  );
   if (exitAssets.length > 0) {
     parts.push('<strong>4. ПЛАНОВЫЙ ВЫХОД ИЗ ПОЗИЦИЙ</strong>');
     parts.push('');
     exitAssets.forEach((a) => {
       const ordersCount = orders.md
-        ? (a.ticker ? (orders.md.match(new RegExp(a.ticker, 'g')) || []).length || 0 : 0)
+        ? a.ticker
+          ? (orders.md.match(new RegExp(a.ticker, 'g')) || []).length || 0
+          : 0
         : 0;
-      const orderNote = ordersCount > 0
-        ? ' Обнаружены активные заявки на продажу в QUIK.'
-        : ' Активных заявок не обнаружено — рекомендуется выставить заявки на продажу.';
+      const orderNote =
+        ordersCount > 0
+          ? ' Обнаружены активные заявки на продажу в QUIK.'
+          : ' Активных заявок не обнаружено — рекомендуется выставить заявки на продажу.';
       parts.push(
-        `• <strong>${a.name} (${a.ticker}):</strong> целевая доля занулена. Текущая доля ${a.currentPercent.toFixed(1)}%.${orderNote}`
+        `• <strong>${a.name} (${a.ticker}):</strong> целевая доля занулена. Текущая доля ${a.currentPercent.toFixed(1)}%.${orderNote}`,
       );
       parts.push('');
     });
+  }
+
+  // ============================================================
+  // СЕКЦИЯ 4.1: Активы, защищённые политикой no-sell
+  // ============================================================
+  const policyBlockedAssets = assetsAnalysis.filter(
+    (a) =>
+      (a.status === 'REDUCE' || a.status === 'EXIT') &&
+      isSellBlockedByPolicy(a, policy),
+  );
+  if (policyBlockedAssets.length > 0) {
+    parts.push('<strong>4.1 ПОЛИТИКА NO-SELL</strong>');
+    parts.push('');
+    policyBlockedAssets.forEach((a) => {
+      parts.push(
+        `• <strong>${a.name} (${a.ticker}):</strong> держать — продажа/сокращение заблокированы политикой no-sell.`,
+      );
+    });
+    parts.push('');
   }
 
   // ============================================================
@@ -123,8 +176,12 @@ export function buildFallbackReport(
     newAssets.forEach((a) => {
       parts.push(
         '<li>' +
-        '<strong>' + a.name + ' (' + a.ticker + '):</strong> новый актив. Целевая доля не задана. ' +
-        'Рекомендуется указать targetPercent в Excel-таблице для определения стратегии.</li>',
+          '<strong>' +
+          a.name +
+          ' (' +
+          a.ticker +
+          '):</strong> новый актив. Целевая доля не задана. ' +
+          'Рекомендуется указать targetPercent в Excel-таблице для определения стратегии.</li>',
       );
       parts.push('');
     });
@@ -149,24 +206,35 @@ export function buildFallbackReport(
     parts.push('<strong>7. ДИВИДЕНДНАЯ СТРАТЕГИЯ</strong>');
     parts.push('');
     parts.push(
-      `• Ожидаемый чистый дивидендный поток (LTM): <strong>${inc.totalDivsNet.toLocaleString('ru-RU')} ₽</strong>`
+      `• Ожидаемый чистый дивидендный поток (LTM): <strong>${inc.totalDivsNet.toLocaleString('ru-RU')} ₽</strong>`,
     );
     if (inc.totalNkd > 0) {
       parts.push(
-        `• НКД по облигациям (накопленный купонный доход): <strong>${inc.totalNkd.toLocaleString('ru-RU')} ₽</strong>`
+        `• НКД по облигациям (накопленный купонный доход): <strong>${inc.totalNkd.toLocaleString('ru-RU')} ₽</strong>`,
       );
     }
 
     // Рекомендации по дивидендам
-    const divYield = macro.totalBalance > 0
-      ? ((inc.totalDivsNet / macro.totalBalance) * 100).toFixed(1)
-      : '0';
+    const divYield =
+      macro.totalBalance > 0
+        ? ((inc.totalDivsNet / macro.totalBalance) * 100).toFixed(1)
+        : '0';
     parts.push(`• Дивидендная доходность портфеля: ~${divYield}% годовых`);
 
-    if (parseFloat(divYield) < PortfolioConfig.macroThresholds.lowDivYieldThreshold) {
-      parts.push(`  💡 Дивидендная доходность ниже ${PortfolioConfig.macroThresholds.lowDivYieldThreshold}% — рассмотрите добавление дивидендных акций или высокодоходных облигаций.`);
-    } else if (parseFloat(divYield) > PortfolioConfig.macroThresholds.highDivYieldThreshold) {
-      parts.push('  💰 Высокая дивидендная доходность — хороший результат. Реинвестируйте дивиденды для сложного процента.');
+    if (
+      parseFloat(divYield) <
+      PortfolioConfig.macroThresholds.lowDivYieldThreshold
+    ) {
+      parts.push(
+        `  💡 Дивидендная доходность ниже ${PortfolioConfig.macroThresholds.lowDivYieldThreshold}% — рассмотрите добавление дивидендных акций или высокодоходных облигаций.`,
+      );
+    } else if (
+      parseFloat(divYield) >
+      PortfolioConfig.macroThresholds.highDivYieldThreshold
+    ) {
+      parts.push(
+        '  💰 Высокая дивидендная доходность — хороший результат. Реинвестируйте дивиденды для сложного процента.',
+      );
     }
     parts.push('');
   }
@@ -183,10 +251,14 @@ export function buildFallbackReport(
   if (buyAssets.length > 0 || reduceAssets.length > 0) {
     parts.push(`${stepNum}. <strong>Провести ребалансировку:</strong>`);
     if (buyAssets.length > 0) {
-      parts.push(`   • Докупить ${buyAssets.length} актив(ов) на общую сумму ~${buyAssets.reduce((sum, a) => sum + a.deficitRub, 0).toLocaleString('ru-RU')} ₽`);
+      parts.push(
+        `   • Докупить ${buyAssets.length} актив(ов) на общую сумму ~${buyAssets.reduce((sum, a) => sum + a.deficitRub, 0).toLocaleString('ru-RU')} ₽`,
+      );
     }
     if (reduceAssets.length > 0) {
-      parts.push(`   • Сократить ${reduceAssets.length} актив(ов) на общую сумму ~${reduceAssets.reduce((sum, a) => sum + Math.abs(a.deficitRub), 0).toLocaleString('ru-RU')} ₽`);
+      parts.push(
+        `   • Сократить ${reduceAssets.length} актив(ов) на общую сумму ~${reduceAssets.reduce((sum, a) => sum + Math.abs(a.deficitRub), 0).toLocaleString('ru-RU')} ₽`,
+      );
     }
     parts.push('');
     stepNum++;
@@ -205,14 +277,28 @@ export function buildFallbackReport(
   // Шаг 3: Управление кэшем
   const totalDeficit = macro.stocksDeficitRub + macro.bondsDeficitRub;
   if (totalDeficit > 0) {
-    parts.push(stepNum + '. <strong>Управление свободными средствами:</strong>');
-    parts.push('   • Свободно: ' + macro.freeCash.toLocaleString('ru-RU') + ' ₽');
-    parts.push('   • Требуется для ребалансировки: ' + totalDeficit.toLocaleString('ru-RU') + ' ₽');
+    parts.push(
+      stepNum + '. <strong>Управление свободными средствами:</strong>',
+    );
+    parts.push(
+      '   • Свободно: ' + macro.freeCash.toLocaleString('ru-RU') + ' ₽',
+    );
+    parts.push(
+      '   • Требуется для ребалансировки: ' +
+        totalDeficit.toLocaleString('ru-RU') +
+        ' ₽',
+    );
     if (macro.freeCash >= totalDeficit) {
-      parts.push('   ✅ Свободных средств достаточно для полной ребалансировки.');
+      parts.push(
+        '   ✅ Свободных средств достаточно для полной ребалансировки.',
+      );
     } else {
       const shortfall = totalDeficit - macro.freeCash;
-      parts.push('   ⚠️ Дефицит средств: ' + shortfall.toLocaleString('ru-RU') + ' ₽. Необходимо найти средства или пересмотреть целевые доли.');
+      parts.push(
+        '   ⚠️ Дефицит средств: ' +
+          shortfall.toLocaleString('ru-RU') +
+          ' ₽. Необходимо найти средства или пересмотреть целевые доли.',
+      );
     }
     parts.push('');
     stepNum++;
@@ -220,9 +306,15 @@ export function buildFallbackReport(
 
   // Шаг 4: Мониторинг
   parts.push(stepNum + '. <strong>Установить мониторинг:</strong>');
-  parts.push('   • Отслеживать ключевую ставку ЦБ — при снижении увеличивать долю акций');
-  parts.push('   • Контролировать дивидендные календари для максимизации дохода');
-  parts.push('   • Пересматривать целевые доли ежеквартально или при существенных изменениях рынка');
+  parts.push(
+    '   • Отслеживать ключевую ставку ЦБ — при снижении увеличивать долю акций',
+  );
+  parts.push(
+    '   • Контролировать дивидендные календари для максимизации дохода',
+  );
+  parts.push(
+    '   • Пересматривать целевые доли ежеквартально или при существенных изменениях рынка',
+  );
   parts.push('');
   stepNum++;
 
@@ -239,11 +331,12 @@ export function buildFallbackReport(
   parts.push('<strong>9. КРАТКОЕ РЕЗЮМЕ</strong>');
   parts.push('');
 
-  const totalActions = buyAssets.length + reduceAssets.length + exitAssets.length;
+  const totalActions =
+    buyAssets.length + reduceAssets.length + exitAssets.length;
   if (totalActions > 0) {
     parts.push(
       `Необходимо выполнить <strong>${totalActions} действие(ий)</strong> по ребалансировке портфеля. ` +
-      `Основной фокус: ${buyAssets.length > 0 ? 'докупка недостающих активов' : ''} ${buyAssets.length > 0 && reduceAssets.length > 0 ? 'и ' : ''}${reduceAssets.length > 0 ? 'сокращение избыточных позиций' : ''}.`
+        `Основной фокус: ${buyAssets.length > 0 ? 'докупка недостающих активов' : ''} ${buyAssets.length > 0 && reduceAssets.length > 0 ? 'и ' : ''}${reduceAssets.length > 0 ? 'сокращение избыточных позиций' : ''}.`,
     );
   } else {
     parts.push('Портфель полностью сбалансирован. Действий не требуется.');
@@ -252,7 +345,7 @@ export function buildFallbackReport(
   parts.push('');
   parts.push(
     `При макро-контексте ключевой ставки <strong>${cbrRate}%</strong> ` +
-    `рекомендуется ${cbrRate >= 18 ? 'сохранять консервативную стратегию с преобладанием облигаций' : 'постепенно увеличивать долю акций при горизонте инвестирования 3+ года'}.`
+      `рекомендуется ${cbrRate >= 18 ? 'сохранять консервативную стратегию с преобладанием облигаций' : 'постепенно увеличивать долю акций при горизонте инвестирования 3+ года'}.`,
   );
 
   // ============================================================

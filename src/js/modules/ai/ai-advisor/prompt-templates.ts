@@ -4,6 +4,12 @@
  * Все критические правила сохранены, дублирование устранено.
  */
 
+import type {
+  PortfolioFundamentalsContext as CanonicalPortfolioFundamentalsContext,
+  SourcedValue,
+  StockFundamentals,
+} from '../../api/fundamentals/types.js';
+
 /** Контекст макроэкономических данных */
 export interface MacroDataContext {
   keyRate: number;
@@ -81,7 +87,11 @@ export interface BondAnalysisResult {
     durationType: string;
     dv01: number | null;
     originalDv01?: { value: number; unit: string; scope: string };
-    scenarios: Array<{ yieldChangePct: number; priceImpactPct: number; priceImpactRub: number }>;
+    scenarios: Array<{
+      yieldChangePct: number;
+      priceImpactPct: number;
+      priceImpactRub: number;
+    }>;
     dataQuality: string;
     derivedDataQuality: string;
   };
@@ -108,51 +118,51 @@ export interface BondAnalysisResult {
   portfolioImpact: string;
 }
 
-  /** Контекст глубокого падения актива */
-  export interface DeepLossContext {
-    /** Тикер актива */
-    ticker: string;
-    /** Название актива */
-    name: string;
-    /** Текущая просадка (%) */
-    drawdownPercent: number;
-    /** Уровень глубины падения */
-    lossLevel: 'MODERATE' | 'SEVERE' | 'CRITICAL';
-    /** Основная причина падения */
-    primaryReason: string;
-    /** Сравнение с рынком */
-    vsMarket: {
-      marketDrawdown: number;
-      relativePerformance: number;
-      isSystemic: boolean;
-    };
-    /** Оценка риска фиксации убытка */
-    realizationRisk: 'LOW' | 'MEDIUM' | 'HIGH';
-    /** Резюме */
-    summary: string;
-  }
+/** Контекст глубокого падения актива */
+export interface DeepLossContext {
+  /** Тикер актива */
+  ticker: string;
+  /** Название актива */
+  name: string;
+  /** Текущая просадка (%) */
+  drawdownPercent: number;
+  /** Уровень глубины падения */
+  lossLevel: 'MODERATE' | 'SEVERE' | 'CRITICAL';
+  /** Основная причина падения */
+  primaryReason: string;
+  /** Сравнение с рынком */
+  vsMarket: {
+    marketDrawdown: number;
+    relativePerformance: number;
+    isSystemic: boolean;
+  };
+  /** Оценка риска фиксации убытка */
+  realizationRisk: 'LOW' | 'MEDIUM' | 'HIGH';
+  /** Резюме */
+  summary: string;
+}
 
-  /** Технические индикаторы для актива */
-  export interface TechnicalIndicators {
-    /** Тикер актива */
-    ticker: string;
-    /** Индекс относительной силы (14 периодов) */
-    rsi: number | null;
-    /** Простое скользящее среднее 20 периодов */
-    sma20: number | null;
-    /** Простое скользящее среднее 50 периодов */
-    sma50: number | null;
-    /** Тренд: восходящий / нисходящий / боковик */
-    trend: 'up' | 'down' | 'flat' | null;
-    /** Годовая волатильность (доля, например 0.35 = 35%) */
-    volatilityAnnual: number | null;
-    /** Уровень риска: низкий / средний / высокий */
-    riskLevel: 'low' | 'medium' | 'high' | null;
-    /** Z-score последнего бара (статистическая аномалия) */
-    zScoreLast: number | null;
-    /** true если на последнем баре обнаружена аномалия */
-    isLastAnomaly: boolean;
-  }
+/** Технические индикаторы для актива */
+export interface TechnicalIndicators {
+  /** Тикер актива */
+  ticker: string;
+  /** Индекс относительной силы (14 периодов) */
+  rsi: number | null;
+  /** Простое скользящее среднее 20 периодов */
+  sma20: number | null;
+  /** Простое скользящее среднее 50 периодов */
+  sma50: number | null;
+  /** Тренд: восходящий / нисходящий / боковик */
+  trend: 'up' | 'down' | 'flat' | null;
+  /** Годовая волатильность (доля, например 0.35 = 35%) */
+  volatilityAnnual: number | null;
+  /** Уровень риска: низкий / средний / высокий */
+  riskLevel: 'low' | 'medium' | 'high' | null;
+  /** Z-score последнего бара (статистическая аномалия) */
+  zScoreLast: number | null;
+  /** true если на последнем баре обнаружена аномалия */
+  isLastAnomaly: boolean;
+}
 
 /** Фундаментальные метрики актива */
 export interface FundamentalMetrics {
@@ -183,6 +193,14 @@ export interface FundamentalMetrics {
   /** Краткое описание фундаментала */
   summary: string;
 }
+
+/**
+ * Фундаментальные данные для ВСЕХ активов портфеля.
+ * Канонический тип — в api/fundamentals/types.ts: каждое значение
+ * содержит источник, дату и статус (VALUE / UNAVAILABLE / PARSE_ERROR / CONFLICT).
+ */
+export type PortfolioFundamentalsContext =
+  CanonicalPortfolioFundamentalsContext;
 
 /** Поведенческие факторы актива */
 export interface BehavioralFactors {
@@ -256,49 +274,254 @@ export interface LiquidityContext {
   recommendations: string[];
 }
 
+/** Форматирование суммы в рублях (компактный вид). */
+function fmtRub(value: number): string {
+  if (value >= 1e9)
+    return (value / 1e9).toFixed(1).replace('.', ',') + ' млрд ₽';
+  if (value >= 1e6)
+    return (value / 1e6).toFixed(1).replace('.', ',') + ' млн ₽';
+  if (value >= 1e3)
+    return (value / 1e3).toFixed(1).replace('.', ',') + ' тыс ₽';
+  return value.toLocaleString('ru-RU') + ' ₽';
+}
+
+/** Форматирование числа в русской нотации: 5,13. */
+function fmtNumber(value: number, digits = 2): string {
+  return value.toFixed(digits).replace('.', ',');
+}
+
+/** Дата источника: 17.11.2026. */
+function fmtAsOf(iso: string | null): string {
+  if (!iso) return 'дата не указана';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString('ru-RU');
+}
+
+/** Значение метрики: «5,13» или «недоступно (причина)». */
+function metricText(metric: SourcedValue, digits = 2, suffix = ''): string {
+  if (metric.value === null) {
+    return `недоступно (${metric.note ?? 'источник не отвечает'})`;
+  }
+  return `${fmtNumber(metric.value, digits)}${suffix}`;
+}
+
+/** Тег «(источник, дата)», если он отличается от тега строки. */
+function metricSourceTag<T>(
+  metric: SourcedValue<T>,
+  lineSource: string | null,
+  lineAsOf: string | null,
+): string {
+  if (metric.value === null) return '';
+  const source = metric.source ?? 'источник не указан';
+  if (source === lineSource && (metric.asOf ?? null) === lineAsOf) return '';
+  return ` (${source}, ${fmtAsOf(metric.asOf)})`;
+}
+
+/** Описание показателя в компактной строке. */
+interface FundamentalMetricSpec {
+  label: string;
+  metric: SourcedValue;
+  digits?: number;
+  suffix?: string;
+}
+
 /**
-  * Формирует системный промпт для ИИ-модели.
-  * @param cbrRate — ключевая ставка ЦБ
-  * @param newsContext — новостной фон (опционально)
-  * @param assetTickers — список тикеров портфеля
-  * @param macroData — макроэкономические данные
-  * @param memoryContext — контекст из памяти ИИ (опционально)
-  * @param guardrailsContext — защитные правила (опционально)
-   * @param investorParams — параметры инвестора (опционально)
-   * @param bondContext — облигационные данные для текущего актива (устарело, использовать bondAnalyses)
-   * @param bondAnalyses — структурированный анализ ВСЕХ облигаций портфеля (приоритет)
-   * @param deepLossContext — контекст глубокого падения актива (опционально)
-   * @param fundamentalMetrics — фундаментальные метрики актива (опционально)
-   * @param behavioralFactors — поведенческие факторы (опционально)
-    */
-    export function buildSystemPrompt(
-      cbrRate: number,
-      newsContext?: string,
-      assetTickers?: string[],
-      macroData?: MacroDataContext,
-      memoryContext?: string,
-      guardrailsContext?: string,
-      investorParams?: {
-        horizon: string;
-        goal: string;
-        riskProfile: string;
-        maxDrawdown: number;
-      },
-      bondContext?: BondDataContext,
-      bondAnalyses?: BondAnalysisResult[],
-      deepLossContext?: DeepLossContext,
-      fundamentalMetrics?: FundamentalMetrics,
-      behavioralFactors?: BehavioralFactors,
-      technicalIndicators?: TechnicalIndicators[],
-      liquidityContext?: LiquidityContext,
-      rebalanceData?: {
-        freeCash: number;
-        buyList: string;
-        reduceList: string;
-        totalBuyRub: number;
-        totalReduceRub: number;
-      },
-    ): string {
+ * Компактный рендер фундаментального блока одного актива.
+ * Одна строка на группу показателей; источник и дата — в конце строки.
+ * Используется и в основном системном промпте, и в JSON-only повторе.
+ */
+function renderAssetFundamentalsCompact(asset: StockFundamentals): string {
+  const lines: string[] = [`--- ${asset.ticker} (${asset.name}) ---`];
+
+  const priceTag = metricSourceTag(asset.price, null, null);
+  const capTag = metricSourceTag(
+    asset.marketCap,
+    asset.price.source,
+    asset.price.asOf,
+  );
+  const capText =
+    asset.marketCap.value !== null
+      ? fmtRub(asset.marketCap.value)
+      : `недоступно (${asset.marketCap.note ?? 'источник не отвечает'})`;
+  lines.push(
+    `Цена ${metricText(asset.price, 2, ' ₽')}${priceTag} | ` +
+      `Капитализация ${capText}${capTag}`,
+  );
+
+  const specs: FundamentalMetricSpec[] = [
+    { label: 'P/E', metric: asset.pe },
+    { label: 'P/S', metric: asset.ps },
+    { label: 'P/B', metric: asset.pb },
+    { label: 'ROE', metric: asset.roe, digits: 1, suffix: '%' },
+    { label: 'ROA', metric: asset.roa, digits: 1, suffix: '%' },
+    { label: 'Долг/Капитал', metric: asset.debtToEquity },
+    {
+      label: 'Дивидендная доходность',
+      metric: asset.dividendYield,
+      digits: 1,
+      suffix: '%',
+    },
+    {
+      label: 'Дивиденд на акцию',
+      metric: asset.dividendPerShare,
+      digits: 2,
+      suffix: ' ₽',
+    },
+  ];
+
+  const primary = specs.find((spec) => spec.metric.value !== null)?.metric;
+  const primarySource = primary?.source ?? null;
+  const primaryAsOf = primary?.asOf ?? null;
+
+  const parts = specs.map(
+    (spec) =>
+      `${spec.label} ${metricText(spec.metric, spec.digits ?? 2, spec.suffix ?? '')}` +
+      metricSourceTag(spec.metric, primarySource, primaryAsOf),
+  );
+  const lineTag = primarySource
+    ? ` (${primarySource}, ${fmtAsOf(primaryAsOf)})`
+    : '';
+  lines.push(`${parts.join(' | ')}${lineTag}`);
+
+  const conflicts = specs
+    .filter(
+      (spec) =>
+        spec.metric.status === 'CONFLICT' && spec.metric.conflictValue != null,
+    )
+    .map(
+      (spec) =>
+        `${spec.label} ${fmtNumber(spec.metric.conflictValue ?? 0, spec.digits ?? 2)}${spec.suffix ?? ''} ` +
+        `(${spec.metric.conflictSource ?? 'второй источник'})`,
+    );
+  if (conflicts.length > 0) {
+    lines.push(`⚠️ Расхождение источников: ${conflicts.join('; ')}`);
+  }
+
+  const medians = asset.medians;
+  if (medians) {
+    const medianParts: string[] = [];
+    if (medians.pe5y != null)
+      medianParts.push(`P/E ${fmtNumber(medians.pe5y, 2)}`);
+    if (medians.roe5y != null)
+      medianParts.push(`ROE ${fmtNumber(medians.roe5y, 1)}%`);
+    if (medians.debtToEquity5y != null)
+      medianParts.push(`Долг/Капитал ${fmtNumber(medians.debtToEquity5y, 2)}`);
+    if (medians.dividendYield5y != null)
+      medianParts.push(
+        `Дивидендная доходность ${fmtNumber(medians.dividendYield5y, 1)}%`,
+      );
+    if (medianParts.length > 0) {
+      lines.push(
+        `Медиана ${medians.years ?? 5} лет (${medians.source ?? 'источник не указан'}, ` +
+          `${fmtAsOf(medians.asOf)}): ${medianParts.join(' | ')}`,
+      );
+    }
+  }
+
+  lines.push(
+    asset.nextDividendDate.value !== null
+      ? `Следующая отсечка: ${asset.nextDividendDate.value}${metricSourceTag(asset.nextDividendDate, null, null)}`
+      : `Следующая отсечка: недоступно (${asset.nextDividendDate.note ?? 'нет данных'})`,
+  );
+
+  if (asset.unavailable.length > 0) {
+    lines.push(`Недоступно: ${asset.unavailable.join('; ')}`);
+  }
+  if (asset.conflicts.length > 0) {
+    lines.push(`Конфликты источников: ${asset.conflicts.join('; ')}`);
+  }
+
+  lines.push(
+    `Здоровье: ${
+      asset.fundamentalHealth === 'POSITIVE'
+        ? '✅ Позитивный'
+        : asset.fundamentalHealth === 'NEGATIVE'
+          ? '❌ Негативный'
+          : '⚠️ Нейтральный'
+    } (оценка по показателям выше)`,
+  );
+
+  return lines.join('\n');
+}
+
+/**
+ * Компактный системный промпт для ПОВТОРНОГО запроса: только JSON-массив.
+ * Используется, когда основной ответ модели не дал валидного JSON.
+ */
+export function buildJsonOnlySystemPrompt(
+  assetTickers: string[],
+  portfolioFundamentals?: CanonicalPortfolioFundamentalsContext,
+): string {
+  const fundamentals =
+    portfolioFundamentals && portfolioFundamentals.assets.length > 0
+      ? `\n=== ФУНДАМЕНТАЛЬНЫЕ ДАННЫЕ ===\n${portfolioFundamentals.assets
+          .map(renderAssetFundamentalsCompact)
+          .join('\n\n')}\n`
+      : '';
+
+  return (
+    'Ты — инвестиционный стратег. Верни ТОЛЬКО JSON-массив: без пояснений ' +
+    'и без текста до/после. Оберни массив в ```json ... ```.\n' +
+    'Один объект на каждый актив. Поля: ticker, recommendedAction ' +
+    '(BUY|SELL|HOLD|REDUCE|EXIT|AVOID|AVERAGE), confidence (0–1 или null), ' +
+    'rationale, targetReason, keyRisks, keyCatalysts, agreementWithPortfolioMath ' +
+    '(AGREE|DISAGREE|UNCERTAIN), fundamentalAnalysis, technicalTiming, entryStrategy, ' +
+    'issuerContext, dataSources.\n' +
+    'Правила: используй только данные из сообщения; каждое число — с источником и датой; ' +
+    'если данных нет — recommendedAction HOLD, agreementWithPortfolioMath UNCERTAIN, ' +
+    'в rationale «нет данных». Не выдумывай P/E, ROE, дивиденды и суммы. ' +
+    'ticker — только символы тикера (например TATN).\n' +
+    `Активы (верни объект для каждого): ${assetTickers.join(', ')}.\n` +
+    fundamentals
+  );
+}
+
+/**
+ * Формирует системный промпт для ИИ-модели.
+ * @param cbrRate — ключевая ставка ЦБ
+ * @param newsContext — новостной фон (опционально)
+ * @param assetTickers — список тикеров портфеля
+ * @param macroData — макроэкономические данные
+ * @param memoryContext — контекст из памяти ИИ (опционально)
+ * @param guardrailsContext — защитные правила (опционально)
+ * @param investorParams — параметры инвестора (опционально)
+ * @param bondContext — облигационные данные для текущего актива (устарело, использовать bondAnalyses)
+ * @param bondAnalyses — структурированный анализ ВСЕХ облигаций портфеля (приоритет)
+ * @param deepLossContext — контекст глубокого падения актива (опционально)
+ * @param fundamentalMetrics — фундаментальные метрики одного актива (опционально)
+ * @param portfolioFundamentals — фундаментальные метрики ВСЕХ активов (опционально, приоритет)
+ * @param behavioralFactors — поведенческие факторы (опционально)
+ */
+export function buildSystemPrompt(
+  cbrRate: number,
+  newsContext?: string,
+  assetTickers?: string[],
+  macroData?: MacroDataContext,
+  memoryContext?: string,
+  guardrailsContext?: string,
+  investorParams?: {
+    horizon: string;
+    goal: string;
+    riskProfile: string;
+    maxDrawdown: number;
+  },
+  bondContext?: BondDataContext,
+  bondAnalyses?: BondAnalysisResult[],
+  deepLossContext?: DeepLossContext,
+  fundamentalMetrics?: FundamentalMetrics,
+  portfolioFundamentals?: PortfolioFundamentalsContext,
+  behavioralFactors?: BehavioralFactors,
+  technicalIndicators?: TechnicalIndicators[],
+  liquidityContext?: LiquidityContext,
+  rebalanceData?: {
+    freeCash: number;
+    buyList: string;
+    reduceList: string;
+    totalBuyRub: number;
+    totalReduceRub: number;
+  },
+): string {
   const currentMonth = new Date().toLocaleDateString('ru-RU', {
     month: 'long',
     year: 'numeric',
@@ -306,10 +529,18 @@ export interface LiquidityContext {
 
   /** Форматирование суммы в рублях */
   function formatRub(value: number): string {
-    if (value >= 1e9) return (value / 1e9).toFixed(1) + ' млрд ₽';
-    if (value >= 1e6) return (value / 1e6).toFixed(1) + ' млн ₽';
-    if (value >= 1e3) return (value / 1e3).toFixed(1) + ' тыс ₽';
+    if (value >= 1e9)
+      return (value / 1e9).toFixed(1).replace('.', ',') + ' млрд ₽';
+    if (value >= 1e6)
+      return (value / 1e6).toFixed(1).replace('.', ',') + ' млн ₽';
+    if (value >= 1e3)
+      return (value / 1e3).toFixed(1).replace('.', ',') + ' тыс ₽';
     return value.toLocaleString('ru-RU') + ' ₽';
+  }
+
+  /** Рендер фундаментального блока одного актива (компактный формат). */
+  function renderAssetFundamentals(asset: StockFundamentals): string {
+    return renderAssetFundamentalsCompact(asset);
   }
 
   // Макро-контекст
@@ -317,7 +548,9 @@ export interface LiquidityContext {
   if (macroData) {
     const hasData = macroData.keyRate > 0;
     if (hasData) {
-      const freshnessLabel = macroData.isFresh ? 'актуально' : '⚠️ требует проверки (данные могут быть устаревшими)';
+      const freshnessLabel = macroData.isFresh
+        ? 'актуально'
+        : '⚠️ требует проверки (данные могут быть устаревшими)';
       macroLines.push(
         `Ставка ЦБ: ${macroData.keyRate}% (источник: ${macroData.source || 'CBR'}, ${freshnessLabel})`,
       );
@@ -325,28 +558,41 @@ export interface LiquidityContext {
       macroLines.push('Ставка ЦБ: — (данные не получены)');
     }
     if (macroData.inflation !== undefined) {
-      const inflationLabel = macroData.inflation > macroData.keyRate
-        ? `⚠️ инфляция (${macroData.inflation}%) превышает ключевую ставку — реальная ставка отрицательная`
-        : macroData.inflation > 7
-          ? 'Инфляция выше целевого диапазона ЦБ (4±1%)'
-          : 'Инфляция в пределах целевого диапазона ЦБ';
+      const inflationLabel =
+        macroData.inflation > macroData.keyRate
+          ? `⚠️ инфляция (${macroData.inflation}%) превышает ключевую ставку — реальная ставка отрицательная`
+          : macroData.inflation > 7
+            ? 'Инфляция выше целевого диапазона ЦБ (4±1%)'
+            : 'Инфляция в пределах целевого диапазона ЦБ';
       macroLines.push(`Инфляция: ${macroData.inflation}% (${inflationLabel})`);
     }
     if (macroData.currency !== undefined)
-      macroLines.push(`USD/RUB: ${macroData.currency} (⚠️ волатильность зависит от геополитики)`);
+      macroLines.push(
+        `USD/RUB: ${macroData.currency} (⚠️ волатильность зависит от геополитики)`,
+      );
     if (macroData.oil !== undefined)
-      macroLines.push(`Нефть Brent: $${macroData.oil} (⚠️ зависит от санкций и спроса из Китая)`);
+      macroLines.push(
+        `Нефть Brent: $${macroData.oil} (⚠️ зависит от санкций и спроса из Китая)`,
+      );
 
     // Uncertainty level
-    const hasUncertainty = !macroData.isFresh || (macroData.inflation !== undefined && macroData.inflation > 7);
+    const hasUncertainty =
+      !macroData.isFresh ||
+      (macroData.inflation !== undefined && macroData.inflation > 7);
     if (hasUncertainty) {
-      macroLines.push('⚠️ Уровень неопределённости: ВЫСОКИЙ — макроэкономические данные требуют осторожной интерпретации');
+      macroLines.push(
+        '⚠️ Уровень неопределённости: ВЫСОКИЙ — макроэкономические данные требуют осторожной интерпретации',
+      );
     } else {
-      macroLines.push('Уровень неопределённости: УМЕРЕННЫЙ — данные соответствуют ожиданиям');
+      macroLines.push(
+        'Уровень неопределённости: УМЕРЕННЫЙ — данные соответствуют ожиданиям',
+      );
     }
   } else {
     macroLines.push('Ставка ЦБ: — (данные не получены)');
-    macroLines.push('⚠️ Макроэкономические данные недоступны — решения принимаются без учёта макроконтекста');
+    macroLines.push(
+      '⚠️ Макроэкономические данные недоступны — решения принимаются без учёта макроконтекста',
+    );
   }
 
   const prompt =
@@ -370,13 +616,15 @@ export interface LiquidityContext {
     '• НЕ выводить суммы сделок в тексте. Вместо этого: "закрыть позицию полностью".\n' +
     '• НЕ рассчитывать собственную доходность (C10/C11/C12). Используй ТОЛЬКО P&L из раздела "ДАННЫЕ ПОРТФЕЛЯ".\n' +
     '• Бенчмарк (+X% за год) — сравнение с рынком, а НЕ твой реальный P&L.\n' +
-    '• В рекомендациях ОБЯЗАТЕЛЬНО использовать SHORT NAME: "Сбербанк" вместо "RU000A109L49". В таблице: "SBER (Сбербанк)". В JSON: ticker — тикер, rationale — название.\n' +
+    '• В рекомендациях ОБЯЗАТЕЛЬНО использовать SHORT NAME: "Сбербанк" вместо "RU000A109L49". В JSON: ticker — тикер, rationale — название.\n' +
     '  ✅ ПРАВИЛЬНО: "Полюс", "Сбербанк", "АЛРОСА1Р1"\n' +
     '  ❌ НЕПРАВИЛЬНО: "RU000A109L49", "A10EC22"\n' +
     '• Для облигаций используй name из Excel, а НЕ ISIN.\n' +
-    '• В таблице ИИ должен писать название ПЕРВЫМ, тикер в скобках: "АЛРОСА1Р1 (RU000A109L49)".\n' +
+    '• При упоминании актива в тексте ИИ должен писать название ПЕРВЫМ, тикер в скобках: "АЛРОСА1Р1 (RU000A109L49)".\n' +
     '• ЗАПРЕЩЕНО: "гарантированная доходность", "безрисковый", "100% гарантия".\n' +
     '• ЗАПРЕЩЕНО: выдумывать отсутствующие данные и факты.\n' +
+    '• ЗАПРЕЩЕНО: обобщать без числа: «обычно 15-20%», «как правило», «в среднем», «известен высокой рентабельностью», «традиционно». Только конкретное число с источником и датой: «P/E 5,3 (smart-lab.ru, 17.11.2026)».\n' +
+    '• Если данных нет — писать «недоступно: источник не отвечает» или «недоступно: структура страницы не распознана». НЕ подставлять отраслевые средние и «обычные» значения.\n' +
     '• ЗАПРЕЩЕНО: выдумывать доходность облигаций. Если данные не переданы — пиши «нет данных».\n' +
     '• ЗАПРЕЩЕНО: выдумывать суммы дефицита/профицита в рублях. Используй ТОЛЬКО данные из раздела «ТОЧНЫЕ СУММЫ ДЛЯ РЕБАЛАНСИРОВКИ».\n' +
     '• Если в разделе «ТОЧНЫЕ СУММЫ» нет актива — пиши «сумма не указана» вместо выдумывания.\n' +
@@ -388,7 +636,7 @@ export interface LiquidityContext {
     '(а) критическом кредитном риске (дефолт, рейтинг ниже A-), ' +
     '(б) экстремальном перевесе доли (> 12–15% портфеля).\n' +
     '• СТРОГАЯ СОГЛАСОВАННОСТЬ НАПРАВЛЕНИЙ (DIRECTION_CONFLICT): ' +
-    'recommendedAction в JSON, текст в карточке актива и строка в итоговой Markdown-таблице ' +
+    'recommendedAction в JSON и текст в карточке актива (rationale) ' +
     'должны 100% совпадать по направлению (BUY, HOLD, REDUCE, EXIT). ' +
     'Если Math=REDUCE — запрещено ставить BUY ни в одном из полей. ' +
     'Если Math=STABLE — запрещено ставить REDUCE/EXIT без обоснования из правил выше.\n' +
@@ -428,7 +676,8 @@ export interface LiquidityContext {
     (memoryContext ? memoryContext + '\n' : '') +
     (newsContext ? '=== НОВОСТИ ===\n' + newsContext + '\n\n' : '') +
     (guardrailsContext || '') +
-    (investorParams ? `
+    (investorParams
+      ? `
 === ПАРАМЕТРЫ ИНВЕСТОРА ===
 • Горизонт: ${investorParams.horizon}
 • Цель: ${investorParams.goal}
@@ -436,12 +685,16 @@ export interface LiquidityContext {
 • Максимальная просадка: ${investorParams.maxDrawdown}%
 
 Учитывай эти параметры при формировании рекомендаций.
-` : '') +
-    (bondAnalyses && bondAnalyses.length > 0 ? `
+`
+      : '') +
+    (bondAnalyses && bondAnalyses.length > 0
+      ? `
 === СТРУКТУРИРОВАННЫЙ АНАЛИЗ ОБЛИГАЦИЙ ===
 В портфеле ${bondAnalyses.length} облигаций. Для каждой проведён полный анализ:
 
-${bondAnalyses.map(bond => `
+${bondAnalyses
+  .map(
+    (bond) => `
 --- ${bond.isin} (${bond.name}) ---
 • Эмитент: ${bond.issuer}
 • Рыночная стоимость: ${formatRub(bond.balanceValue)} руб. (${(bond.balanceValue / 1000000).toFixed(2)} млн руб.), кол-во: ${bond.quantity}
@@ -471,9 +724,13 @@ ${bondAnalyses.map(bond => `
 • Согласованность с PortfolioMath: ${bond.mathAgreement}
 ${bond.missingData && bond.missingData.length > 0 ? `• Недостающие данные:\n${bond.missingData.map((m: string) => '  - ' + m).join('\n')}` : ''}
 ${bond.creditAssessment.quality === 'INSUFFICIENT_DATA' ? '\n⚠️ ВАЖНО: Кредитное качество НЕ ПОДТВЕРЖДЕНО.\nНЕ писать высокий рейтинг если quality = INSUFFICIENT_DATA.\nЕсли нет данных — писать нет данных по кредитному качеству.\n' : ''}
-`).join('\n')}
-` : '') +
-    (bondContext ? `
+`,
+  )
+  .join('\n')}
+`
+      : '') +
+    (bondContext
+      ? `
 === ОБЛИГАЦИЯ (legacy context) ===
 • ISIN: ${bondContext.isin}
 • Эмитент: ${bondContext.issuer}
@@ -492,24 +749,58 @@ ${bondContext.sector ? `• Сектор: ${bondContext.sector}` : ''}
 ${bondContext.hasOption ? '• Callable: да (опцион досрочного погашения)' : ''}
 ${bondContext.floatSpreadPct ? `• Спред к КС: ${bondContext.floatSpreadPct}%` : ''}
 ${bondContext.floatIndex ? `• Базовый индекс: ${bondContext.floatIndex}` : ''}
-` : '') +
-    (deepLossContext ? `
+`
+      : '') +
+    (deepLossContext
+      ? `
 === ГЛУБОКОЕ ПАДЕНИЕ ===
 • ${deepLossContext.ticker}: ${deepLossContext.drawdownPercent.toFixed(1)}% просадка, уровень ${deepLossContext.lossLevel}, причина: ${deepLossContext.primaryReason}
-` : '') +
-    (fundamentalMetrics ? `
-=== ФУНДАМЕНТАЛ ===
-• ${fundamentalMetrics.ticker}: ${fundamentalMetrics.fundamentalHealth === 'POSITIVE' ? 'позитивный' : fundamentalMetrics.fundamentalHealth === 'NEGATIVE' ? 'негативный' : 'нейтральный'} — ${fundamentalMetrics.summary}
-` : '') +
-    (behavioralFactors ? `
+`
+      : '') +
+    (portfolioFundamentals && portfolioFundamentals.assets.length > 0
+      ? `
+=== ФУНДАМЕНТАЛЬНЫЙ АНАЛИЗ ВСЕХ АКТИВОВ ===
+Источники: MOEX ISS — цены и дивидендный календарь; smart-lab.ru — мультипликаторы и история.
+Формат: «P/E 5,13 | ROE 19,0% | Долг/Капитал 0,01 (smart-lab.ru, 17.11.2026)» — источник и дата стоят в конце строки показателей.
+⚠️ Каждая цифра ниже имеет источник и дату. Запрещено заменять «недоступно» отраслевыми средними или «обычными» значениями.
+
+${portfolioFundamentals.assets.map(renderAssetFundamentals).join('\n\n')}
+
+${portfolioFundamentals.warnings.length > 0 ? `Предупреждения источников:\n${portfolioFundamentals.warnings.map((warning) => '• ' + warning).join('\n')}\n` : ''}
+ПРАВИЛА ИСПОЛЬЗОВАНИЯ:
+• В fundamentalAnalysis и issuerContext используй ТОЛЬКО числа из этого раздела с пометкой источника и даты: «P/E 5,13 (smart-lab.ru, 17.11.2026)».
+• Если поле помечено «недоступно» — пиши «P/E: недоступно (источник не отвечает)». Запрещены формулировки «обычно 15-20%», «как правило», «в среднем», «известен высокой рентабельностью» без конкретного числа.
+• Сравнивай текущее значение с медианой 5 лет, если она указана.
+• Названия источников не искажай: «MOEX ISS», «smart-lab.ru».
+`
+      : '') +
+    (fundamentalMetrics
+      ? `
+=== ФУНДАМЕНТАЛЬНЫЙ АНАЛИЗ (legacy) ===
+• ${fundamentalMetrics.ticker} (${fundamentalMetrics.name}):
+${fundamentalMetrics.pe !== undefined ? `• P/E: ${(fundamentalMetrics.pe ?? 0).toFixed(1)}${fundamentalMetrics.ps !== undefined ? ', P/S: ' + (fundamentalMetrics.ps ?? 0).toFixed(1) : ''}${fundamentalMetrics.roe !== undefined ? ', ROE: ' + (fundamentalMetrics.roe ?? 0).toFixed(1) + '%' : ''}` : '• Оценка: нет данных'}
+${fundamentalMetrics.profitMargin !== undefined ? `• Маржа прибыли: ${(fundamentalMetrics.profitMargin ?? 0).toFixed(1)}%` : ''}
+${fundamentalMetrics.debtToEquity !== undefined ? `• Долг/Капитал: ${(fundamentalMetrics.debtToEquity ?? 0).toFixed(2)}` : ''}
+${fundamentalMetrics.revenueGrowth !== undefined ? `• Рост выручки: ${(fundamentalMetrics.revenueGrowth ?? 0).toFixed(1)}%` : ''}
+${fundamentalMetrics.earningsGrowth !== undefined ? `• Рост прибыли: ${(fundamentalMetrics.earningsGrowth ?? 0).toFixed(1)}%` : ''}
+${fundamentalMetrics.dividendYield !== undefined ? `• Дивидендная доходность: ${(fundamentalMetrics.dividendYield ?? 0).toFixed(1)}%` : ''}
+• Фундаментальное здоровье: ${fundamentalMetrics.fundamentalHealth === 'POSITIVE' ? '✅ Позитивный' : fundamentalMetrics.fundamentalHealth === 'NEGATIVE' ? '❌ Негативный' : '⚠️ Нейтральный'} — ${fundamentalMetrics.summary}
+`
+      : '') +
+    (behavioralFactors
+      ? `
 === ПОВЕДЕНИЕ ===
 • ${behavioralFactors.ticker}: ${behavioralFactors.lossAversion} lossAversion, ${behavioralFactors.averagingTendency} averaging, ${behavioralFactors.panicTendency} panic — ${behavioralFactors.behavioralAdvice}
-` : '') +
-    (technicalIndicators && technicalIndicators.length > 0 ? `
+`
+      : '') +
+    (technicalIndicators && technicalIndicators.length > 0
+      ? `
 === ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ И ИСТОРИЧЕСКИЕ ДАННЫЕ ===
 Для каждого актива рассчитаны индикаторы на основе 180 дней исторических котировок:
 
-${technicalIndicators.map(ind => `
+${technicalIndicators
+  .map(
+    (ind) => `
 --- ${ind.ticker} ---
 • RSI(14): ${ind.rsi !== null ? ind.rsi.toFixed(1) : 'нет данных'}${ind.rsi !== null ? (ind.rsi < 30 ? ' (перепроданность)' : ind.rsi > 70 ? ' (перекупленность)' : '') : ''}
 • SMA20: ${ind.sma20 !== null ? ind.sma20.toFixed(2) : 'нет данных'}
@@ -519,7 +810,9 @@ ${technicalIndicators.map(ind => `
 • Риск: ${ind.riskLevel !== null ? (ind.riskLevel === 'low' ? 'низкий' : ind.riskLevel === 'medium' ? 'средний' : 'высокий') : 'нет данных'}
 • Z-score: ${ind.zScoreLast !== null ? ind.zScoreLast.toFixed(2) : 'нет данных'}${ind.zScoreLast !== null && Math.abs(ind.zScoreLast) > 2 ? ' (аномалия)' : ''}
 ${ind.isLastAnomaly ? '⚠️ Аномалия на последнем баре!' : ''}
-`).join('\n')}
+`,
+  )
+  .join('\n')}
 
 ИСПОЛЬЗУЙ эти данные для рекомендации оптимальных точек входа/выхода:
 • RSI < 30 + цена ниже SMA20/SMA50 → потенциальная точка покупки (перепроданность)
@@ -528,8 +821,10 @@ ${ind.isLastAnomaly ? '⚠️ Аномалия на последнем баре!
 • Нисходящий тренд + высокая волатильность → осторожность с покупками
 • Z-score > 2 или < -2 → аномальное движение, требует внимания
 • НЕ используй технические индикаторы как единственный аргумент — комбинируй с фундаменталом
-` : '') +
-    (rebalanceData ? `
+`
+      : '') +
+    (rebalanceData
+      ? `
 === ТОЧНЫЕ СУММЫ ДЛЯ РЕБАЛАНСИРОВКИ ===
 ⚠️ НЕ выдумывай суммы. Используй ТОЛЬКО эти данные:
 • Свободный кэш: ${rebalanceData.freeCash.toLocaleString('ru-RU')} руб.
@@ -541,8 +836,10 @@ ${rebalanceData.reduceList}
 • Итого можно продать: ${rebalanceData.totalReduceRub.toLocaleString('ru-RU')} руб.
 
 Используй эти точные суммы в резюме. НЕ рассчитывай суммы самостоятельно.
-` : '') +
-    (liquidityContext ? `
+`
+      : '') +
+    (liquidityContext
+      ? `
 === АНАЛИЗ ЛИКВИДНОСТИ ПОРТФЕЛЯ ===
 Статус портфеля: ${liquidityContext.summary.status === 'HEALTHY' ? '✅ Здоровый' : liquidityContext.summary.status === 'WARNING' ? '⚠️ ВНИМАНИЕ' : '🔴 КРИТИЧЕСКИЙ'}
 ├── Высокая ликвидность: ${liquidityContext.summary.highLiquidityPct.toFixed(1)}%
@@ -557,7 +854,9 @@ ${liquidityContext.warnings.length > 0 ? liquidityContext.warnings.map((w: strin
 ${liquidityContext.recommendations.length > 0 ? liquidityContext.recommendations.map((r: string) => '  • ' + r).join('\n') : '  (нет)'}
 
 Данные по активам:
-${liquidityContext.assets.map(asset => `
+${liquidityContext.assets
+  .map(
+    (asset) => `
 --- ${asset.ticker} (${asset.name}) ---
 • Стоимость позиции: ${formatRub(asset.marketValue)}
 • Дневной оборот: ${asset.dailyTurnover !== null ? formatRub(asset.dailyTurnover) : 'нет данных'}
@@ -566,7 +865,9 @@ ${liquidityContext.assets.map(asset => `
 • Дней для ликвидации: ${asset.liquidationDays !== null ? asset.liquidationDays : 'н/д'}
 ${asset.warning ? '• ⚠️ ' + asset.warning : ''}
 ${asset.advice ? '• 💡 ' + asset.advice : ''}
-`).join('\n')}
+`,
+  )
+  .join('\n')}
 
 ВАЖНО ПРИ ФОРМИРОВАНИИ РЕКОМЕНДАЦИЙ:
 • НЕ РЕКОМЕНДУЙ BUY для активов с CRITICAL ликвидностью без предупреждения о рисках выхода.
@@ -574,7 +875,8 @@ ${asset.advice ? '• 💡 ' + asset.advice : ''}
 • При рекомендации SELL низколиквидного актива: ОБЯЗАТЕЛЬНО укажи "продавать частями из-за низкого оборота".
 • Активы с CRITICAL ликвидностью не должны составлять более 5% портфеля.
 • Если портфель имеет статус WARNING/CRITICAL по ликвидности — приоритетом является снижение концентрации низколиквидных активов.
-` : '') +
+`
+      : '') +
     '=== ЗАДАЧА ===\n' +
     '1. Макро: соответствие структуры портфеля ставке ' +
     cbrRate +
@@ -582,12 +884,11 @@ ${asset.advice ? '• 💡 ' + asset.advice : ''}
     '2. Каждый актив: анализ по status (BUY/REDUCE/STABLE/EXIT/NO_TARGET).\n' +
     '3. Ребалансировка: приоритет BUY/REDUCE/EXIT, кэш. ' +
     'Если указан средний ежемесячный взнос — планируй покупки с его учётом: распредели дефицит долей на 1-3 месяца пополнений.\n' +
-    '4. Выход в прибыль: шаги 1-3 мес / 3-12 мес / 1+ лет.\n' +
-    '5. Мониторинг: котировки, макро.\n' +
-    '6. Новые инструменты: НЕ добавлять.\n\n' +
+    '4. Мониторинг: котировки, макро.\n' +
+    '5. Новые инструменты: НЕ добавлять.\n\n' +
     '=== ФОРМАТ ОТВЕТА ===\n' +
     '1. СНАЧАЛА выведи JSON-МАССИВ для ВСЕХ активов портфеля — он обязателен и идёт ПЕРВЫМ.\n' +
-    '2. Затем развёрнутый текстовый ответ из 7 секций.\n\n' +
+    '2. Затем развёрнутый текстовый ответ из 5 секций.\n\n' +
     '=== JSON-МАССИВ (ОБЯЗАТЕЛЬНО ПЕРВЫМ) ===\n' +
     '```json\n' +
     '[\n' +
@@ -600,7 +901,12 @@ ${asset.advice ? '• 💡 ' + asset.advice : ''}
     '    "targetReason": "Причина изменения целевой доли",\n' +
     '    "keyRisks": ["риск 1"],\n' +
     '    "keyCatalysts": ["катализатор 1"],\n' +
-    '    "agreementWithPortfolioMath": "AGREE"|"DISAGREE"|"UNCERTAIN"\n' +
+    '    "agreementWithPortfolioMath": "AGREE"|"DISAGREE"|"UNCERTAIN",\n' +
+    '    "fundamentalAnalysis": "<P/E> (<источник>, <дата>) — <сравнение с медианой>. <ROE> (<источник>, <дата>). Долг/Капитал <D/E> (<источник>, <дата>) — долг <Debt> на капитал <Equity>.",\n' +
+    '    "technicalTiming": "RSI 28 (MOEX ISS, 17.11.2026) — акция перепродана. Лучшая точка: нарастить частями при падении до 280 ₽.",\n' +
+    '    "entryStrategy": "Покупайте в 2-3 партии по 50-60% от нужной суммы. Первая партия сейчас, вторая при падении на 5-10%. Это снижает риск покупки по неправильной цене.",\n' +
+    '    "issuerContext": "<P/E> и <ROE> (<источник>, <дата>). Дивдоходность <DividendYield> (<источник>, <дата>).",\n' +
+    '    "dataSources": ["MOEX ISS", "smart-lab.ru", "CBR", "QUIK"]\n' +
     '  },\n' +
     '  ...\n' +
     ']\n' +
@@ -612,23 +918,31 @@ ${asset.advice ? '• 💡 ' + asset.advice : ''}
     '⚠️ НЕ включай в JSON: price, quantity, deficit, liquidationValue.\n' +
     '⚠️ Проценты: 47.7%, не 47.739999%.\n' +
     '⚠️ ОБЯЗАТЕЛЬНО заполни targetReason для КАЖДОГО актива. Если нет причины — напиши "целевая доля не меняется".\n' +
-    '=== ТЕКСТОВЫЙ ОТВЕТ (7 секций, ПОСЛЕ JSON) ===\n' +
+    '=== ТЕКСТОВЫЙ ОТВЕТ (5 секций, ПОСЛЕ JSON) ===\n' +
     '1. Макро и структура\n' +
-    '2. Рекомендации по каждому активу (таблица)\n' +
-    '3. План ребалансировки\n' +
-    '4. Стратегия выхода в прибыль\n' +
-    '5. Динамический мониторинг\n' +
-    '6. Новые инструменты\n' +
-    '7. Краткое резюме (3-5 действий)\n\n' +
+    '2. План ребалансировки\n' +
+    '3. Динамический мониторинг\n' +
+    '4. Новые инструменты\n' +
+    '5. Краткое резюме (3-5 действий)\n\n' +
+    '⚠️ НЕ генерируй блок «Инвестиционные стратегии»: он строится программно ' +
+    'из валидированного JSON. Допустим только один итоговый абзац ' +
+    '(3-4 предложения, без чисел) поверх готового рендера.\n' +
+    '⚠️ ЗАПРЕЩЕНЫ любые прогнозы доходности в процентах за периоды: ' +
+    '«+5-15% за 3 мес», «+20-40% за 12 мес», «+50-100% за 3+ лет», ' +
+    '«ожидаемая доходность +20-40% годовых», «обычно 15-20%». ' +
+    'Единственный допустимый доходностный якорь — купонно-дивидендный, ' +
+    'вычисленный из данных.\n' +
     '⚠️ Опора только на переданные данные: ' +
     'Используй ТОЛЬКО цифры из входного контекста. ' +
     'При флагах NO_DATA или INSUFFICIENT_DATA прямо указывай «нет данных» — ' +
     'НЕ выдумывай мультипликаторы (P/E, ROE) или обороты.\n' +
-    '⚠️ Защита Markdown-таблицы (секция 2): ' +
-    'Заполняй таблицу строго для ВСЕХ активов портфеля без пропусков. ' +
-    'Обоснования пиши максимально кратко (5–8 слов), ' +
-    'без переносов строк и символов | внутри текста ячейки.\n' +
-    '⚠️ Отвечай на русском, развёрнуто, с аргументацией и цифрами.';
+    '⚠️ НЕ дублируй рекомендации по активам в тексте: ' +
+    'НЕ выводи таблицу «Актив | Действие | Доля % | Целевая % | Дефицит/Профицит | Обоснование» ' +
+    'и не пересказывай построчно числа из JSON. ' +
+    'Эти данные пользователь видит в структурированных карточках, ' +
+    'которые строятся из JSON и валидируются отдельно. ' +
+    'В тексте — только макро-выводы, план ребалансировки, мониторинг и резюме.\n' +
+    '⚠️ Отвечай на русском, развёрнуто, с аргументацией; числа — только из входного контекста.';
 
   return prompt;
 }
@@ -663,6 +977,23 @@ function buildDeepAnalysisRules(): string {
     '  Каждый актив должен быть оценён индивидуально.\n' +
     '  Даже актив с высокой концентрацией может быть куплен, если фундаментал сильный.\n' +
     '  Даже актив с дефицитом доли может быть продан, если фундаментал слабый.\n' +
+    '• ОБЯЗАТЕЛЬНО заполняй новые поля JSON для КАЖДОГО актива:\n' +
+    '  - fundamentalAnalysis: ОБЪЯСНИ простыми словами, что каждый показатель значит для инвестора, но КАЖДОЕ число сопровождай источником и датой:\n' +
+    '    • P/E: «P/E 5,13 (smart-lab.ru, 17.11.2026) — вы платите 5,13 ₽ за 1 ₽ годовой прибыли; медиана 5 лет 5,77».\n' +
+    '    • ROE: «ROE <ROE> (<источник>, <дата>) — компания зарабатывает <ROE> на собственный капитал».\n' +
+    '    • Долг/Капитал: «Долг/Капитал <D/E> (<источник>, <дата>) — долг <Debt> против капитала <Equity>».\n' +
+    '    • Дивидендная доходность: «Дивдоходность <DividendYield> (<источник>, <дата>) — <DividendYield> годовых только от дивидендов».\n' +
+    '    ⚠️ Это шаблон формата, а не данные. Числа из примера запрещено переносить в другой тикер: бери только из блока «--- TICKER ---».\n' +
+    '    Если поле помечено «недоступно» — напиши «P/E: недоступно (источник не отвечает)». ЗАПРЕЩЕНО писать «обычно 15-20%», «как правило», «в среднем», «известен высокой рентабельностью» без числа.\n' +
+    '  - technicalTiming: на основе RSI, SMA20/50, тренда — лучшая точка для сделки. ' +
+    '    ОБЪЯСНИ простыми словами: "RSI 28 — акция сильно упала и может вырасти. Хорошее время для покупки."\n' +
+    '    Если RSI недоступен — напиши "Технические индикаторы недоступны. Следите за ценой: если акция упадёт на 10-15% от текущей — это хорошая точка входа".\n' +
+    '  - entryStrategy: как покупать/продавать — частями (сколько партий) или сразу. ' +
+    '    ОБЪЯСНИ почему: "Покупайте в 2-3 партии — так вы снизите риск покупки по неправильной цене".\n' +
+    '  - issuerContext: краткий контекст по эмитенту — ТОЛЬКО факты с числом, источником и датой: ' +
+    '    «P/E 5,13, ROE 19,0% (smart-lab.ru, 17.11.2026); дивдоходность 9,0% (smart-lab.ru, 17.11.2026)». ' +
+    '    Если данных нет — «недоступно: источник не отвечает». Не писать общие характеристики без чисел.\n' +
+    '  - dataSources: массив источников — ["MOEX ISS", "smart-lab.ru", "CBR", "QUIK"] — только те, что реально использованы. Названия не искажать.\n' +
     '\n' +
     '• ВАЖНО: ОБЛИГАЦИИ — разделение portfolioSignal и bondAssessment:\n' +
     '  PortfolioMath возвращает статус для облигаций:\n' +

@@ -64,6 +64,8 @@ export interface GatekeeperNewsItem {
   filterReason?: string;
   /** Сырые данные источника */
   rawData?: Record<string, unknown>;
+  /** Вес новости с учётом временного затухания (0.1 - 1.0) */
+  temporalWeight?: number;
 }
 
 /** Нормализованная новость (без priority, relevantTickers, filterStatus) */
@@ -90,6 +92,14 @@ export interface GatekeeperResult {
   filteredOut: {
     total: number;
     byReason: Record<string, number>;
+    /** Примеры отфильтрованных новостей (до 3 на каждую причину) — только релевантные */
+    examples: Record<string, Array<{
+      title: string;
+      description: string;
+      url: string;
+      source: string;
+      relevantTickers: string[];
+    }>>;
   };
   /** Статистика по источникам */
   sourceStats: Record<NewsSource, {

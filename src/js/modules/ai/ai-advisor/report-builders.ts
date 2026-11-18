@@ -1,4 +1,4 @@
-﻿import { QuikOrder } from '../../data/xlsx-parser/quik-orders-parser.js';
+import { QuikOrder } from '../../data/xlsx-parser/quik-orders-parser.js';
 import { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
 
 /**
@@ -94,7 +94,7 @@ export function buildLiquidityBlockHtml(
         ? '#e3b341'
         : '#ff7b72';
 
-  let html = '<div class=\'block-box\'>';
+  let html = "<div class='block-box'>";
   html += '<h2>📊 Анализ ликвидности</h2>';
   html += '<div style="font-size: 14px; margin-bottom: 10px;">';
   html += `Статус: <strong style="color: ${statusColor};">${status === 'HEALTHY' ? '✅ Здоровый' : status === 'WARNING' ? '⚠️ Внимание' : '🔴 Критический'}</strong>`;
@@ -104,7 +104,8 @@ export function buildLiquidityBlockHtml(
   html += "<div style='margin: 10px 0;'>";
   html +=
     "<div style='font-size: 12px; color: #8b949e; margin-bottom: 4px;'>Структура ликвидности:</div>";
-  html += '<div style="background: #21262d; border-radius: 4px; height: 20px; overflow: hidden; display: flex;">';
+  html +=
+    '<div style="background: #21262d; border-radius: 4px; height: 20px; overflow: hidden; display: flex;">';
   if (highPct > 0)
     html += `<div style="background: #56d364; width: ${highPct}%; text-align: center; font-size: 11px; line-height: 20px; color: #000;">${highPct.toFixed(0)}%</div>`;
   if (mediumPct > 0)
@@ -381,19 +382,18 @@ export function buildAssetsTablesAndBars(
       '</div>' +
       '</div>';
 
-    const prefix = item.deficitRub > 0 ? '+' : '';
+    // Контракт колонки «Дефицит/Профицит»: current − target.
+    // Дефицит отрицательный, профицит положительный.
+    const signedAmount = -item.deficitRub;
+    const prefix = signedAmount > 0 ? '+' : '';
     const colorStyle =
-      item.deficitRub > 0
-        ? '#58a6ff'
-        : item.deficitRub < 0
-          ? '#ff7b72'
-          : '#fff';
+      signedAmount > 0 ? '#56d364' : signedAmount < 0 ? '#ff7b72' : '#fff';
 
     // Если целевая доля не установлена или равна 0 — выводим прочерк
     const displayDeficit =
       item.targetPercent === undefined || item.targetPercent === 0
         ? '—'
-        : prefix + item.deficitRub.toLocaleString('ru-RU') + ' ₽';
+        : prefix + signedAmount.toLocaleString('ru-RU') + ' ₽';
 
     // ─── P&L от цены входа (в процентах) ───
     const balancePrice = Number(item.balancePrice) || 0;
@@ -476,9 +476,18 @@ export function buildAssetsTablesAndBars(
       '</tr>';
   }
 
+  // NEW-активы (например, ОФЗ) тоже участвуют в приведении к целям:
+  // стратег строит для них шаг, значит итоговая сумма обязана их учитывать.
   const buyAssets = assetsAnalysis.filter(
-    (a) => a.status === 'BUY' && (a.targetPercent ?? 0) > 0,
+    (a) => (a.status === 'BUY' || a.status === 'NEW') && a.deficitRub > 0,
   );
+  if (buyAssets.length > 0) {
+    console.log(
+      `[REBALANCE_TOTAL] render=report-builders positions=${buyAssets.length} ` +
+        `totalRub=${buyAssets.reduce((sum, a) => sum + a.deficitRub, 0)} ` +
+        `tickers=${buyAssets.map((a) => a.ticker).join(',')}`,
+    );
+  }
   if (buyAssets.length > 0) {
     priorityBlock =
       "<div class='priority-section'>" +
@@ -532,6 +541,13 @@ export function buildAssetsTablesAndBars(
     const topName = topBuy.name;
     const topDeficit = topBuy.deficitRub.toLocaleString('ru-RU');
     const topPct = (topTargetPct - topBuy.currentPercent).toFixed(1);
+    const positionsWord =
+      totalPositions % 10 === 1 && totalPositions % 100 !== 11
+        ? 'позицию'
+        : [2, 3, 4].includes(totalPositions % 10) &&
+            ![12, 13, 14].includes(totalPositions % 100)
+          ? 'позиции'
+          : 'позиций';
 
     rebalanceBlock =
       "<div class='rebalance-section'>" +
@@ -552,7 +568,9 @@ export function buildAssetsTablesAndBars(
       totalDeficit +
       ' ₽</strong> на <strong>' +
       totalPositions +
-      ' позиций</strong>.' +
+      ' ' +
+      positionsWord +
+      '</strong>.' +
       '</div>' +
       '</div></div>';
   }
@@ -726,12 +744,8 @@ export function buildQuotesBlock(quotes: StockQuote[]): QuotesBlockResult {
 }
 
 // ============================================================================
-// P1-3: Итоговое заключение — 7 элементов по ТЗ
+// P1-3: Итоговое заключение — 4 элемента по ТЗ
 // ============================================================================
-
-/** Источник рекомендации */
-export type RecommendationSource =
-  'MATH_ONLY' | 'AI_ONLY' | 'BOTH_AGREED' | 'BOTH_CONFLICT' | 'NO_DATA';
 
 /** Итоговое заключение по активу */
 export interface FinalConclusion {
@@ -741,13 +755,7 @@ export interface FinalConclusion {
   reasons: string[];
   /** 3. Основные риски */
   risks: string[];
-  /** 4. Состояние данных */
-  dataStatus: string;
-  /** 5. Источник рекомендации */
-  source: RecommendationSource;
-  /** 6. Согласованность Math и AI */
-  mathAiAgreement: string;
-  /** 7. Ограничения исполнения */
+  /** 4. Ограничения исполнения */
   executionLimitations: string[];
 }
 
@@ -791,10 +799,6 @@ export function buildFinalConclusion(
 
   // ─── 1. Действие ───
   const mathAction = assetAnalysis.status;
-  let aiAction: string | null = null;
-  if (aiRecommendation && aiRecommendation.recommendedAction) {
-    aiAction = aiRecommendation.recommendedAction;
-  }
 
   // ─── 2. Причины рекомендации ───
   const deviation =
@@ -860,76 +864,7 @@ export function buildFinalConclusion(
     risks.push('Нет критических рисков');
   }
 
-  // ─── 4. Состояние данных ───
-  const hasMarketData = assetAnalysis.currentPrice > 0;
-  const hasTarget = assetAnalysis.targetPercent !== undefined;
-  // Надёжная проверка: aiRecommendation != null (не null и не undefined)
-  // И recommendedAction != null (AI вернул рекомендацию, а не пустой объект)
-  const hasAiData =
-    aiRecommendation != null && aiRecommendation.recommendedAction != null;
-
-  if (!hasMarketData) {
-    risks.unshift('⚠️ Рыночные данные отсутствуют (currentPrice=0)');
-  }
-  if (!hasTarget) {
-    risks.push('⚠️ Целевая доля не установлена');
-  }
-
-  // Раздельная оценка полноты данных
-  const portfolioDataComplete = hasMarketData && hasTarget;
-  const aiDataComplete = hasAiData;
-
-  let dataStatus: string;
-  if (portfolioDataComplete && aiDataComplete) {
-    dataStatus = 'Данные портфеля: OK, AI: рекомендация есть';
-  } else if (portfolioDataComplete) {
-    dataStatus = 'Данные портфеля: OK, AI: нет данных';
-  } else {
-    dataStatus = 'Данные неполные';
-  }
-
-  // ─── 5. Источник рекомендации ───
-  // При конфликте — приоритет у PortfolioMath (детерминированная математика),
-  // AI сигнал показывается как предупреждение в reasons.
-
-  // Нормализация для сравнения: STABLE→HOLD, NO_TARGET→HOLD
-  const normalizedMath =
-    mathAction === 'STABLE' || mathAction === 'NO_TARGET' ? 'HOLD' : mathAction;
-  const normalizedAi = aiAction === 'STABLE' ? 'HOLD' : aiAction;
-
-  let source: RecommendationSource;
-  if (!hasAiData && !aiAction) {
-    source = 'MATH_ONLY';
-  } else if ((hasAiData && !mathAction) || mathAction === 'NO_TARGET') {
-    source = 'AI_ONLY';
-  } else if (aiAction && normalizedAi === normalizedMath) {
-    source = 'BOTH_AGREED';
-  } else {
-    source = 'BOTH_CONFLICT';
-  }
-
-  // ─── 6. Согласованность Math и AI ───
-  // При конфликте показываем ФИНАЛЬНЫЙ сигнал (PortfolioMath) и AI как предупреждение.
-  // В одном отчёте — только один финальный сигнал, не два.
-  let mathAiAgreement: string;
-  if (source === 'MATH_ONLY') {
-    mathAiAgreement =
-      'AI рекомендация отсутствует — решение на основе PortfolioMath';
-  } else if (source === 'AI_ONLY') {
-    mathAiAgreement = 'Только AI вернул рекомендацию';
-  } else if (source === 'BOTH_AGREED') {
-    mathAiAgreement = `Math=${mathAction}, AI=${aiAction} — согласованы`;
-  } else {
-    // Конфликт: финальный сигнал = PortfolioMath, AI — предупреждение
-    mathAiAgreement = `Финальный: Math=${mathAction}. AI=${aiAction} — конфликт, требуется ручная проверка`;
-  }
-
-  // При конфликте — добавить AI действие как предупреждение в reasons
-  if (source === 'BOTH_CONFLICT' && aiAction) {
-    reasons.push(
-      `⚠️ AI предложил ${aiAction}, но PortfolioMath: ${mathAction} — конфликт сигналов`,
-    );
-  }
+  // ─── 4. Ограничения исполнения ───
 
   // ─── 7. Ограничения исполнения ───
   if (assetAnalysis.holdOnly) {
@@ -954,9 +889,6 @@ export function buildFinalConclusion(
     action: mathAction,
     reasons,
     risks,
-    dataStatus,
-    source,
-    mathAiAgreement,
     executionLimitations: limitations,
   };
 }

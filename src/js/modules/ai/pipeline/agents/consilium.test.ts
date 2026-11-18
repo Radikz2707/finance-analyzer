@@ -1,4 +1,4 @@
-﻿import type { AssetAnalysis } from '../../../portfolio/portfolio-math/portfolio-math.js';
+import type { AssetAnalysis } from '../../../portfolio/portfolio-math/portfolio-math.js';
 import type { StrategistAgentOutput } from './strategist-agent.js';
 import type { ScenarioAgentOutput, ScenarioChange } from './scenario-agent.js';
 import { StrategistAgent } from './strategist-agent.js';
@@ -40,8 +40,9 @@ function createAsset(o?: Partial<AssetAnalysis>): AssetAnalysis {
 async function buildInput(
   o?: Partial<ConsiliumInput>,
   scenarioProposed?: ScenarioChange[],
+  options?: { assets?: AssetAnalysis[]; freeCashRub?: number },
 ): Promise<ConsiliumInput> {
-  const assets = [createAsset()];
+  const assets = options?.assets ?? [createAsset()];
   const defaultProposals = [
     { ticker: 'PLZL', action: 'SELL' as const, keyCatalysts: [] },
   ];
@@ -58,7 +59,7 @@ async function buildInput(
     scenario.execute({
       assetsAnalysis: assets,
       totalPortfolioValue: 500000,
-      freeCashRub: 0,
+      freeCashRub: options?.freeCashRub ?? 0,
       proposedChanges: scenarioProposed ?? [
         { ticker: 'PLZL', action: 'SELL' as const, amountRub: 20000 },
       ],
@@ -100,6 +101,20 @@ describe('Consilium', () => {
         newsContext: 'Рост котировок, рекордная прибыль',
       },
       [{ ticker: 'PLZL', action: 'BUY', amountRub: 10000 }],
+      {
+        // Недостаток доли + свободный кэш: покупка улучшает структуру,
+        // поэтому все четыре голоса совпадают (BUY).
+        freeCashRub: 50000,
+        assets: [
+          createAsset({
+            status: 'BUY',
+            currentPercent: 5,
+            targetPercent: 8,
+            deficitRub: 15000,
+            isConcentrated: false,
+          }),
+        ],
+      },
     );
     const output = runConsilium(input);
 

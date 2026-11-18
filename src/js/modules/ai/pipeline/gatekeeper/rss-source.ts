@@ -127,34 +127,26 @@ function parseRssXml(xml: string, maxItems: number = 50): RawNewsItem[] {
 function extractTickersFromNews(text: string): string[] {
   const found: string[] = [];
   const knownTickers = [
-    'SBER',
-    'GMKN',
-    'LKOH',
-    'PLZL',
-    'ROSN',
-    'VTBR',
-    'SBERP',
-    'GAZP',
-    'MGNT',
-    'YNDX',
-    'AFLT',
-    'MTLR',
-    'TATN',
-    'SNGS',
-    'ROSNDR',
-    'MTSS',
-    'FLOT',
-    'ALRS',
-    'CHMF',
-    'NLMK',
-    'PHOR',
-    'SENER',
-    'MAGN',
-    'SKNG',
-    'VKCO',
-    'AFKON',
-    'BSPB',
-    'FEES',
+    // === Акции I уровня (основные) ===
+    'SBER', 'GMKN', 'LKOH', 'PLZL', 'ROSN', 'VTBR', 'SBERP', 'GAZP',
+    'MGNT', 'YNDX', 'AFLT', 'MTLR', 'TATN', 'SNGS', 'ROSNDR', 'MTSS',
+    'FLOT', 'ALRS', 'CHMF', 'NLMK', 'PHOR', 'SENER', 'MAGN', 'SKNG',
+    'VKCO', 'AFKON', 'BSPB', 'FEES',
+    // === Акции II уровня (MOEX) ===
+    'SBERM', 'VRNG', 'POLY', 'TCSG', 'ELZAR', 'ARIR', 'DIVI', 'HYDR',
+    'IRAO', 'RTKM', 'VTBMB', 'SMLP', 'ALBT', 'TATNP', 'KZST', 'AZNV',
+    'ROSG', 'MTLRP', 'GAZPM', 'SNGSP', 'MTT', 'SBRF', 'MVID', 'ODFL',
+    'OZON', 'ARTG', 'FESH', 'GROSN', 'KZOS', 'LSRG', 'MOEX', 'NFT',
+    'NLMK', 'PHOR', 'PIKK', 'RUAL', 'RYBN', 'SAMT', 'SEMP', 'SIAN',
+    'TATN', 'TRNKP', 'TRNPK', 'VTB', 'WICT', 'YARN', 'AFKS', 'CASS',
+    // === Зарубежные акции (для международных новостей) ===
+    'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'TSLA', 'NVDA', 'AMZN', 'META',
+    'NFLX', 'AMD', 'INTC', 'ORCL', 'IBM', 'CRM', 'ADBE', 'PYPL',
+    'SQ', 'V', 'MA', 'JPM', 'BAC', 'GS', 'MS', 'WFC', 'C', 'BRK',
+    'XOM', 'CVX', 'BP', 'SHEL', 'TOT', 'SON', 'COP', 'EOG', 'PXD',
+    // === Зарубежные ETF ===
+    'SPY', 'QQQ', 'IWM', 'DIA', 'VTI', 'VOO', 'VEA', 'VWO', 'BND',
+    'TLT', 'GLD', 'SLV', 'USO', 'UNG',
   ];
 
   const lower = text.toLowerCase();

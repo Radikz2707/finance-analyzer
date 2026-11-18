@@ -19,7 +19,17 @@ export { ScenarioAgent } from './scenario-agent.js';
 export { type ScenarioAgentOutput } from './scenario-agent.js';
 
 export { StrategistAgent } from './strategist-agent.js';
-export { type StrategistAgentOutput } from './strategist-agent.js';
+export {
+  type InvestmentStrategy,
+  type StrategyIncomeAnchor,
+  type StrategyStep,
+  type StrategistAgentOutput,
+} from './strategist-agent.js';
+export {
+  validateStrategyConsistency,
+  type StrategyConflict,
+  type StrategyValidationPolicy,
+} from './strategy-validator.js';
 
 export { NotificationAgent } from './notification-agent.js';
 export { type NotificationAgentOutput } from './notification-agent.js';

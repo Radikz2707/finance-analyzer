@@ -1,19 +1,22 @@
-﻿import {
+import {
   PortfolioReportData,
   type AssetAnalysis,
 } from '../../portfolio/portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../../portfolio/portfolio-math/portfolio-validator.js';
 import { BondReferenceData } from '../../data/xlsx-parser/xlsx-parser.js';
 import { fetchSmartLabBondByIsin } from '../../api/smart-lab-api/smart-lab-api.js';
+import { getPortfolioFundamentalsOnce } from '../../api/fundamentals-api.js';
 import { CalculatedIncome } from './income-calculator.js';
 import axios from 'axios';
 import https from 'https';
 import { randomUUID } from 'node:crypto';
 import {
+  buildJsonOnlySystemPrompt,
   buildSystemPrompt,
   type MacroDataContext,
   type FundamentalMetrics,
   type BehavioralFactors,
+  type PortfolioFundamentalsContext,
 } from './prompt-templates.js';
 import { buildFallbackReport } from './fallback-report-builder.js';
 import { UIOrdersData } from './types.js';
@@ -57,6 +60,26 @@ import { getLogger } from '../../shared/logger/index.js';
 /** Задержка (мс) */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Дивидендные доходности из уже загруженного фундаментала.
+ *
+ * Вынесено в чистую функцию, чтобы значение можно было приложить к ЛЮБОМУ
+ * результату generateDynamicReport — включая локальный fallback, который
+ * возвращается до финального блока метода.
+ */
+export function buildDividendYieldsFromFundamentals(
+  fundamentals: PortfolioFundamentalsContext | undefined,
+): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const asset of fundamentals?.assets ?? []) {
+    const value = asset.dividendYield?.value;
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      result[asset.ticker.toUpperCase()] = value;
+    }
+  }
+  return result;
 }
 
 /**
@@ -160,6 +183,17 @@ interface AiResponseResult {
   success: boolean;
   /** Сообщение об ошибке (если success = false) */
   error?: string;
+  /**
+   * Дивидендные доходности акций, уже загруженные при построении контекста.
+   * Передаются в StrategistAgent для расчёта купонно-дивидендного якоря.
+   * Новых сетевых вызовов не создаёт.
+   */
+  fundamentalsDividendYields?: Record<string, number>;
+  /**
+   * Тот же fundamentals-контекст, что использовался для промпта карточек.
+   * Нужен стратегу и валидатору Д/К, чтобы не читать данные из другого места.
+   */
+  portfolioFundamentals?: PortfolioFundamentalsContext;
   /** Структурированный JSON от AI (может быть null если не извлечён) */
   structuredJson?: RawAIJson | null;
   /** Массив структурированных JSON-объектов от AI (по одному на каждый актив) */
@@ -279,6 +313,53 @@ export function extractJsonArrayFromAiResponse(text: string): RawAIJson[] {
     }
   }
 
+  // Паттерн 3: голый JSON-массив без ``` (модель не обернула в fence).
+  // Ищем первый '[{' с полем ticker и сканируем до балансирующей ']',
+  // корректно пропуская строки и экранирование.
+  const arrayStart = text.search(/\[\s*\{\s*"ticker"\s*:/);
+  if (arrayStart >= 0) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    let endIdx = -1;
+    for (let i = arrayStart; i < text.length; i++) {
+      const char = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === '\\') {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+        continue;
+      }
+      if (char === '[') {
+        depth++;
+      } else if (char === ']') {
+        depth--;
+        if (depth === 0) {
+          endIdx = i + 1;
+          break;
+        }
+      }
+    }
+    if (endIdx > arrayStart) {
+      try {
+        const parsed = JSON.parse(text.substring(arrayStart, endIdx));
+        if (Array.isArray(parsed)) {
+          return parsed as RawAIJson[];
+        }
+      } catch {
+        // Обрыв (нет закрывающей скобки) — массив не восстановить
+      }
+    }
+  }
+
   return [];
 }
 
@@ -384,7 +465,7 @@ export class AiClient {
     macroData?: MacroDataContext,
   ): string {
     const { assetsAnalysis, macro } = analysis;
-    const totalVal = macro.totalBalance;
+    const totalVal = macro.totalLiquidationValue;
 
     const snapshotFinancial = snapshot?.financial ?? null;
     const contributedCapital = snapshotFinancial?.contributedCapital ?? 0;
@@ -585,7 +666,11 @@ export class AiClient {
       // Сокращённый thesis — только уровень доверия и первые 40 символов
       const thesisShort = thesis
         ? (typeof thesis.confidence === 'number'
-            ? (thesis.confidence >= 0.8 ? 'H' : thesis.confidence >= 0.5 ? 'M' : 'L')
+            ? thesis.confidence >= 0.8
+              ? 'H'
+              : thesis.confidence >= 0.5
+                ? 'M'
+                : 'L'
             : 'L') +
           ': ' +
           (thesis.thesis.length > 40
@@ -642,44 +727,44 @@ export class AiClient {
    * Построение user prompt с учётом новостного фона
    * Усиленная версия: жёсткие инструкции по формату, валидация данных
    */
-   private buildUserPrompt(
-     context: string,
-     rateDisplay: string,
-     hasData: boolean,
-     rateValue: number,
-     newsContext?: string,
-     macroPercentages?: { stocks: number; bonds: number },
-     _historicalData?: {
-       profitC10: number;
-       profitC11: number;
-       investedNet: number;
-     },
-     _anomalyData?: Array<{
-       ticker: string;
-       rsi: number | null;
-       sma20: number | null;
-       sma50: number | null;
-       trend: 'up' | 'down' | 'flat' | null;
-       volatilityAnnual: number | null;
-       riskLevel: 'low' | 'medium' | 'high' | null;
-       zScoreLast: number | null;
-       isLastAnomaly: boolean;
-     }>,
-     _financialReconciliation?: {
-       totalMarketValue: number;
-       totalUnrealizedPnL: number;
-       realizedPnL: number;
-       totalCoupons: number;
-       totalDividends: number;
-       totalCommissions: number;
-       totalTaxes: number;
-       totalDeposits: number;
-       totalWithdrawals: number;
-       netInvestedCapital: number;
-       formula: string;
-     },
-     _allocationBaseValue?: number,
-   ): string {
+  private buildUserPrompt(
+    context: string,
+    rateDisplay: string,
+    hasData: boolean,
+    rateValue: number,
+    newsContext?: string,
+    macroPercentages?: { stocks: number; bonds: number },
+    _historicalData?: {
+      profitC10: number;
+      profitC11: number;
+      investedNet: number;
+    },
+    _anomalyData?: Array<{
+      ticker: string;
+      rsi: number | null;
+      sma20: number | null;
+      sma50: number | null;
+      trend: 'up' | 'down' | 'flat' | null;
+      volatilityAnnual: number | null;
+      riskLevel: 'low' | 'medium' | 'high' | null;
+      zScoreLast: number | null;
+      isLastAnomaly: boolean;
+    }>,
+    _financialReconciliation?: {
+      totalMarketValue: number;
+      totalUnrealizedPnL: number;
+      realizedPnL: number;
+      totalCoupons: number;
+      totalDividends: number;
+      totalCommissions: number;
+      totalTaxes: number;
+      totalDeposits: number;
+      totalWithdrawals: number;
+      netInvestedCapital: number;
+      formula: string;
+    },
+    _allocationBaseValue?: number,
+  ): string {
     const currentMonth = new Date().toLocaleDateString('ru-RU', {
       month: 'long',
       year: 'numeric',
@@ -725,23 +810,25 @@ export class AiClient {
     // ─── Исторические данные и технические индикаторы ───
     if (_anomalyData && _anomalyData.length > 0) {
       prompt += '=== ИСТОРИЧЕСКИЕ ДАННЫЕ И ТЕХНИЧЕСКИЙ АНАЛИЗ ===\n';
-      prompt += 'Для каждого актива рассчитаны технические индикаторы на основе 180 дней исторических котировок:\n\n';
-      
+      prompt +=
+        'Для каждого актива рассчитаны технические индикаторы на основе 180 дней исторических котировок:\n\n';
+
       for (const a of _anomalyData) {
         prompt += `• ${a.ticker}:\n`;
         prompt += `  - RSI(14): ${a.rsi !== null ? a.rsi.toFixed(1) : 'нет данных'}`;
         if (a.rsi !== null) {
           if (a.rsi < 30) prompt += ' (перепроданность, возможен отскок вверх)';
-          else if (a.rsi > 70) prompt += ' (перекупленность, возможен отскок вниз)';
+          else if (a.rsi > 70)
+            prompt += ' (перекупленность, возможен отскок вниз)';
         }
         prompt += '\n';
-        
+
         prompt += `  - SMA20: ${a.sma20 !== null ? a.sma20.toFixed(2) : 'нет данных'}`;
         if (a.sma20 !== null && a.sma50 !== null) {
           prompt += ` (цена ${a.sma20 > 0 ? (a.sma20 < (a.sma50 || 0) ? 'ниже SMA50' : 'выше SMA50') : '—'})`;
         }
         prompt += '\n';
-        
+
         prompt += `  - SMA50: ${a.sma50 !== null ? a.sma50.toFixed(2) : 'нет данных'}\n`;
         prompt += `  - Тренд: ${a.trend !== null ? (a.trend === 'up' ? 'восходящий' : a.trend === 'down' ? 'нисходящий' : 'боковик') : 'нет данных'}\n`;
         prompt += `  - Волатильность (годовая): ${a.volatilityAnnual !== null ? (a.volatilityAnnual * 100).toFixed(1) + '%' : 'нет данных'}\n`;
@@ -751,54 +838,83 @@ export class AiClient {
           if (Math.abs(a.zScoreLast) > 2) prompt += ' (аномалия)';
         }
         prompt += '\n';
-        
+
         if (a.isLastAnomaly) {
           prompt += `  ⚠️ ${a.ticker}: обнаружена аномалия на последнем баре!\n`;
         }
         prompt += '\n';
       }
-      
-      prompt += 'ИСПОЛЬЗУЙ эти данные для рекомендации оптимальных точек входа/выхода:\n';
-      prompt += '- RSI < 30 + цена ниже SMA20/SMA50 → потенциальная точка покупки (перепроданность)\n';
-      prompt += '- RSI > 70 + цена выше SMA20/SMA50 → потенциальная точка продажи (перекупленность)\n';
-      prompt += '- Восходящий тренд + низкая волатильность → благоприятная среда для покупки\n';
-      prompt += '- Нисходящий тренд + высокая волатильность → осторожность с покупками\n';
-      prompt += '- Z-score > 2 или < -2 → аномальное движение, требует внимания\n\n';
+
+      prompt +=
+        'ИСПОЛЬЗУЙ эти данные для рекомендации оптимальных точек входа/выхода:\n';
+      prompt +=
+        '- RSI < 30 + цена ниже SMA20/SMA50 → потенциальная точка покупки (перепроданность)\n';
+      prompt +=
+        '- RSI > 70 + цена выше SMA20/SMA50 → потенциальная точка продажи (перекупленность)\n';
+      prompt +=
+        '- Восходящий тренд + низкая волатильность → благоприятная среда для покупки\n';
+      prompt +=
+        '- Нисходящий тренд + высокая волатильность → осторожность с покупками\n';
+      prompt +=
+        '- Z-score > 2 или < -2 → аномальное движение, требует внимания\n\n';
     }
 
     // ─── P4: Мост финансовой сверки и P5: allocationBaseValue ───
     if (_financialReconciliation) {
       const fr = _financialReconciliation;
       prompt += '=== ФИНАНСОВАЯ СВЕРКА ===\n';
-      prompt += 'Текущая стоимость портфеля: ' + fr.totalMarketValue.toLocaleString('ru-RU') + ' ₽\n';
-      prompt += 'Чистый вложенный капитал: ' + fr.netInvestedCapital.toLocaleString('ru-RU') + ' ₽\n';
-      prompt += 'Нереализованный P&L: ' + fr.totalUnrealizedPnL.toLocaleString('ru-RU') + ' ₽\n';
-      prompt += 'Реализованный P&L: ' + fr.realizedPnL.toLocaleString('ru-RU') + ' ₽\n';
+      prompt +=
+        'Текущая стоимость портфеля: ' +
+        fr.totalMarketValue.toLocaleString('ru-RU') +
+        ' ₽\n';
+      prompt +=
+        'Чистый вложенный капитал: ' +
+        fr.netInvestedCapital.toLocaleString('ru-RU') +
+        ' ₽\n';
+      prompt +=
+        'Нереализованный P&L: ' +
+        fr.totalUnrealizedPnL.toLocaleString('ru-RU') +
+        ' ₽\n';
+      prompt +=
+        'Реализованный P&L: ' + fr.realizedPnL.toLocaleString('ru-RU') + ' ₽\n';
       prompt += 'Купоны: ' + fr.totalCoupons.toLocaleString('ru-RU') + ' ₽\n';
-      prompt += 'Дивиденды: ' + fr.totalDividends.toLocaleString('ru-RU') + ' ₽\n';
-      prompt += 'Комиссии: ' + fr.totalCommissions.toLocaleString('ru-RU') + ' ₽\n';
+      prompt +=
+        'Дивиденды: ' + fr.totalDividends.toLocaleString('ru-RU') + ' ₽\n';
+      prompt +=
+        'Комиссии: ' + fr.totalCommissions.toLocaleString('ru-RU') + ' ₽\n';
       prompt += 'Налоги: ' + fr.totalTaxes.toLocaleString('ru-RU') + ' ₽\n';
       prompt += 'Взносы: ' + fr.totalDeposits.toLocaleString('ru-RU') + ' ₽\n';
-      prompt += 'Выводы: ' + fr.totalWithdrawals.toLocaleString('ru-RU') + ' ₽\n';
+      prompt +=
+        'Выводы: ' + fr.totalWithdrawals.toLocaleString('ru-RU') + ' ₽\n';
       prompt += 'Формула: ' + fr.formula + '\n';
       prompt += '\n';
-      prompt += 'ИСПОЛЬЗУЙ эти данные для проверки согласованности рекомендаций:\n';
+      prompt +=
+        'ИСПОЛЬЗУЙ эти данные для проверки согласованности рекомендаций:\n';
       prompt += '- Чистый итог = totalMarketValue − netInvestedCapital\n';
       prompt += '- Доходность = чистыйИтог / netInvestedCapital × 100%\n';
-      prompt += '- Если totalMarketValue ≠ netInvestedCapital + unrealizedPnL + realizedPnL + coupons + dividends − commissions − taxes → проверь данные\n\n';
+      prompt +=
+        '- Если totalMarketValue ≠ netInvestedCapital + unrealizedPnL + realizedPnL + coupons + dividends − commissions − taxes → проверь данные\n\n';
     }
 
     if (_allocationBaseValue) {
       prompt += '=== РАСЧЁТНАЯ БАЗА (allocationBaseValue) ===\n';
       prompt += 'Проценты и рублёвые отклонения рассчитываются относительно:\n';
-      prompt += 'allocationBaseValue = ' + _allocationBaseValue.toLocaleString('ru-RU') + ' ₽\n';
-      prompt += 'Это стоимость портфеля (liquidation value), которую использует PortfolioMath для расчёта:\n';
-      prompt += '- currentPercent = (assetValue / allocationBaseValue) × 100%\n';
-      prompt += '- deficitRub = round(deviationPct / 100 × allocationBaseValue)\n';
+      prompt +=
+        'allocationBaseValue = ' +
+        _allocationBaseValue.toLocaleString('ru-RU') +
+        ' ₽\n';
+      prompt +=
+        'Это стоимость портфеля (liquidation value), которую использует PortfolioMath для расчёта:\n';
+      prompt +=
+        '- currentPercent = (assetValue / allocationBaseValue) × 100%\n';
+      prompt +=
+        '- deficitRub = round(deviationPct / 100 × allocationBaseValue)\n';
       prompt += '- targetRub = targetPercent / 100 × allocationBaseValue\n';
       prompt += '\n';
-      prompt += 'ЕСЛИ часть активов исключена из базы (holdOnly, excludeFromStockPool) — это может привести к расхождению между суммой assetValues и allocationBaseValue.\n';
-      prompt += 'Проверь calculationBaseBreakdown в отчёте для детализации.\n\n';
+      prompt +=
+        'ЕСЛИ часть активов исключена из базы (holdOnly, excludeFromStockPool) — это может привести к расхождению между суммой assetValues и allocationBaseValue.\n';
+      prompt +=
+        'Проверь calculationBaseBreakdown в отчёте для детализации.\n\n';
     }
 
     prompt += '=== ЗАДАЧА ===\n';
@@ -1399,6 +1515,11 @@ export class AiClient {
         '[Ollama] streamChat returned, success:',
         streamResult.success,
       );
+      this.log.info(
+        `[Ollama] prompt_tokens=${streamResult.promptTokens ?? 'n/a'}, ` +
+          `output_tokens=${streamResult.totalTokens}, ` +
+          `duration=${streamResult.totalDuration}ms, load=${streamResult.loadDuration}ms`,
+      );
 
       if (!streamResult.success) {
         throw new Error(streamResult.error || 'Ошибка стриминга');
@@ -1777,7 +1898,8 @@ export class AiClient {
           'Кредитное качество не подтверждено',
         ],
         mathAgreement: 'INSUFFICIENT_DATA',
-        portfolioImpact: 'Невозможно оценить влияние на структуру портфеля без данных',
+        portfolioImpact:
+          'Невозможно оценить влияние на структуру портфеля без данных',
       };
     }
 
@@ -1950,19 +2072,22 @@ export class AiClient {
           });
 
           // 3. Ликвидность
-          const turnoverNum = bondData.turnover != null ? Number(bondData.turnover) : 0;
-          const liquidityAssessment: import('../../research/bond-analyzer/bond-analyzer-types.js').LiquidityAssessment = {
-            status: turnoverNum > 0 ? 'AVAILABLE' : 'PARTIAL',
-            turnover: turnoverNum > 0 ? turnoverNum : null,
-            turnoverUnit: 'RUB',
-            spread: null,
-            depth: null,
-            summary: turnoverNum > 1e6
-              ? `Оборот: ${turnoverNum.toLocaleString('ru-RU')} руб./день — ликвидность достаточна`
-              : turnoverNum > 0
-                ? `Оборот: ${turnoverNum.toLocaleString('ru-RU')} руб./день — ликвидность умеренная`
-                : 'Оборот отсутствует — ликвидность низкая',
-          };
+          const turnoverNum =
+            bondData.turnover != null ? Number(bondData.turnover) : 0;
+          const liquidityAssessment: import('../../research/bond-analyzer/bond-analyzer-types.js').LiquidityAssessment =
+            {
+              status: turnoverNum > 0 ? 'AVAILABLE' : 'PARTIAL',
+              turnover: turnoverNum > 0 ? turnoverNum : null,
+              turnoverUnit: 'RUB',
+              spread: null,
+              depth: null,
+              summary:
+                turnoverNum > 1e6
+                  ? `Оборот: ${turnoverNum.toLocaleString('ru-RU')} руб./день — ликвидность достаточна`
+                  : turnoverNum > 0
+                    ? `Оборот: ${turnoverNum.toLocaleString('ru-RU')} руб./день — ликвидность умеренная`
+                    : 'Оборот отсутствует — ликвидность низкая',
+            };
 
           // 4. Кредитный анализ
           this.log.info(
@@ -1979,14 +2104,15 @@ export class AiClient {
               bondData.icbrrRating != null
                 ? String(bondData.icbrrRating)
                 : undefined,
-            rating: bondData.rating != null
-              ? {
-                  agency: 'Smart-Lab',
-                  rating: String(bondData.rating),
-                  outlook: 'STABLE',
-                  asOfDate: new Date().toISOString().split('T')[0] as string,
-                }
-              : undefined,
+            rating:
+              bondData.rating != null
+                ? {
+                    agency: 'Smart-Lab',
+                    rating: String(bondData.rating),
+                    outlook: 'STABLE',
+                    asOfDate: new Date().toISOString().split('T')[0] as string,
+                  }
+                : undefined,
           });
 
           // 5. Итоговая оценка
@@ -2110,9 +2236,12 @@ export class AiClient {
             recommendation: 'INSUFFICIENT_DATA',
             rationale: `Техническая ошибка анализа: ${error instanceof Error ? error.message : 'unknown'}`,
             moexData: {},
-            missingData: [`Ошибка анализа: ${error instanceof Error ? error.message : 'unknown'}`],
+            missingData: [
+              `Ошибка анализа: ${error instanceof Error ? error.message : 'unknown'}`,
+            ],
             mathAgreement: 'INSUFFICIENT_DATA',
-            portfolioImpact: 'Невозможно оценить влияние на структуру портфеля из-за ошибки анализа',
+            portfolioImpact:
+              'Невозможно оценить влияние на структуру портфеля из-за ошибки анализа',
           });
         }
       }
@@ -2143,21 +2272,113 @@ export class AiClient {
 
     for (const asset of analysis.assetsAnalysis) {
       if (asset.deficitRub > 0) {
-        buyListLines.push(`• ${asset.ticker} (${asset.name}): +${asset.deficitRub.toLocaleString('ru-RU')} руб. (целевая ${asset.targetPercent?.toFixed(1)}%, текущая ${asset.currentPercent.toFixed(1)}%)`);
+        buyListLines.push(
+          `• ${asset.ticker} (${asset.name}): +${asset.deficitRub.toLocaleString('ru-RU')} руб. (целевая ${asset.targetPercent?.toFixed(1)}%, текущая ${asset.currentPercent.toFixed(1)}%)`,
+        );
         totalBuyRub += asset.deficitRub;
       } else if (asset.deficitRub < 0 && asset.status === 'REDUCE') {
-        reduceListLines.push(`• ${asset.ticker} (${asset.name}): -${Math.abs(asset.deficitRub).toLocaleString('ru-RU')} руб. (профицит ${Math.abs(asset.deficitRub).toLocaleString('ru-RU')} руб.)`);
+        reduceListLines.push(
+          `• ${asset.ticker} (${asset.name}): -${Math.abs(asset.deficitRub).toLocaleString('ru-RU')} руб. (профицит ${Math.abs(asset.deficitRub).toLocaleString('ru-RU')} руб.)`,
+        );
         totalReduceRub += Math.abs(asset.deficitRub);
       }
     }
 
     const rebalanceData = {
       freeCash: analysis.macro.freeCash ?? 0,
-      buyList: buyListLines.length > 0 ? buyListLines.join('\n') : 'нет активов с дефицитом',
-      reduceList: reduceListLines.length > 0 ? reduceListLines.join('\n') : 'нет активов с профицитом',
+      buyList:
+        buyListLines.length > 0
+          ? buyListLines.join('\n')
+          : 'нет активов с дефицитом',
+      reduceList:
+        reduceListLines.length > 0
+          ? reduceListLines.join('\n')
+          : 'нет активов с профицитом',
       totalBuyRub,
       totalReduceRub,
     };
+
+    // ─── Фундаментальные данные по акциям портфеля (MOEX ISS) ───
+    let portfolioFundamentals: PortfolioFundamentalsContext | undefined;
+    try {
+      const stockAssets = analysis.assetsAnalysis.filter((asset) => {
+        const type = (asset.assetType || '').toUpperCase();
+        return type === 'А' || type === 'АКЦИЯ' || type === 'STOCK';
+      });
+      const stockTickers = Array.from(
+        new Set(
+          stockAssets
+            .map((asset) => (asset.ticker || '').trim().toUpperCase())
+            .filter(
+              (ticker) => ticker.length > 0 && !ticker.startsWith('RU00'),
+            ),
+        ),
+      );
+      if (stockTickers.length > 0) {
+        const names: Record<string, string> = {};
+        for (const asset of stockAssets) {
+          const ticker = (asset.ticker || '').trim().toUpperCase();
+          if (ticker) {
+            names[ticker] = asset.shortName || asset.name || ticker;
+          }
+        }
+        portfolioFundamentals = await getPortfolioFundamentalsOnce(
+          stockTickers,
+          names,
+        );
+        this.log.info(
+          `[AI_CLIENT] Фундаментальные данные загружены: ${portfolioFundamentals.assets.length} акций`,
+        );
+
+        // Legacy-блок фундаментала (для актива с глубокой просадкой) раньше
+        // содержал жёсткие null. Подставляем реальные значения из общего
+        // контекста, чтобы в промпте не было противоречий «нет данных».
+        if (fundamentalMetrics) {
+          const detailed = portfolioFundamentals.assets.find(
+            (asset) =>
+              asset.ticker.toUpperCase() ===
+              fundamentalMetrics?.ticker.toUpperCase(),
+          );
+          if (detailed) {
+            fundamentalMetrics = {
+              ...fundamentalMetrics,
+              pe: detailed.pe.value,
+              ps: detailed.ps.value,
+              pb: detailed.pb.value,
+              roe: detailed.roe.value,
+              debtToEquity: detailed.debtToEquity.value,
+              dividendYield: detailed.dividendYield.value,
+              fundamentalHealth: detailed.fundamentalHealth,
+              summary: detailed.summary,
+            };
+          }
+        }
+      }
+    } catch (error) {
+      this.log.error(
+        '[AI_CLIENT] Ошибка загрузки фундаментальных данных:',
+        error,
+      );
+    }
+
+    // Дивидендные доходности нужны StrategistAgent для якоря даже тогда,
+    // когда AI-провайдер недоступен и метод уходит в локальный fallback.
+    // Поэтому считаем их ДО любых ранних return.
+    const fundamentalsDividendYields = buildDividendYieldsFromFundamentals(
+      portfolioFundamentals,
+    );
+    for (const asset of portfolioFundamentals?.assets ?? []) {
+      this.log.info(
+        `[DIVIDEND_YIELDS] ticker=${asset.ticker} ` +
+          `value=${asset.dividendYield.value ?? 'null'} ` +
+          `source=${asset.dividendYield.source ?? 'none'} ` +
+          `status=${asset.dividendYield.status}`,
+      );
+    }
+    this.log.info(
+      `[DIVIDEND_YIELDS] source=fundamentals count=${Object.keys(fundamentalsDividendYields).length} ` +
+        `tickers=${Object.keys(fundamentalsDividendYields).join(',') || 'none'}`,
+    );
 
     const systemPrompt = buildSystemPrompt(
       macroData.keyRate,
@@ -2182,9 +2403,12 @@ export class AiClient {
           }
         : undefined,
       fundamentalMetrics,
+      portfolioFundamentals, // ← фундаментальные данные по всем акциям
       behavioralFactors,
       technicalIndicators.length > 0 ? technicalIndicators : undefined, // ← технические индикаторы
-      liquidityAnalysis ? this.toLiquidityContext(liquidityAnalysis) : undefined, // ← анализ ликвидности
+      liquidityAnalysis
+        ? this.toLiquidityContext(liquidityAnalysis)
+        : undefined, // ← анализ ликвидности
       rebalanceData, // ← точные суммы для ребалансировки
     );
     const macroPercentages = actualMacroPercentages || {
@@ -2243,6 +2467,8 @@ export class AiClient {
         modelUsed: 'local-fallback',
         success: false,
         error: 'Нет доступных API-ключей',
+        fundamentalsDividendYields,
+        portfolioFundamentals,
       };
     }
 
@@ -2336,6 +2562,12 @@ export class AiClient {
             `[AI] ✅ Ответ получен от ${usedProviderName} (${aiText.length} символов)`,
           );
           this.log.info(
+            `[AI DEBUG] Response length=${aiText.length}, ` +
+              `endsWithFence=${aiText.trimEnd().endsWith('```')}, ` +
+              `jsonBlocks=${(aiText.match(/```json/g) ?? []).length}, ` +
+              `tail=${JSON.stringify(aiText.slice(-160))}`,
+          );
+          this.log.info(
             `[AI DEBUG] First 500 chars: ${aiText.substring(0, 500)}`,
           );
           lastError = null;
@@ -2407,6 +2639,8 @@ export class AiClient {
         error: 'Все API недоступны',
         structuredJson: null,
         structuredValidation: null,
+        fundamentalsDividendYields,
+        portfolioFundamentals,
       };
     }
 
@@ -2531,6 +2765,94 @@ export class AiClient {
       }
     }
 
+    // ─── Реальный повторный запрос за недостающими JSON-объектами ───
+    // Прежний «retry» лишь повторно парсил тот же текст. Теперь, если после
+    // разбора не хватает активов (или массив пуст), делаем ОДИН
+    // дополнительный запрос с компактным JSON-only промптом: меньше
+    // контекста, строгий контракт, только JSON.
+    const coveredTickers = new Set(
+      structuredJsonArray
+        .map((item) => (item.ticker ?? '').toUpperCase())
+        .filter((ticker) => ticker.length > 0),
+    );
+    const missingTickers = assetTickers.filter(
+      (ticker) => !coveredTickers.has(ticker.toUpperCase()),
+    );
+
+    if (missingTickers.length > 0 && usedProviderName) {
+      const usedProvider = providers.find(
+        (provider) => provider.name === usedProviderName,
+      );
+      if (usedProvider) {
+        try {
+          const missingSet = new Set(
+            missingTickers.map((ticker) => ticker.toUpperCase()),
+          );
+          const missingFundamentals = portfolioFundamentals
+            ? {
+                ...portfolioFundamentals,
+                assets: portfolioFundamentals.assets.filter((asset) =>
+                  missingSet.has(asset.ticker.toUpperCase()),
+                ),
+              }
+            : undefined;
+          const jsonSystemPrompt = buildJsonOnlySystemPrompt(
+            missingTickers,
+            missingFundamentals,
+          );
+          const jsonUserPrompt = `ДАННЫЕ ПОРТФЕЛЯ:\n${context}`;
+          this.log.warn(
+            `[AI] JSON неполный (${coveredTickers.size}/${assetTickers.length}). ` +
+              `Повторный запрос только за JSON для: ${missingTickers.join(', ')} ` +
+              `(${jsonSystemPrompt.length + jsonUserPrompt.length} chars) через ${usedProviderName}`,
+          );
+          const jsonRetryText = await usedProvider.query(
+            jsonSystemPrompt,
+            jsonUserPrompt,
+          );
+          this.log.info(
+            `[AI] JSON-retry ответ: ${jsonRetryText.length} символов, ` +
+              `endsWithFence=${jsonRetryText.trimEnd().endsWith('```')}`,
+          );
+
+          const retryItems = extractJsonArrayFromAiResponse(jsonRetryText);
+          const retryValid: RawAIJson[] = [];
+          for (const item of retryItems) {
+            const ticker = (item.ticker ?? '').toUpperCase();
+            if (!missingSet.has(ticker)) continue;
+            const validation = validateStructuredAIJson(item, assetTickers);
+            if (validation.valid) {
+              retryValid.push(item);
+            } else {
+              this.log.warn(
+                `[AI] ⚠️ JSON-retry валидация не пройдена для ${item.ticker}:`,
+                validation.errors,
+              );
+            }
+          }
+
+          if (retryValid.length > 0) {
+            structuredJsonArray = [...structuredJsonArray, ...retryValid];
+            structuredJson = (structuredJson ?? retryValid[0]) as RawAIJson;
+            jsonExtractSuccess = true;
+            this.log.info(
+              `[AI] JSON-retry успешен: +${retryValid.length} актив(ов), ` +
+                `итого ${structuredJsonArray.length}`,
+            );
+          } else {
+            this.log.warn('[AI] JSON-retry не дал валидных объектов');
+          }
+        } catch (retryError) {
+          this.log.warn(
+            '[AI] JSON-retry завершился ошибкой:',
+            retryError instanceof Error
+              ? retryError.message
+              : String(retryError),
+          );
+        }
+      }
+    }
+
     if (!jsonExtractSuccess) {
       this.log.warn(
         '[AI] ⚠️ JSON не извлечён после всех попыток. Используется fallback.',
@@ -2552,6 +2874,8 @@ export class AiClient {
       structuredJson,
       structuredJsonArray,
       structuredValidation,
+      fundamentalsDividendYields,
+      portfolioFundamentals,
     };
   }
 

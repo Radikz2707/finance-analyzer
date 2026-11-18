@@ -43,6 +43,8 @@ export interface StreamResult {
   model: string;
   /** Количество сгенерированных токенов */
   totalTokens: number;
+  /** Количество токенов во входном промпте (prompt_eval_count) */
+  promptTokens?: number;
   /** Время генерации в миллисекундах */
   totalDuration: number;
   /** Загрузка модели в миллисекундах */
@@ -73,6 +75,7 @@ export async function streamChat(
   const startTime = Date.now();
   let fullContent = '';
   let totalTokens = 0;
+  let promptTokens = 0;
   let totalDuration = 0;
   let loadDuration = 0;
   let chunksReceived = 0;
@@ -104,8 +107,10 @@ export async function streamChat(
             num_predict: options.numPredict || 8192,
             // Явное контекстное окно: без него Ollama берёт полный контекст
             // модели (у qwen3.6:35b-a3b это 32768) → огромный KV-cache → OOM.
-            // 24576 достаточно для промпта ~5-7k токенов и ответа до 8192.
-            num_ctx: options.numCtx || 24576,
+            // 32768 согласовано с ai-config.maxTokens (8192) и объёмом
+            // промпта (~13k токенов с блоком фундаментала): 13k + 8k = 21k,
+            // запас ~11k. Прежние 24576 при num_predict 16384 обрывали ответ.
+            num_ctx: options.numCtx || 32768,
             temperature: options.temperature ?? 0.2,
             top_p: options.topP || 0.9,
             top_k: options.topK || 40,
@@ -250,6 +255,7 @@ export async function streamChat(
               // сгенерированных токенов), а не total_tokens — иначе 0.
               if (json.done) {
                 totalTokens = json.eval_count ?? json.total_tokens ?? 0;
+                promptTokens = json.prompt_eval_count ?? promptTokens;
                 totalDuration = json.total_duration || 0;
                 loadDuration = json.load_duration || 0;
               }
@@ -262,9 +268,8 @@ export async function streamChat(
           if (chunksReceived % 500 === 0) {
             const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
             const elapsedNum = parseFloat(elapsedSec);
-            const speed = elapsedNum > 0
-              ? (chunksReceived / elapsedNum).toFixed(1)
-              : '0';
+            const speed =
+              elapsedNum > 0 ? (chunksReceived / elapsedNum).toFixed(1) : '0';
             console.log(
               `[Ollama Stream] 📊 Прогресс: чанков=${chunksReceived}, ` +
                 `время=${elapsedSec}с, скорость=${speed} чанков/с, ` +
@@ -284,6 +289,7 @@ export async function streamChat(
               }
               if (json.done) {
                 totalTokens = json.eval_count ?? json.total_tokens ?? 0;
+                promptTokens = json.prompt_eval_count ?? promptTokens;
                 totalDuration = json.total_duration || 0;
                 loadDuration = json.load_duration || 0;
               }
@@ -294,13 +300,14 @@ export async function streamChat(
 
           const elapsed = Date.now() - startTime;
           console.log(
-            `[Ollama Stream] ✅ Ответ получен за ${elapsed}мс (${fullContent.length} символов, ${totalTokens} токенов, ${chunksReceived} чанков, done_reason=${doneReason || 'no_done_chunk'})`,
+            `[Ollama Stream] ✅ Ответ получен за ${elapsed}мс (${fullContent.length} символов, prompt=${promptTokens} токенов, output=${totalTokens} токенов, ${chunksReceived} чанков, done_reason=${doneReason || 'no_done_chunk'})`,
           );
 
           settle({
             content: fullContent,
             model: modelName,
             totalTokens,
+            promptTokens,
             totalDuration,
             loadDuration,
             success: true,
@@ -327,6 +334,7 @@ export async function streamChat(
       // Нестриминговый режим
       const content = response.data.message?.content || '';
       totalTokens = response.data.eval_count ?? response.data.total_tokens ?? 0;
+      promptTokens = response.data.prompt_eval_count ?? 0;
       totalDuration = response.data.total_duration || 0;
       loadDuration = response.data.load_duration || 0;
 

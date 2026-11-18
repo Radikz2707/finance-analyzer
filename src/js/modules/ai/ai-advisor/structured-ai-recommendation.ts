@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Structured AI Recommendation — вынос AI-рекомендаций из свободного markdown-текста
  * в структурированный объект.
  *
@@ -10,6 +10,8 @@
  */
 
 import type { AssetAnalysis } from '../../portfolio/portfolio-math/portfolio-math.js';
+import type { StockFundamentals } from '../../api/fundamentals/types.js';
+import { validateFundamentalTextForTicker } from './fundamentals-guard.js';
 import type {
   AiAction,
   PortfolioMathStatus,
@@ -30,6 +32,18 @@ export interface RawAIJson {
   keyRisks: string[] | null;
   keyCatalysts: string[] | null;
   agreementWithPortfolioMath: string | null;
+
+  // НОВЫЕ поля: глубина анализа
+  /** Анализ фундаментала эмитента (P/E, ROE, рост, долг) */
+  fundamentalAnalysis?: string | null;
+  /** Рекомендация по timing сделки (когда покупать/продавать) */
+  technicalTiming?: string | null;
+  /** Как покупать/продавать (частями, сразу) */
+  entryStrategy?: string | null;
+  /** Контекст по эмитенту (финансы, дивиденды, перспективы) */
+  issuerContext?: string | null;
+  /** Какие источники использованы при анализе */
+  dataSources?: string[];
 }
 
 // ──────────────────────────────────────────────
@@ -159,6 +173,26 @@ export interface StructuredAIAssetRecommendation {
   keyCatalysts: string[];
   agreementWithPortfolioMath: MathAgreement;
 
+  // ─── Новые поля: глубина анализа ───
+  /** Анализ фундаментала эмитента */
+  fundamentalAnalysis?: string | null;
+  /** Рекомендация по timing сделки */
+  technicalTiming?: string | null;
+  /** Как покупать/продавать (частями, сразу) */
+  entryStrategy?: string | null;
+  /** Контекст по эмитенту (финансы, дивиденды) */
+  issuerContext?: string | null;
+  /** Какие источники использованы */
+  dataSources?: string[];
+
+  // ─── Пользовательская политика (no-sell) ───
+  /** Действие было заменено на HOLD из-за политики no-sell */
+  policyBlocked?: boolean;
+  /** Текст был очищен от sell-директив из-за политики no-sell */
+  policyTextBlocked?: boolean;
+  /** Пояснение для отчёта */
+  policyNote?: string | null;
+
   // ─── Fallback (заполняется ТОЛЬКО когда AI не ответил) ───
   /** Причина fallback (для отладки и объяснений) */
   _fallbackReason?: FallbackReason;
@@ -254,7 +288,9 @@ const FALLBACK_EXPLANATIONS: Record<FallbackReason, FallbackExplanation> = {
 };
 
 /** Получить объяснение для причины fallback */
-export function getFallbackExplanation(reason: FallbackReason): FallbackExplanation {
+export function getFallbackExplanation(
+  reason: FallbackReason,
+): FallbackExplanation {
   return FALLBACK_EXPLANATIONS[reason] ?? FALLBACK_EXPLANATIONS.NO_AI_JSON;
 }
 
@@ -547,26 +583,33 @@ export function validateStructuredAIJson(
   }
 
   // 5. agreementWithPortfolioMath допустим
-  const validAgreements: MathAgreement[] = ['AGREE', 'DISAGREE', 'UNCERTAIN', 'INSUFFICIENT_DATA'];
-  if (json.agreementWithPortfolioMath !== null && json.agreementWithPortfolioMath !== undefined) {
+  const validAgreements: MathAgreement[] = [
+    'AGREE',
+    'DISAGREE',
+    'UNCERTAIN',
+    'INSUFFICIENT_DATA',
+  ];
+  if (
+    json.agreementWithPortfolioMath !== null &&
+    json.agreementWithPortfolioMath !== undefined
+  ) {
     // AI может вернуть boolean или число — конвертируем в строку
     let agreementValue: string;
     if (typeof json.agreementWithPortfolioMath === 'boolean') {
       agreementValue = json.agreementWithPortfolioMath ? 'AGREE' : 'DISAGREE';
     } else if (typeof json.agreementWithPortfolioMath === 'number') {
-      agreementValue = json.agreementWithPortfolioMath > 0 ? 'AGREE' : 'DISAGREE';
+      agreementValue =
+        json.agreementWithPortfolioMath > 0 ? 'AGREE' : 'DISAGREE';
     } else {
       agreementValue = json.agreementWithPortfolioMath;
     }
-    
+
     if (typeof agreementValue !== 'string') {
       errors.push({
         field: 'agreementWithPortfolioMath',
         message: 'agreementWithPortfolioMath должен быть строкой или null',
       });
-    } else if (
-      !validAgreements.includes(agreementValue as MathAgreement)
-    ) {
+    } else if (!validAgreements.includes(agreementValue as MathAgreement)) {
       errors.push({
         field: 'agreementWithPortfolioMath',
         message: `недопустимое согласие '${agreementValue}', допустимые: ${validAgreements.join(', ')}`,
@@ -626,6 +669,7 @@ export function buildStructuredAIRecommendation(
   aiJson: RawAIJson | null,
   validation: ValidationResult | null,
   fallbackReason: FallbackReason = 'NO_AI_JSON',
+  fundamentals?: StockFundamentals,
 ): StructuredAIAssetRecommendation {
   // Если AI JSON невалиден или отсутствует — используем fallback
   if (!aiJson || !validation || !validation.valid) {
@@ -675,6 +719,23 @@ export function buildStructuredAIRecommendation(
     keyRisks: aiJson.keyRisks || [],
     keyCatalysts: aiJson.keyCatalysts || [],
     agreementWithPortfolioMath: agreement,
+
+    // Новые поля: глубина анализа.
+    // fundamentalAnalysis/issuerContext проходят анти-галлюцинационную
+    // проверку и проверку принадлежности чисел своему тикеру.
+    fundamentalAnalysis: validateFundamentalTextForTicker(
+      aiJson.fundamentalAnalysis,
+      det.ticker,
+      fundamentals,
+    ),
+    technicalTiming: aiJson.technicalTiming || null,
+    entryStrategy: aiJson.entryStrategy || null,
+    issuerContext: validateFundamentalTextForTicker(
+      aiJson.issuerContext,
+      det.ticker,
+      fundamentals,
+    ),
+    dataSources: aiJson.dataSources || [],
   };
 }
 
@@ -698,7 +759,12 @@ function validAiAction(value: string | null): value is AiAction {
 }
 
 function validMathAgreement(value: string | null): value is MathAgreement {
-  const valid: MathAgreement[] = ['AGREE', 'DISAGREE', 'UNCERTAIN', 'INSUFFICIENT_DATA'];
+  const valid: MathAgreement[] = [
+    'AGREE',
+    'DISAGREE',
+    'UNCERTAIN',
+    'INSUFFICIENT_DATA',
+  ];
   return valid.includes(value as MathAgreement);
 }
 

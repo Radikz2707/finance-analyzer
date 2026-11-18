@@ -8,7 +8,7 @@
 import type {
   DirectorAuditEvent,
   DirectorTask,
-} from '../src/js/modules/pipeline/director/director-types.js';
+} from '../../src/js/modules/ai/pipeline/director/director-types.js';
 import type {
   AskResult,
   AutonomousBridgeStatusInfo,
