@@ -539,8 +539,9 @@ export function validateFundamentalTextForTicker(
 
       console.warn(
         `[NARRATIVE_METRIC_CONTRACT] section=${section} ticker=${ticker} ` +
-          `label=${binding.label} old=${parsed.raw} new=${own.value} ` +
-          `reason=${foreign ? 'foreign' : 'own_value'}`,
+          `label=${binding.label} old=${parsed.raw} own=${own.value} ` +
+          `new=${own.value} reason=${foreign ? 'foreign' : 'own_value'} ` +
+          `tolerance=${metricTolerancePp(binding, siblingYieldTolerancePp) ?? 'abs_0.05'}`,
       );
       replacements.push(
         foreign

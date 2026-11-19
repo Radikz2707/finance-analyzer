@@ -501,9 +501,19 @@ function calculateIncomeAnchor(
       : kindSet.size === 1
         ? Array.from(kindSet)[0]!
         : 'MIXED';
+  // T.5: Если asOf старше 30 дней — помечаем как устаревший источник.
+  const isDividendAsOfStale = dividendAsOf
+    ? (() => {
+        const asOfDate = new Date(dividendAsOf);
+        const now = new Date();
+        const diffDays = (now.getTime() - asOfDate.getTime()) / (1000 * 60 * 60 * 24);
+        return diffDays > 30;
+      })()
+    : false;
+
   const dividendSourceNote = dividendSource
     ? ` Источник дивидендов: ${dividendSource}` +
-      (dividendAsOf ? ` (${dividendAsOf.slice(0, 10)})` : '') +
+      (dividendAsOf ? ` (${dividendAsOf.slice(0, 10)}${isDividendAsOfStale ? ' ⚠️ устарел' : ''})` : '') +
       (dividendKind === 'DECLARED' ? ' — форвардная доходность' : '') +
       '.'
     : '';

@@ -4,6 +4,7 @@ import { PortfolioConfig } from '../../../config/portfolio-config.js';
 import {
   applyPolicyToNarrative,
   applyPolicyToRecommendation,
+  dedupePolicyStatementsWithProvenance,
   detectSellDirective,
   isPolicyStatement,
   isSellBlockedByPolicy,
@@ -537,13 +538,21 @@ describe('policy-text-guard: аргументные фразы карточек 
     expect(applyPolicyToNarrative(line, [createAsset()], POLICY)).toBe(line);
   });
 
-  it('искажённое извлечением «политикой поsell» остаётся текстом политики', () => {
+  it('искажённое извлечением «политикой поsell» чистится в каноническую форму', () => {
+    // Раньше «поsell» распознавался как pipeline (через normalizePolicySpelling)
+    // и пропускался без санации. Теперь: detectSellDirective ловит «поsell» ДО
+    // isPolicyStatement, и sanitizePolicyCardText заменяет на каноническую форму.
     const line =
       'Брус 2Р04: держать — продажа/сокращение заблокированы политикой поsell.';
 
     expect(isPolicyStatement(line)).toBe(true);
-    expect(sanitizePolicyCardText(line, 'RU000A10GC20').changed).toBe(false);
-    expect(applyPolicyToNarrative(line, [createAsset()], POLICY)).toBe(line);
+    // sanitizePolicyCardText теперь чистит артефакт «поsell»
+    const sanitized = sanitizePolicyCardText(line, 'RU000A10GC20');
+    expect(sanitized.changed).toBe(true);
+    expect(sanitized.text).not.toContain('поsell');
+    expect(sanitized.text).toContain('no-sell');
+    // applyPolicyToNarrative тоже чистит
+    expect(applyPolicyToNarrative(line, [createAsset()], POLICY)).not.toContain('поsell');
   });
 
   it('BUY по no-sell: действие не меняется, баннер не выставляется', () => {
@@ -602,5 +611,154 @@ describe('policy-text-guard: аргументные фразы карточек 
       ),
     ).toBe(true);
     log.mockRestore();
+  });
+});
+
+// ─── Контр-тесты: prove the fix was necessary ───
+describe('policy-text-guard: контр-тесты provenance', () => {
+  it('dedupePolicyStatementsWithProvenance: pipeline-строка защищена, model-дубль удалён', () => {
+    const statements = [
+      { text: '⛔ Заблокировано политикой no-sell: HOLD.', provenance: 'pipeline' as const },
+      { text: 'Продавайте PLZL в 1-2 партии.', provenance: 'model' as const },
+    ];
+
+    const result = dedupePolicyStatementsWithProvenance(statements, 'PLZL');
+
+    // Pipeline-строка сохранена
+    expect(result.text).toContain('Заблокировано политикой no-sell');
+    // Model-дубль удалён
+    expect(result.text).not.toContain('Продавайте');
+    // Удалено ровно 1 model-строка
+    expect(result.removed).toBe(1);
+  });
+
+  it('dedupePolicyStatementsWithProvenance: если model-строка первая — она всё равно удалена', () => {
+    // На старом коде dedupePolicyStatements сохранял ПЕРВЫЙ экземпляр,
+    // поэтому model-строка выигрывала, а pipeline-префикс удалялся.
+    const statements = [
+      { text: 'Продавайте PLZL в 1-2 партии.', provenance: 'model' as const },
+      { text: '⛔ Заблокировано политикой no-sell: HOLD.', provenance: 'pipeline' as const },
+    ];
+
+    const result = dedupePolicyStatementsWithProvenance(statements, 'PLZL');
+
+    // Pipeline-строка сохранена несмотря на то что пришла второй
+    expect(result.text).toContain('Заблокировано политикой no-sell');
+    // Model-строка удалена
+    expect(result.text).not.toContain('Продавайте');
+    expect(result.removed).toBe(1);
+  });
+
+  // ─── Контр-тест регрессии «поsell» ───
+  it('КОНТР-ТЕСТ: артефакт «поsell» не доходит до карточки (связка buildPolicyStatements → dedupe)', () => {
+    // В билде 01:28 строка была чистой «no-sell», в 03:15 артефакт вернулся.
+    // Регрессия: normalizePolicySpelling применяется в isPolicyStatement,
+    // поэтому «политикой поsell» распознаётся как pipeline и ЗАЩИЩАЕТСЯ.
+    // buildPolicyStatements помечает provenance='pipeline' для «поsell»
+    // и dedupePolicyStatementsWithProvenance НЕ удаляет.
+    //
+    // Контр-тест: связка buildPolicyStatements → dedupePolicyStatementsWithProvenance
+    // должна удалить модельную строку с артефактом «поsell».
+    // buildPolicyStatements помечает provenance='pipeline' для «поsell»
+    // (через isPolicyStatement → normalizePolicySpelling),
+    // поэтому dedupePolicyStatementsWithProvenance должен удалить дубликат
+    // pipeline-строк (вторая pipeline-строка удаляется).
+
+    const statements = [
+      { text: '⛔ Заблокировано политикой no-sell: HOLD.', provenance: 'pipeline' as const },
+      { text: 'Держать — продажа/сокращение заблокированы политикой поsell.', provenance: 'pipeline' as const },
+    ];
+
+    const result = dedupePolicyStatementsWithProvenance(statements, 'PLZL');
+
+    // Первая pipeline-строка (каноническая) сохранена
+    expect(result.text).toContain('политикой no-sell');
+    // Вторая pipeline-строка (артефакт «поsell») удалена как дубль
+    expect(result.text).not.toContain('поsell');
+    expect(result.removed).toBe(1);
+  });
+
+  it('КОНТР-ТЕСТ: sanitizePolicyCardText чистит «поsell» артефакт', () => {
+    // sanitizePolicyCardText проверяет isPolicyStatement(line) и пропускает
+    // pipeline-строки. Но normalizePolicySpelling нормализует «поsell» → «no-sell»,
+    // поэтому «политикой поsell» распознаётся как pipeline и пропускается.
+    //
+    // Контр-тест: sanitizePolicyCardText должен нормализовать строку
+    // ПЕРЕД проверкой isPolicyStatement и не пропускать артефакт.
+    const text = 'Держать — продажа/сокращение заблокированы политикой поsell.';
+    const result = sanitizePolicyCardText(text, 'PLZL');
+
+    // Артефакт «поsell» должен быть заменён на каноническую pipeline-строку
+    expect(result.changed).toBe(true);
+    expect(result.text).not.toContain('поsell');
+    expect(result.text).toContain('no-sell');
+  });
+
+  it('карточка без policyBlocked: rationale не содержит sell-директив', () => {
+    // Контр-тест: если policyBlocked=false (тикeр не в no-sell),
+    // то rationale не должен содержать sell-директивы.
+    // На старом коде sell-директивы модели проходили без очистки.
+    const asset = createAsset({
+      ticker: 'SBER',
+      name: 'Сбербанк',
+      status: 'BUY',
+      currentPercent: 20,
+      targetPercent: 30,
+      deficitRub: 100000,
+    });
+    const rec = createRecommendation({
+      ticker: 'SBER',
+      name: 'Сбербанк',
+      recommendedAction: 'BUY',
+      rationale: 'Покупать. Продавайте при отскоке выше 300.',
+      entryStrategy: 'Покупать.',
+      technicalTiming: 'После отскока.',
+      sellAmountRub: null,
+    });
+
+    // SBER не в no-sell — policyBlocked=false
+    const result = applyPolicyToRecommendation(rec, asset, {
+      noSellTickers: ['PLZL'],
+    });
+
+    expect(result.policyBlocked).not.toBe(true);
+    // Но rationale всё равно должен быть очищен от sell-директив
+    expect(result.rationale).not.toMatch(/продавайте|продайте|продажи/gi);
+  });
+
+  it('SBER-карточка целиком: rationale + entryStrategy + technicalTiming без policy-строк', () => {
+    // Контр-тест: SBER не в no-sell, но модель могла написать sell-директивы
+    // в rationale, entryStrategy (секция «Как покупать/продавать») и technicalTiming.
+    // Все поля должны быть очищены, policyBlocked=false.
+    const asset = createAsset({
+      ticker: 'SBER',
+      name: 'Сбербанк',
+      status: 'BUY',
+      currentPercent: 11.4,
+      targetPercent: 11.5,
+      deficitRub: 489,
+    });
+    const rec = createRecommendation({
+      ticker: 'SBER',
+      name: 'Сбербанк',
+      recommendedAction: 'BUY',
+      rationale: 'Покупать. Продавайте при отскоке выше 300.',
+      entryStrategy: 'Покупать. Не продавайте до 350.',
+      technicalTiming: 'Продайте при тестировании 280.',
+      sellAmountRub: null,
+    });
+
+    const result = applyPolicyToRecommendation(rec, asset, {
+      noSellTickers: ['PLZL'],
+    });
+
+    expect(result.policyBlocked).not.toBe(true);
+    expect(result.policyNote).toBeNull();
+    // rationale — чистый
+    expect(result.rationale).not.toMatch(/продавайте|продайте|продажи/gi);
+    // entryStrategy — чистый (секция «Как покупать/продавать»)
+    expect(result.entryStrategy).not.toMatch(/продавайте|продайте|продажи/gi);
+    // technicalTiming — чистый
+    expect(result.technicalTiming).not.toMatch(/продавайте|продайте|продажи/gi);
   });
 });

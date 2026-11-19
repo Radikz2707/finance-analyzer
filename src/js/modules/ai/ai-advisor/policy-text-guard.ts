@@ -71,11 +71,40 @@ export function normalizePolicySpelling(value: string): string {
     .replace(/политик[а-яё]*\s+no\s+sell/gi, 'политикой no-sell');
 }
 
+/**
+ * Нормализация LaTeX-разметки в тексте карточек.
+ *
+ * Модель генерирует математическую разметку `$...$` (например, `$1.6 < 3.5$`),
+ * которая рендерится как есть в отчёте. Разворачиваем в обычный текст:
+ * - `$1.6 < 3.5$` → `1,6 < 3,5` (замена точки на запятую, удаление $)
+ * - `$...$` → содержимое с заменой точек на запятые (русская нотация)
+ */
+export function normalizeLatexMarkup(text: string | null | undefined): string | null {
+  if (!text) return text ?? null;
+
+  return text.replace(/\$([^$]+)\$/g, (_match, content: string) => {
+    // Удаляем LaTeX-команды (\b, \s, и т.д.)
+    let cleaned = content.replace(/\\[a-zA-Z]+/g, '');
+    // Заменяем английские десятичные точки на русские запятые
+    cleaned = cleaned.replace(/(\d)\.(\d)/g, '$1,$2');
+    return cleaned;
+  });
+}
+
 /** Является ли строка/предложение текстом политики, сгенерированным pipeline. */
 export function isPolicyStatement(text: string | null | undefined): boolean {
   if (!text) return false;
   const trimmed = normalizePolicySpelling(text).trim();
   return POLICY_STATEMENT_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+/** Источник строки политики. */
+export type PolicyStatementProvenance = 'pipeline' | 'model';
+
+/** Строка политики с пометкой источника. */
+export interface PolicyStatementWithProvenance {
+  text: string;
+  provenance: PolicyStatementProvenance;
 }
 
 /**
@@ -127,6 +156,68 @@ export function dedupePolicyStatements(
 
   return {
     text: lines.filter((line) => line.length > 0).join('\n'),
+    removed,
+  };
+}
+
+/**
+ * Схлопнуть повторяющиеся строки политики с учётом provenance.
+ *
+ * Pipeline-строки (provenance='pipeline') защищены — не удаляются.
+ * Модельные строки (provenance='model') удаляются как дубликаты,
+ * даже если появились первыми.
+ *
+ * Дополнительно: model-строки содержащие sell-директивы (detectSellDirective)
+ * тоже удаляются — это признак того что модель не очистила свой текст.
+ *
+ * @returns текст с удалёнными дубликатами + количество удалённых модельных строк
+ */
+export function dedupePolicyStatementsWithProvenance(
+  statements: PolicyStatementWithProvenance[],
+  ticker: string,
+): { text: string; removed: number } {
+  if (statements.length === 0) return { text: '', removed: 0 };
+
+  let removed = 0;
+  let pipelineSeen = false;
+  const kept: PolicyStatementWithProvenance[] = [];
+
+  for (const stmt of statements) {
+    const isPipelinePolicy = isPolicyStatement(stmt.text);
+    const hasSellDirective = detectSellDirective(stmt.text, 'card') !== null;
+
+    // Pipeline-строка политики — всегда защищена
+    if (isPipelinePolicy) {
+      if (!pipelineSeen) {
+        pipelineSeen = true;
+        kept.push(stmt);
+      } else {
+        // Повторная pipeline-строка — не дублируем
+        removed++;
+      }
+      continue;
+    }
+
+    // Model-строка: если содержит sell-директиву — удаляем
+    // (модель не очистила свой текст, sanitizePolicyCardText не справился)
+    if (hasSellDirective) {
+      removed++;
+      continue;
+    }
+
+    // Остальные model-строки — сохраняем
+    kept.push(stmt);
+  }
+
+  if (removed > 0) {
+    console.log(
+      `[POLICY_TEXT] layer=dedupe-provenance mode=card ticker=${normalizeTicker(ticker) || 'n/a'} ` +
+        `dedup=${removed} pipeline_protected=${pipelineSeen}`,
+    );
+  }
+
+  return {
+    text: kept.map((s) => s.text).join('\n'),
     removed,
   };
 }
@@ -184,6 +275,15 @@ export function detectSellDirective(
   mode: 'narrative' | 'card',
 ): SellDirectiveRule | null {
   if (!sentence) return null;
+
+  // Явная проверка артефакта «поsell» ДО isPolicyStatement.
+  // normalizePolicySpelling нормализует «поsell» → «no-sell»,
+  // поэтому isPolicyStatement распознаёт как pipeline и возвращает null.
+  // Но «поsell» — это артефакт модели, а не настоящий pipeline-текст.
+  if (/поsell/gi.test(sentence)) {
+    return 'stem';
+  }
+
   if (isPolicyStatement(sentence)) return null;
 
   if (STRUCTURAL_PATTERNS.some((pattern) => pattern.test(sentence))) {
@@ -550,7 +650,14 @@ export function sanitizePolicyCardText(
   const replaced = source.split('\n').map((line) => {
     // Строка политики, отрендеренная конвейером, — не AI-контент.
     // Её нельзя ни заменять, ни считать sell-директивой (поправка 1).
-    if (isPolicyStatement(line)) return line;
+    // Нормализуем ПЕРЕД проверкой: «поsell» → «no-sell» → распознаётся как pipeline.
+    // Но если оригинальная строка содержит артефакт «поsell» — это не настоящий
+    // pipeline-текст, а артефакт модели. Не пропускаем, даём sanitizePolicyCardText
+    // заменить на каноническую pipeline-строку.
+    const normalized = normalizePolicySpelling(line);
+    if (isPolicyStatement(normalized) && !line.includes('поsell')) {
+      return line;
+    }
 
     const sentences = splitSentences(line);
     if (!sentences.some((sentence) => detectSellDirective(sentence, 'card'))) {
@@ -589,17 +696,19 @@ export function sanitizePolicyCardText(
  * Применить политику к структурированной рекомендации.
  * - sell-действие для no-sell тикера → HOLD + policyBlocked;
  * - текстовые sell-директивы вычищаются даже при BUY/HOLD.
+ *
+ * Ключевой порядок: pipeline-префикс добавляется ДО санации/дедюпа,
+ * чтобы provenance=pipeline строка была защищена от удаления модельных дублей.
  */
 export function applyPolicyToRecommendation(
   rec: StructuredAIAssetRecommendation,
   asset: AssetAnalysis,
   policy?: PolicyLike,
 ): StructuredAIAssetRecommendation {
-  if (!isSellBlockedByPolicy(asset, policy)) {
-    return rec;
-  }
-
-  const actionBlocked = isSellAction(rec.recommendedAction);
+  // ─── Шаг 1: ВСЕГДА чистим sell-директивы из model-текста ───
+  // Раньше санация вызывалась только для no-sell тикеров.
+  // Теперь: sell-директивы модели не должны проходить в карточку
+  // ни для одного тикера — ни разрешённого, ни запрещённого.
   const rationale = sanitizePolicyCardText(rec.rationale, asset.ticker);
   const entryStrategy = sanitizePolicyCardText(rec.entryStrategy, asset.ticker);
   const technicalTiming = sanitizePolicyCardText(
@@ -610,15 +719,24 @@ export function applyPolicyToRecommendation(
   const textBlocked =
     rationale.changed || entryStrategy.changed || technicalTiming.changed;
 
+  const blocked = isSellBlockedByPolicy(asset, policy);
+  const actionBlocked = blocked && isSellAction(rec.recommendedAction);
+
   if (!actionBlocked && !textBlocked) {
-    return rec;
+    return {
+      ...rec,
+      rationale: rationale.text,
+      entryStrategy: entryStrategy.text,
+      technicalTiming: technicalTiming.text,
+    };
   }
 
   const policyNote = 'Продажа/сокращение заблокированы политикой no-sell';
 
-  // Не дублируем политику: если rationale уже является строкой политики,
-  // префикс не добавляется. Финальный dedupe страхует случай, когда
-  // rationale содержит политику в середине, а префикс добавляет вторую.
+  // Pipeline-префикс добавляется ДО финального dedupe, чтобы строка
+  // с provenance=pipeline была защищена от удаления модельных дублей.
+  // Раньше dedupe охранял «первое встреченное» — модельная строка
+  // выигрывала, а pipeline-префикс удалялся как дубль.
   const rationaleCandidate = actionBlocked
     ? isPolicyStatement(rationale.text ?? '')
       ? rationale.text
@@ -626,11 +744,17 @@ export function applyPolicyToRecommendation(
           rationale.text ?? ''
         }`.trim()
     : rationale.text;
-  const dedupedRationale = dedupePolicyStatements(
-    rationaleCandidate,
+
+  // Source-based trust: pipeline-строка защищена, модельные дубли удаляются.
+  const dedupedRationale = dedupePolicyStatementsWithProvenance(
+    buildPolicyStatements(rationaleCandidate, asset.ticker),
     asset.ticker,
   );
 
+  // policyBlocked/policyNote/policyTextBlocked — ТОЛЬКО для no-sell тикеров.
+  // Для разрешённых тикеров (SBER) текст санируется, но policyBlocked=false.
+  // Для no-sell тикеров: policyTextBlocked=true когда текст был изменён,
+  // даже если action не заблокирован (BUY по no-sell).
   return {
     ...rec,
     recommendedAction: actionBlocked ? 'HOLD' : rec.recommendedAction,
@@ -642,10 +766,29 @@ export function applyPolicyToRecommendation(
       ? 'Держать. Продажа/сокращение заблокированы политикой no-sell.'
       : technicalTiming.text,
     policyBlocked: actionBlocked || rec.policyBlocked === true,
-    policyTextBlocked: textBlocked || rec.policyTextBlocked === true,
-    policyNote:
-      actionBlocked || textBlocked ? policyNote : (rec.policyNote ?? null),
+    policyTextBlocked:
+      (blocked && textBlocked) || rec.policyTextBlocked === true,
+    policyNote: actionBlocked ? policyNote : (rec.policyNote ?? null),
   };
+}
+
+/**
+ * Разобрать текст на предложения с автоматической маркировкой provenance.
+ *
+ * Строки, распознаваемые как pipeline-текст (POLICY_STATEMENT_PATTERNS),
+ * получают provenance='pipeline'. Остальные — 'model'.
+ */
+function buildPolicyStatements(
+  text: string | null | undefined,
+  _ticker: string,
+): PolicyStatementWithProvenance[] {
+  if (!text) return [];
+
+  const sentences = splitSentences(text);
+  return sentences.map((sentence) => ({
+    text: sentence.trim(),
+    provenance: isPolicyStatement(sentence) ? 'pipeline' : 'model',
+  }));
 }
 
 /** Опции line-context режима для свободного текста. */
@@ -716,12 +859,28 @@ export function applyPolicyToNarrative(
     }
 
     const contextTicker = blockedHere ?? activeTicker;
+    // Явная проверка артефакта «поsell» ДО всех проверок контекста.
+    // normalizePolicySpelling нормализует «поsell» → «no-sell»,
+    // поэтому isPolicyStatement распознаёт как pipeline и пропускает.
+    // Контекст тикера не важен: «поsell» — артефакт модели, чистим везде.
+    if (line.includes('поsell') || line.includes('посell') || line.includes('по-sell')) {
+      const fixed = line
+        .replace(/поsell/gi, 'no-sell')
+        .replace(/посell/gi, 'no-sell')
+        .replace(/по-sell/gi, 'no-sell');
+      // Добавляем тикер в changedTickers, иначе changedTickers.size === 0
+      // и функция возвращает исходный text (строка 924) вместо replaced.
+      if (contextTicker) changedTickers.add(contextTicker);
+      return fixed;
+    }
+
     if (!contextTicker) return line;
     // Pipeline-строка политики не является AI-директивой (поправка 1).
     if (isPolicyStatement(line)) return line;
 
     // Одна строка может содержать фразы про разные активы. Заменяем только
     // те предложения, которые относятся к no-sell активу.
+
     const sentences = splitSentences(line);
     let lineChanged = false;
     const replacedSentences = sentences.map((sentence) => {

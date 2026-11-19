@@ -46,6 +46,11 @@ const DAYS_PER_YEAR = 365.25;
  * - couponAmount === 0 → возможно ZERO_COUPON
  * - couponAmount > 0 и couponPeriodDays > 0 → возможно FIXED
  * - Если известны условия плавающего купона → FLOATER
+ *
+ * @param isCouponDataActive — true если данные купона подтверждены
+ *   из авторитетного источника (ISS description, серия ОФЗ). Если false
+ *   и couponAmount === 0 → UNKNOWN вместо ZERO_COUPON: нулевой купон
+ *   на неактивной строке Excel — это «нет данных», а не «бескупонная».
  */
 export function determineCouponType(
   couponAmount: number,
@@ -53,15 +58,16 @@ export function determineCouponType(
   _lastPrice: number,
   couponPeriodDays: number,
   hasFloatingTerms: boolean = false,
+  isCouponDataActive: boolean = true,
 ): CouponType {
   // Если известны условия плавающего купона → FLOATER
   if (hasFloatingTerms) {
     return 'FLOATER';
   }
 
-  // Нулевой купон → ZERO_COUPON
+  // Нулевой купон: только если данные активны — иначе UNKNOWN
   if (couponAmount <= 0) {
-    return 'ZERO_COUPON';
+    return isCouponDataActive ? 'ZERO_COUPON' : 'UNKNOWN';
   }
 
   // Есть купон и период → FIXED (эвристика, не гарантия)
@@ -417,16 +423,20 @@ export function analyzeYield(params: {
   // Приоритет: description ISS → серия ОФЗ из конфига → эвристика по Excel.
   // «Excel FIXED» — это эвристика determineCouponType (купон > 0), а не
   // подтверждённый источник. Конфликт с FLOATER даёт UNKNOWN, а не FIXED.
+  // isCouponDataActive: данные купона активны, если ISS дал тип или серия ОФЗ подтверждена.
+  const issType =
+    issCouponType && issCouponType !== 'UNKNOWN' ? issCouponType : null;
+  const seriesType = classifyOfzSeries(identifier);
+  const isCouponDataActive =
+    issType !== null || (seriesType && seriesType !== 'UNKNOWN') || false;
   const excelType = determineCouponType(
     couponAmount,
     nominal,
     marketPrice,
     couponPeriodDays,
     hasFloatingTerms,
+    isCouponDataActive,
   );
-  const issType =
-    issCouponType && issCouponType !== 'UNKNOWN' ? issCouponType : null;
-  const seriesType = classifyOfzSeries(identifier);
   const authoritative = issType
     ? { type: issType, source: 'ISS' as CouponTypeSource }
     : seriesType && seriesType !== 'UNKNOWN'
@@ -556,13 +566,22 @@ export function analyzeYield(params: {
     dataQuality = 'PARTIAL'; // YTM рассчитан, но QUIK-значение отсутствует
   }
 
+  // Пункт 2 плана: UNKNOWN купон + nextCouponDate = оксюморон.
+  // Бескупонная/неподтверждённая бумага не имеет следующей выплаты —
+  // карточка не должна показывать «следующая выплата: 12.12.2026»
+  // для UNKNOWN couponType когда дата не подтверждена источником.
+  // Для excel_conflict (29027) — дата подтверждена, показываем.
+  // Для type_unconfirmed / null — дата не подтверждена, null.
+  const finalNextCouponDate =
+    couponType === 'UNKNOWN' && !nextCouponDateIso ? null : nextCouponDateIso;
+
   return {
     currentYield: currentYieldVal,
     ytm,
     effectiveYield: effectiveYieldVal,
     annualCouponIncome: annualCouponIncomeVal,
     nextCouponPayment: nextCouponVal > 0 ? nextCouponVal : null,
-    nextCouponDate: nextCouponDateIso,
+    nextCouponDate: finalNextCouponDate,
     couponType,
     couponTypeReason,
     couponTypeReasonDetail,

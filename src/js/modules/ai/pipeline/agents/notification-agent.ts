@@ -37,6 +37,7 @@ import {
   applyPolicyToNarrative,
   isSellBlockedByPolicy,
   sanitizePolicyCardText,
+  normalizeLatexMarkup,
 } from '../../../ai/ai-advisor/policy-text-guard.js';
 import { PortfolioConfig } from '../../../../config/portfolio-config.js';
 import { loadUserPolicy } from '../../../../config/user-policy.js';
@@ -442,14 +443,17 @@ export class NotificationAgent extends AgentBase {
         '\n' +
         priceAlertsMd +
         '\n\n### 💰 Доходность портфеля: НКД и дивиденды\n' +
-        `* НКД по облигациям (накопленный купон): **${income.totalNkd.toLocaleString('ru-RU')} ₽**\n` +
-        `* Дивиденды LTM (грязные, до налога): **${dividendText(income.totalDivs)}**${dividendStatusNote}\n` +
-        `* Дивиденды LTM (чистые, после НДФЛ ${Math.round(PortfolioConfig.tax.dividendNdflRate * 100)}%): **${dividendText(income.totalDivsNet)}**\n` +
+        `* НКД по облигациям: **${income.totalNkd.toLocaleString('ru-RU')} ₽**\n` +
+        `* Фактические купоны по облигациям: **${income.stocks
+          .filter((s) => s.kind !== 'LTM')
+          .reduce((sum, s) => sum + s.grossIncome, 0)
+          .toLocaleString('ru-RU')} ₽**\n` +
+        `* Дивиденды LTM (чистые, после НДФЛ ${Math.round(PortfolioConfig.tax.dividendNdflRate * 100)}%): **${dividendText(income.totalDivsNet)}**${dividendStatusNote}\n` +
         ((income.declaredDivs ?? 0) > 0
-          ? `* Ожидаемые дивиденды (объявленные, до налога): **${(income.declaredDivs ?? 0).toLocaleString('ru-RU')} ₽**\n` +
-            `* Ожидаемые дивиденды (чистые): **${(income.declaredDivsNet ?? 0).toLocaleString('ru-RU')} ₽**\n`
+          ? `* Объявленные будущие дивиденды (чистые): **${(income.declaredDivsNet ?? 0).toLocaleString('ru-RU')} ₽**\n`
           : '') +
-        `* Итого чистый доход (НКД + дивиденды LTM): **${(income.totalNkd + income.totalDivsNet).toLocaleString('ru-RU')} ₽**` +
+        `* Итого чистый доход: **${(income.totalNkd + income.totalDivsNet).toLocaleString('ru-RU')} ₽** ` +
+        `(НКД ${income.totalNkd.toLocaleString('ru-RU')} ₽ + дивиденды LTM ${income.totalDivsNet.toLocaleString('ru-RU')} ₽)` +
         (income.dividendDataStatus === 'UNAVAILABLE' ||
         income.dividendDataStatus === 'EMPTY'
           ? ' — дивидендная часть не подтверждена'
@@ -663,18 +667,10 @@ export class NotificationAgent extends AgentBase {
   private sanitizeCardField(
     text: string | null | undefined,
     ticker: string,
-    asset: AssetAnalysis | undefined,
+    _asset: AssetAnalysis | undefined,
     field: string,
   ): string | null {
     if (!text) return text ?? null;
-
-    const policy = loadUserPolicy();
-    const blocked = asset
-      ? isSellBlockedByPolicy(asset, policy)
-      : (policy.noSellTickers ?? []).some(
-          (candidate) =>
-            candidate.trim().toUpperCase() === ticker.trim().toUpperCase(),
-        );
 
     // Ремонт слипшихся диапазонов («510%» → «5–10%») — на слое рендера.
     const repaired = (value: string | null) =>
@@ -683,8 +679,10 @@ export class NotificationAgent extends AgentBase {
         PortfolioConfig.textFixes.maxPlausiblePct,
       );
 
-    if (!blocked) return repaired(text);
-
+    // ВСЕГДА чистим sell-директивы из model-текста, не только для no-sell.
+    // Раньше санация вызывалась только при policyBlocked — для SBER и других
+    // разрешённых тикеров модельные sell-директивы проходили в rationale
+    // и секцию «Как покупать/продавать».
     const result = sanitizePolicyCardText(text, ticker);
     if (result.changed) {
       console.warn(
@@ -790,11 +788,8 @@ export class NotificationAgent extends AgentBase {
       // АЛРОСА1Р1: «Покупать» + no-sell) баннер не показывается:
       // покупка политикой не запрещена.
       const policyBlocked = rec.policyBlocked === true;
-      const displayRationale = this.sanitizeCardField(
-        rec.rationale,
-        ticker,
-        asset,
-        'rationale',
+      const displayRationale = normalizeLatexMarkup(
+        this.sanitizeCardField(rec.rationale, ticker, asset, 'rationale'),
       );
 
       html +=
@@ -835,6 +830,14 @@ export class NotificationAgent extends AgentBase {
           `color: #ff7b72; font-size: 11px;">⛔ ${policyText}` +
           '</div>\n';
       }
+      // holdOnly — позиция запрещена к продаже (из Excel/QUIK)
+      if (asset?.holdOnly === true && !policyBlocked) {
+        html +=
+          '<div style="margin-top: 4px; padding: 4px 6px; background: rgba(255,209,102,0.08); ' +
+          'border: 1px solid rgba(255,209,102,0.25); border-radius: 4px; ' +
+          'color: #ffd166; font-size: 11px;">' +
+          '\u25CF Позиция только для удержания (holdOnly)</div>\n';
+      }
       html +=
         '<div style="color: #8b949e; font-size: 12px; margin-top: 2px;">' +
         argumentBalance +
@@ -855,8 +858,9 @@ export class NotificationAgent extends AgentBase {
         html +=
           '<div style="color: #ffd166; font-weight: bold; margin-bottom: 3px;">⚠️ Риски:</div>\n';
         for (const risk of risks) {
-          const displayRisk =
-            this.sanitizeCardField(risk, ticker, asset, 'keyRisks') ?? risk;
+          const displayRisk = normalizeLatexMarkup(
+            this.sanitizeCardField(risk, ticker, asset, 'keyRisks') ?? risk,
+          );
           html +=
             '<div style="color: #ff7b72; margin-top: 2px;">• ' +
             displayRisk +
@@ -893,6 +897,7 @@ export class NotificationAgent extends AgentBase {
         );
 
         const couponUnknown = bondCard.couponType === 'UNKNOWN';
+        const isZeroCoupon = bondCard.couponType === 'ZERO_COUPON';
         const unknownReason =
           bondCard.couponTypeReason === 'excel_conflict'
             ? (bondCard.couponTypeReasonDetail ??
@@ -909,19 +914,28 @@ export class NotificationAgent extends AgentBase {
           ? `, подтверждено: ${bondCard.couponTypeSource}`
           : '';
 
-        const couponLine = couponUnknown
-          ? `Купон: тип не подтверждён (UNKNOWN) — причина: ${unknownReason}; следующая выплата: ${nextCoupon}`
-          : floating
-            ? `Купон плавающий (${bondCard.couponType}${couponSourceNote})` +
-              (bondCard.floatIndex
-                ? `, привязан к ${bondCard.floatIndex}`
-                : '') +
-              (bondCard.floatSpreadPct != null
-                ? ` + ${bondCard.floatSpreadPct}%`
-                : '') +
-              `; следующая выплата: ${nextCoupon}`
-            : `Купон фиксированный (${bondCard.couponType}${couponSourceNote}); ` +
-              `следующая выплата: ${nextCoupon}`;
+        // У бескупонной бумаги не бывает следующей выплаты — оксюморон.
+        const nextCouponDisplay = isZeroCoupon
+          ? '— (бескупонная бумага)'
+          : nextCoupon;
+
+        const couponLine = isZeroCoupon
+          ? `Купон: бескупонная (${bondCard.couponType}${couponSourceNote}); следующая выплата: ${nextCouponDisplay}`
+          : couponUnknown
+            ? `Купон: тип не подтверждён (UNKNOWN) — причина: ${unknownReason}; следующая выплата: ${nextCouponDisplay}`
+            : floating
+              ? `Купон плавающий (${bondCard.couponType}${couponSourceNote})` +
+                (bondCard.floatIndex
+                  ? `, привязан к ${bondCard.floatIndex}`
+                  : '') +
+                (bondCard.floatSpreadPct != null
+                  ? ` + ${bondCard.floatSpreadPct}%`
+                  : '') +
+                `; следующая выплата: ${nextCouponDisplay}`
+              : `Купон фиксированный (${bondCard.couponType}${couponSourceNote}); ` +
+                `следующая выплата: ${nextCouponDisplay}`;
+        // Пункт 3 в рендере: при UNKNOWN + MISSING — «нет подтверждённых данных».
+        const isUnknownCoupon = bondCard.couponType === 'UNKNOWN';
         const yieldLine = floating
           ? `Текущая доходность: ${
               bondCard.currentYield != null
@@ -930,10 +944,12 @@ export class NotificationAgent extends AgentBase {
             }. YTM — проекция при предположении неизменной ставки ` +
             `(методика: ${bondCard.ytmMethod ?? 'FLOATER_ASSUMED_CONSTANT_RATE'}), ` +
             'не доходность к погашению.'
-          : bondCard.ytm != null
-            ? `Доходность к погашению: ${bondCard.ytm.toFixed(2)}%` +
-              (bondCard.ytmMethod ? ` (методика: ${bondCard.ytmMethod})` : '')
-            : 'Доходность к погашению: недоступна';
+          : bondCard.dataQuality === 'MISSING' || (isUnknownCoupon && bondCard.dataQuality === 'PARTIAL')
+            ? 'Нет подтверждённых данных по доходности'
+            : bondCard.ytm != null
+              ? `Доходность к погашению: ${bondCard.ytm.toFixed(2)}%` +
+                (bondCard.ytmMethod ? ` (методика: ${bondCard.ytmMethod})` : '')
+              : 'Доходность к погашению: недоступна';
         const ratingLine = bondCard.creditRating
           ? `Рейтинг ${bondCard.creditRating.agency}: ${bondCard.creditRating.rating} (прогноз: ${bondCard.creditRating.outlook})`
           : 'Рейтинг: нет подтверждённых данных';
@@ -951,9 +967,24 @@ export class NotificationAgent extends AgentBase {
           '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(210,153,34,0.05); border: 1px solid rgba(210,153,34,0.2); border-radius: 4px; font-size: 11px;">\n';
         html +=
           '<div style="color: #d29922; font-weight: bold; margin-bottom: 3px;">📜 Облигация:</div>\n';
+        // Две оценки: балансовая (Excel/QUIK) и ликвидационная (C9/MOEX) — раздельно.
+        const priceLines: string[] = [];
+        if (bondCard) {
+          const bal = (rec as { balancePrice?: number }).balancePrice;
+          const cur = (rec as { currentPrice?: number | null }).currentPrice;
+          if (bal != null && bal > 0)
+            priceLines.push(
+              `Балансовая стоимость (Excel): ${bal.toLocaleString('ru-RU')} ₽`,
+            );
+          if (cur != null && cur > 0)
+            priceLines.push(
+              `Ликвидационная стоимость (C9): ${cur.toLocaleString('ru-RU')} ₽`,
+            );
+        }
         html +=
           '<div style="color: #c9d1d9; line-height: 1.4;">' +
           couponLine +
+          (priceLines.length > 0 ? '<br>' + priceLines.join('<br>') : '') +
           '<br>' +
           yieldLine +
           '<br>' +
@@ -972,11 +1003,13 @@ export class NotificationAgent extends AgentBase {
       const fundamentalAnalysis = (
         rec as { fundamentalAnalysis?: string | null }
       ).fundamentalAnalysis;
-      const displayFundamentalAnalysis = this.sanitizeCardField(
-        fundamentalAnalysis,
-        ticker,
-        asset,
-        'fundamentalAnalysis',
+      const displayFundamentalAnalysis = normalizeLatexMarkup(
+        this.sanitizeCardField(
+          fundamentalAnalysis,
+          ticker,
+          asset,
+          'fundamentalAnalysis',
+        ),
       );
       if (displayFundamentalAnalysis) {
         html +=
@@ -996,13 +1029,14 @@ export class NotificationAgent extends AgentBase {
       if (technicalTiming) {
         // Defense-in-depth: policy-blocked карточка не должна показывать
         // «точку для фиксации части прибыли» даже если upstream не успел.
-        const displayTechnicalTiming =
+        const displayTechnicalTiming = normalizeLatexMarkup(
           this.sanitizeCardField(
             technicalTiming,
             ticker,
             asset,
             'technicalTiming',
-          ) ?? technicalTiming;
+          ) ?? technicalTiming,
+        );
         html +=
           '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(227, 179, 65, 0.05); border: 1px solid rgba(227, 179, 65, 0.15); border-radius: 4px; font-size: 11px;">\n';
         html +=
@@ -1020,13 +1054,14 @@ export class NotificationAgent extends AgentBase {
       if (entryStrategy) {
         // Defense-in-depth: даже если upstream не успел почистить текст,
         // для policy-blocked карточки sell-директивы не показываем.
-        const displayEntryStrategy =
+        const displayEntryStrategy = normalizeLatexMarkup(
           this.sanitizeCardField(
             entryStrategy,
             ticker,
             asset,
             'entryStrategy',
-          ) ?? entryStrategy;
+          ) ?? entryStrategy,
+        );
         html +=
           '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(163, 113, 247, 0.05); border: 1px solid rgba(163, 113, 247, 0.15); border-radius: 4px; font-size: 11px;">\n';
         html +=
@@ -1041,11 +1076,8 @@ export class NotificationAgent extends AgentBase {
       // ─── Контекст эмитента ───
       const issuerContext = (rec as { issuerContext?: string | null })
         .issuerContext;
-      const displayIssuerContext = this.sanitizeCardField(
-        issuerContext,
-        ticker,
-        asset,
-        'issuerContext',
+      const displayIssuerContext = normalizeLatexMarkup(
+        this.sanitizeCardField(issuerContext, ticker, asset, 'issuerContext'),
       );
       if (displayIssuerContext) {
         html +=
@@ -1143,7 +1175,7 @@ export class NotificationAgent extends AgentBase {
           'ИИ — мнение модели для ручной проверки.</div>\n';
       }
       for (const warning of ai.validationWarnings) {
-        html += `- ${warning}\n`;
+        html += `- ${normalizeLatexMarkup(warning) ?? warning}\n`;
       }
       html += '\n';
     }

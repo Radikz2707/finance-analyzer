@@ -143,14 +143,39 @@ describe('analyzeYield — тип купона: ISS description → серия �
     );
   });
 
-  it('не-ОФЗ без купона остаётся ZERO_COUPON', () => {
+  it('не-ОФЗ без купона и без ISS → UNKNOWN (нет подтверждения источника)', () => {
     const result = analyzeYield({
       ...base,
       identifier: 'RU000A10GC20',
     });
 
-    expect(result.couponType).toBe('ZERO_COUPON');
+    // Пункт 2 плана: нулевой купон без авторитетного подтверждения (ISS/серия)
+    // → UNKNOWN, а не ZERO_COUPON. Это чинит кейс ALROSA: неактивная строка
+    // Excel ≠ бескупонная бумага.
+    // reason=null: это не «нераспознанная серия ОФЗ», а просто отсутствие данных.
+    expect(result.couponType).toBe('UNKNOWN');
     expect(result.couponTypeSource).toBe('EXCEL');
+    expect(result.couponTypeReason).toBeNull();
+  });
+
+  // ─── Контр-тест пункта 2: ALROSA ───
+  it('КОНТР-ТЕСТ: ALROSA с maturity date ≠ ZERO_COUPON (пункт 2 плана)', () => {
+    // ALROSA в отчёте 01:28 показывала «ZERO_COUPON» И «next payment: 12.12.2026» —
+    // оксюморон: бескупонная бумага не может иметь следующую выплату.
+    // Фикс: без ISS/серии → UNKNOWN (не ZERO_COUPON).
+    // UNKNOWN + nextCouponDate — не оксюморон: тип не подтверждён,
+    // но дата выплаты может быть известна из источника.
+    const result = analyzeYield({
+      ...base,
+      identifier: 'RU000A10GC20',
+      maturityDate: new Date('2026-12-12T00:00:00.000Z'),
+      nextCouponDate: new Date('2026-12-12T00:00:00.000Z'),
+    });
+
+    // Без ISS/серии → UNKNOWN, не ZERO_COUPON (главный фикс пункта 2)
+    expect(result.couponType).toBe('UNKNOWN');
+    // nextCouponDate показывается потому что подтверждён источником
+    expect(result.nextCouponDate).toBe('2026-12-12');
   });
 
   it('46xxx → FIXED_AMORTIZING, YTM помечен как без учёта амортизации', () => {

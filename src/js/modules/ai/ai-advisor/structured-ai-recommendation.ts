@@ -145,6 +145,8 @@ export interface BondCardInfo {
   couponTypeSource: string | null;
   /** Методика YTM — карточка подписывает её рядом со значением. */
   ytmMethod: string | null;
+  /** Качество данных доходности: AVAILABLE / PARTIAL / MISSING */
+  dataQuality: 'AVAILABLE' | 'PARTIAL' | 'MISSING' | null;
   currentYield: number | null;
   ytm: number | null;
   nextCouponDate: string | null;
@@ -168,6 +170,7 @@ export function buildBondCardInfo(bond: BondAnalysisResult): BondCardInfo {
     couponTypeReasonDetail: bond.yieldAnalysis.couponTypeReasonDetail ?? null,
     couponTypeSource: bond.yieldAnalysis.couponTypeSource ?? null,
     ytmMethod: bond.yieldAnalysis.ytmMethod ?? null,
+    dataQuality: (bond.yieldAnalysis.dataQuality as 'AVAILABLE' | 'PARTIAL' | 'MISSING' | null) ?? null,
     currentYield: bond.yieldAnalysis.currentYield,
     ytm: bond.yieldAnalysis.ytm,
     nextCouponDate: bond.yieldAnalysis.nextCouponDate ?? null,

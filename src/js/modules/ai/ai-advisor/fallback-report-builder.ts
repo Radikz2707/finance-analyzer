@@ -11,6 +11,9 @@ import { isSellBlockedByPolicy, type PolicyLike } from './policy-text-guard.js';
  * Включает макроанализ, детальные рекомендации по ребалансировке,
  * оценку рисков и пошаговый план действий.
  */
+/** Статус финансирования сценария (для fallback-отчёта). */
+export type FundingStatus = 'SUFFICIENT' | 'PARTIAL' | 'INSUFFICIENT';
+
 export function buildFallbackReport(
   analysis: PortfolioReportData,
   inc: CalculatedIncome,
@@ -18,6 +21,7 @@ export function buildFallbackReport(
   orders: UIOrdersData,
   cbrRate: number,
   policy: PolicyLike = loadUserPolicy(),
+  fundingStatus?: FundingStatus,
 ): string {
   const { assetsAnalysis, macro } = analysis;
   const parts: string[] = [];
@@ -100,15 +104,24 @@ export function buildFallbackReport(
   if (reduceAssets.length > 0) {
     parts.push('<strong>3. РЕКОМЕНДАЦИИ ПО СНИЖЕНИЮ ПОЗИЦИЙ</strong>');
     parts.push('');
+    const insufficient = fundingStatus === 'INSUFFICIENT';
     reduceAssets.forEach((a) => {
       const tp = a.targetPercent ?? 0;
       const excess = a.currentPercent - tp;
       const excessAbs = Math.abs(excess).toFixed(1);
-      parts.push(
-        `• <strong>${a.name} (${a.ticker}):</strong> ` +
-          `профицит ${excessAbs}% (цель ${tp.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
-          `→ рекомендуется сократить на <strong>${Math.abs(a.deficitRub).toLocaleString('ru-RU')} ₽</strong>`,
-      );
+      if (insufficient) {
+        parts.push(
+          `• <strong>${a.name} (${a.ticker}):</strong> ` +
+            `профицит ${excessAbs}% (цель ${tp.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
+            '→ недостаточно средств для полной ребалансировки — продажа для покрытия дефицита',
+        );
+      } else {
+        parts.push(
+          `• <strong>${a.name} (${a.ticker}):</strong> ` +
+            `профицит ${excessAbs}% (цель ${tp.toFixed(1)}%, факт ${a.currentPercent.toFixed(1)}%)<br>` +
+            `→ рекомендуется сократить на <strong>${Math.abs(a.deficitRub).toLocaleString('ru-RU')} ₽</strong>`,
+        );
+      }
       if (a.dynamicsPercent > 15) {
         parts.push(
           `  💰 Актив вырос на ${a.dynamicsPercent.toFixed(1)}% — фиксируем прибыль. Часть позиций можно продать сейчас.`,
@@ -130,6 +143,7 @@ export function buildFallbackReport(
   if (exitAssets.length > 0) {
     parts.push('<strong>4. ПЛАНОВЫЙ ВЫХОД ИЗ ПОЗИЦИЙ</strong>');
     parts.push('');
+    const insufficient = fundingStatus === 'INSUFFICIENT';
     exitAssets.forEach((a) => {
       const ordersCount = orders.md
         ? a.ticker
@@ -139,7 +153,9 @@ export function buildFallbackReport(
       const orderNote =
         ordersCount > 0
           ? ' Обнаружены активные заявки на продажу в QUIK.'
-          : ' Активных заявок не обнаружено — рекомендуется выставить заявки на продажу.';
+          : insufficient
+            ? ' Активных заявок не обнаружено — продажа для покрытия дефицита.'
+            : ' Активных заявок не обнаружено — рекомендуется выставить заявки на продажу.';
       parts.push(
         `• <strong>${a.name} (${a.ticker}):</strong> целевая доля занулена. Текущая доля ${a.currentPercent.toFixed(1)}%.${orderNote}`,
       );
@@ -356,6 +372,14 @@ export function buildFallbackReport(
   }
 
   parts.push('');
+  if (fundingStatus === 'INSUFFICIENT') {
+    parts.push(
+      '⚠️ Недостаточно средств для полной ребалансировки: ' +
+        'свободный кэш + продажи не покрывают покупки. ' +
+        'Рассмотрите частичную ребалансировку или пересмотр целевых долей.',
+    );
+    parts.push('');
+  }
   parts.push(
     `При макро-контексте ключевой ставки <strong>${cbrRate}%</strong> ` +
       `рекомендуется ${cbrRate >= 18 ? 'сохранять консервативную стратегию с преобладанием облигаций' : 'постепенно увеличивать долю акций при горизонте инвестирования 3+ года'}.`,

@@ -198,7 +198,17 @@ async function initAppState(): Promise<void> {
 
 /** Отформатировать метку времени для имён файлов (YYYY-MM-DDTHH-MM-SS) */
 function timestampLabel(date: Date): string {
-  return date.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  // Используем локальное время, а не UTC — иначе в зонах UTC+文件名
+  // отличается от даты в отчёте (когда в Москве 01:28 19.11 — в UTC
+  // ещё 22:28 18.11, и файл называется «20261118», а не «20261119»).
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const y = date.getFullYear();
+  const m = pad(date.getMonth() + 1);
+  const d = pad(date.getDate());
+  const h = pad(date.getHours());
+  const min = pad(date.getMinutes());
+  const s = pad(date.getSeconds());
+  return `${y}-${m}-${d}T${h}-${min}-${s}`;
 }
 
 /**

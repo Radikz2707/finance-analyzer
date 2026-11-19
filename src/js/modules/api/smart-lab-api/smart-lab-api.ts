@@ -290,7 +290,7 @@ function parseMillion(str: string): number | undefined {
 }
 
 /**
- * Парсить дату из строки (например, "2038-10-06" или "06.10.2038").
+ * Парсить дату из строки (например, "2038-10-06", "06.10.2038" или "11-12-2026").
  */
 function parseDate(str: string): string | undefined {
   if (!str || str === '—') return undefined;
@@ -301,10 +301,17 @@ function parseDate(str: string): string | undefined {
     return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
   }
 
-  // Формат DD.MM.YYYY
-  const ruMatch = str.match(/(\d{2})\.(\d{2})\.(\d{4})/);
-  if (ruMatch) {
-    return `${ruMatch[3]}-${ruMatch[2]}-${ruMatch[1]}`;
+  // Формат DD.MM.YYYY (точки)
+  const ruDotMatch = str.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+  if (ruDotMatch) {
+    return `${ruDotMatch[3]}-${ruDotMatch[2]}-${ruDotMatch[1]}`;
+  }
+
+  // Формат DD-MM-YYYY (дефисы) — Smart-Lab иногда использует
+  // "Дата след. выплаты 11-12-2026 НКД (<" вместо "11.12.2026"
+  const ruDashMatch = str.match(/(\d{2})-(\d{2})-(\d{4})/);
+  if (ruDashMatch) {
+    return `${ruDashMatch[3]}-${ruDashMatch[2]}-${ruDashMatch[1]}`;
   }
 
   return undefined;
