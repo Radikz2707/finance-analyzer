@@ -164,17 +164,23 @@ export function buildFallbackReport(
   }
 
   // ============================================================
-  // СЕКЦИЯ 4.1: Активы, защищённые политикой no-sell
+  // СЕКЦИЯ 4.1: Активы, защищённые политикой no-sell (явный список)
   // ============================================================
-  const policyBlockedAssets = assetsAnalysis.filter(
-    (a) =>
+  const explicitNoSellAssets = assetsAnalysis.filter((a) => {
+    // Только явный список тикеров — не asset-type блокировки.
+    const ticker = a.ticker.toUpperCase().trim();
+    const noSellTickers = (policy?.noSellTickers ?? [])
+      .map((t) => t.toUpperCase().trim())
+      .filter(Boolean);
+    return (
       (a.status === 'REDUCE' || a.status === 'EXIT') &&
-      isSellBlockedByPolicy(a, policy),
-  );
-  if (policyBlockedAssets.length > 0) {
+      noSellTickers.includes(ticker)
+    );
+  });
+  if (explicitNoSellAssets.length > 0) {
     parts.push('<strong>4.1 ПОЛИТИКА NO-SELL</strong>');
     parts.push('');
-    policyBlockedAssets.forEach((a) => {
+    explicitNoSellAssets.forEach((a) => {
       parts.push(
         `• <strong>${a.name} (${a.ticker}):</strong> держать — продажа/сокращение заблокированы политикой no-sell.`,
       );
@@ -372,12 +378,23 @@ export function buildFallbackReport(
   }
 
   parts.push('');
-  if (fundingStatus === 'INSUFFICIENT') {
-    parts.push(
+  // Funding status — отображаем для ВСЕХ статусов, не только INSUFFICIENT.
+  const fundingLabels: Record<string, string> = {
+    SUFFICIENT:
+      '✅ Средств достаточно для полной ребалансировки: ' +
+      'свободный кэш + продажи покрывают покупки.',
+    PARTIAL:
+      '⚠️ Средства частично покрывают ребалансировку: ' +
+      'свободный кэш + продажи не полностью покрывают покупки. ' +
+      'Приоритет — покупка активов с наибольшим дефицитом доли.',
+    INSUFFICIENT:
       '⚠️ Недостаточно средств для полной ребалансировки: ' +
-        'свободный кэш + продажи не покрывают покупки. ' +
-        'Рассмотрите частичную ребалансировку или пересмотр целевых долей.',
-    );
+      'свободный кэш + продажи не покрывают покупки. ' +
+      'Рассмотрите частичную ребалансировку или пересмотр целевых долей.',
+  };
+  const fundingLabel = fundingLabels[fundingStatus ?? ''];
+  if (fundingLabel) {
+    parts.push(fundingLabel);
     parts.push('');
   }
   parts.push(

@@ -1,4 +1,4 @@
-
+﻿
 import { buildPortfolioSnapshot, parseBooleanValue, InternalAggregatedAsset } from './portfolio-snapshot.js';
 
 describe('PortfolioSnapshot', () => {
@@ -98,6 +98,7 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 1500000,
+        cashSource: 'QUIK',
         freeCash: 50000,
       }, {
         profitC10: 0,
@@ -161,6 +162,8 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 200000,
+        cashSource: 'QUIK',
+
         freeCash: 0,
       });
 
@@ -216,6 +219,8 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 200000,
+        cashSource: 'QUIK',
+
         freeCash: 0,
 
       });
@@ -282,6 +287,8 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 1000000,
+        cashSource: 'QUIK',
+
         freeCash: 100000,
 
       });
@@ -352,6 +359,8 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 1000000,
+        cashSource: 'QUIK',
+
         freeCash: 200000,
 
       }, {
@@ -415,6 +424,8 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 200000,
+        cashSource: 'QUIK',
+
         freeCash: 0,
 
       });
@@ -481,6 +492,8 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 200000,
+        cashSource: 'QUIK',
+
         freeCash: 0,
 
       });
@@ -549,6 +562,8 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 200000,
+        cashSource: 'QUIK',
+
         freeCash: 0,
 
       });
@@ -599,6 +614,8 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 1000000,
+        cashSource: 'QUIK',
+
         freeCash: 200000,
 
       }, {
@@ -624,6 +641,8 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 200000,
+        cashSource: 'QUIK',
+
         freeCash: 0,
       });
 
@@ -641,6 +660,8 @@ describe('PortfolioSnapshot', () => {
 
       const snapshot = buildPortfolioSnapshot(aggregated, {
         totalBalance: 200000,
+        cashSource: 'QUIK',
+
         freeCash: 0,
       });
 
@@ -652,3 +673,4 @@ describe('PortfolioSnapshot', () => {
     });
   });
 });
+

@@ -42,6 +42,12 @@ export interface DashboardKpiData {
   totalSales?: number;
   totalWithdrawals?: number;
   totalDeposits?: number; // Сумма всех пополнений из таблицы "Средства"
+  /** XIRR — годовая доходность портфеля */
+  xirr?: {
+    rate: number | null;
+    reason: string;
+    withdrawalsHaveDates?: boolean;
+  };
 }
 
 /**
@@ -105,8 +111,15 @@ export interface DashboardReportData {
   quotesSourceNote?: string;
   /** Пометка «движение на низкой ликвидности, не сигнал». */
   lowLiquidityNote?: string;
-  topGainers: string;
-  topLosers: string;
+  /** XIRR — годовая доходность портфеля */
+  xirr?: {
+    rate: number | null;
+    reason: string;
+    withdrawalsHaveDates?: boolean;
+    withoutPlzl?: { rate: number | null; reason: string };
+  };
+  topGainers?: string;
+  topLosers?: string;
   fundsGridHtml?: string;
   marketValueWarningHtml?: string;
   totalDeposits?: number;
@@ -122,7 +135,6 @@ export class DashboardReportBuilder {
   buildHtml(): string {
     const {
       totalVal,
-      freeCash,
       stocksPct,
       bondsPct,
       cbrRateDisplay,
@@ -149,7 +161,13 @@ export class DashboardReportBuilder {
       topLosers,
       fundsGridHtml,
       marketValueWarningHtml = '',
+      xirr,
     } = this.data;
+
+    // XIRR данные
+  const xirrRate = xirr?.rate ?? null;
+  const xirrReason = xirr?.reason ?? 'нет данных о взносах';
+  const withdrawalsHaveDates = xirr?.withdrawalsHaveDates ?? false;
 
     // Формирование отображения ставки ЦБ
     const cbrRateHtml =
@@ -347,24 +365,22 @@ export class DashboardReportBuilder {
       '<!-- 📊 ИСТОРИЧЕСКИЕ КАРТОЧКИ ЭФФЕКТИВНОСТИ -->' +
       "<div class='header-panel'>" +
       "<div class='card'>" +
-      "<div class='card-title'>Текущие активы (C9: бумаги + кэш)</div>" +
+      "<div class='card-title'>Активы (рыночная стоимость)</div>" +
       "<div class='card-value' style='color: #e3b341;'>" +
       totalVal +
       (totalVal === '—' ? '' : ' ₽') +
       '</div>' +
-      "<div class='card-sub'>Свободный кэш: " +
-      freeCash +
-      ' ₽ (входит в C9)</div>' +
+      "<div class='card-sub'>бумаги по рынку + кэш; базис ребалансировки дополнительно включает НКД 4 220 ₽</div>" +
       '</div>' +
       "<div class='card'>" +
-      "<div class='card-title'>Лично внесено (C12)</div>" +
+      "<div class='card-title'>Внесено собственных средств</div>" +
       "<div class='card-value'>" +
       totalInvested +
       ' ₽</div>' +
-      "<div class='card-sub'>Собственный капитал</div>" +
+      "<div class='card-sub'>Собственный капитал (нетто-взносы)</div>" +
       '</div>' +
       "<div class='card'>" +
-      "<div class='card-title'>Результат рынка (C10)</div>" +
+      "<div class='card-title'>Результат рынка (по цене покупки)</div>" +
       "<div class='card-value' style='color: " +
       c10Color +
       ";'>" +
@@ -373,13 +389,31 @@ export class DashboardReportBuilder {
       "<div class='card-sub'>Торговый результат: активы по цене покупки − нетто-траты на сделки (без купонов и дивидендов)</div>" +
       '</div>' +
       "<div class='card'>" +
-      "<div class='card-title'>Чистый итог (C11)</div>" +
+      "<div class='card-title'>Чистый итог (рыночная − внесено)</div>" +
       "<div class='card-value' style='color: " +
       c11Color +
       ";'>" +
       profitC11 +
       '</div>' +
-      "<div class='card-sub'>Реальный инвест-профит</div>" +
+      "<div class='card-sub'>Реальный инвест-профит: рыночная стоимость − внесённые средства</div>" +
+      '</div>' +
+      // XIRR tile
+      "<div class='card' style='border-color: #79c0ff;'>" +
+      "<div class='card-title'>Годовая доходность (XIRR)</div>" +
+      "<div class='card-value' style='color: " +
+      (xirrRate !== null
+        ? (xirrRate >= 0 ? '#56d364' : '#ff7b72')
+        : '#8b949e') +
+      ";'>" +
+      (xirrRate !== null ? (xirrRate >= 0 ? '+' : '') + xirrRate.toFixed(1) + '% годовых' : 'н/д') +
+      '</div>' +
+      "<div class='card-sub'>" +
+      (xirrRate !== null && !withdrawalsHaveDates
+        ? 'оценка: выводы без дат — ' + xirrReason
+        : xirrRate !== null
+          ? xirrReason
+          : xirrReason) +
+      '</div>' +
       '</div>' +
       "<div class='card' style='border-color: #a371f7;'>" +
       "<div class='card-title'>Ключевая ставка ЦБ</div>" +
@@ -390,11 +424,14 @@ export class DashboardReportBuilder {
       '</div>' +
       '</div>' +
       (fundsGridHtml || '') +
-      "<div class='grid-main'>" +
-      '<div>' +
+      // Карточки рекомендаций ИИ — на всю ширину, вне двухколоночной сетки
+      "<div class='ai-recommendations-full-width'>" +
       "<div class='block-box ai-box-styled'>" +
       aiBoxHtml +
       '</div>' +
+      '</div>' +
+      "<div class='grid-main'>" +
+      '<div>' +
       "<div class='block-box'>" +
       '<h2>Портфель: состав и приоритеты</h2>' +
       '<table id="portfolio-table">' +
@@ -652,6 +689,7 @@ export class DashboardReportBuilder {
       fundsGridHtml,
       marketValueWarningHtml: kpiData?.marketValueWarningHtml ?? '',
       totalDeposits: kpiData?.totalDeposits || 0,
+      xirr: kpiData?.xirr,
     });
   }
 }

@@ -59,8 +59,13 @@ const DEFAULT_POLICY: UserPolicy = {
   // Хардкод тикера запрещён: тикерные запреты приходят из user-policy.json
   // или PORTFOLIO_NO_SELL_TICKERS. Пустой список — валидное состояние,
   // но о нём обязательно предупреждаем (см. loadUserPolicyWithMeta).
+  //
+  // Запрет по asset-type (например, «все облигации») также НЕ хардкодится:
+  // он должен быть явно объявлен пользователем в user-policy.json или env.
+  // Если пользователь не объявил asset-type запрет — продажа облигаций
+  // не блокируется автоматически.
   noSellTickers: [],
-  noSellAssetTypes: ['О', 'Облигация'],
+  noSellAssetTypes: [],
 };
 
 let cached: UserPolicyLoadResult | null = null;
@@ -178,7 +183,11 @@ export function loadUserPolicyWithMeta(): UserPolicyLoadResult {
 
   const envTickers = process.env.PORTFOLIO_NO_SELL_TICKERS;
   if (envTickers && envTickers.trim() !== '') {
-    policy.noSellTickers = normalizeTickers(envTickers.split(','));
+    // Разделяем по запятой/точке с запятой; пробелы вокруг разделителя игнорируются.
+    // Пример: "RU000A10EC22, PLZL" → ['RU000A10EC22', 'PLZL']
+    policy.noSellTickers = normalizeTickers(
+      envTickers.split(/[,;]/).map((t) => t.trim()).filter(Boolean),
+    );
     source = 'env';
   }
 

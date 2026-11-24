@@ -306,6 +306,43 @@
       const netResult = currentAssets - investedNet;
       const netResultPercent = investedNet > 0 ? ((netResult / investedNet) * 100) : 0;
       
+      // XIRR — годовая доходность
+      let xirrRate: number | null = null;
+      let xirrWithoutPlzl: number | null = null;
+      let xirrReason = 'нет данных';
+      if (typeof window !== 'undefined' && (window as any).FinanceAnalyzerXIRR) {
+        const xirrCalc = (window as any).FinanceAnalyzerXIRR;
+        const deposits = (investedFunds.allDeposits || []).map((d: any) => ({
+          date: new Date(d.date),
+          amount: d.value,
+        }));
+        const plzlAsset = aggregated.find((a: any) => a.ticker === 'PLZL');
+        const plzlValue = plzlAsset ? (plzlAsset.quantity || 0) * (plzlAsset.currentPrice || 0) : 0;
+        const marketValue = totalValue;
+        const cash = freeCash;
+        const withdrawals = investedFunds.totalWithdrawals || 0;
+        const today = new Date();
+        try {
+          // Полный портфель
+          const flows: Array<{date: Date; amount: number}> = [
+            ...deposits,
+            ...(withdrawals > 0 ? [{ date: today, amount: -withdrawals }] : []),
+            { date: today, amount: -(marketValue + cash) },
+          ];
+          xirrRate = xirrCalc.bisectXirr(flows, today);
+          // Без PLZL
+          const flowsNoPlzl: Array<{date: Date; amount: number}> = [
+            ...deposits,
+            ...(withdrawals > 0 ? [{ date: today, amount: -withdrawals }] : []),
+            { date: today, amount: -((marketValue - plzlValue) + cash) },
+          ];
+          xirrWithoutPlzl = xirrCalc.bisectXirr(flowsNoPlzl, today);
+          xirrReason = `${flows.length} точек`;
+        } catch (e) {
+          xirrReason = 'ошибка расчёта';
+        }
+      }
+      
       let percentColorClass = 'positive';
       if (netResultPercent >= 10) {
         percentColorClass = 'glow';
@@ -384,34 +421,39 @@
         </div>`;
       }
       
-      kpiGrid.innerHTML = `
-        <div class="dashboard__card">
-          <div class="dashboard__card__label">Текущие активы (C9)</div>
-          <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(currentAssets))} ₽</div>
-          <div class="dashboard__card__sub">Ликвидационная стоимость</div>
-        </div>
-        <div class="dashboard__card">
-          <div class="dashboard__card__label">Всего внесено</div>
-          <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(totalPurchases))} ₽</div>
-          <div class="dashboard__card__sub">За весь период</div>
-        </div>
-        <div class="dashboard__card">
-          <div class="dashboard__card__label">Всего выведено</div>
-          <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(totalSales))} ₽</div>
-          <div class="dashboard__card__sub">За весь период</div>
-        </div>
-        ${avgDepositHtml}
-        <div class="dashboard__card">
-          <div class="dashboard__card__label">Результат рынка (C10)</div>
-          <div class="dashboard__card__value dashboard__card__value--${marketResult >= 0 ? 'positive' : 'negative'}">${new Intl.NumberFormat('ru-RU').format(Math.round(marketResult))} ₽</div>
-          <div class="dashboard__card__sub">активы по цене покупки − нетто-траты на сделки</div>
-        </div>
-        <div class="dashboard__card ${netResultPercent >= 10 ? 'dashboard__card--highlight' : ''}">
-          <div class="dashboard__card__label">Чистый итог (C11)</div>
-          <div class="dashboard__card__value dashboard__card__value--${netResult >= 0 ? 'positive' : 'negative'}">${new Intl.NumberFormat('ru-RU').format(Math.round(netResult))} ₽</div>
-          <div class="dashboard__card__percent dashboard__card__percent--${percentColorClass}">${netResultPercent >= 0 ? '+' : ''}${netResultPercent.toFixed(2)}%</div>
-          <div class="dashboard__card__sub">активы − нетто-взносы</div>
-        </div>
+       kpiGrid.innerHTML = `
+         <div class="dashboard__card">
+           <div class="dashboard__card__label">Активы (рыночная стоимость)</div>
+           <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(currentAssets))} ₽</div>
+           <div class="dashboard__card__sub">бумаги по рынку + кэш; базис ребалансировки дополнительно включает НКД 4 220 ₽</div>
+         </div>
+         <div class="dashboard__card">
+           <div class="dashboard__card__label">Внесено собственных средств</div>
+           <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(totalPurchases))} ₽</div>
+           <div class="dashboard__card__sub">Собственный капитал (нетто-взносы)</div>
+         </div>
+         <div class="dashboard__card">
+           <div class="dashboard__card__label">Всего выведено</div>
+           <div class="dashboard__card__value dashboard__card__value--neutral">${new Intl.NumberFormat('ru-RU').format(Math.round(totalSales))} ₽</div>
+           <div class="dashboard__card__sub">За весь период</div>
+         </div>
+         ${avgDepositHtml}
+         <div class="dashboard__card">
+           <div class="dashboard__card__label">Результат рынка (по цене покупки)</div>
+           <div class="dashboard__card__value dashboard__card__value--${marketResult >= 0 ? 'positive' : 'negative'}">${new Intl.NumberFormat('ru-RU').format(Math.round(marketResult))} ₽</div>
+           <div class="dashboard__card__sub">активы по цене покупки − нетто-траты на сделки</div>
+         </div>
+          <div class="dashboard__card ${netResultPercent >= 10 ? 'dashboard__card--highlight' : ''}">
+            <div class="dashboard__card__label">Чистый итог (рыночная − внесено)</div>
+            <div class="dashboard__card__value dashboard__card__value--${netResult >= 0 ? 'positive' : 'negative'}">${new Intl.NumberFormat('ru-RU').format(Math.round(netResult))} ₽</div>
+            <div class="dashboard__card__percent dashboard__card__percent--${percentColorClass}">${netResultPercent >= 0 ? '+' : ''}${netResultPercent.toFixed(2)}%</div>
+            <div class="dashboard__card__sub">Реальный инвест-профит: рыночная стоимость − внесённые средства</div>
+          </div>
+          <div class="dashboard__card" style="border-color: #79c0ff;">
+            <div class="dashboard__card__label">Годовая доходность (XIRR)</div>
+            <div class="dashboard__card__value dashboard__card__value--${xirrRate !== null ? (xirrRate >= 0 ? 'positive' : 'negative') : 'neutral'}">${xirrRate !== null ? (xirrRate >= 0 ? '+' : '') + xirrRate.toFixed(1) + '% годовых' : 'н/д'}</div>
+            <div class="dashboard__card__sub">${xirrRate !== null ? xirrReason : xirrReason}</div>
+          </div>
         <div class="dashboard__card">
           <div class="dashboard__card__label">Лучший актив</div>
           <div class="dashboard__card__value dashboard__card__value--positive">${topGainer.ticker}</div>

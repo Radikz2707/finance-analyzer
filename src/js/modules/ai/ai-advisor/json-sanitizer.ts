@@ -23,6 +23,9 @@
  *  5. Многострочный JSON с вложенными объектами и массивами
  */
 export function stripJsonBlockFromAiText(text: string): string {
+  // Санитайзер не вызывать на пустом тексте — экономим циклы.
+  if (!text || text.length === 0) return text;
+
   let result = text;
 
   // 1. Удаляем ```json ... ``` блок (fenced с маркером, тройные бэктики)
@@ -42,6 +45,21 @@ export function stripJsonBlockFromAiText(text: string): string {
   // 3. Удаляем сырой JSON-объект {"ticker": ... } без маркеров (inline)
   //    Используем brace-counting для корректного удаления вложенных объектов
   result = removeInlineJsonObject(result);
+
+  // 3b. Удаляем JSON-объект с portfolioSummary (новая схема: {portfolioSummary, recommendations})
+  //     JSON может быть обрезан в конце (нет закрывающей }), поэтому режем от { до конца текста
+  //     Также учитываем что \n может быть уже заменён на <br> в HTML-рендеринге
+  //     ВАЖНО: санитайзер вызывается ДО конвертации \n → <br>, поэтому ищем с \n
+  if (/^\s*\{[\s\S]*?"portfolioSummary"\s*:/m.test(result)) {
+    console.log('[JSON_SANITIZER] Found portfolioSummary JSON block at start, removing to end...');
+    result = result.replace(/^\s*\{[\s\S]*?"portfolioSummary"\s*:[\s\S]*$/m, '');
+  } else {
+    console.log('[JSON_SANITIZER] portfolioSummary JSON block NOT found in text');
+    console.log('[JSON_SANITIZER] Text length:', result.length);
+    console.log('[JSON_SANITIZER] Text contains "portfolioSummary":', result.includes('portfolioSummary'));
+    console.log('[JSON_SANITIZER] First 200 chars:', JSON.stringify(result.substring(0, 200)));
+    console.log('[JSON_SANITIZER] Last 200 chars:', JSON.stringify(result.substring(result.length - 200)));
+  }
 
   // 4. Удаляем <environment_details>...</environment_details>
   result = result.replace(
@@ -70,7 +88,8 @@ export function stripJsonBlockFromAiText(text: string): string {
  * вложенных объектов и массивов через подсчёт скобок.
  */
 function removeInlineJsonObject(text: string): string {
-  const pattern = /\{\s*"ticker"\s*:/;
+  // Учитываем что \n может быть уже заменён на <br> в HTML-рендеринге
+  const pattern = /\{\s*(?:<br\s*\/?>\s*)*"ticker"\s*:/;
   let result = '';
   let lastIndex = 0;
   let match;
@@ -146,3 +165,5 @@ function removeInlineJsonObject(text: string): string {
 
   return result;
 }
+
+

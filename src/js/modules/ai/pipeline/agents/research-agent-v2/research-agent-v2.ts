@@ -979,15 +979,7 @@ export class ResearchAgentV2 extends AgentBase {
             ) ?? [])
           : (facts.assetsAnalysis ?? []);
 
-      if (assetsToAnalyze.length === 0) {
-        console.warn(
-          '[ResearchAgentV2] DEPRECATED action=facts snapshots=0 ' +
-            `reason=no_assetsAnalysis input.assetsAnalysis=${facts.assetsAnalysis?.length ?? 0} ` +
-            `input.assets=${facts.assets?.length ?? 0}. ` +
-            'Этап выполняется до AnalysisAgent и не может построить snapshots; ' +
-            'InvestmentThesisEngine — заглушка.',
-        );
-      }
+      // Research snapshots DEPRECATED — не выводим warning при пустом assetsToAnalyze
 
       for (const asset of assetsToAnalyze) {
         const ticker = asset.ticker;

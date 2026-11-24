@@ -8,6 +8,10 @@ import {
   type DividendLtmResult,
   type DividendLtmStatus,
 } from './dividend-ltm.js';
+import {
+  fetchPortfolioBondCouponsLtm,
+  type CouponLtmStatus,
+} from './bond-coupon-ltm.js';
 
 /** Семантика дивидендной колонки QUIK. */
 export type DividendKind = 'LTM' | 'DECLARED' | 'UNKNOWN';
@@ -64,14 +68,27 @@ export interface CalculatedIncome {
   excelAsOf?: string | null;
   dividendWarnings?: string[];
   /**
-   * Статус подтверждения LTM-дивидендов для визуального слоя:
-   * - OK — суммы подтверждены источником;
-   * - EMPTY — источники ответили, но выплат в окне нет;
-   * - UNAVAILABLE — источники недоступны (показывать «недоступно», не 0 ₽);
-   * - MIXED — часть тикеров подтверждена, часть нет;
-   * - null — автодогрузка не запрашивалась (данные Excel / опция выключена).
+   * Статус подтверждения LTM-дивидендов для визуального слоя.
    */
   dividendDataStatus?: DividendLtmStatus | 'MIXED' | null;
+
+  // ─── Купоны LTM (облигации, по графику MOEX ISS) ───
+  /** Сумма LTM купонов до НДФЛ, ₽. */
+  totalCouponsGross?: number;
+  /** Сумма LTM купонов после НДФЛ 13%, ₽. */
+  totalCouponsNet?: number;
+  /** Результаты по каждой облигации. */
+  couponBonds?: Array<{
+    ticker: string;
+    ltmPerBond: number | null;
+    count: number;
+    asOf: string | null;
+    source: string;
+    status: string;
+    isFloaterEstimate: boolean;
+  }>;
+  couponStatus?: CouponLtmStatus | 'MIXED' | null;
+  couponWarnings?: string[];
 }
 
 const STOCK_TYPES = new Set(['А', 'АКЦИЯ', 'АКЦИИ', 'A', 'STOCK', 'STOCKS']);
@@ -231,6 +248,11 @@ export async function calculatePortfolioIncome(
   const pendingLtm: Array<{
     ticker: string;
     name: string;
+    quantity: number;
+  }> = [];
+  // Облигации для расчёта купонов LTM из графика MOEX ISS.
+  const bondPositions: Array<{
+    ticker: string;
     quantity: number;
   }> = [];
 
@@ -451,6 +473,10 @@ export async function calculatePortfolioIncome(
           totalNkd += rowNkd;
         }
       }
+      // Собираем позиции облигаций для расчёта купонов LTM.
+      if (qty > 0 && ticker) {
+        bondPositions.push({ ticker, quantity: qty });
+      }
       continue;
     }
 
@@ -637,6 +663,47 @@ export async function calculatePortfolioIncome(
       `asOf=${excelAsOf}`,
   );
 
+  // ─── Купоны LTM (облигации, по графику MOEX ISS) ─────────────────────────
+  let totalCouponsGross = 0;
+  let totalCouponsNet = 0;
+  let couponStatus: CouponLtmStatus | 'MIXED' | null = null;
+  const couponWarnings: string[] = [];
+  const couponBonds: Array<{
+    ticker: string;
+    ltmPerBond: number | null;
+    count: number;
+    asOf: string | null;
+    source: string;
+    status: string;
+    isFloaterEstimate: boolean;
+  }> = [];
+
+  if (bondPositions.length > 0) {
+    const couponResult = await fetchPortfolioBondCouponsLtm(bondPositions);
+    totalCouponsGross = couponResult.totalGross;
+    totalCouponsNet = couponResult.totalNet;
+    couponStatus = couponResult.status;
+    couponWarnings.push(...couponResult.warnings);
+
+    for (const bond of couponResult.bonds) {
+      couponBonds.push({
+        ticker: bond.ticker,
+        ltmPerBond: bond.ltmPerBond,
+        count: bond.count,
+        asOf: bond.asOf,
+        source: bond.source,
+        status: bond.status,
+        isFloaterEstimate: bond.isFloaterEstimate,
+      });
+    }
+  }
+
+  console.log(
+    `[BOND_COUPON_TILE] gross=${totalCouponsGross.toFixed(2)} net=${totalCouponsNet.toFixed(2)} ` +
+      `bonds=${bondPositions.length} status=${couponStatus ?? 'none'} ` +
+      `warnings=${couponWarnings.length > 0 ? couponWarnings.length : 'none'}`,
+  );
+
   return {
     totalNkd: Math.round(totalNkd * 100) / 100,
     totalDivs: Math.round(totalDivs * 100) / 100,
@@ -650,6 +717,11 @@ export async function calculatePortfolioIncome(
     excelAsOf,
     dividendWarnings,
     dividendDataStatus,
+    totalCouponsGross: Math.round(totalCouponsGross * 100) / 100,
+    totalCouponsNet: Math.round(totalCouponsNet * 100) / 100,
+    couponBonds: couponBonds.length > 0 ? couponBonds : undefined,
+    couponStatus,
+    couponWarnings: couponWarnings.length > 0 ? couponWarnings : undefined,
   };
 }
 

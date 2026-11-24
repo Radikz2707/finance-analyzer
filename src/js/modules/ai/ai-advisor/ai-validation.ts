@@ -43,6 +43,8 @@ export interface HallucinationRemovalResult {
     type: 'price' | 'quantity' | 'amount';
     ticker?: string;
     raw: string;
+    /** Реальное значение из данных, если было подставлено */
+    replacedWith?: string;
   }>;
 }
 
@@ -492,19 +494,32 @@ function tickerLower(ticker: string): string {
 // ============================================================================
 
 /**
- * Удаляет из AI-текста галлюцинированные цены, количества и суммы,
- * которые не должны генерироваться AI — все числовые данные
- * должны приходить из детерминированных источников (Excel).
+ * Удаляет или заменяет галлюцинированные данные из AI-текста.
+ *
+ * Ищет цены, количества и суммы, которые AI мог сгенерировать
+ * самостоятельно. Вместо молчаливой замены на [ДАННЫЕ_УДАЛЕНЫ]
+ * пытается подставить реальное значение из assetsAnalysis.
+ * [ДАННЫЕ_УДАЛЕНЫ] — только если данных нет вовсе.
  *
  * @param text — AI-текст для очистки
+ * @param assetsAnalysis — данные анализа активов для подстановки реальных значений
  * @returns результат очистки
  */
 export function removeHallucinatedData(
   text: string,
+  assetsAnalysis?: AssetAnalysis[],
 ): HallucinationRemovalResult {
   const removedHallucinations: HallucinationRemovalResult['removedHallucinations'] =
     [];
   let cleanedText = text;
+
+  // Индексируем активы по тикеру для быстрого поиска
+  const tickerMap = new Map<string, AssetAnalysis>();
+  if (assetsAnalysis) {
+    for (const a of assetsAnalysis) {
+      tickerMap.set(a.ticker.toUpperCase().trim(), a);
+    }
+  }
 
   // Удаляем галлюцинированные цены
   cleanedText = removePatterns(
@@ -512,6 +527,7 @@ export function removeHallucinatedData(
     HALLUCINATED_PRICE_PATTERNS,
     'price',
     removedHallucinations,
+    tickerMap,
   );
 
   // Удаляем галлюцинированные количества
@@ -520,6 +536,7 @@ export function removeHallucinatedData(
     HALLUCINATED_QUANTITY_PATTERNS,
     'quantity',
     removedHallucinations,
+    tickerMap,
   );
 
   // Удаляем галлюцинированные суммы
@@ -528,6 +545,7 @@ export function removeHallucinatedData(
     HALLUCINATED_AMOUNT_PATTERNS,
     'amount',
     removedHallucinations,
+    tickerMap,
   );
 
   return {
@@ -537,13 +555,17 @@ export function removeHallucinatedData(
 }
 
 /**
- * Удаляет совпадения по массиву паттернов из текста.
+ * Удаляет или заменяет совпадения по массиву паттернов из текста.
+ *
+ * Если найден тикер и в assetsAnalysis есть данные — подставляет
+ * реальное значение. Иначе заменяет на [ДАННЫЕ_УДАЛЕНЫ].
  */
 function removePatterns(
   text: string,
   patterns: RegExp[],
   hallucinationType: 'price' | 'quantity' | 'amount',
   removedHallucinations: HallucinationRemovalResult['removedHallucinations'],
+  tickerMap: Map<string, AssetAnalysis>,
 ): string {
   let result = text;
 
@@ -559,14 +581,34 @@ function removePatterns(
         break;
       }
 
+      const ticker = match[1] || undefined;
+      let replacement = '[ДАННЫЕ_УДАЛЕНЫ]';
+
+      // Пытаемся подставить реальное значение из данных
+      if (ticker && tickerMap.size > 0) {
+        const asset = tickerMap.get(ticker.toUpperCase().trim());
+        if (asset) {
+          if (hallucinationType === 'price') {
+            replacement = `${asset.currentPrice.toLocaleString('ru-RU')}`;
+          } else if (hallucinationType === 'quantity') {
+            replacement = `${asset.quantity}`;
+          } else if (hallucinationType === 'amount') {
+            const amount = asset.currentPrice * asset.quantity;
+            if (amount > 0) {
+              replacement = `${amount.toLocaleString('ru-RU')} ₽`;
+            }
+          }
+        }
+      }
+
       removedHallucinations.push({
         type: hallucinationType,
         raw: match[0],
-        ticker: match[1] || undefined,
+        ticker,
+        replacedWith: replacement !== '[ДАННЫЕ_УДАЛЕНЫ]' ? replacement : undefined,
       });
 
-      // Заменяем на нейтральный маркер
-      result = result.replace(match[0], '[ДАННЫЕ_УДАЛЕНЫ]');
+      result = result.replace(match[0], replacement);
     }
   }
 
@@ -664,12 +706,21 @@ export function postProcessAiText(
     }
   }
 
-  // 2. Удаление галлюцинированных данных
-  const hallucinationRemoval = removeHallucinatedData(policySafeText);
+  // 2. Удаление галлюцинированных данных (с подстановкой реальных значений)
+  const hallucinationRemoval = removeHallucinatedData(
+    policySafeText,
+    assetsAnalysis,
+  );
   if (hallucinationRemoval.removedHallucinations.length > 0) {
+    const withRealData = hallucinationRemoval.removedHallucinations.filter(
+      (h) => h.replacedWith,
+    ).length;
+    const withPlaceholder =
+      hallucinationRemoval.removedHallucinations.length - withRealData;
     warnings.push(
-      `[HALLUCINATION_REMOVAL] Удалено ${hallucinationRemoval.removedHallucinations.length} ` +
-        'галлюцинированных элементов (цен/количеств/сумм)',
+      `[HALLUCINATION_REMOVAL] Обработано ${hallucinationRemoval.removedHallucinations.length} ` +
+        `галлюцинаций: ${withRealData} заменены на реальные данные, ` +
+        `${withPlaceholder} заменены на [ДАННЫЕ_УДАЛЕНЫ]`,
     );
   }
 

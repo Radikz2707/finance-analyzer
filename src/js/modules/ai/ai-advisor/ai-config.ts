@@ -20,6 +20,8 @@ export interface AiModelConfig {
   maxTokens: number;
   /** Температура генерации (0-1) */
   temperature: number;
+  /** Seed для детерминированной генерации (null = случайный) */
+  seed?: number;
   /** Приоритет (меньше = выше) */
   priority: number;
   /** Требуется ли API-ключ */
@@ -39,15 +41,13 @@ export const AI_MODELS: AiModelConfig[] = [
     // Имя модели берётся из OLLAMA_MODEL_NAME (env OLLAMA_MODEL, дефолт
     // qwen3.5:9b) — единая точка смены модели для всего проекта.
     modelName: OLLAMA_MODEL_NAME,
-    // 8192 токенов: полный отчёт (JSON-блок ~1.5k + 7 секций + таблица +
-    // план ребалансировки ~5-6k). 4096 приводило к ОБРЫВУ отчёта на
-    // середине плана ребалансировки. 16384 НЕЛЬЗЯ: вместе с промптом
-    // (~13k токенов с блоком фундаментала) это превышало num_ctx 24576,
-    // и Ollama обрывала генерацию по длине контекста. Теперь бюджет
-    // согласован: num_ctx 32768 (ollama-stream.ts) = промпт ~13k +
-    // ответ 8192 + запас ~11k. Таймауты увеличены до 30 минут.
-    maxTokens: 8192,
+    // 12284 токена: полный отчёт (JSON-блок ~1.5k + 7 секций + таблица +
+    // план ребалансировки ~5-6k). 4096 приводило к ОБРЫВУ отчёта.
+    // num_ctx 20480 + num_predict 16384 (ollama-stream.ts) = промпт ~12k + ответ 4k = 16k.
+    // Таймауты увеличены до 30 минут.
+    maxTokens: 12284,
     temperature: 0.2,
+    seed: 42,
     priority: 1,
     requiresKey: false,
     envKey: '',
@@ -58,7 +58,7 @@ export const AI_MODELS: AiModelConfig[] = [
     name: 'GigaChat (Сбер)',
     baseUrl: 'https://gigachat.devices.sberbank.ru/api/v1/chat/completions',
     modelName: 'GigaChat',
-    maxTokens: 8192,
+    maxTokens: 12284,
     temperature: 0.3,
     priority: 2,
     requiresKey: true,
@@ -87,7 +87,7 @@ export const AI_MODELS: AiModelConfig[] = [
     name: 'YandexGPT (Яндекс Cloud)',
     baseUrl: 'https://llm.api.cloud.yandex.net/ai/v1/chatCompletions',
     modelName: 'yandexgpt-lite',
-    maxTokens: 8192,
+    maxTokens: 12284,
     temperature: 0.3,
     priority: 5,
     requiresKey: true,

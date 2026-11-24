@@ -38,6 +38,8 @@ export interface RawAIJson {
   agreementWithPortfolioMath: string | null;
 
   // НОВЫЕ поля: глубина анализа
+  /** Общий анализ портфеля (2-3 абзаца о структуре, рисках, макро). Заполняется первым элементом массива. */
+  portfolioSummary?: string;
   /** Анализ фундаментала эмитента (P/E, ROE, рост, долг) */
   fundamentalAnalysis?: string | null;
   /** Рекомендация по timing сделки (когда покупать/продавать) */
@@ -143,6 +145,8 @@ export interface BondCardInfo {
   couponTypeReasonDetail: string | null;
   /** Источник подтверждения типа: ISS / SERIES / EXCEL. */
   couponTypeSource: string | null;
+  /** Источник доходности: EXCEL_COLUMN / EXCEL_COMPUTED / SMART_LAB_PROBE. */
+  yieldSource: 'EXCEL_COLUMN' | 'EXCEL_COMPUTED' | 'SMART_LAB_PROBE' | null;
   /** Методика YTM — карточка подписывает её рядом со значением. */
   ytmMethod: string | null;
   /** Качество данных доходности: AVAILABLE / PARTIAL / MISSING */
@@ -158,6 +162,8 @@ export interface BondCardInfo {
   creditSource: string;
   creditAsOf: string | null;
   creditRating: { agency: string; rating: string; outlook: string } | null;
+  /** Объём оборота (млн руб.) из Smart-Lab probe, если пуст в Excel. */
+  turnoverFromSmartLab?: number | null;
   recommendation: string;
 }
 
@@ -169,6 +175,7 @@ export function buildBondCardInfo(bond: BondAnalysisResult): BondCardInfo {
     couponTypeReason: bond.yieldAnalysis.couponTypeReason ?? null,
     couponTypeReasonDetail: bond.yieldAnalysis.couponTypeReasonDetail ?? null,
     couponTypeSource: bond.yieldAnalysis.couponTypeSource ?? null,
+    yieldSource: bond.yieldAnalysis.yieldSource ?? null,
     ytmMethod: bond.yieldAnalysis.ytmMethod ?? null,
     dataQuality: (bond.yieldAnalysis.dataQuality as 'AVAILABLE' | 'PARTIAL' | 'MISSING' | null) ?? null,
     currentYield: bond.yieldAnalysis.currentYield,
@@ -181,6 +188,7 @@ export function buildBondCardInfo(bond: BondAnalysisResult): BondCardInfo {
     creditSource: bond.creditAssessment.source,
     creditAsOf: bond.creditAssessment.asOfDate ?? null,
     creditRating: bond.creditAssessment.rating ?? null,
+    turnoverFromSmartLab: bond.moexData.turnoverFromSmartLab ?? null,
     recommendation: bond.recommendation,
   };
 }
@@ -270,12 +278,48 @@ export interface StructuredAIAssetRecommendation {
   /** Средний ежемесячный взнос (investedFunds.averageMonthlyDeposit), ₽/мес. */
   monthlyContributionRub?: number | null;
 
-  // ─── Fallback (заполняется ТОЛЬКО когда AI не ответил) ───
-  /** Причина fallback (для отладки и объяснений) */
+  // ─── Confidence raw — значение до клампинга ───
+  /**
+   * Оригинальная уверенность модели ДО клампинга по macroCtx.isFresh.
+   * Нужна для отображения: «50% (raw: 85%, макро устарело)».
+   */
+  confidenceRaw?: number | null;
+
+  // ─── Ликвидность (для акций и облигаций) ───
+  /** Уровень ликвидности: HIGH / MEDIUM / LOW / CRITICAL / UNKNOWN */
+  liquidityLevel?: 'HIGH' | 'MEDIUM' | 'LOW' | 'CRITICAL' | 'UNKNOWN';
+  /** Дневной оборот (руб) или null */
+  dailyTurnover?: number | null;
+  /** Дней для ликвидации позиции (без просадки) или null */
+  liquidationDays?: number | null;
+
+  // ─── Расширенные данные из Excel (лист «Акции») ───
+  /** Минимальная цена за период (поддержка) */
+  minPrice?: number | null;
+  /** Максимальная цена за период (сопротивление) */
+  maxPrice?: number | null;
+  /** Рейтинг по динамике (0-100, из Excel) */
+  ratingDynamic?: number | null;
+  /** Рейтинг по объему (0-100, из Excel) */
+  ratingVolume?: number | null;
+  /** Общий рейтинг (0-100, из Excel) */
+  ratingTotal?: number | null;
+  /** Позиция в диапазоне (%) — % от мин/макс за период */
+  rangePosition?: number | null;
+  /** Сигнал входа из Excel (например, «Выгодная зона», «Нейтрально / Ждать») */
+  entrySignal?: string | null;
+
+  // ─── Fallback — внутренние поля ───
+  /** Причина fallback (внутреннее поле, не рендерится) */
   _fallbackReason?: FallbackReason;
   /** Подробное объяснение fallback */
-  _fallbackExplanation?: FallbackExplanation;
-  /** Рекомендация что делать при fallback */
+  _fallbackExplanation?: {
+    reason: FallbackReason;
+    short: string;
+    detailed: string;
+    action: string;
+  };
+  /** Рекомендация что делать */
   _fallbackAction?: string;
 }
 
@@ -387,6 +431,20 @@ export function buildFallbackStructuredRecommendation(
   det: DeterministicAssetData,
   fallbackReason: FallbackReason = 'NO_AI_JSON',
   reason?: string,
+  liquidity?: {
+    liquidityLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'CRITICAL' | 'UNKNOWN';
+    dailyTurnover: number | null;
+    liquidationDays: number | null;
+  },
+  extendedData?: {
+    minPrice?: number | null;
+    maxPrice?: number | null;
+    ratingDynamic?: number | null;
+    ratingVolume?: number | null;
+    ratingTotal?: number | null;
+    rangePosition?: number | null;
+    entrySignal?: string | null;
+  },
 ): StructuredAIAssetRecommendation {
   const explanation = getFallbackExplanation(fallbackReason);
 
@@ -453,6 +511,20 @@ export function buildFallbackStructuredRecommendation(
     },
     /** Рекомендация что делать */
     _fallbackAction: explanation.action,
+
+    // Ликвидность (детерминированная)
+    liquidityLevel: liquidity?.liquidityLevel,
+    dailyTurnover: liquidity?.dailyTurnover,
+    liquidationDays: liquidity?.liquidationDays,
+
+    // Расширенные данные из Excel
+    minPrice: extendedData?.minPrice,
+    maxPrice: extendedData?.maxPrice,
+    ratingDynamic: extendedData?.ratingDynamic,
+    ratingVolume: extendedData?.ratingVolume,
+    ratingTotal: extendedData?.ratingTotal,
+    rangePosition: extendedData?.rangePosition,
+    entrySignal: extendedData?.entrySignal,
   };
 }
 
@@ -573,6 +645,7 @@ export interface ValidationResult {
 export function validateStructuredAIJson(
   json: RawAIJson,
   knownTickers: string[],
+  macroCtx?: { isFresh: boolean },
 ): ValidationResult {
   const errors: ValidationError[] = [];
 
@@ -632,29 +705,50 @@ export function validateStructuredAIJson(
   }
 
   // 4. recommendedTargetPercent — валидация диапазона 0..100
-  if (json.recommendedTargetPercent !== null) {
-    if (typeof json.recommendedTargetPercent !== 'number') {
+  // Coercion: если модель вернула строку ("17.4%"), пробуем вычистить % и пробелы → parseFloat.
+  // undefined → null: при schema-выводе модель пропускает необязательные поля.
+  let targetPercentValue: number | null = json.recommendedTargetPercent;
+  if (targetPercentValue === undefined) {
+    targetPercentValue = null;
+    (json as RawAIJson).recommendedTargetPercent = null;
+  } else if (targetPercentValue !== null && typeof targetPercentValue === 'string') {
+    const cleaned = (targetPercentValue as string).replace(/[%\s]/g, '');
+    const parsed = parseFloat(cleaned);
+    if (!isNaN(parsed) && isFinite(parsed)) {
+      targetPercentValue = parsed;
+      (json as RawAIJson).recommendedTargetPercent = parsed;
+    }
+  }
+  if (targetPercentValue !== null) {
+    if (typeof targetPercentValue !== 'number') {
+      // Лог для отладки: ловим тип, который модель реально вернула
+      console.log(
+        '[VALIDATOR] raw recommendedTargetPercent:',
+        JSON.stringify(json.recommendedTargetPercent),
+        'ticker:',
+        json.ticker,
+      );
       errors.push({
         field: 'recommendedTargetPercent',
         message: 'recommendedTargetPercent должен быть числом или null',
       });
     } else if (
-      json.recommendedTargetPercent !== json.recommendedTargetPercent || // NaN проверка
-      !isFinite(json.recommendedTargetPercent) // Infinity/-Infinity проверка
+      targetPercentValue !== targetPercentValue || // NaN проверка
+      !isFinite(targetPercentValue) // Infinity/-Infinity проверка
     ) {
       errors.push({
         field: 'recommendedTargetPercent',
-        message: `recommendedTargetPercent должен быть конечным числом, получено: ${json.recommendedTargetPercent}`,
+        message: `recommendedTargetPercent должен быть конечным числом, получено: ${targetPercentValue}`,
       });
-    } else if (json.recommendedTargetPercent < 0) {
+    } else if (targetPercentValue < 0) {
       errors.push({
         field: 'recommendedTargetPercent',
-        message: `recommendedTargetPercent не может быть отрицательным: ${json.recommendedTargetPercent}`,
+        message: `recommendedTargetPercent не может быть отрицательным: ${targetPercentValue}`,
       });
-    } else if (json.recommendedTargetPercent > 100) {
+    } else if (targetPercentValue > 100) {
       errors.push({
         field: 'recommendedTargetPercent',
-        message: `recommendedTargetPercent не может превышать 100%, получено: ${json.recommendedTargetPercent}`,
+        message: `recommendedTargetPercent не может превышать 100%, получено: ${targetPercentValue}`,
       });
     }
   }
@@ -718,17 +812,70 @@ export function validateStructuredAIJson(
   }
 
   // 7. keyRisks и keyCatalysts — массивы строк или null
-  if (json.keyRisks !== null && !Array.isArray(json.keyRisks)) {
-    errors.push({
-      field: 'keyRisks',
-      message: 'keyRisks должен быть массивом строк или null',
-    });
+  // Если модель вернула строку — преобразуем в массив (coercion)
+  // Если модель вернула объект (описание схемы JSON) — ставим null
+  if (json.keyRisks !== null && json.keyRisks !== undefined) {
+    if (typeof json.keyRisks === 'string') {
+      // Модель вернула строку — преобразуем в массив
+      json.keyRisks = [json.keyRisks];
+    } else if (typeof json.keyRisks === 'object' && !Array.isArray(json.keyRisks)) {
+      // Модель вернула описание схемы JSON {"type": ["array", "null"], ...}
+      // Это не данные, а метасхема — ставим null
+      json.keyRisks = null;
+    } else if (!Array.isArray(json.keyRisks)) {
+      errors.push({
+        field: 'keyRisks',
+        message: 'keyRisks должен быть массивом строк или null',
+      });
+    }
   }
-  if (json.keyCatalysts !== null && !Array.isArray(json.keyCatalysts)) {
-    errors.push({
-      field: 'keyCatalysts',
-      message: 'keyCatalysts должен быть массивом строк или null',
-    });
+  if (json.keyCatalysts !== null && json.keyCatalysts !== undefined) {
+    if (typeof json.keyCatalysts === 'string') {
+      // Модель вернула строку — преобразуем в массив
+      json.keyCatalysts = [json.keyCatalysts];
+    } else if (typeof json.keyCatalysts === 'object' && !Array.isArray(json.keyCatalysts)) {
+      // Модель вернула описание схемы JSON — ставим null
+      json.keyCatalysts = null;
+    } else if (!Array.isArray(json.keyCatalysts)) {
+      errors.push({
+        field: 'keyCatalysts',
+        message: 'keyCatalysts должен быть массивом строк или null',
+      });
+    }
+  }
+
+  // 7b. portfolioSummary — строка или null (первый элемент массива)
+  if (json.portfolioSummary !== null && json.portfolioSummary !== undefined) {
+    if (typeof json.portfolioSummary !== 'string') {
+      errors.push({
+        field: 'portfolioSummary',
+        message: 'portfolioSummary должен быть строкой или null',
+      });
+    }
+  }
+
+  // 8. Confidence — guard + клампинг при устаревших макро-данных
+  if (json.confidence !== null && typeof json.confidence === 'number') {
+    // Сохраняем raw-значение ДО клампинга
+    const rawConfidence = json.confidence;
+
+    // Guard: confidence вне [0, 1] → приводим к границам
+    if (json.confidence < 0) {
+      json.confidence = 0;
+    } else if (json.confidence > 1) {
+      json.confidence = 1;
+    }
+
+    // Клампинг: если макро-данные устарели — потолок 0.5
+    if (!macroCtx?.isFresh && json.confidence > 0.5) {
+      const clamped = 0.5;
+      console.log(
+        `[CONFIDENCE_CLAMP] ticker=${json.ticker} raw=${rawConfidence} → ${clamped} reason=macro_stale`,
+      );
+      json.confidence = clamped;
+      // Сохраняем raw-значение для отображения
+      (json as RawAIJson & { confidenceRaw?: number }).confidenceRaw = rawConfidence;
+    }
   }
 
   return {
@@ -752,6 +899,26 @@ export function buildStructuredAIRecommendation(
    * неверное число» от контаминации соседним тикером (кейс TATN/IRAO).
    */
   fundamentalSiblings: FundamentalSibling[] = [],
+  /**
+   * Данные ликвидности из LiquidityAnalyzer.
+   */
+  liquidity?: {
+    liquidityLevel: 'HIGH' | 'MEDIUM' | 'LOW' | 'CRITICAL' | 'UNKNOWN';
+    dailyTurnover: number | null;
+    liquidationDays: number | null;
+  },
+  /**
+   * Расширенные данные из Excel (лист «Акции»).
+   */
+  extendedData?: {
+    minPrice?: number | null;
+    maxPrice?: number | null;
+    ratingDynamic?: number | null;
+    ratingVolume?: number | null;
+    ratingTotal?: number | null;
+    rangePosition?: number | null;
+    entrySignal?: string | null;
+  },
 ): StructuredAIAssetRecommendation {
   // Если AI JSON невалиден или отсутствует — используем fallback
   if (!aiJson || !validation || !validation.valid) {
@@ -796,6 +963,7 @@ export function buildStructuredAIRecommendation(
     recommendedTargetPercent: aiJson.recommendedTargetPercent,
     recommendedAction,
     confidence: aiJson.confidence,
+    confidenceRaw: (aiJson as unknown as Record<string, unknown>).confidenceRaw as number | undefined ?? aiJson.confidence,
     rationale: aiJson.rationale || null,
     targetReason: aiJson.targetReason || null,
     keyRisks: aiJson.keyRisks || [],
@@ -820,6 +988,20 @@ export function buildStructuredAIRecommendation(
       fundamentalSiblings,
     ),
     dataSources: aiJson.dataSources || [],
+
+    // Ликвидность (детерминированная, из LiquidityAnalyzer)
+    liquidityLevel: liquidity?.liquidityLevel,
+    dailyTurnover: liquidity?.dailyTurnover,
+    liquidationDays: liquidity?.liquidationDays,
+
+    // Расширенные данные из Excel
+    minPrice: extendedData?.minPrice,
+    maxPrice: extendedData?.maxPrice,
+    ratingDynamic: extendedData?.ratingDynamic,
+    ratingVolume: extendedData?.ratingVolume,
+    ratingTotal: extendedData?.ratingTotal,
+    rangePosition: extendedData?.rangePosition,
+    entrySignal: extendedData?.entrySignal,
   };
 }
 

@@ -175,6 +175,7 @@ export function buildPortfolioSnapshot(
   macro: {
     totalBalance: number;
     freeCash: number;
+    cashSource?: 'EXCEL' | 'QUIK';
     stocksDeficitRub?: number;
     bondsDeficitRub?: number;
   },

@@ -292,6 +292,12 @@ export async function fetchDividendLtm(
           if (smartLabComputed.ltmPerShare !== null) {
             computed = smartLabComputed;
             source = 'SMARTLAB';
+          } else if (smartLabProbe === 'EMPTY') {
+            // EMPTY при smartlab=OK — предупреждение в лог
+            console.warn(
+              `[DIVIDENDS_LTM_FETCH] ⚠️ ${normalized}: smart-lab ответил OK, ` +
+                `но выплат в окне нет (records=${parsed.records.length}, parseOk=${parsed.parseOk}${parsed.parseError ? `, error: ${parsed.parseError}` : ''})`,
+            );
           }
         }
       } catch {

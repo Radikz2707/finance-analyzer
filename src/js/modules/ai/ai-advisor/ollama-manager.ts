@@ -55,6 +55,12 @@ export interface OllamaChatOptions {
   frequencyPenalty?: number;
   /** Presence penalty */
   presencePenalty?: number;
+  /** JSON schema для format-декодинга (гарантирует валидный JSON) */
+  jsonSchema?: Record<string, unknown>;
+  /** Время удержания модели в памяти (по умолчанию 60m — не выгружать при простое) */
+  keepAlive?: string;
+  /** Seed для детерминированной генерации */
+  seed?: number;
 }
 
 /** Сообщение в чате */
@@ -661,7 +667,10 @@ function validateAssetReferences(text: string, knownTickers: string[]): string {
  *
  * Используем string-based matching вместо regex для надёжности в разных средах.
  */
-export function sanitizeAiNarrative(text: string): string {
+export function sanitizeAiNarrative(
+  text: string,
+  noSellTickers?: string[],
+): string {
   if (!text || text.length === 0) return text;
 
   // Разбиваем на предложения по разделителям: . ! ?
@@ -739,15 +748,99 @@ export function sanitizeAiNarrative(text: string): string {
 
   const sanitized = filtered.join(' ');
 
+  // G.1: no-sell — заменить sell-действия на удержание
+  const noSellReplacements: Array<[RegExp, string]> = [
+    [/продажа\s+частями/gi, 'удерживать; долю снижаем докупками других активов'],
+    [/частичная\s+продажа/gi, 'удерживать; долю снижаем докупками других активов'],
+    [/выход\s+из\s+позиции/gi, 'удерживать; долю снижаем докупками других активов'],
+    [/осторожный\s+выход/gi, 'снижение доли пассивно'],
+    [/зафиксировать\s+убыток\s+на\s+дне/gi, 'размывание докупками'],
+  ];
+
+  // Применяем ТОЛЬКО если передан noSellTickers (карточки с policyBlocked)
+  // Для BUY-карточек с дефицитом — не применяем (докупать можно)
+  let result = sanitized;
+  if (noSellTickers && noSellTickers.length > 0) {
+    // Разбиваем текст на блоки по тикерам и применяем замены только
+    // к секциям с policyBlocked тикерами
+    const tickerBlocks: Array<{ticker: string, text: string}> = [];
+    let remaining = result;
+    
+    for (const ticker of noSellTickers) {
+      const tickerUpper = ticker.toUpperCase();
+      // Ищем секцию тикера (от тикера до следующего тикера или конца)
+      const idx = remaining.search(new RegExp(tickerUpper + '[\\s\\S]{0,2000}'));
+      if (idx >= 0) {
+        const blockStart = idx;
+        // Ищем следующий тикер или конец
+        let blockEnd = remaining.length;
+        for (const otherTicker of noSellTickers) {
+          if (otherTicker !== ticker) {
+            const otherIdx = remaining.search(
+              new RegExp(otherTicker.toUpperCase() + '[\\s\\S]{0,2000}'),
+            );
+            if (otherIdx > idx && otherIdx < blockEnd) {
+              blockEnd = otherIdx;
+            }
+          }
+        }
+        const block = remaining.substring(blockStart, blockEnd);
+        tickerBlocks.push({ticker: tickerUpper, text: block});
+        remaining = remaining.substring(blockEnd);
+      }
+    }
+    
+    // Применяем no-sell замены только к блокам policyBlocked тикеров
+    for (const block of tickerBlocks) {
+      let blockedText = block.text;
+      for (const [pattern, replacement] of noSellReplacements) {
+        blockedText = blockedText.replace(pattern, replacement);
+      }
+      // Проверяем: если текст блока изменился — заменяем
+      if (blockedText !== block.text) {
+        const originalBlock = result.substring(
+          result.search(new RegExp(block.ticker + '[\\s\\S]{0,2000}')),
+          result.search(
+            new RegExp(
+              noSellTickers
+                .filter((t) => t.toUpperCase() !== block.ticker)
+                .map((t) => t.toUpperCase())
+                .map((t) => `(?:(?!${t}).)*`)
+                .join('|')
+            )
+          ) || result.length,
+        );
+        if (originalBlock) {
+          result = result.replace(originalBlock, blockedText);
+        }
+      }
+    }
+  } else {
+    // Без noSellTickers — базовая замена (fallback)
+    for (const [pattern, replacement] of noSellReplacements) {
+      result = result.replace(pattern, replacement);
+    }
+  }
+
+  // G.2: Детект конкатенации слов («низкорисковыйда» → «низкорисковый» + «да»)
+  const concatPattern = /([а-яё]+)(да|нет)\b/gi;
+  result = result.replace(concatPattern, (match, word, suffix) => {
+    // Проверяем: является ли префик осмысленным словом
+    if (word.length > 3) {
+      return `${word} ${suffix}`;
+    }
+    return match;
+  });
+
   // Safety: если санитизация удалила >70% текста — возвращаем оригинал
-  if (sanitized.length < text.length * 0.3) {
+  if (result.length < text.length * 0.3) {
     log.warn(
       '[AI_NARRATIVE_SANITIZATION] ⚠️ Санитизация удалила слишком много текста (>70%), возвращаем оригинал',
     );
     return text;
   }
 
-  return sanitized.trim();
+  return result.trim();
 }
 
 /**

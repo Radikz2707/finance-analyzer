@@ -53,6 +53,8 @@ export interface StreamResult {
   success: boolean;
   /** Сообщение об ошибке (если success = false) */
   error?: string;
+  /** Причина завершения генерации: stop / length / abort */
+  doneReason?: string;
 }
 
 /**
@@ -96,28 +98,52 @@ export async function streamChat(
     let response;
     try {
       console.log('[STREAM] calling axios.post...');
+      const requestBody = {
+        model: modelName,
+        messages,
+        stream,
+        format: options.jsonSchema,
+        think: false,
+        keep_alive: options.keepAlive ?? '60m',
+        options: {
+          num_predict: options.numPredict || 8192,
+          // Явное контекстное окно: без него Ollama берёт полный контекст
+          // модели (у qwen3.6:35b-a3b это 262144) → огромный KV-cache → OOM.
+          // 32768 согласовано с num_predict 32768 и объёмом
+          // промпта (~16k после чистки мусора):
+          // 16k + 8k = 24k, запас ~8k. При ошибке нехватки VRAM — fallback на 16384.
+          num_ctx: options.numCtx || 20480,
+          temperature: options.temperature ?? 0.2,
+          top_p: options.topP || 0.9,
+          top_k: options.topK || 40,
+          seed: options.seed ?? 42,
+          frequency_penalty: options.frequencyPenalty || 0,
+          presence_penalty: options.presencePenalty || 0,
+        },
+      };
+      // Лог для отладки: фактические параметры запроса
+      console.log(
+        `[OLLAMA_OPTIONS] temperature=${requestBody.options.temperature} ` +
+          `seed=${requestBody.options.seed} ` +
+          `num_ctx=${requestBody.options.num_ctx} ` +
+          `num_predict=${requestBody.options.num_predict}`,
+      );
+      // Лог requestBody.options перед axios.post — для детерминизма
+      console.log(
+        `[OLLAMA_REQUEST] options=${JSON.stringify({
+          temperature: requestBody.options.temperature,
+          seed: requestBody.options.seed,
+          num_ctx: requestBody.options.num_ctx,
+          num_predict: requestBody.options.num_predict,
+          top_p: requestBody.options.top_p,
+          top_k: requestBody.options.top_k,
+        })}`,
+      );
+      // Лог для отладки: format и think должны быть на верхнем уровне
+      // console.log('[STREAM] Request body:', JSON.stringify(requestBody, null, 2));
       response = await axios.post(
         `${OLLAMA_BASE_URL}/api/chat`,
-        {
-          model: modelName,
-          messages,
-          stream,
-          think: false,
-          options: {
-            num_predict: options.numPredict || 8192,
-            // Явное контекстное окно: без него Ollama берёт полный контекст
-            // модели (у qwen3.6:35b-a3b это 32768) → огромный KV-cache → OOM.
-            // 32768 согласовано с ai-config.maxTokens (8192) и объёмом
-            // промпта (~13k токенов с блоком фундаментала): 13k + 8k = 21k,
-            // запас ~11k. Прежние 24576 при num_predict 16384 обрывали ответ.
-            num_ctx: options.numCtx || 32768,
-            temperature: options.temperature ?? 0.2,
-            top_p: options.topP || 0.9,
-            top_k: options.topK || 40,
-            frequency_penalty: options.frequencyPenalty || 0,
-            presence_penalty: options.presencePenalty || 0,
-          },
-        },
+        requestBody,
         {
           timeout,
           responseType: stream ? 'stream' : 'json',
@@ -253,11 +279,13 @@ export async function streamChat(
               // Собираем статистику из последнего сообщения.
               // Ollama в финальном чанке возвращает eval_count (число
               // сгенерированных токенов), а не total_tokens — иначе 0.
+              // total_duration и load_duration — в наносекундах от Ollama,
+              // сохраняем сразу в миллисекундах для единообразия.
               if (json.done) {
                 totalTokens = json.eval_count ?? json.total_tokens ?? 0;
                 promptTokens = json.prompt_eval_count ?? promptTokens;
-                totalDuration = json.total_duration || 0;
-                loadDuration = json.load_duration || 0;
+                totalDuration = (json.total_duration || 0) / 1e6; // нс → мс
+                loadDuration = (json.load_duration || 0) / 1e6; // нс → мс
               }
             } catch {
               // Игнорируем не-JSON данные
@@ -290,8 +318,8 @@ export async function streamChat(
               if (json.done) {
                 totalTokens = json.eval_count ?? json.total_tokens ?? 0;
                 promptTokens = json.prompt_eval_count ?? promptTokens;
-                totalDuration = json.total_duration || 0;
-                loadDuration = json.load_duration || 0;
+                totalDuration = (json.total_duration || 0) / 1e6; // нс → мс
+                loadDuration = (json.load_duration || 0) / 1e6; // нс → мс
               }
             } catch {
               // Игнорируем
@@ -300,7 +328,13 @@ export async function streamChat(
 
           const elapsed = Date.now() - startTime;
           console.log(
-            `[Ollama Stream] ✅ Ответ получен за ${elapsed}мс (${fullContent.length} символов, prompt=${promptTokens} токенов, output=${totalTokens} токенов, ${chunksReceived} чанков, done_reason=${doneReason || 'no_done_chunk'})`,
+            `[Ollama Stream] ✅ Ответ получен за ${elapsed}мс | ` +
+              `fullContent=${fullContent.length} символов | ` +
+              `prompt_eval_count=${promptTokens} токенов | ` +
+              `eval_count=${totalTokens} токенов | ` +
+              `done_reason=${doneReason || 'no_done_chunk'} | ` +
+              `${chunksReceived} чанков | ` +
+              `total_duration=${totalDuration.toFixed(1)}мс`,
           );
 
           settle({
@@ -311,6 +345,7 @@ export async function streamChat(
             totalDuration,
             loadDuration,
             success: true,
+            doneReason: doneReason || undefined,
           });
         });
 
@@ -331,12 +366,12 @@ export async function streamChat(
         });
       });
     } else if (!stream && response.data) {
-      // Нестриминговый режим
+      // Нестриминговый режим — total_duration/ load_duration в нс → мс.
       const content = response.data.message?.content || '';
       totalTokens = response.data.eval_count ?? response.data.total_tokens ?? 0;
       promptTokens = response.data.prompt_eval_count ?? 0;
-      totalDuration = response.data.total_duration || 0;
-      loadDuration = response.data.load_duration || 0;
+      totalDuration = (response.data.total_duration || 0) / 1e6; // нс → мс
+      loadDuration = (response.data.load_duration || 0) / 1e6; // нс → мс
 
       fullContent = content;
 
@@ -425,10 +460,10 @@ export function formatStreamStats(result: StreamResult): string {
     return '❌ Ошибка генерации ответа';
   }
 
-  const timeSeconds = (result.totalDuration / 1_000_000_000).toFixed(2);
+  const timeSeconds = (result.totalDuration / 1_000).toFixed(2);
   const tokensPerSecond =
     result.totalDuration > 0
-      ? (result.totalTokens / (result.totalDuration / 1_000_000_000)).toFixed(1)
+      ? (result.totalTokens / (result.totalDuration / 1_000)).toFixed(1)
       : '0';
 
   return [
@@ -437,7 +472,7 @@ export function formatStreamStats(result: StreamResult): string {
     '⏱️ Время: ' + timeSeconds + 'с',
     '🚀 Скорость: ' + tokensPerSecond + ' токенов/с',
     '📊 Загрузка модели: ' +
-      (result.loadDuration / 1_000_000_000).toFixed(2) +
+      (result.loadDuration / 1_000).toFixed(2) +
       'с',
   ].join('\n');
 }

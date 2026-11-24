@@ -15,6 +15,7 @@ import type {
   MoexQuoteSnapshot,
   MoexReportRecord,
   MoexSecurityInfo,
+  MoexCouponRecord,
 } from './types.js';
 import type { OHLCVBar } from '../../data/data-fetcher/contracts.js';
 import { getFundamentalsConfig } from './config.js';
@@ -408,6 +409,69 @@ export async function fetchMoexReports(
       equity: findNumeric(row, ['EQUITY', 'CAPITAL']),
       debt: findNumeric(row, ['DEBT', 'LIABILITIES', 'TOTALDEBT']),
       assets: findNumeric(row, ['ASSETS', 'TOTALASSETS']),
+    });
+  }
+
+  return records;
+}
+
+/**
+ * Купонный график облигации.
+ *
+ * Endpoint: /iss/securities/{SECID}/coupons.json
+ * Возвращает таблицу «coupons» с историей и планом выплат.
+ *
+ * Возвращает:
+ * - массив записей, если ISS отдал таблицу `coupons`;
+ * - [] — если таблица есть, но выплат нет;
+ * - null — если endpoint недоступен/формат изменился.
+ */
+export async function fetchMoexCoupons(
+  secid: string,
+): Promise<MoexCouponRecord[] | null> {
+  const ticker = secid.trim().toUpperCase();
+  if (!ticker) return null;
+
+  const payload = await fetchIssJson(
+    `securities/${encodeURIComponent(ticker)}/coupons`,
+  );
+  if (!payload) return null;
+
+  const table = getIssTable(payload, 'coupons');
+  if (!table) {
+    // Endpoint не отдаёт таблицу coupons — бумага может быть акцией
+    // или endpoint недоступен.
+    return null;
+  }
+
+  const records: MoexCouponRecord[] = [];
+  for (const row of issRows(table)) {
+    const get = (name: string): unknown => {
+      if (name in row) return row[name];
+      const key = Object.keys(row).find((k) => k.toUpperCase() === name);
+      return key ? row[key] : null;
+    };
+
+    const eventDateRaw =
+      get('EVENTDATE') ?? get('EVENT_DATE') ?? get('DATE');
+    const eventValue = toNumber(get('EVENTVALUE') ?? get('EVENT_VALUE'));
+    const couponValue = toNumber(get('COUPONVALUE') ?? get('COUPON_VALUE'));
+    const couponType =
+      typeof get('COUPONTYPE') === 'string'
+        ? String(get('COUPONTYPE'))
+        : typeof get('COUPON_TYPE') === 'string'
+          ? String(get('COUPON_TYPE'))
+          : null;
+    const couponDays = toNumber(get('COUPONDAYS') ?? get('COUPON_DAYS'));
+
+    records.push({
+      secid: ticker,
+      eventDate:
+        typeof eventDateRaw === 'string' ? eventDateRaw.slice(0, 10) : null,
+      eventValue,
+      couponValue,
+      couponType,
+      couponDays,
     });
   }
 

@@ -96,7 +96,7 @@
     "gulp-zip": "^6.1.0",
     "htmlhint-stylish": "^1.0.3",
     "husky": "^9.1.7",
-    "lint-staged": "^17.6.1",
+    "lint-staged": "^17.6.2",
     "postcss": "^8.5.33",
     "postcss-sort-media-queries": "^6.7.1",
     "prettier": "^3.10.1",

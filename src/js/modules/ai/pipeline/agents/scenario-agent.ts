@@ -40,15 +40,24 @@ export interface ScenarioChange {
 export interface ScenarioAgentInput {
   /** Анализ всех активов портфеля */
   assetsAnalysis: AssetAnalysis[];
-  /** Общая стоимость портфеля, руб */
-  totalPortfolioValue: number;
+  /**
+   * Общая стоимость портфеля, руб (legacy, для обратной совместимости).
+   * @deprecated используйте allocationBaseValue для расчёта долей.
+   */
+  totalPortfolioValue?: number;
+  /**
+   * База распределения (allocationBaseValue): сумма рыночных стоимостей
+   * всех позиций + свободный кэш + НКД. Именно от неё считаются доли
+   * в сценариях — это единый знаменатель для всех процентов.
+   */
+  allocationBaseValue?: number;
   /** Свободные средства, руб */
   freeCashRub: number;
   /** Предложенные AI изменения (проверяются и улучшаются) */
   proposedChanges: ScenarioChange[];
   /**
    * Тикеры, которые запрещено продавать (пользовательская политика).
-   * S4 не имеет права финансировать покупки продажей таких активов.
+   * S4 не имеет права финансировать продажи таких активов.
    */
   noSellTickers?: string[];
 }
@@ -255,13 +264,22 @@ export class ScenarioAgent extends AgentBase {
     input: ScenarioAgentInput,
   ): Promise<ScenarioAgentOutput> {
     const assets = input?.assetsAnalysis ?? [];
-    const total = input?.totalPortfolioValue ?? 0;
+    // allocationBaseValue — единый знаменатель для долей (позиции + кэш + НКД).
+    // fallback на totalPortfolioValue для обратной совместимости.
+    const total = input?.allocationBaseValue ?? input?.totalPortfolioValue ?? 0;
     const freeCash = input?.freeCashRub ?? 0;
     const proposed = input?.proposedChanges ?? [];
 
     if (assets.length === 0 || total <= 0) {
       return this.emptyResult();
     }
+
+    // Подтверждаем знаменатель долей
+    console.log(
+      `[SCENARIO_AGENT] denominator=allocationBaseValue=${Math.round(total).toLocaleString('ru-RU')}₽ ` +
+        `(allocationBaseValue=${input.allocationBaseValue != null ? Math.round(input.allocationBaseValue).toLocaleString('ru-RU') : 'not set'}, ` +
+        `totalPortfolioValue=${input.totalPortfolioValue != null ? Math.round(input.totalPortfolioValue).toLocaleString('ru-RU') : 'not set'})`,
+    );
 
     const baselineDeviation = this.calcStructureDeviation(assets);
     const baselinePnL = this.sumUnrealizedPnL(assets);
@@ -471,9 +489,14 @@ export class ScenarioAgent extends AgentBase {
     const optimizedChanges: ScenarioChange[] = [...proposed];
 
     // ─── P0-1: Автоматическое снижение концентраций ───
-    // Находим активы с высокой концентрацией и убыточным P&L
+    // Находим активы с высокой концентрацией и убыточным P&L.
+    // ЗАПРЕТ: не продаём позиции с дефицитом (BUY) — их продажа
+    // усугубит дисбаланс структуры портфеля.
     const concentratedAssets = assets.filter(
-      (a) => a.currentPercent > 15 && (a.unrealizedProfitRub ?? 0) < 0,
+      (a) =>
+        a.currentPercent > 15 &&
+        (a.unrealizedProfitRub ?? 0) < 0 &&
+        a.status !== 'BUY', // дефицитные позиции не продаём
     );
 
     for (const asset of concentratedAssets) {
@@ -800,6 +823,7 @@ export class ScenarioAgent extends AgentBase {
 
     // Прибыльные активы с перевесом — кандидаты на частичную продажу.
     // No-sell политика исключает их из финансирования: продажа запрещена.
+    // Статус уже ограничен до REDUCE/STABLE — BUY не попадёт.
     const sellCandidates = assets
       .filter(
         (a) =>

@@ -35,6 +35,10 @@ export const BONDS_COLUMN_ISIN_ALT1 = 'ISIN-код';
 export const BONDS_COLUMN_ISIN_ALT2 = 'Код ISIN';
 export const BONDS_COLUMN_ISIN_ALT3 = 'ISIN код';
 
+/** Варианты имён колонки «Код инструмента» (QUIK-тикер) в листе «Облигации» */
+export const BONDS_COLUMN_TICKER = 'Код инструмента';
+export const BONDS_COLUMN_TICKER_ALT1 = 'Код';
+
 /** Варианты имён колонки номинала в листе «Облигации» */
 export const BONDS_COLUMN_NOMINAL = 'Номинал';
 export const BONDS_COLUMN_NOMINAL_ALT1 = 'Номинальная стоимость';
@@ -47,8 +51,9 @@ export const BONDS_COLUMN_INSTRUMENT = 'Инструмент';
 // Столбец B (ISIN — уже определён выше)
 // Столбец C
 export const BONDS_COLUMN_LISTING = 'Листинг';
-// Столбец D
+// Столбец D — «Цена последняя» + алиасы QUIK (опечатки)
 export const BONDS_COLUMN_LAST_PRICE = 'Цена последняя';
+export const BONDS_COLUMN_LAST_PRICE_ALT1 = 'Цена послед.';
 // Столбец E
 export const BONDS_COLUMN_YIELD = 'Доходность';
 // Столбец F
@@ -65,8 +70,10 @@ export const BONDS_COLUMN_COUPON_DATE_ALT2 = 'Следующий купон';
 export const BONDS_COLUMN_COUPON_DATE_ALT3 = 'Дата следующего купона';
 // Столбец K
 export const BONDS_COLUMN_NKD = 'НКД';
-// Столбец L
+// Столбец L — «Дата погашения» + алиасы QUIK (опечатка «погашеия», сокращение «Погашение»)
 export const BONDS_COLUMN_MATURITY_DATE = 'Дата погашения';
+export const BONDS_COLUMN_MATURITY_DATE_ALT1 = 'Дата погашеия';
+export const BONDS_COLUMN_MATURITY_DATE_ALT2 = 'Погашение';
 // Столбец M
 export const BONDS_COLUMN_DURATION = 'Дюрация';
 
@@ -86,6 +93,16 @@ export const QUOTES_COLUMN_TURNOVER = 'Оборот';
 export const QUOTES_COLUMN_TURNOVER_ALT1 = 'Оборот, руб';
 export const QUOTES_COLUMN_TURNOVER_ALT2 = 'Оборот, руб.';
 export const QUOTES_COLUMN_TURNOVER_ALT3 = 'Оборот за день';
+
+// Столбцы листа "Акции" — расширенные данные (правая часть таблицы)
+export const QUOTES_COLUMN_MIN_PRICE = 'Мин. цена';
+export const QUOTES_COLUMN_MAX_PRICE = 'Макс. цена';
+export const QUOTES_COLUMN_RATING_DYNAMIC = 'Рейтинг по динамике';
+export const QUOTES_COLUMN_RATING_VOLUME = 'Рейтинг по объему';
+export const QUOTES_COLUMN_RATING_TOTAL = 'Общий рейтинг';
+export const QUOTES_COLUMN_RANGE_POSITION = 'Позиция в диапазоне';
+export const QUOTES_COLUMN_ENTRY_SIGNAL = 'Сигнал входа';
+export const QUOTES_COLUMN_IN_PORTFOLIO = 'Портфель';
 
 // ─── Ключевые слова для поиска строк ────────────────────────────────────────
 

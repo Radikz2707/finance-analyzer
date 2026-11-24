@@ -17,6 +17,11 @@
 
 /// <reference types="node" />
 
+// Отключаем проверку TLS-сертификатов для корпоративных сетей с self-signed CA.
+// Это необходимо, потому что MOEX ISS и cbr.ru подключаются через HTTPS,
+// а корпоративный прокси использует self-signed сертификат.
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
@@ -67,7 +72,7 @@ const kpiSink = async (
 // см. src/js/modules/shared/run-logger.ts. Здесь вызываем явно, чтобы
 // заголовок прогона попал в файл до создания координатора.
 async function runPipeline(): Promise<void> {
-  installRunLogger();
+  installRunLogger({ quiet: true });
   console.log('[PIPELINE] Запуск мультиагентного конвейера');
 
   const coordinator = new PipelineCoordinator(

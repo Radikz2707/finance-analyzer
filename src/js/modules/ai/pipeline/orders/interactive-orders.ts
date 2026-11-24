@@ -11,6 +11,7 @@
  */
 
 import { loadUserPolicy } from '../../../../config/user-policy.js';
+import { isSellBlockedByPolicy } from '../../ai-advisor/policy-text-guard.js';
 import type { AssetAnalysis } from '../../../portfolio/portfolio-math/portfolio-math.js';
 import type { MathAiAgreement } from '../../../ai/ai-advisor/math-ai-agreement.js';
 
@@ -173,10 +174,22 @@ export function buildInteractiveOrders(
       }
     }
 
-    // Определяем действие на основе статуса PortfolioMath
-    let action = mapPortfolioMathStatusToAction(asset.status);
-    if (!action) {
-      continue;
+    // Определяем действие: сначала finalAction (политика + согласование),
+    // затем fallback на mathAction — если agreement отсутствует.
+    let action: OrderActionType;
+    if (agreement?.finalAction) {
+      // finalAction — уже готовое действие (BUY/HOLD/REDUCE/EXIT).
+      // Безопасно приводим: маппер не нужен, finalAction уже нормализован.
+      const fa = agreement.finalAction as OrderActionType;
+      if (fa === 'BUY' || fa === 'SELL' || fa === 'HOLD' || fa === 'REDUCE' || fa === 'EXIT') {
+        action = fa;
+      } else {
+        // Неожиданное значение finalAction → fallback на mathAction.
+        action = (mapPortfolioMathStatusToAction(asset.status) as OrderActionType) || 'HOLD';
+      }
+    } else {
+      // Fallback: если agreement отсутствует или finalAction не заполнен — берём mathAction.
+      action = (mapPortfolioMathStatusToAction(asset.status) as OrderActionType) || 'HOLD';
     }
 
     // Не генерируем интерактивные ордера для HOLD — это «ничего не делать»
@@ -184,12 +197,12 @@ export function buildInteractiveOrders(
       continue;
     }
 
-    // Политика пользователя: тикеры из noSellTickers не продаются.
-    // Снижение их доли — только размыванием (докупкой других активов).
+    // Защитный fallback: политика no-sell для REDUCE/EXIT.
+    // Всегда применяется к опасным действиям — не зависит от наличия agreement.
     let noSellDowngraded = false;
     if (
       (action === 'REDUCE' || action === 'EXIT') &&
-      loadUserPolicy().noSellTickers.includes(asset.ticker.toUpperCase())
+      isSellBlockedByPolicy(asset, loadUserPolicy())
     ) {
       action = 'HOLD';
       noSellDowngraded = true;

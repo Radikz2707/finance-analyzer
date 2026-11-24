@@ -221,6 +221,8 @@ interface AiResponseResult {
   structuredJson?: RawAIJson | null;
   /** Массив структурированных JSON-объектов от AI (по одному на каждый актив) */
   structuredJsonArray?: RawAIJson[];
+  /** Общий анализ портфеля из JSON-схемы */
+  portfolioSummary?: string;
   /** Результат валидации structured JSON */
   structuredValidation?: StructuredValidationResult | null;
 }
@@ -285,6 +287,15 @@ export function extractJsonFromAiResponse(text: string): RawAIJson | null {
   }
 
   return null;
+}
+
+/**
+ * Результат ответа модели: portfolioSummary + recommendations.
+ * Схема: { portfolioSummary: string, recommendations: RawAIJson[] }
+ */
+export interface PortfolioSummaryResponse {
+  portfolioSummary: string;
+  recommendations: RawAIJson[];
 }
 
 /**
@@ -384,6 +395,81 @@ export function extractJsonArrayFromAiResponse(text: string): RawAIJson[] {
   }
 
   return [];
+}
+
+/**
+ * Извлекает ответ модели: { portfolioSummary, recommendations }.
+ * Схема: { portfolioSummary: string, recommendations: RawAIJson[] }
+ * Используется когда схема требует объект с двумя полями.
+ */
+export function extractPortfolioSummaryResponse(text: string): PortfolioSummaryResponse | null {
+  if (!text) return null;
+
+  // Паттерн 1: ```json { ... } ```
+  const jsonBlockPattern = /```json\s*([\s\S]*?)```/;
+  let match = text.match(jsonBlockPattern);
+  if (match) {
+    const jsonText = match[1];
+    if (jsonText) {
+      try {
+        const parsed = JSON.parse(jsonText.trim());
+        if (parsed && typeof parsed === 'object' && 'recommendations' in parsed) {
+          return parsed as PortfolioSummaryResponse;
+        }
+      } catch {
+        // fall through
+      }
+    }
+  }
+
+  // Паттерн 2: ``` { ... } ```
+  const blockPattern = /```\s*([\s\S]*?)```/;
+  match = text.match(blockPattern);
+  if (match) {
+    const jsonText = match[1];
+    if (jsonText) {
+      try {
+        const parsed = JSON.parse(jsonText.trim());
+        if (parsed && typeof parsed === 'object' && 'recommendations' in parsed) {
+          return parsed as PortfolioSummaryResponse;
+        }
+      } catch {
+        // fall through
+      }
+    }
+  }
+
+  // Паттерн 3: голый JSON объект с recommendations
+  const objPattern = /\{\s*"portfolioSummary"\s*:/;
+  const idx = text.search(objPattern);
+  if (idx >= 0) {
+    let braceCount = 0;
+    let endIdx = -1;
+    for (let i = idx; i < text.length; i++) {
+      if (text[i] === '{') braceCount++;
+      if (text[i] === '}') braceCount--;
+      if (braceCount === 0) {
+        endIdx = i + 1;
+        break;
+      }
+    }
+    if (endIdx > idx) {
+      try {
+        const jsonSlice = text.substring(idx, endIdx);
+        const parsed = JSON.parse(jsonSlice);
+        if (parsed && typeof parsed === 'object' && 'recommendations' in parsed) {
+          console.log('[extractPortfolioSummaryResponse] ✅ Pattern 3 matched, portfolioSummary length:', parsed.portfolioSummary?.length);
+          return parsed as PortfolioSummaryResponse;
+        }
+      } catch (e) {
+        console.log('[extractPortfolioSummaryResponse] ❌ JSON.parse failed:', e instanceof Error ? e.message : String(e));
+        console.log('[extractPortfolioSummaryResponse] JSON slice preview:', text.substring(idx, Math.min(idx + 200, endIdx)));
+        // fall through
+      }
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -815,29 +901,30 @@ export class AiClient {
       prompt += 'НОВОСТНОЙ ФОН:\n' + newsContext + '\n\n';
     }
 
-    // ─── P0-2: Чёткие метки C10/C11 ───
+    // ─── P0-2: Чёткие метрики с ОПРЕДЕЛЕНИЯМИ ───
     if (_historicalData) {
-      const c10 = _historicalData.profitC10;
-      const c11 = _historicalData.profitC11;
+      const resultMarket = _historicalData.profitC10;
+      const netResult = _historicalData.profitC11;
       const invested = _historicalData.investedNet;
       prompt += '=== ФИНАНСОВЫЕ ПОКАЗАТЕЛИ ===\n';
       prompt +=
-        '• C10_РезультатРынка (реализованный P&L от исторических сделок): ' +
-        this.fmtRubWithSign(c10) +
-        '\n';
+        '• Результат рынка (' +
+        this.fmtRubWithSign(resultMarket) +
+        '): активы по цене покупки минус нетто-траты. НЕ является реализованным убытком.\n';
       prompt +=
-        '• C11_ЧистыйИтог (текущая стоимость активов − чистые взносы): ' +
-        this.fmtRubWithSign(c11) +
-        '\n';
+        '• Нереализованный результат (' +
+        this.fmtRubWithSign(resultMarket - netResult) +
+        '): рыночная − балансовая.\n';
       prompt +=
-        '• C12_ВложенныйКапитал (все взносы − все выводы): ' +
+        '• Чистый итог (' +
+        this.fmtRubWithSign(netResult) +
+        '): рыночная − внесённые средства.\n';
+      prompt +=
+        '• Вложенный капитал (' +
         this.fmtRubWithSign(invested) +
-        '\n';
-      prompt += '⚠️ C10 и C11 — РАЗНЫЕ показатели. C10 ≠ C11. Не перепутай.\n';
+        '): все взносы − все выводы.\n';
       prompt +=
-        'C10 = сколько заработано/потеряно на конкретных сделках (реализованное).\n';
-      prompt +=
-        'C11 = сколько портфель стоит сейчас минус сколько вложено (включая нереализованное).\n\n';
+        '⚠️ Важно: «Результат рынка» — это нереализованный P&L по текущим ценам. НЕ интерпретируй как «потери на реализованных сделках». Нереализованный результат = рыночная − балансовая. Чистый итог = рыночная − внесено. Не интерпретируй иначе.\n\n';
     }
 
     // ─── Исторические данные и технические индикаторы ───
@@ -971,6 +1058,54 @@ export class AiClient {
       '- Структура: Акции ' + stocksPct + '%, Облигации ' + bondsPct + '%\n';
     prompt += '- Дата: ' + currentMonth + '\n\n';
 
+    // ─── ПОЛНЫЙ АНАЛИЗ ПОРТФЕЛЯ (portfolioSummary) ───
+    prompt += '=== ПОЛНЫЙ АНАЛИЗ ПОРТФЕЛЯ (portfolioSummary) ===\n';
+    prompt += 'Верни JSON-объект с полем portfolioSummary — ПОЛНЫЙ АНАЛИЗ 5-8 РАЗДЕЛЬНЫХ АБЗАЦЕВ.\n';
+    prompt += 'РАЗДЕЛЯЙ каждый абзац символом \n\n (двойной перенос строки).\n';
+    prompt += 'Каждый абзац должен содержать 3-5 РАЗВЁРНУТЫХ предложений с конкретными цифрами и фактами.\n';
+    prompt += 'Каждый абзац — минимум 60 слов.\n\n';
+
+    prompt += 'СТРУКТУРА КАЖДОГО АБЗАЦА:\n';
+    prompt += '1) СТРУКТУРА ПОРТФЕЛЯ:\n';
+    prompt += '   Начни с: "Портфель на [дата] оценивается в [сумма] ₽"\n';
+    prompt += '   Укажи: доли акций/облигаций/ETF в процентах и рублях.\n';
+    prompt += '   Сравни с целевой структурой: "Акции составляют X% против целевых Y% — дефицит Z п.п."\n';
+    prompt += '   Пример: "Портфель на 23.11.2026 оценивается в 613 771,95 ₽ с долей акций 31,17% (191 342 ₽) и облигаций 68,83% (422 430 ₽). Доля акций ниже целевой на 8,6 п.п."\n\n';
+
+    prompt += '2) P&L (ПРИБЫЛЬ/УБЫТОК):\n';
+    prompt += '   Укажи: вложенный капитал, текущий результат в рублях и процентах.\n';
+    prompt += '   Интерпретируй: "в плюсе" или "в минусе", относительно допустимой просадки 20%.\n';
+    prompt += '   Укажи: торговый результат по цене покупки.\n';
+    prompt += '   Пример: "Вложенный капитал составляет 830 690 ₽, что формирует нереализованный убыток в размере -69 838 ₽, или -8,41% от вложений. Текущая просадка находится в пределах допустимого лимита в 20%."\n\n';
+
+    prompt += '3) ЛИКВИДНОСТЬ:\n';
+    prompt += '   Укажи: свободный кэш (руб), средний ежемесячный взнос (руб).\n';
+    prompt += '   Оцени: способность совершать покупки — "минимальный кэш, но ежемесячный приток позволяет..."\n';
+    prompt += '   Пример: "Свободный кэш минимален (146,07 ₽), но ежемесячный денежный поток в 14 671 ₽ обеспечивает возможность постепенного закрытия дефицита позиций без необходимости дополнительных вложений."\n\n';
+
+    prompt += '4) КЛЮЧЕВЫЕ РИСКИ:\n';
+    prompt += '   Перечисли: глубокие просадки отдельных активов (тикер + %), концентрация (макс. доля одного актива).\n';
+    prompt += '   Укажи: блокировки (no-sell, BLOCKED), профицит/дефицит.\n';
+    prompt += '   Пример: "Ключевой риск — глубокая просадка позиции PLZL (Полюс) на -57,6% с максимума 2409,8 ₽. Максимальная концентрация — PLZL 16,8% портфеля, что близко к лимиту 20%. Позиция заблокирована политикой no-sell."\n\n';
+
+    prompt += '5) МАКРО-КОНТЕКСТ:\n';
+    prompt += '   Укажи: ставку ЦБ (значение, источник, свежесть данных).\n';
+    prompt += '   Оцени: инфляцию если есть, неопределённость (высокая/умеренная).\n';
+    prompt += '   Пример: "Ключевая ставка ЦБ составляет 14% (от 08.09.2026, данные устарели). Высокая ставка поддерживает привлекательность облигаций, но оказывает давление на акции роста."\n\n';
+
+    prompt += '6) СТРАТЕГИЧЕСКИЕ ВЫВОДЫ:\n';
+    prompt += '   Оцени: соответствует ли структура портфеля макро-контексту.\n';
+    prompt += '   Баланс: риск/доходность, главная рекомендация по позиции.\n';
+    prompt += '   Пример: "Текущая структура с долей облигаций 68,83% оптимальна при ставке 14%. Портфель сбалансирован, но требует ребалансировки акций при накоплении средств."\n\n';
+
+    prompt += '7) ПЕРСПЕКТИВЫ И РЕКОМЕНДАЦИИ (ОПЦИОНАЛЬНО, 7-8 абзац):\n';
+    prompt += '   Оцени: горизонт 1-3 мес, 3-12 мес, 1+ лет.\n';
+    prompt += '   Укажи: что мониторить (котировки, макро, новости).\n';
+    prompt += '   3-5 конкретных действий в приоритетном порядке.\n\n';
+
+    prompt += 'ВСЕ числа и факты — ТОЛЬКО из переданного контекста, с указанием источника и даты. Не более одного предложения на отдельный актив.\n';
+    prompt += '⚠️ ВАЖНО: portfolioSummary ДОЛЖЕН содержать минимум 5 абзацев, разделённых \n\n. Не объединяй всё в один абзац. Каждый абзац — 3-5 предложений.\n\n';
+
     prompt += '=== ОТВЕТ ===\n';
     if (hasData) {
       prompt += '1. Макро: соответствие структуры ставке ' + rateValue + '%\n';
@@ -1036,6 +1171,7 @@ export class AiClient {
         ],
         max_tokens: modelConfig.maxTokens,
         temperature: modelConfig.temperature,
+        seed: modelConfig.seed,
       },
       {
         headers: {
@@ -1117,6 +1253,7 @@ export class AiClient {
           ],
           max_tokens: modelConfig.maxTokens,
           temperature: modelConfig.temperature,
+          seed: modelConfig.seed,
           stream: false,
         },
         {
@@ -1335,6 +1472,7 @@ export class AiClient {
             ],
             max_tokens: modelConfig.maxTokens,
             temperature: modelConfig.temperature,
+            seed: modelConfig.seed,
             stream: false,
           },
           {
@@ -1422,6 +1560,7 @@ export class AiClient {
           modelCompletionOptions: {
             maxTokens: modelConfig.maxTokens,
             temperature: modelConfig.temperature,
+            seed: modelConfig.seed,
           },
         },
         messages: [
@@ -1526,11 +1665,66 @@ export class AiClient {
         messages,
         modelConfig.modelName,
         {
-          numPredict: modelConfig.maxTokens,
+          numPredict: 8192,
+          numCtx: 20480,
           temperature: modelConfig.temperature,
+          seed: modelConfig.seed,
+          jsonSchema: {
+            type: 'object',
+            properties: {
+              portfolioSummary: {
+                type: 'string',
+                  description: 'ПОЛНЫЙ АНАЛИЗ ПОРТФЕЛЯ. ОБЯЗАТЕЛЬНО: 6 разделов — 1) Структура (стоимость, доли А/О/ETF) 2) P&L (вложено, результат руб/%, интерпретация) 3) Ликвидность (кэш, взносы, способность к покупкам) 4) Риски (просадки, концентрация, no-sell) 5) Макро (ставка ЦБ, свежесть, неопределённость) 6) Выводы (соответствие структуры макро, баланс риск/доходность). 5-8 РАЗВЁРНУТЫХ абзацев, каждый 3-5 предложений, разделённых \n\n. Все числа — из контекста с источником.',
+              },
+              recommendations: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    ticker: { type: 'string' },
+                    recommendedTargetPercent: { type: ['number', 'null'] },
+                    recommendedAction: {
+                      enum: [
+                        'BUY',
+                        'SELL',
+                        'HOLD',
+                        'REDUCE',
+                        'EXIT',
+                        'AVOID',
+                        'AVERAGE',
+                      ],
+                    },
+                    confidence: { type: 'number' },
+                    rationale: { type: 'string' },
+                    targetReason: { type: 'string' },
+                    keyRisks: { type: ['array', 'null'], items: { type: 'string' } },
+                    keyCatalysts: { type: ['array', 'null'], items: { type: 'string' } },
+                    agreementWithPortfolioMath: {
+                      enum: ['AGREE', 'DISAGREE', 'UNCERTAIN'],
+                    },
+                    fundamentalAnalysis: { type: ['string', 'null'] },
+                    technicalTiming: { type: ['string', 'null'] },
+                    entryStrategy: { type: ['string', 'null'] },
+                    issuerContext: { type: ['string', 'null'] },
+                    dataSources: { type: ['array', 'null'], items: { type: 'string' } },
+                  },
+                  required: [
+                    'ticker',
+                    'recommendedAction',
+                    'confidence',
+                    'rationale',
+                    'agreementWithPortfolioMath',
+                    'recommendedTargetPercent',
+                  ],
+                },
+              },
+            },
+            required: ['portfolioSummary', 'recommendations'],
+          } as Record<string, unknown>,
+          keepAlive: '60m', // модель остаётся в памяти 60 минут
         },
         {
-          timeout: 300000, // 5 минут
+          timeout: 1200000, // 20 минут — полный отчёт может генерироваться долго
           stream: true,
         },
       );
@@ -1548,11 +1742,66 @@ export class AiClient {
           messages,
           modelConfig.modelName,
           {
-            numPredict: modelConfig.maxTokens,
+            numPredict: 8192,
+            numCtx: 20480,
             temperature: modelConfig.temperature,
+            seed: modelConfig.seed,
+            jsonSchema: {
+              type: 'object',
+              properties: {
+                portfolioSummary: {
+                  type: 'string',
+                description: 'ПОЛНЫЙ АНАЛИЗ ПОРТФЕЛЯ. ОБЯЗАТЕЛЬНО: 6 разделов — 1) Структура (стоимость, доли А/О/ETF) 2) P&L (вложено, результат руб/%, интерпретация) 3) Ликвидность (кэш, взносы, способность к покупкам) 4) Риски (просадки, концентрация, no-sell) 5) Макро (ставка ЦБ, свежесть, неопределённость) 6) Выводы (соответствие структуры макро, баланс риск/доходность). 5-8 РАЗВЁРНУТЫХ абзацев, каждый 3-5 предложений, разделённых \n\n. Все числа — из контекста с источником.',
+                },
+                recommendations: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      ticker: { type: 'string' },
+                      recommendedTargetPercent: { type: ['number', 'null'] },
+                      recommendedAction: {
+                        enum: [
+                          'BUY',
+                          'SELL',
+                          'HOLD',
+                          'REDUCE',
+                          'EXIT',
+                          'AVOID',
+                          'AVERAGE',
+                        ],
+                      },
+                      confidence: { type: 'number' },
+                      rationale: { type: 'string' },
+                      targetReason: { type: 'string' },
+                      keyRisks: { type: ['array', 'null'], items: { type: 'string' } },
+                      keyCatalysts: { type: ['array', 'null'], items: { type: 'string' } },
+                      agreementWithPortfolioMath: {
+                        enum: ['AGREE', 'DISAGREE', 'UNCERTAIN'],
+                      },
+                      fundamentalAnalysis: { type: ['string', 'null'] },
+                      technicalTiming: { type: ['string', 'null'] },
+                      entryStrategy: { type: ['string', 'null'] },
+                      issuerContext: { type: ['string', 'null'] },
+                      dataSources: { type: ['array', 'null'], items: { type: 'string' } },
+                    },
+                    required: [
+                      'ticker',
+                      'recommendedAction',
+                      'confidence',
+                      'rationale',
+                      'agreementWithPortfolioMath',
+                      'recommendedTargetPercent',
+                    ],
+                  },
+                },
+              },
+              required: ['portfolioSummary', 'recommendations'],
+            } as Record<string, unknown>,
+            keepAlive: '60m',
           },
           {
-            timeout: 300000, // 5 минут
+            timeout: 1200000, // 20 минут
             stream: true,
           },
         );
@@ -1628,8 +1877,9 @@ export class AiClient {
           messages,
           modelConfig.modelName,
           {
-            numPredict: modelConfig.maxTokens,
+            numPredict: Math.max(modelConfig.maxTokens, 8192),
             temperature: modelConfig.temperature,
+            seed: modelConfig.seed,
           },
         );
 
@@ -1876,6 +2126,8 @@ export class AiClient {
         couponTypeReasonDetail?: string | null;
         /** Источник подтверждения типа: ISS / SERIES / EXCEL. */
         couponTypeSource?: string | null;
+        /** Источник доходности: EXCEL_COLUMN / EXCEL_COMPUTED / SMART_LAB_PROBE. */
+        yieldSource?: 'EXCEL_COLUMN' | 'EXCEL_COMPUTED' | 'SMART_LAB_PROBE' | null;
         /** Методика YTM: QUIK / расчёт / флоатер при неизменной ставке. */
         ytmMethod?: string | null;
         dataQuality: string;
@@ -1912,6 +2164,8 @@ export class AiClient {
         floatSpreadPct?: number;
         floatIndex?: string;
         hasOption?: boolean;
+        /** Объём оборота (млн руб.) из Smart-Lab probe, если пуст в Excel. */
+        turnoverFromSmartLab?: number | null;
       };
       /** Недостающие данные для анализа */
       missingData: string[];
@@ -2022,6 +2276,13 @@ export class AiClient {
         // Но пробуем fallback-поиск по имени, если ISIN не прошёл валидацию
         let bondData = bondMarketData.get(normalizedIsin);
 
+        // P1: диагностика матчинга — видно, нашлась ли запись в bondsMap
+        console.log(
+          `[BondAnalysis] isin=${normalizedIsin} ` +
+            `bondData=${bondData ? 'FOUND' : 'MISSING'} ` +
+            `bondMarketDataSize=${bondMarketData.size}`,
+        );
+
         if (!bondData) {
           // Fallback: поиск по instrumentName, если ISIN невалиден или не найден
           const bondDataByName = this.findBondByName(
@@ -2080,6 +2341,9 @@ export class AiClient {
         }
 
         // Если bondData есть, но нет rating — пробуем Smart-Lab как fallback
+        // Отслеживаем, был ли yield заполнен из Smart-Lab probe
+        let yieldFromSmartLab = false;
+
         if (bondData && !bondData.rating) {
           try {
             this.log.info(
@@ -2096,10 +2360,52 @@ export class AiClient {
                 `[BondAnalysis] ⚠️ Smart-Lab не вернул rating для ${bondAsset.name}`,
               );
             }
+            // P3: если yield пустой — догружаем с Smart-Lab (для ВИС и подобных)
+            if (
+              smartlabBond &&
+              smartlabBond.yield != null &&
+              smartlabBond.yield > 0
+            ) {
+              const hadExcelYield = bondData.yield != null && Number(bondData.yield) > 0;
+              if (!hadExcelYield) {
+                yieldFromSmartLab = true;
+              }
+              bondData.yield = smartlabBond.yield;
+              this.log.info(
+                `[BondAnalysis] ✅ Yield загружен с Smart-Lab: ${smartlabBond.yield}% для ${bondAsset.name}`,
+              );
+            }
+            // P3: если turnover пустой — догружаем volume из Smart-Lab (для ВИС и подобных)
+            if (
+              smartlabBond &&
+              smartlabBond.volume != null &&
+              smartlabBond.volume > 0 &&
+              (bondData.turnover == null || Number(bondData.turnover) === 0)
+            ) {
+              bondData.turnover = smartlabBond.volume * 1e6; // млн руб → руб
+              this.log.info(
+                `[BondAnalysis] ✅ Volume загружен с Smart-Lab: ${smartlabBond.volume} млн руб для ${bondAsset.name}`,
+              );
+            }
           } catch (err) {
             this.log.warn(
               `[BondAnalysis] ⚠️ Smart-Lab fallback для рейтинга не удался: ${err}`,
             );
+          }
+        }
+
+        // P3: Отдельный fallback для turnover — если в Excel 0, пробуем MOEX ISS
+        if (bondData && (bondData.turnover == null || Number(bondData.turnover) === 0)) {
+          try {
+            const moexTurnover = await this.fetchBondTurnoverFromMoex(normalizedIsin);
+            if (moexTurnover != null && moexTurnover > 0) {
+              bondData.turnover = moexTurnover;
+              this.log.info(
+                `[BondAnalysis] ✅ Turnover загружен с MOEX: ${moexTurnover.toLocaleString('ru-RU')} руб для ${bondAsset.name}`,
+              );
+            }
+          } catch {
+            // MOEX недоступен — оставляем 0
           }
         }
 
@@ -2278,6 +2584,11 @@ export class AiClient {
               // терялась, и ВСЕ облигации показывали «дата не указана».
               nextCouponDate: yieldAnalysis.nextCouponDate,
               nextCouponDateSource: nextCouponDateSource ?? null,
+              yieldSource: yieldFromSmartLab
+                ? 'SMART_LAB_PROBE'
+                : bondData.yield != null && Number(bondData.yield) > 0
+                  ? 'EXCEL_COLUMN'
+                  : null,
             },
             durationAnalysis: {
               duration: durationAnalysis.duration,
@@ -2319,6 +2630,10 @@ export class AiClient {
                 bondData.hasOption != null
                   ? Boolean(bondData.hasOption)
                   : undefined,
+              turnoverFromSmartLab:
+                bondData.turnover != null
+                  ? Number(bondData.turnover) / 1e6 // руб → млн
+                  : null,
             },
             missingData: finalAssessment.missingData,
             mathAgreement: finalAssessment.mathAgreement,
@@ -2588,6 +2903,31 @@ export class AiClient {
       analysis.allocationBaseValue,
     );
 
+    // ─── Расчёт статуса финансирования (аналог scenario-agent.checkFunding) ───
+    let fundingBuyRub = 0;
+    let fundingSellRub = 0;
+    for (const a of analysis.assetsAnalysis) {
+      if (a.deficitRub > 0) fundingBuyRub += a.deficitRub;
+      if (a.deficitRub < 0 && a.status === 'REDUCE')
+        fundingSellRub += Math.abs(a.deficitRub);
+    }
+    const freeCash = analysis.macro.freeCash ?? 0;
+    const fundingAvailableCash = freeCash + fundingSellRub;
+    let fundingStatus: 'SUFFICIENT' | 'PARTIAL' | 'INSUFFICIENT' = 'SUFFICIENT';
+    if (fundingBuyRub > 0) {
+      if (fundingAvailableCash >= fundingBuyRub) {
+        fundingStatus = 'SUFFICIENT';
+      } else if (fundingSellRub > 0 && fundingAvailableCash > 0) {
+        fundingStatus = 'PARTIAL';
+      } else {
+        fundingStatus = 'INSUFFICIENT';
+      }
+      this.log.info(
+        `[FUNDING] status=${fundingStatus} freeCash=${freeCash} ` +
+          `buy=${fundingBuyRub} sell=${fundingSellRub} available=${fundingAvailableCash}`,
+      );
+    }
+
     // Получаем список доступных моделей
     const availableModels = getAvailableModels();
 
@@ -2602,6 +2942,8 @@ export class AiClient {
           validation,
           orders,
           macroData.keyRate,
+          undefined,
+          fundingStatus,
         ),
         modelUsed: 'local-fallback',
         success: false,
@@ -2772,6 +3114,8 @@ export class AiClient {
           validation,
           orders,
           macroData.keyRate,
+          undefined,
+          fundingStatus,
         ),
         modelUsed: 'local-fallback',
         success: false,
@@ -2787,6 +3131,7 @@ export class AiClient {
     let structuredJson: RawAIJson | null = null;
     let structuredJsonArray: RawAIJson[] = [];
     let structuredValidation: StructuredValidationResult | null = null;
+    let extractedPortfolioSummary: string | undefined;
 
     // Если aiText не определён — используем пустую строку
     const safeAiText = aiText ?? '';
@@ -2797,7 +3142,7 @@ export class AiClient {
 
     for (let jsonAttempt = 0; jsonAttempt <= maxJsonRetries; jsonAttempt++) {
       try {
-        // Сначала пробуем массив JSON (один объект на каждый актив)
+        // Сначала пробуем ответ со schema: { portfolioSummary, recommendations }
         this.log.info(`[AI DEBUG] JSON extraction attempt ${jsonAttempt + 1}`);
         this.log.info(
           `[AI DEBUG] Text contains \`\`\`json: ${safeAiText.includes('```json')}`,
@@ -2806,13 +3151,16 @@ export class AiClient {
           `[AI DEBUG] Text contains \`\`\`: ${safeAiText.includes('```')}`,
         );
 
-        structuredJsonArray = extractJsonArrayFromAiResponse(safeAiText);
+        const portfolioResp = extractPortfolioSummaryResponse(safeAiText);
+        extractedPortfolioSummary = portfolioResp?.portfolioSummary;
 
-        if (structuredJsonArray.length > 0) {
+        if (portfolioResp && Array.isArray(portfolioResp.recommendations)) {
+          structuredJsonArray = portfolioResp.recommendations;
+
           // Валидируем каждый элемент массива
           const validResults: RawAIJson[] = [];
           for (const item of structuredJsonArray) {
-            const validation = validateStructuredAIJson(item, assetTickers);
+            const validation = validateStructuredAIJson(item, assetTickers, macroData);
             if (validation.valid) {
               validResults.push(item);
             } else {
@@ -2827,7 +3175,7 @@ export class AiClient {
             validResults.length > 0 ? (validResults[0] as RawAIJson) : null;
 
           this.log.info(
-            `[AI] JSON-массив извлечён: ${structuredJsonArray.length} актив(ов) прошло валидацию`,
+            `[AI] JSON извлечён: ${structuredJsonArray.length} актив(ов) прошло валидацию, portfolioSummary=${!!portfolioResp.portfolioSummary}`,
           );
           for (const item of structuredJsonArray) {
             this.log.info(
@@ -2851,6 +3199,7 @@ export class AiClient {
             structuredValidation = validateStructuredAIJson(
               structuredJson,
               assetTickers,
+              macroData,
             );
             this.log.info(
               `[AI] JSON извлечён: ticker=${structuredJson.ticker}, ` +
@@ -2961,12 +3310,19 @@ export class AiClient {
               `endsWithFence=${jsonRetryText.trimEnd().endsWith('```')}`,
           );
 
-          const retryItems = extractJsonArrayFromAiResponse(jsonRetryText);
+          const retryResp = extractPortfolioSummaryResponse(jsonRetryText);
+          const retryItems = retryResp?.recommendations ?? [];
+          
+          // Сохраняем portfolioSummary из retry-ответа, если он есть
+          if (retryResp?.portfolioSummary && !extractedPortfolioSummary) {
+            extractedPortfolioSummary = retryResp.portfolioSummary;
+          }
+          
           const retryValid: RawAIJson[] = [];
           for (const item of retryItems) {
             const ticker = (item.ticker ?? '').toUpperCase();
             if (!missingSet.has(ticker)) continue;
-            const validation = validateStructuredAIJson(item, assetTickers);
+            const validation = validateStructuredAIJson(item, assetTickers, macroData);
             if (validation.valid) {
               retryValid.push(item);
             } else {
@@ -3013,12 +3369,19 @@ export class AiClient {
       `[AI DEBUG] Returning structuredJson: ${structuredJson ? 'exists' : 'null'}`,
     );
 
+    // Извлекаем portfolioSummary из корневого объекта (не из массива!)
+    let portfolioSummary: string | undefined;
+    if (extractedPortfolioSummary) {
+      portfolioSummary = extractedPortfolioSummary;
+    }
+
     return {
       text: aiText.replace(/\n/g, '<br>'),
       modelUsed: usedProviderName,
       success: true,
       structuredJson,
       structuredJsonArray,
+      portfolioSummary,
       structuredValidation,
       fundamentalsDividendYields,
       portfolioFundamentals,
@@ -3105,6 +3468,68 @@ export class AiClient {
   }
 
   /**
+   * Получает дневной оборот облигации из MOEX ISS.
+   * Endpoint: /engines/stock/markets/bonds/quotes_board.json
+   * Возвращает оборот в рублях или null.
+   */
+  private async fetchBondTurnoverFromMoex(
+    isin: string,
+  ): Promise<number | null> {
+    try {
+      const url = 'https://iss.moex.com/iss/engines/stock/markets/bonds/quotes_board.json?market_id=1&iss.meta=off&iss.only=board&board=TQOB&select=SECID,TURN_OVER';
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) return null;
+
+      const json = await response.json() as Record<string, unknown>;
+      const boards = json?.boards as Record<string, unknown> | undefined;
+      if (!boards) return null;
+
+      // Ищем TQOB board
+      const tqob = boards['TQOB'] as Record<string, unknown> | undefined;
+      if (!tqob) return null;
+
+      const datasets = tqob?.datasets as Record<string, unknown[]> | undefined;
+      if (!datasets) return null;
+
+      // Ищем dataset с TURN_OVER
+      for (const _key of Object.keys(datasets)) {
+        const dataset = datasets[_key];
+        if (!Array.isArray(dataset) || dataset.length === 0) continue;
+
+        const firstItem = dataset[0] as Record<string, unknown> | undefined;
+        if (!firstItem) continue;
+
+        const columns = firstItem.columns as string[] | undefined;
+        const rows = firstItem.rows as string[][] | undefined;
+        if (!columns || !rows) continue;
+
+        const secidIdx = columns.indexOf('SECID');
+        const turnIdx = columns.indexOf('TURN_OVER');
+        if (secidIdx < 0 || turnIdx < 0) continue;
+
+        for (const row of rows) {
+          if (row[secidIdx] === isin) {
+            const val = row[turnIdx] ?? '0';
+            const turnover = parseFloat(String(val));
+            if (!isNaN(turnover) && turnover > 0) {
+              return turnover;
+            }
+          }
+        }
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Ищет облигацию в bondMarketData по имени, если ISIN невалиден или не найден.
    * Сравнивает bondAsset.name / shortName с bondRef.instrumentName.
    */
@@ -3128,12 +3553,17 @@ export class AiClient {
         if (!refName) continue;
 
         // Прямое совпадение или вхождение
-        if (
-          refName === normalizedSearch ||
+        const isExactMatch = refName === normalizedSearch;
+        const isIncluded =
           refName.includes(normalizedSearch) ||
-          normalizedSearch.includes(refName)
-        ) {
-          // Проверка: ISIN должен быть похож на ticker (оба начинаются с RU000A10...)
+          normalizedSearch.includes(refName);
+        if (isExactMatch || isIncluded) {
+          // Для точного совпадения по имени префикс не нужен — это надёжный
+          // матч. Для частичного совпадения проверяем префикс ISIN, чтобы
+          // избежать ложных срабатываний (например, «Сбер» и «Сбербанк»).
+          if (isExactMatch) {
+            return bondRef;
+          }
           const tickerPrefix = normalizedIsin.substring(0, 8);
           const isinPrefix = isin.substring(0, 8);
           if (tickerPrefix === isinPrefix) {

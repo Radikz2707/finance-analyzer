@@ -410,6 +410,145 @@ describe('XlsxParserModule', () => {
     });
   });
 
+  describe('parseBondsSheet — schema-guard [SHEET_SCHEMA]', () => {
+    it('не должен логировать [SHEET_SCHEMA] при корректной схеме (13 колонок)', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const HEADER_13 = [
+        'Инструмент',
+        'ISIN',
+        'Листинг',
+        'Цена последняя',
+        'Доходность',
+        'Оборот',
+        'Номинал',
+        'Размер купона',
+        'Длительность купона',
+        'Дата выпл. куп.',
+        'НКД',
+        'Дата погашения',
+        'Дюрация',
+      ];
+
+      mockReadFile.mockReturnValue({
+        SheetNames: ['Облигации'],
+        Sheets: { Облигации: { '!ref': 'A1:M100' } },
+      });
+      mockSheetToJson.mockImplementation(
+        (_sheet: unknown, options?: { header?: number }) => {
+          if (options?.header === 1) {
+            return [['Справочник'], HEADER_13];
+          }
+          return [
+            Object.fromEntries(
+              HEADER_13.map((key, index) => [key, 'value' + index]),
+            ),
+          ];
+        },
+      );
+
+      await parser.parseBondsSheet();
+      expect(
+        warn.mock.calls.some((call) =>
+          String(call[0]).includes('[SHEET_SCHEMA]'),
+        ),
+      ).toBe(false);
+      warn.mockRestore();
+    });
+
+    it('не должен логировать [SHEET_SCHEMA] при 14 колонках с «Код инструмента»', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const HEADER_14 = [
+        'Инструмент',
+        'ISIN',
+        'Код инструмента',
+        'Листинг',
+        'Цена последняя',
+        'Доходность',
+        'Оборот',
+        'Номинал',
+        'Размер купона',
+        'Длительность купона',
+        'Дата выпл. куп.',
+        'НКД',
+        'Дата погашения',
+        'Дюрация',
+      ];
+
+      mockReadFile.mockReturnValue({
+        SheetNames: ['Облигации'],
+        Sheets: { Облигации: { '!ref': 'A1:N100' } },
+      });
+      mockSheetToJson.mockImplementation(
+        (_sheet: unknown, options?: { header?: number }) => {
+          if (options?.header === 1) {
+            return [['Справочник'], HEADER_14];
+          }
+          return [
+            Object.fromEntries(
+              HEADER_14.map((key, index) => [key, 'value' + index]),
+            ),
+          ];
+        },
+      );
+
+      await parser.parseBondsSheet();
+      expect(
+        warn.mock.calls.some((call) =>
+          String(call[0]).includes('[SHEET_SCHEMA]'),
+        ),
+      ).toBe(false);
+      warn.mockRestore();
+    });
+
+    it('должен логировать [SHEET_SCHEMA] при отсутствии обязательной колонки ISIN', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const HEADER_MISSING = [
+        'Инструмент',
+        'Листинг',
+        'Цена последняя',
+        'Доходность',
+        'Оборот',
+        'Номинал',
+        'Размер купона',
+        'Длительность купона',
+        'Дата выпл. куп.',
+        'НКД',
+        'Дата погашения',
+        'Дюрация',
+      ];
+
+      mockReadFile.mockReturnValue({
+        SheetNames: ['Облигации'],
+        Sheets: { Облигации: { '!ref': 'A1:L100' } },
+      });
+      mockSheetToJson.mockImplementation(
+        (_sheet: unknown, options?: { header?: number }) => {
+          if (options?.header === 1) {
+            return [['Справочник'], HEADER_MISSING];
+          }
+          return [
+            Object.fromEntries(
+              HEADER_MISSING.map((key, index) => [key, 'value' + index]),
+            ),
+          ];
+        },
+      );
+
+      await parser.parseBondsSheet();
+      expect(
+        warn.mock.calls.some((call) =>
+          String(call[0]).includes('[SHEET_SCHEMA]'),
+        ),
+      ).toBe(true);
+      expect(
+        warn.mock.calls.some((call) =>
+          String(call[0]).includes('ISIN'),
+        ),
+      ).toBe(true);
+      warn.mockRestore();
+    });
+  });
+
   describe('getBondReference и getBondNominal', () => {
     it('должен возвращать справочные данные по облигации', async () => {
       await parser.parseBondsSheet();
@@ -2237,6 +2376,284 @@ describe('XlsxParserModule', () => {
       const asset4 = currentAssets[0]!;
       expect(asset4.quantity).toBe(200);
       expect(asset4.liquidationPercent).toBe(25);
+    });
+  });
+
+  // ─── SU29027RMFS8: двойной ключ bondsMap + merge дубликатов ───
+  describe('SU29027RMFS8 — двойной ключ bondsMap и merge дубликатов', () => {
+    const HEADER_14 = [
+      'Инструмент',
+      'ISIN',
+      'Код инструмента',
+      'Листинг',
+      'Цена последняя',
+      'Доходность',
+      'Оборот',
+      'Номинал',
+      'Размер купона',
+      'Длительность купона',
+      'Дата выпл. куп.',
+      'НКД',
+      'Дата погашения',
+      'Дюрация',
+    ];
+
+    function mockBondsSheetWithDuplicates(
+      rows: Array<Array<string | number | null>>,
+    ): void {
+      mockReadFile.mockReturnValue({
+        SheetNames: ['Облигации'],
+        Sheets: { Облигации: { '!ref': 'A1:N100' } },
+      });
+      mockSheetToJson.mockImplementation(
+        (_sheet: unknown, options?: { header?: number }) => {
+          if (options?.header === 1) {
+            return [['Справочник'], HEADER_14, ...rows];
+          }
+          return rows.map((row) =>
+            Object.fromEntries(
+              HEADER_14.map((key, index) => [key, row[index] ?? null]),
+            ),
+          );
+        },
+      );
+    }
+
+    it('КРАСНЫЙ ТЕСТ: тикер SU29027RMFS8 ≠ ISIN RU000A10AA93, двойной ключ bondsMap', async () => {
+      // Реальный лист: ISIN = RU000A10AA93, Код инструмента = SU29027RMFS8
+      // Excel serial date 46367 = 2026-12-11
+      mockBondsSheetWithDuplicates([
+        [
+          'ОФЗ-ПК 29027',       // 0: Инструмент
+          'RU000A10AA93',       // 1: ISIN
+          'SU29027RMFS8',       // 2: Код инструмента (QUIK-тикер, ≠ ISIN)
+          '1',                  // 3: Листинг
+          99,                   // 4: Цена последняя
+          12,                   // 5: Доходность
+          1000,                 // 6: Оборот
+          0,                    // 7: Номинал
+          182,                  // 8: Размер купона
+          90,                   // 9: Длительность купона (дни)
+          46367,                // 10: Дата выпл. куп. (2026-12-11)
+          28.35,                // 11: НКД
+          46367,                // 12: Дата погашения
+          700,                  // 13: Дюрация
+        ],
+      ]);
+
+      const bondsMap = await parser.parseBondsSheet();
+
+      // По ISIN — должно найтись
+      const byIsin = bondsMap.get('RU000A10AA93');
+      expect(byIsin).toBeDefined();
+      expect(byIsin?.nextCouponDate).not.toBeNull();
+      expect(byIsin?.nextCouponDateSource).toBe('EXCEL');
+      expect(byIsin?.nextCouponDate?.toISOString().slice(0, 10)).toBe(
+        '2026-12-11',
+      );
+
+      // По тикеру QUIK (SU29027RMFS8) — тоже должно найтись (двойной ключ)
+      const byTicker = bondsMap.get('SU29027RMFS8');
+      expect(byTicker).toBeDefined();
+      expect(byTicker?.isin).toBe('RU000A10AA93');
+      expect(byTicker?.nextCouponDate?.toISOString().slice(0, 10)).toBe(
+        '2026-12-11',
+      );
+    });
+
+    it('КРАСНЫЙ ТЕСТ: при дубликате ISIN merge сохраняет non-null поля первой записи', async () => {
+      // Excel serial date 46367 = 2026-12-11
+      mockBondsSheetWithDuplicates([
+        // Первая запись: с датой купона
+        [
+          'ОФЗ-ПК 29027 (блок 1)', // 0: Инструмент
+          'RU000A10AA93',          // 1: ISIN
+          'SU29027RMFS8',          // 2: Код инструмента
+          '1',                     // 3: Листинг
+          99,                      // 4: Цена последняя
+          12,                      // 5: Доходность
+          1000,                    // 6: Оборот
+          0,                       // 7: Номинал
+          182,                     // 8: Размер купона
+          90,                      // 9: Длительность купона (дни)
+          46367,                   // 10: Дата выпл. куп. (2026-12-11)
+          28.35,                   // 11: НКД
+          46367,                   // 12: Дата погашения
+          700,                     // 13: Дюрация
+        ],
+        // Вторая запись: пустая дата (дубликат из другого блока листа)
+        [
+          'ОФЗ-ПК 29027 (блок 2)', // 0: Инструмент
+          'RU000A10AA93',          // 1: ISIN
+          'SU29027RMFS8',          // 2: Код инструмента
+          '1',                     // 3: Листинг
+          0,                       // 4: Цена последняя
+          0,                       // 5: Доходность
+          1000,                    // 6: Оборот
+          0,                       // 7: Номинал
+          0,                       // 8: Размер купона
+          0,                       // 9: Длительность купона (дни)
+          '',                      // 10: Дата выпл. куп. (пустая)
+          0,                       // 11: НКД
+          '',                      // 12: Дата погашения
+          0,                       // 13: Дюрация
+        ],
+      ]);
+
+      const bondsMap = await parser.parseBondsSheet();
+
+      // Дата из первой записи НЕ должна затеряться
+      const bond = bondsMap.get('RU000A10AA93');
+      expect(bond).toBeDefined();
+      expect(bond?.nextCouponDate).not.toBeNull();
+      expect(bond?.nextCouponDateSource).toBe('EXCEL');
+      expect(bond?.nextCouponDate?.toISOString().slice(0, 10)).toBe(
+        '2026-12-11',
+      );
+    });
+  });
+
+  // ─── Контр-тест: 29027 и ВИС на листе с 14 колонками (с «Код инструмента») ───
+  describe('Контр-тест: 29027 и ВИС на обновлённом листе (14 колонок)', () => {
+    const HEADER_14 = [
+      'Инструмент',
+      'ISIN',
+      'Код инструмента',
+      'Листинг',
+      'Цена последняя',
+      'Доходность',
+      'Оборот',
+      'Номинал',
+      'Размер купона',
+      'Длительность купона',
+      'Дата выпл. куп.',
+      'НКД',
+      'Дата погашения',
+      'Дюрация',
+    ];
+
+    function mockBondsSheet14(rows: Array<Array<string | number | null>>): void {
+      mockReadFile.mockReturnValue({
+        SheetNames: ['Облигации'],
+        Sheets: { Облигации: { '!ref': 'A1:N100' } },
+      });
+      mockSheetToJson.mockImplementation(
+        (_sheet: unknown, options?: { header?: number }) => {
+          if (options?.header === 1) {
+            return [['Справочник'], HEADER_14, ...rows];
+          }
+          return rows.map((row) =>
+            Object.fromEntries(
+              HEADER_14.map((key, index) => [key, row[index] ?? null]),
+            ),
+          );
+        },
+      );
+    }
+
+    it('ВИС Ф БП17 (RU000A10GC20): дата купона 08.12.2026 из реального листа', async () => {
+      // Реальный лист: ISIN = RU000A10GC20, Код инструмента = RU000A10GC20
+      // Корпоративная — тикер = ISIN. Дата купона из реального листа = 08.12.2026.
+      mockBondsSheet14([
+        [
+          'ВИС Ф БП17',         // 0: Инструмент
+          'RU000A10GC20',       // 1: ISIN
+          'RU000A10GC20',       // 2: Код инструмента (корпоративная = ISIN)
+          '1',                  // 3: Листинг
+          95.5,                 // 4: Цена последняя
+          11,                   // 5: Доходность
+          500,                  // 6: Оборот
+          1000,                 // 7: Номинал
+          250,                  // 8: Размер купона
+          183,                  // 9: Длительность купона (дни)
+          46364,                // 10: Дата выпл. куп. (2026-12-08, реальный лист)
+          35.2,                 // 11: НКД
+          47290,                // 12: Дата погашения (2029-06-28)
+          850,                  // 13: Дюрация
+        ],
+      ]);
+
+      const bondsMap = await parser.parseBondsSheet();
+      const bond = bondsMap.get('RU000A10GC20');
+
+      expect(bond).toBeDefined();
+      expect(bond?.nextCouponDate).not.toBeNull();
+      expect(bond?.nextCouponDateSource).toBe('EXCEL');
+      expect(bond?.nextCouponDate?.toISOString().slice(0, 10)).toBe(
+        '2026-12-08',
+      );
+      expect(bond?.instrumentName).toBe('ВИС Ф БП17');
+      expect(bond?.nominal).toBe(1000);
+      expect(bond?.yield).toBe(11);
+    });
+  });
+
+  // ─── Контр-тест класса: произвольная облигация с ticker ≠ ISIN ───
+  describe('Контр-тест класса: произвольная облигация ticker ≠ ISIN', () => {
+    const HEADER = [
+      'Инструмент',
+      'ISIN',
+      'Листинг',
+      'Цена последняя',
+      'Доходность',
+      'Оборот',
+      'Номинал',
+      'Размер купона',
+      'Длительность купона',
+      'Дата выпл. куп.',
+      'НКД',
+      'Дата погашения',
+      'Дюрация',
+    ];
+
+    it('bondsMap доступен по ISIN, QUIK-тикер не нужен для bondsMap', async () => {
+      // Произвольная облигация: ISIN = RU000A10ZZZZ, instrumentName = «Тестовая Облигация 001R-01»
+      // В QUIK тикер может быть любым (например, 'TESTBOND') — bondsMap ключуется по ISIN.
+      mockReadFile.mockReturnValue({
+        SheetNames: ['Облигации'],
+        Sheets: { Облигации: { '!ref': 'A1:M100' } },
+      });
+      mockSheetToJson.mockImplementation(
+        (_sheet: unknown, options?: { header?: number }) => {
+          if (options?.header === 1) {
+            return [['Справочник'], HEADER];
+          }
+          return [
+            Object.fromEntries(
+              HEADER.map((key, index) => {
+                const values: Array<string | number> = [
+                  'Тестовая Облигация 001R-01',
+                  'RU000A10ZZZZ',
+                  '1',
+                  98,
+                  15,
+                  5,
+                  1000,
+                  75,
+                  90,
+                  '15.03.2027',
+                  20,
+                  '15.03.2029',
+                  600,
+                ];
+                return [key, values[index]];
+              }),
+            ),
+          ];
+        },
+      );
+
+      const bondsMap = await parser.parseBondsSheet();
+
+      // bondsMap должен быть доступен по ISIN
+      const bond = bondsMap.get('RU000A10ZZZZ');
+      expect(bond).toBeDefined();
+      expect(bond?.instrumentName).toBe('Тестовая Облигация 001R-01');
+      expect(bond?.nextCouponDate?.toISOString().slice(0, 10)).toBe(
+        '2027-03-15',
+      );
+      expect(bond?.nominal).toBe(1000);
+      expect(bond?.yield).toBe(15);
     });
   });
 });

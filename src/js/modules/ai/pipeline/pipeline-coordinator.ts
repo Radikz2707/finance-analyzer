@@ -359,7 +359,7 @@ export class PipelineCoordinator {
     // scripts/pipeline-report.ts, Electron/desktop IPC, планировщик,
     // прямой вызов) создаёт reports/last-run.log до первой диагностической
     // строки. В браузере/Electron-renderer ФС недоступна — логгер отключён.
-    const runLogPath = installRunLogger();
+    const runLogPath = installRunLogger({ quiet: true });
 
     // Один прогон = один fundamentals-контекст для карточек и стратега.
     resetPortfolioFundamentalsOnce();
@@ -738,6 +738,11 @@ export class PipelineCoordinator {
 
         const scenarioInput = {
           assetsAnalysis: assetsAnalysisJson,
+          // allocationBaseValue = Σ(qty×price) + freeCash + НКД (рыночная база).
+          // Именно от неё считаются доли в сценариях — единый знаменатель.
+          allocationBaseValue: macroGoalsJson.totalLiquidationValue ?? 0,
+          // totalPortfolioValue — legacy fallback (балансовая C11), не используется
+          // когда allocationBaseValue задана.
           totalPortfolioValue: macroGoalsJson.totalBalance ?? 0,
           freeCashRub: macroGoalsJson.freeCash ?? 0,
           proposedChanges: proposedChanges.map((c) => ({
@@ -753,7 +758,8 @@ export class PipelineCoordinator {
 
         console.log(
           `[Pipeline] ScenarioAgent input: assets=${scenarioInput.assetsAnalysis.length}, ` +
-            `total=${Number(scenarioInput.totalPortfolioValue.toFixed(2))}, freeCash=${Number(scenarioInput.freeCashRub.toFixed(2))}, ` +
+            `allocationBaseValue=${Number(scenarioInput.allocationBaseValue.toFixed(2))}, ` +
+            `freeCash=${Number(scenarioInput.freeCashRub.toFixed(2))}, ` +
             `proposedChanges=${scenarioInput.proposedChanges.length}`,
         );
         if (scenarioInput.proposedChanges.length > 0) {

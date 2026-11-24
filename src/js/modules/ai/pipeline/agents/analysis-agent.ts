@@ -76,6 +76,21 @@ export interface PortfolioIncome {
   dividendWarnings?: string[];
   /** OK / EMPTY / UNAVAILABLE / MIXED — статус подтверждения LTM-дивидендов. */
   dividendDataStatus?: 'OK' | 'EMPTY' | 'UNAVAILABLE' | 'MIXED' | null;
+
+  // ─── Купоны LTM (облигации, по графику MOEX ISS) ───
+  totalCouponsGross?: number;
+  totalCouponsNet?: number;
+  couponBonds?: Array<{
+    ticker: string;
+    ltmPerBond: number | null;
+    count: number;
+    asOf: string | null;
+    source: string;
+    status: string;
+    isFloaterEstimate: boolean;
+  }>;
+  couponStatus?: 'OK' | 'EMPTY' | 'UNAVAILABLE' | 'MIXED' | null;
+  couponWarnings?: string[];
 }
 
 /** Проверка ценовых алертов */
@@ -140,14 +155,28 @@ export class AnalysisAgent extends AgentBase {
 
     // Шаг 1: Математический анализ портфеля
     const math = new PortfolioMathModule();
-    const totalLiq = this.calculateTotalLiquidationValue(assets);
+    const freeCash = macroGoals.freeCash ?? 0;
+    const totalLiq = this.calculateTotalLiquidationValue(assets, freeCash);
+
+    // ─── Пересчёт liquidationPercent от allocationBaseValue ───
+    // liquidationPercent должен считаться от полной базы (рыночная + кэш + НКД),
+    // чтобы быть сопоставимым с targetPercent из Excel.
+    const marketValueOnly = assets.reduce(
+      (sum, a) => sum + (a.quantity ?? 0) * (a.currentPrice ?? 0),
+      0,
+    );
+    for (const asset of assets) {
+      const assetValue = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
+      asset.liquidationPercent =
+        totalLiq > 0 ? (assetValue / totalLiq) * 100 : 0;
+    }
 
     // ─── Диагностика: liquidation vs balance ───
     const excelTotalBalance = macroGoals.totalBalance ?? 0;
     const liqBalanceDiff = excelTotalBalance - totalLiq;
     if (excelTotalBalance > 0 && Math.abs(liqBalanceDiff) > 1000) {
       console.warn(
-        `[DIAGNOSTIC] totalLiquidationValue=${Math.round(totalLiq).toLocaleString('ru-RU')}₽, ` +
+        `[DIAGNOSTIC] allocationBaseValue=${Math.round(totalLiq).toLocaleString('ru-RU')}₽ (рыночная ${Math.round(marketValueOnly).toLocaleString('ru-RU')}₽ + кэш ${Math.round(freeCash).toLocaleString('ru-RU')}₽ + НКД), ` +
           `Excel totalBalance=${Math.round(excelTotalBalance).toLocaleString('ru-RU')}₽, ` +
           `расхождение=${Math.round(liqBalanceDiff).toLocaleString('ru-RU')}₽ (${((liqBalanceDiff / excelTotalBalance) * 100).toFixed(1)}%)`,
       );
@@ -223,11 +252,22 @@ export class AnalysisAgent extends AgentBase {
 
   // ── Helpers ──
 
-  private calculateTotalLiquidationValue(assets: CurrentAsset[]): number {
-    return assets.reduce((sum, asset) => {
+  private calculateTotalLiquidationValue(
+    assets: CurrentAsset[],
+    freeCash: number,
+  ): number {
+    // Рыночная стоимость бумаг
+    const marketValue = assets.reduce((sum, asset) => {
       const liqValue = (asset.quantity ?? 0) * (asset.currentPrice ?? 0);
       return sum + liqValue;
     }, 0);
+    // НКД по всем активам
+    const totalNkd = assets.reduce((sum, asset) => {
+      return sum + (asset.nkdRub ?? 0);
+    }, 0);
+    // Allocation base = рыночная стоимость + кэш + НКД
+    // (кэш и НКД добавляются, т.к. они часть ликвидной базы для ребалансировки)
+    return marketValue + freeCash + totalNkd;
   }
 
   private emptyResult(): AnalysisAgentOutput {

@@ -366,21 +366,9 @@ export async function withProviderFallback<T>(
 export abstract class MacroFetcher {
   abstract fetch(): Promise<MacroResearch>;
 }
-export class CbrOfficialFetcher extends MacroFetcher {
-  async fetch(): Promise<MacroResearch> {
-    return {
-      keyRate: { status: 'VALUE', value: 0 },
-      inflation: { status: 'NO_DATA' },
-      inflationTrend: { status: 'NO_DATA' },
-      fx: { status: 'NO_DATA' },
-      oil: { status: 'NO_DATA' },
-      commodityRegime: { status: 'NO_DATA' },
-      liquidityRegime: { status: 'NO_DATA' },
-      economicCycle: { status: 'NO_DATA' },
-      rateRegime: { status: 'NO_DATA' },
-    };
-  }
-}
+// CbrOfficialFetcher импортируется из cbr-official-fetcher.ts
+// (реальный fetcher с User-Agent, retry, MOEX fallback)
+export { CbrOfficialFetcher } from './cbr-official-fetcher.js';
 export class MarketDataProvider extends MacroFetcher {
   async fetch(): Promise<MacroResearch> {
     return {

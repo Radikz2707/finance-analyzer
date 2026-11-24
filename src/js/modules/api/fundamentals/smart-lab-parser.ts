@@ -278,7 +278,13 @@ export function parseSmartLabDividends(
       if (cells.length < 6) continue;
 
       const rowTicker = (cells[0] ?? '').toUpperCase();
-      if (rowTicker !== normalizedTicker) continue;
+      // Для префов (TATNP, SBERP) страница обыкновенной содержит строки
+      // с тикером обыкновенной — разрешаем оба варианта.
+      const tickerBase = normalizedTicker.replace(/P$/, '');
+      const isMatch =
+        rowTicker === normalizedTicker ||
+        rowTicker === tickerBase;
+      if (!isMatch) continue;
 
       const record: SmartLabDividendRecord = {
         ticker: rowTicker,

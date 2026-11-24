@@ -321,6 +321,14 @@ export class NotificationAgent extends AgentBase {
         totalSales: data.investedFunds.totalSales,
         totalWithdrawals: data.investedFunds.totalWithdrawals,
         totalDeposits: data.investedFunds.totalDeposits,
+        // XIRR
+        xirr: data.xirr
+          ? {
+              rate: data.xirr.rate,
+              reason: data.xirr.reason,
+              withdrawalsHaveDates: data.xirr.withdrawalsHaveDates,
+            }
+          : undefined,
       },
       strategist?.strategies?.[0]?.steps,
     );
@@ -444,6 +452,13 @@ export class NotificationAgent extends AgentBase {
         priceAlertsMd +
         '\n\n### 💰 Доходность портфеля: НКД и дивиденды\n' +
         `* НКД по облигациям: **${income.totalNkd.toLocaleString('ru-RU')} ₽**\n` +
+        (income.totalCouponsGross
+          ? `* Купоны LTM (по графику MOEX ISS, чистые): **${(income.totalCouponsNet ?? 0).toLocaleString('ru-RU')} ₽** ` +
+            `(грязные ${income.totalCouponsGross.toLocaleString('ru-RU')} ₽, ${income.couponBonds?.length ?? 0} бумаг, статус ${income.couponStatus ?? '—'})\n` +
+            (income.couponWarnings && income.couponWarnings.length > 0
+              ? income.couponWarnings.map((w) => `  ⚠️ ${w}`).join('\n') + '\n'
+              : '')
+          : '') +
         `* Фактические купоны по облигациям: **${income.stocks
           .filter((s) => s.kind !== 'LTM')
           .reduce((sum, s) => sum + s.grossIncome, 0)
@@ -452,8 +467,12 @@ export class NotificationAgent extends AgentBase {
         ((income.declaredDivs ?? 0) > 0
           ? `* Объявленные будущие дивиденды (чистые): **${(income.declaredDivsNet ?? 0).toLocaleString('ru-RU')} ₽**\n`
           : '') +
-        `* Итого чистый доход: **${(income.totalNkd + income.totalDivsNet).toLocaleString('ru-RU')} ₽** ` +
-        `(НКД ${income.totalNkd.toLocaleString('ru-RU')} ₽ + дивиденды LTM ${income.totalDivsNet.toLocaleString('ru-RU')} ₽)` +
+        `* Итого чистый доход: **${(income.totalNkd + (income.totalCouponsNet ?? 0) + income.totalDivsNet).toLocaleString('ru-RU')} ₽** ` +
+        `(НКД ${income.totalNkd.toLocaleString('ru-RU')} ₽` +
+        (income.totalCouponsNet
+          ? ` + купоны LTM ${(income.totalCouponsNet ?? 0).toLocaleString('ru-RU')} ₽`
+          : '') +
+        ` + дивиденды LTM ${income.totalDivsNet.toLocaleString('ru-RU')} ₽)` +
         (income.dividendDataStatus === 'UNAVAILABLE' ||
         income.dividendDataStatus === 'EMPTY'
           ? ' — дивидендная часть не подтверждена'
@@ -498,6 +517,13 @@ export class NotificationAgent extends AgentBase {
     }
 
     // Новостной фон убран — не несёт практической ценности для пользователя
+
+    // Добавляем общий анализ портфеля от ИИ
+    if (ai.portfolioSummary) {
+      md += '\n\n---\n\n';
+      md += '## 📊 Анализ ИИ-советника\n\n';
+      md += ai.portfolioSummary + '\n\n';
+    }
 
     // Добавляем сценарии "что если"
     if (scenario && scenario.scenarios.length > 0) {
@@ -723,7 +749,7 @@ export class NotificationAgent extends AgentBase {
     }
 
     html +=
-      '<div class="recommendations-list" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px;">\n';
+      '<div class="recommendations-list" style="display: flex; flex-direction: column; gap: 16px;">\n';
 
     for (const [ticker, rec] of recs) {
       // Действие карточки — единый источник: стратег → PortfolioMath → AI.
@@ -760,13 +786,25 @@ export class NotificationAgent extends AgentBase {
         aiAction !== null &&
         cardAction !== null &&
         aiAction !== cardAction;
-      // confidence от модели — НЕ вероятность. Показываем его как внутреннюю
-      // оценку модели, а основным сигналом считаем число аргументов за/против.
-      const confidenceRaw = rec.confidence;
-      const confidenceDisplay =
-        confidenceRaw === null || confidenceRaw === undefined
-          ? ''
-          : ` · оценка модели: ${Math.round(confidenceRaw * 100)}% (не вероятность)`;
+      // confidence от модели — НЕ вероятность. Показываем raw + clamped.
+      const confidenceRaw = (rec as unknown as Record<string, unknown>).confidenceRaw as number | undefined ?? rec.confidence;
+      const confidenceClamped = rec.confidence;
+      const confidenceClampedApplied =
+        confidenceRaw !== null &&
+        confidenceClamped !== null &&
+        confidenceRaw !== confidenceClamped;
+
+      let confidenceDisplay = '';
+      if (confidenceClamped !== null && confidenceClamped !== undefined) {
+        const clampedPercent = Math.round(confidenceClamped * 100);
+        if (confidenceClampedApplied) {
+          const rawPercent = Math.round(confidenceRaw * 100);
+          confidenceDisplay =
+            ` · оценка модели: ${clampedPercent}% (raw: ${rawPercent}%, макро устарело)`;
+        } else {
+          confidenceDisplay = ` · оценка модели: ${clampedPercent}% (не вероятность)`;
+        }
+      }
       const catalystsCount = rec.keyCatalysts?.length ?? 0;
       const risksCount = rec.keyRisks?.length ?? 0;
       const argumentBalance = `Аргументы за/против: ${catalystsCount}/${risksCount}`;
@@ -793,79 +831,163 @@ export class NotificationAgent extends AgentBase {
       );
 
       html +=
-        '<div class="recommendation-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; background: rgba(255,255,255,0.03); border-radius: 6px; border-left: 3px solid ' +
+        '<div class="recommendation-item" style="padding: 20px 24px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; border-left: 4px solid ' +
         actionColor +
-        ';">\n';
+        '; box-shadow: 0 2px 8px rgba(0,0,0,0.2);">\n';
+
+      // ─── Шапка карточки: тикер, действие, метаданные ───
+      html +=
+        '<div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,0.06);">\n';
       html += '<div style="flex: 1;">\n';
       html +=
-        '<div style="font-weight: bold; color: #e6edf3; font-size: 14px;">' +
+        '<div style="font-weight: 700; color: #e6edf3; font-size: 16px; line-height: 1.3;">' +
         ticker +
-        (rec.name ? ' — ' + rec.name : '') +
+        (rec.name ? ' <span style="color: #8b949e; font-weight: 400;">— ' + rec.name + '</span>' : '') +
         '</div>\n';
       html +=
-        '<div style="color: ' +
-        actionColor +
-        '; font-size: 13px; margin-top: 4px;">' +
+        '<div style="color: ' + actionColor + '; font-size: 14px; font-weight: 600; margin-top: 4px;">' +
         actionLabel +
         '</div>\n';
       if (actionMismatch && asset) {
         const deviationPp =
           asset.currentPercent - (asset.targetPercent ?? asset.currentPercent);
         html +=
-          '<div style="color: #d29922; font-size: 11px; margin-top: 4px;">' +
+          '<div style="color: #d29922; font-size: 11px; margin-top: 6px; padding: 4px 8px; background: rgba(210,153,34,0.08); border-radius: 4px; display: inline-block;">' +
           `⚠️ Расхождение сигналов: AI — ${aiAction}, PortfolioMath — ${asset.status} ` +
           `(${deviationPp > 0 ? '+' : ''}${deviationPp.toFixed(1).replace('.', ',')} п.п.)` +
           '</div>\n';
       }
       if (policyBlocked) {
-        // policyNote уже содержит формулировку политики — не дублируем
-        // заголовок «Заблокировано политикой no-sell» дважды.
         const policyText =
           rec.policyNote && rec.policyNote.trim().length > 0
             ? rec.policyNote
             : 'Заблокировано политикой no-sell';
         html +=
-          '<div style="margin-top: 4px; padding: 4px 6px; background: rgba(255,123,114,0.08); ' +
-          'border: 1px solid rgba(255,123,114,0.25); border-radius: 4px; ' +
-          `color: #ff7b72; font-size: 11px;">⛔ ${policyText}` +
-          '</div>\n';
+          '<div style="margin-top: 6px; padding: 5px 10px; background: rgba(255,123,114,0.08); ' +
+          'border: 1px solid rgba(255,123,114,0.25); border-radius: 5px; ' +
+          `color: #ff7b72; font-size: 11px; display: inline-block;">⛔ ${policyText}</div>\n`;
       }
-      // holdOnly — позиция запрещена к продаже (из Excel/QUIK)
       if (asset?.holdOnly === true && !policyBlocked) {
         html +=
-          '<div style="margin-top: 4px; padding: 4px 6px; background: rgba(255,209,102,0.08); ' +
-          'border: 1px solid rgba(255,209,102,0.25); border-radius: 4px; ' +
-          'color: #ffd166; font-size: 11px;">' +
+          '<div style="margin-top: 6px; padding: 5px 10px; background: rgba(255,209,102,0.08); ' +
+          'border: 1px solid rgba(255,209,102,0.25); border-radius: 5px; ' +
+          'color: #ffd166; font-size: 11px; display: inline-block;">' +
           '\u25CF Позиция только для удержания (holdOnly)</div>\n';
       }
-      html +=
-        '<div style="color: #8b949e; font-size: 12px; margin-top: 2px;">' +
-        argumentBalance +
-        confidenceDisplay +
-        '</div>\n';
-      if (displayRationale) {
+      // Концентрация — отдельное предупреждение, не путать с confidence модели.
+      if (asset?.isConcentrated === true) {
         html +=
-          '<div style="color: #c9d1d9; font-size: 12px; margin-top: 6px; line-height: 1.4;">' +
-          displayRationale +
+          '<div style="margin-top: 6px; padding: 5px 10px; background: rgba(255,165,0,0.08); ' +
+          'border: 1px solid rgba(255,165,0,0.25); border-radius: 5px; ' +
+          'color: #ffa500; font-size: 11px; display: inline-block;">' +
+          `⚠️ Концентрация: ${asset.currentPercent.toFixed(1)}% портфеля (лимит 20%)</div>\n`;
+      }
+      html += '</div>\n';
+      // Метаданные справа
+      html +=
+        '<div style="text-align: right; flex-shrink: 0; min-width: 140px;">\n';
+      html +=
+        '<div style="color: #8b949e; font-size: 11px; margin-bottom: 4px;">' +
+        argumentBalance +
+        '</div>\n';
+      if (confidenceDisplay) {
+        html +=
+          '<div style="color: #6e7681; font-size: 10px; line-height: 1.3;">' +
+          confidenceDisplay +
           '</div>\n';
       }
+      html += '</div>\n';
+      html += '</div>\n';
 
-      // ─── Риски (если есть) ───
-      const risks = (rec as { keyRisks?: string[] }).keyRisks;
-      if (risks && risks.length > 0) {
+      // ─── Секция: Обоснование ───
+      if (displayRationale) {
         html +=
-          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(255, 123, 114, 0.05); border: 1px solid rgba(255, 123, 114, 0.15); border-radius: 4px; font-size: 11px;">\n';
+          '<div style="margin-bottom: 14px; padding: 12px 14px; background: rgba(88,166,255,0.03); border: 1px solid rgba(88,166,255,0.1); border-radius: 7px;">\n';
         html +=
-          '<div style="color: #ffd166; font-weight: bold; margin-bottom: 3px;">⚠️ Риски:</div>\n';
-        for (const risk of risks) {
-          const displayRisk = normalizeLatexMarkup(
-            this.sanitizeCardField(risk, ticker, asset, 'keyRisks') ?? risk,
-          );
-          html +=
-            '<div style="color: #ff7b72; margin-top: 2px;">• ' +
-            displayRisk +
-            '</div>\n';
+          '<div style="color: #58a6ff; font-weight: 600; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">💡 Обоснование</div>\n';
+        html +=
+          '<div style="color: #c9d1d9; font-size: 13px; line-height: 1.65;">' +
+          displayRationale +
+          '</div>\n';
+        html += '</div>\n';
+      }
+
+      // ─── Фундаментальный анализ ───
+      const fundamentalAnalysis = (
+        rec as { fundamentalAnalysis?: string | null }
+      ).fundamentalAnalysis;
+      const displayFundamentalAnalysis = normalizeLatexMarkup(
+        this.sanitizeCardField(
+          fundamentalAnalysis,
+          ticker,
+          asset,
+          'fundamentalAnalysis',
+        ),
+      );
+      if (displayFundamentalAnalysis) {
+        html +=
+          '<div style="margin-bottom: 14px; padding: 12px 14px; background: rgba(88,166,255,0.03); border: 1px solid rgba(88,166,255,0.1); border-radius: 7px;">\n';
+        html +=
+          '<div style="color: #58a6ff; font-weight: 600; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">📊 Фундаментал</div>\n';
+        html +=
+          '<div style="color: #c9d1d9; font-size: 13px; line-height: 1.65;">' +
+          displayFundamentalAnalysis +
+          '</div>\n';
+        html += '</div>\n';
+      }
+
+      // ─── Ликвидность (для акций и облигаций, детерминированно) ───
+      const liquidityLevel = (rec as { liquidityLevel?: string }).liquidityLevel;
+      const dailyTurnover = (rec as { dailyTurnover?: number | null }).dailyTurnover;
+      const liquidationDays = (rec as { liquidationDays?: number | null }).liquidationDays;
+      if (liquidityLevel && liquidityLevel !== 'UNKNOWN') {
+        const levelEmoji: Record<string, string> = {
+          HIGH: '🟢',
+          MEDIUM: '🟡',
+          LOW: '🟠',
+          CRITICAL: '🔴',
+        };
+        const levelLabel: Record<string, string> = {
+          HIGH: 'Высокая',
+          MEDIUM: 'Средняя',
+          LOW: 'Низкая',
+          CRITICAL: 'Критическая',
+        };
+        const emoji = levelEmoji[liquidityLevel] || '⚪';
+        const label = levelLabel[liquidityLevel] || liquidityLevel;
+        let liquidityText = `${emoji} Ликвидность: ${label}`;
+        if (dailyTurnover != null && dailyTurnover > 0) {
+          const turnoverFormatted = dailyTurnover >= 1e9
+            ? `${(dailyTurnover / 1e9).toFixed(1)} млрд ₽`
+            : dailyTurnover >= 1e6
+              ? `${(dailyTurnover / 1e6).toFixed(0)} млн ₽`
+              : `${dailyTurnover.toLocaleString('ru-RU')} ₽`;
+          liquidityText += ` — оборот ${turnoverFormatted}/день`;
         }
+        if (liquidationDays != null && liquidationDays > 0) {
+          liquidityText += `, продажа за ${liquidationDays} дн.`;
+        }
+        html +=
+          '<div style="margin-bottom: 14px; padding: 12px 14px; background: rgba(86,211,100,0.03); border: 1px solid rgba(86,211,100,0.1); border-radius: 7px;">\n';
+        html +=
+          '<div style="color: #58a6ff; font-weight: 600; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">💧 Ликвидность</div>\n';
+        html +=
+          '<div style="color: #c9d1d9; font-size: 13px; line-height: 1.65;">' +
+          liquidityText +
+          '</div>\n';
+        html += '</div>\n';
+      }
+
+      // ─── Предупреждение: неизвестная ликвидность ───
+      if (liquidityLevel === 'UNKNOWN') {
+        html +=
+          '<div style="margin-bottom: 14px; padding: 12px 14px; background: rgba(210,153,34,0.04); border: 1px solid rgba(210,153,34,0.15); border-radius: 7px;">\n';
+        html +=
+          '<div style="color: #58a6ff; font-weight: 600; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">⚠️ Ликвидность</div>\n';
+        html +=
+          '<div style="color: #d29922; font-size: 13px; line-height: 1.65;">' +
+          'Нет данных по обороту — проверьте столбец «Оборот» в листе «Акции» Excel.' +
+          '</div>\n';
         html += '</div>\n';
       }
 
@@ -886,7 +1008,9 @@ export class NotificationAgent extends AgentBase {
                 : '';
         const nextCoupon = bondCard.nextCouponDate
           ? `${new Date(bondCard.nextCouponDate).toLocaleDateString('ru-RU')}${nextCouponSourceNote}`
-          : 'дата не указана (нет NEXTCOUPON в Excel/ISS)';
+          : bondCard.nextCouponDateSource
+            ? `дата не найдена (источник: ${bondCard.nextCouponDateSource})`
+            : 'дата не указана (нет NEXTCOUPON в Excel/ISS/smart-lab)';
 
         // Срез карточки в лог: видно, почему тип/дата именно такие.
         console.log(
@@ -936,6 +1060,19 @@ export class NotificationAgent extends AgentBase {
                 `следующая выплата: ${nextCouponDisplay}`;
         // Пункт 3 в рендере: при UNKNOWN + MISSING — «нет подтверждённых данных».
         const isUnknownCoupon = bondCard.couponType === 'UNKNOWN';
+        // Атрибуция источника доходности
+        const yieldSourceLabel = (() => {
+          switch (bondCard.yieldSource) {
+            case 'SMART_LAB_PROBE':
+              return ` (Smart-Lab, ${new Date().toLocaleDateString('ru-RU')})`;
+            case 'EXCEL_COLUMN':
+              return ' (Excel, колонка доходности)';
+            case 'EXCEL_COMPUTED':
+              return ' (Excel, вычислено)';
+            default:
+              return '';
+          }
+        })();
         const yieldLine = floating
           ? `Текущая доходность: ${
               bondCard.currentYield != null
@@ -943,12 +1080,13 @@ export class NotificationAgent extends AgentBase {
                 : 'недоступна'
             }. YTM — проекция при предположении неизменной ставки ` +
             `(методика: ${bondCard.ytmMethod ?? 'FLOATER_ASSUMED_CONSTANT_RATE'}), ` +
-            'не доходность к погашению.'
+            'не доходность к погашению.' + yieldSourceLabel
           : bondCard.dataQuality === 'MISSING' || (isUnknownCoupon && bondCard.dataQuality === 'PARTIAL')
             ? 'Нет подтверждённых данных по доходности'
             : bondCard.ytm != null
               ? `Доходность к погашению: ${bondCard.ytm.toFixed(2)}%` +
-                (bondCard.ytmMethod ? ` (методика: ${bondCard.ytmMethod})` : '')
+                (bondCard.ytmMethod ? ` (методика: ${bondCard.ytmMethod})` : '') +
+                yieldSourceLabel
               : 'Доходность к погашению: недоступна';
         const ratingLine = bondCard.creditRating
           ? `Рейтинг ${bondCard.creditRating.agency}: ${bondCard.creditRating.rating} (прогноз: ${bondCard.creditRating.outlook})`
@@ -964,9 +1102,9 @@ export class NotificationAgent extends AgentBase {
           bondCard.creditQuality === 'LOW';
 
         html +=
-          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(210,153,34,0.05); border: 1px solid rgba(210,153,34,0.2); border-radius: 4px; font-size: 11px;">\n';
+          '<div style="margin-bottom: 14px; padding: 12px 14px; background: rgba(210,153,34,0.04); border: 1px solid rgba(210,153,34,0.12); border-radius: 7px;">\n';
         html +=
-          '<div style="color: #d29922; font-weight: bold; margin-bottom: 3px;">📜 Облигация:</div>\n';
+          '<div style="color: #d29922; font-weight: 600; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">📜 Облигация</div>\n';
         // Две оценки: балансовая (Excel/QUIK) и ликвидационная (C9/MOEX) — раздельно.
         const priceLines: string[] = [];
         if (bondCard) {
@@ -981,12 +1119,21 @@ export class NotificationAgent extends AgentBase {
               `Ликвидационная стоимость (C9): ${cur.toLocaleString('ru-RU')} ₽`,
             );
         }
+        // Поле ликвидности
+        const liquidityLine = (() => {
+          if (bondCard.turnoverFromSmartLab != null && bondCard.turnoverFromSmartLab > 0) {
+            return `Ликвидность: оборот ${bondCard.turnoverFromSmartLab.toLocaleString('ru-RU')} млн руб./день`;
+          }
+          return 'Ликвидность: нет данных по обороту';
+        })();
         html +=
-          '<div style="color: #c9d1d9; line-height: 1.4;">' +
+          '<div style="color: #c9d1d9; line-height: 1.65;">' +
           couponLine +
           (priceLines.length > 0 ? '<br>' + priceLines.join('<br>') : '') +
           '<br>' +
           yieldLine +
+          '<br>' +
+          liquidityLine +
           '<br>' +
           creditLine +
           '<br>' +
@@ -994,32 +1141,59 @@ export class NotificationAgent extends AgentBase {
           '</div>\n';
         if (defaultFlag) {
           html +=
-            '<div style="color: #ff7b72; margin-top: 4px; font-weight: bold;">⛔ Дефолт/реструктуризация: покупка запрещена, высокая доходность — компенсация кредитного риска</div>\n';
+            '<div style="color: #ff7b72; margin-top: 8px; padding: 6px 8px; background: rgba(255,123,114,0.06); border-radius: 4px; font-weight: 600; font-size: 11px;">⛔ Дефолт/реструктуризация: покупка запрещена, высокая доходность — компенсация кредитного риска</div>\n';
         }
         html += '</div>\n';
       }
 
-      // ─── Фундаментальный анализ ───
-      const fundamentalAnalysis = (
-        rec as { fundamentalAnalysis?: string | null }
-      ).fundamentalAnalysis;
-      const displayFundamentalAnalysis = normalizeLatexMarkup(
-        this.sanitizeCardField(
-          fundamentalAnalysis,
-          ticker,
-          asset,
-          'fundamentalAnalysis',
-        ),
-      );
-      if (displayFundamentalAnalysis) {
+      // ─── Расширенные данные из Excel ───
+      const minPrice = (rec as { minPrice?: number | null }).minPrice;
+      const maxPrice = (rec as { maxPrice?: number | null }).maxPrice;
+      const ratingTotal = (rec as { ratingTotal?: number | null }).ratingTotal;
+      const rangePosition = (rec as { rangePosition?: number | null }).rangePosition;
+      const entrySignal = (rec as { entrySignal?: string | null }).entrySignal;
+      const ratingDynamic = (rec as { ratingDynamic?: number | null }).ratingDynamic;
+      const ratingVolume = (rec as { ratingVolume?: number | null }).ratingVolume;
+
+      if (minPrice != null || maxPrice != null || ratingTotal != null || entrySignal != null) {
         html +=
-          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(88, 166, 255, 0.05); border: 1px solid rgba(88, 166, 255, 0.15); border-radius: 4px; font-size: 11px;">\n';
+          '<div style="margin-bottom: 14px; padding: 12px 14px; background: rgba(139,148,158,0.04); border: 1px solid rgba(139,148,158,0.12); border-radius: 7px;">\n';
         html +=
-          '<div style="color: #58a6ff; font-weight: bold; margin-bottom: 3px;">📊 Фундаментал:</div>\n';
-        html +=
-          '<div style="color: #c9d1d9; line-height: 1.4;">' +
-          displayFundamentalAnalysis +
-          '</div>\n';
+          '<div style="color: #58a6ff; font-weight: 600; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">📋 Данные Excel</div>\n';
+        html += '<div style="color: #c9d1d9; font-size: 13px; line-height: 1.65;">';
+
+        const parts: string[] = [];
+        if (minPrice != null && maxPrice != null) {
+          parts.push(`Диапазон: ${minPrice.toFixed(2)}–${maxPrice.toFixed(2)} ₽`);
+        }
+        if (rangePosition != null && rangePosition > 0) {
+          parts.push(`Позиция в диапазоне: ${rangePosition.toFixed(0)}%`);
+        }
+        if (ratingTotal != null && ratingTotal > 0) {
+          parts.push(`Общий рейтинг: ${ratingTotal}/100`);
+        }
+        if (ratingDynamic != null && ratingDynamic > 0) {
+          parts.push(`Рейтинг динамики: ${ratingDynamic}/100`);
+        }
+        if (ratingVolume != null && ratingVolume > 0) {
+          parts.push(`Рейтинг объёма: ${ratingVolume}/100`);
+        }
+        if (entrySignal) {
+          const signalColor = entrySignal.toLowerCase().includes('выгодн')
+            ? '#56d364'
+            : entrySignal.toLowerCase().includes('нейтрал')
+              ? '#ffd166'
+              : '#c9d1d9';
+          parts.push(`<span style="color: ${signalColor}; font-weight: 600;">Сигнал входа: ${entrySignal}</span>`);
+        }
+
+        if (parts.length > 0) {
+          html += parts.join(' · ');
+        } else {
+          html += 'Нет данных';
+        }
+
+        html += '</div>\n';
         html += '</div>\n';
       }
 
@@ -1038,11 +1212,11 @@ export class NotificationAgent extends AgentBase {
           ) ?? technicalTiming,
         );
         html +=
-          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(227, 179, 65, 0.05); border: 1px solid rgba(227, 179, 65, 0.15); border-radius: 4px; font-size: 11px;">\n';
+          '<div style="margin-bottom: 14px; padding: 12px 14px; background: rgba(227,179,65,0.04); border: 1px solid rgba(227,179,65,0.12); border-radius: 7px;">\n';
         html +=
-          '<div style="color: #e3b341; font-weight: bold; margin-bottom: 3px;">🎯 Лучшая точка для сделки:</div>\n';
+          '<div style="color: #e3b341; font-weight: 600; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">🎯 Лучшая точка для сделки</div>\n';
         html +=
-          '<div style="color: #c9d1d9; line-height: 1.4;">' +
+          '<div style="color: #c9d1d9; font-size: 13px; line-height: 1.65;">' +
           displayTechnicalTiming +
           '</div>\n';
         html += '</div>\n';
@@ -1063,11 +1237,11 @@ export class NotificationAgent extends AgentBase {
           ) ?? entryStrategy,
         );
         html +=
-          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(163, 113, 247, 0.05); border: 1px solid rgba(163, 113, 247, 0.15); border-radius: 4px; font-size: 11px;">\n';
+          '<div style="margin-bottom: 14px; padding: 12px 14px; background: rgba(163,113,247,0.04); border: 1px solid rgba(163,113,247,0.12); border-radius: 7px;">\n';
         html +=
-          '<div style="color: #a371f7; font-weight: bold; margin-bottom: 3px;">📈 Как покупать/продавать:</div>\n';
+          '<div style="color: #a371f7; font-weight: 600; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">📈 Как покупать/продавать</div>\n';
         html +=
-          '<div style="color: #c9d1d9; line-height: 1.4;">' +
+          '<div style="color: #c9d1d9; font-size: 13px; line-height: 1.65;">' +
           displayEntryStrategy +
           '</div>\n';
         html += '</div>\n';
@@ -1081,27 +1255,28 @@ export class NotificationAgent extends AgentBase {
       );
       if (displayIssuerContext) {
         html +=
-          '<div style="margin-top: 6px; padding: 6px 8px; background: rgba(86, 211, 100, 0.05); border: 1px solid rgba(86, 211, 100, 0.15); border-radius: 4px; font-size: 11px;">\n';
+          '<div style="margin-bottom: 14px; padding: 12px 14px; background: rgba(86,211,100,0.04); border: 1px solid rgba(86,211,100,0.12); border-radius: 7px;">\n';
         html +=
-          '<div style="color: #56d364; font-weight: bold; margin-bottom: 3px;">🏢 Контекст эмитента:</div>\n';
+          '<div style="color: #56d364; font-weight: 600; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">🏢 Контекст эмитента</div>\n';
         html +=
-          '<div style="color: #c9d1d9; line-height: 1.4;">' +
+          '<div style="color: #c9d1d9; font-size: 13px; line-height: 1.65;">' +
           displayIssuerContext +
           '</div>\n';
         html += '</div>\n';
       }
 
       html += '</div>\n';
+      // ─── Кнопки обратной связи ───
       html +=
-        '<div class="feedback-buttons" style="display: flex; gap: 8px; margin-left: 15px;">\n';
+        '<div style="margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); display: flex; gap: 8px;">\n';
       html +=
         '<button class="feedback-btn feedback-good" data-ticker="' +
         ticker +
-        '" data-action="good" style="background: rgba(86, 211, 100, 0.1); border: 1px solid rgba(86, 211, 100, 0.4); color: #56d364; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px;">👍</button>\n';
+        '" data-action="good" style="background: rgba(86, 211, 100, 0.1); border: 1px solid rgba(86, 211, 100, 0.3); color: #56d364; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.2s;">👍</button>\n';
       html +=
         '<button class="feedback-btn feedback-bad" data-ticker="' +
         ticker +
-        '" data-action="bad" style="background: rgba(255, 123, 114, 0.1); border: 1px solid rgba(255, 123, 114, 0.4); color: #ff7b72; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px;">👎</button>\n';
+        '" data-action="bad" style="background: rgba(255, 123, 114, 0.1); border: 1px solid rgba(255, 123, 114, 0.3); color: #ff7b72; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; transition: all 0.2s;">👎</button>\n';
       html += '</div>\n';
       html += '</div>\n';
     }
@@ -1178,6 +1353,20 @@ export class NotificationAgent extends AgentBase {
         html += `- ${normalizeLatexMarkup(warning) ?? warning}\n`;
       }
       html += '\n';
+    }
+
+    // ── Общий анализ портфеля (portfolioSummary) ──
+    if (ai.portfolioSummary) {
+      // Конвертируем \n в <br> для корректного отображения абзацев
+      const formattedSummary = ai.portfolioSummary
+        .replace(/\\n/g, '\n')
+        .replace(/\n/g, '<br>');
+      html +=
+        '<div style="margin-bottom: 20px; padding: 15px; background: rgba(88, 166, 255, 0.05); border: 1px solid rgba(88, 166, 255, 0.2); border-radius: 6px;">' +
+        '<h3 style="margin: 0 0 12px 0; color: #58a6ff; font-size: 15px;">📊 Общий анализ портфеля</h3>' +
+        '<div style="font-size: 13px; color: #c9d1d9; line-height: 1.65;">' +
+        formattedSummary +
+        '</div></div>\n';
     }
 
     // ── Структурированные рекомендации с кнопками обратной связи ──

@@ -18,6 +18,8 @@ function makeMacro(): MacroGoals {
   return {
     totalBalance: 4_800_000,
     totalLiquidationValue: 5_000_000,
+    cashSource: 'QUIK',
+
     freeCash: 200_000,
     stocksPercent: 60,
     bondsPercent: 35,
@@ -105,3 +107,4 @@ export async function runPortfolioMathBenchmarks(): Promise<BenchmarkResult[]> {
   }
   return results;
 }
+

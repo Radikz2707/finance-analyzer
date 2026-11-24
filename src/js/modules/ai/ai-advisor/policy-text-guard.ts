@@ -536,6 +536,25 @@ export function isSellBlockedByPolicy(
   return false;
 }
 
+/**
+ * Заблокирована ли продажа ПО ЯВНОМУ СПИСКУ тикеров (noSellTickers).
+ *
+ * В отличие от isSellBlockedByPolicy, НЕ проверяет assetType —
+ * возвращает true только если тикер явно указан в policy.noSellTickers.
+ * Используется для метки «заблокированы политикой no-sell» в карточках:
+ * метка ставится только наExplicit-тикеры, а не на все облигации подряд.
+ */
+export function isSellBlockedByExplicitTicker(
+  asset: Pick<AssetAnalysis, 'ticker'>,
+  policy?: PolicyLike,
+): boolean {
+  const ticker = normalizeTicker(asset.ticker);
+  const noSellTickers = new Set(
+    (policy?.noSellTickers ?? []).map((value) => normalizeTicker(value)),
+  );
+  return noSellTickers.has(ticker);
+}
+
 interface SanitizeOptions {
   /**
    * true — заменять предложение только если в нём упомянут тикер
@@ -693,12 +712,104 @@ export function sanitizePolicyCardText(
 }
 
 /**
+ * Нейтрализация buy-директив при HOLD/STABLE (CARD_ACTION_MISMATCH).
+ *
+ * Если финальное действие карточки — HOLD или STABLE, текст не должен
+ * содержать «рекомендуется покупка/докупить/нарастить». Такие директивы
+ * заменяются на нейтральную формулировку с ПОДСТАВКОЙ фактического aiVote:
+ *   «ТИКЕР: ядро: HOLD, мнение ИИ: SELL — покупка отложена».
+ *
+ * Ключевое: заменяются ТОЛЬКО предложения с buy-директивами.
+ * Остальной текст (P/E, SMA, RSI, фундаментал) сохраняется без изменений.
+ */
+export function sanitizeBuyDirectivesForAction(
+  text: string | null | undefined,
+  ticker: string,
+  action: string,
+  aiVote?: string | null,
+): { text: string | null; changed: boolean } {
+  if (!text || !text.length) return { text: text ?? null, changed: false };
+
+  // Только для HOLD/STABLE — BUY/REDUCE/EXIT не трогаем
+  if (action !== 'HOLD' && action !== 'STABLE') {
+    return { text, changed: false };
+  }
+
+  const tickerUpper = (ticker ?? '').trim().toUpperCase();
+  // Фактический aiVote: если не передан — HOLD (по умолчанию)
+  const vote = (aiVote ?? 'HOLD').toUpperCase();
+  const neutralTemplate = `${tickerUpper}: ядро: HOLD, мнение ИИ: ${vote} — покупка отложена.`;
+
+  const buyPatterns = [
+    /рекомендуется\s+покупк[а-яё]/i,
+    /рекомендуется\s+докуп[иы]ть/i,
+    /рекомендуется\s+нарастить/i,
+    /необходимо\s+докуп[иы]ть/i,
+    /пора\s+покупать/i,
+    /время\s+покупать/i,
+    /покупать/i,
+    /докупать/i,
+    /нарастить/i,
+    /накапливать/i,
+    /закупать/i,
+  ];
+
+  const lines = text.split('\n');
+  let changed = false;
+  const replaced: string[] = [];
+
+  for (const line of lines) {
+    // Проверяем, есть ли в строке хотя бы одно предложение с buy-директивой
+    const sentences = splitSentences(line);
+    const hasBuyDirective = sentences.some((s) =>
+      buyPatterns.some((p) => p.test(s)),
+    );
+
+    if (!hasBuyDirective) {
+      // Нет buy-директив — строку не трогаем (сохраняем P/E, SMA, RSI и т.д.)
+      replaced.push(line);
+      continue;
+    }
+
+    // Есть buy-директива — заменяем только предложения с ней, сохраняем аналитику
+    changed = true;
+    const replacedLine = sentences
+      .map((sentence) => {
+        if (!buyPatterns.some((p) => p.test(sentence))) {
+          // Не buy-предложение — сохраняем
+          return sentence;
+        }
+        // Buy-предложение — заменяем на нейтральную формулировку
+        return neutralTemplate;
+      })
+      .join(' ')
+      .replace(/[ \t]+([.!?])/g, '$1')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+
+    replaced.push(replacedLine);
+  }
+
+  if (!changed) return { text, changed: false };
+  return {
+    text: replaced.join('\n'),
+    changed: true,
+  };
+}
+
+/**
  * Применить политику к структурированной рекомендации.
  * - sell-действие для no-sell тикера → HOLD + policyBlocked;
  * - текстовые sell-директивы вычищаются даже при BUY/HOLD.
+ * - для no-sell тикеров удаляются «разрешающие» утверждения
+ *   («продажа допустима», «профицит превышает порог»).
  *
  * Ключевой порядок: pipeline-префикс добавляется ДО санации/дедюпа,
  * чтобы provenance=pipeline строка была защищена от удаления модельных дублей.
+ *
+ * Метка «заблокированы no-sell» ставится ТОЛЬКО для тикеров из
+ * policy.noSellTickers (явный список). Для asset-type блокировок
+ * (например, «все облигации») — нейтральная формулировка «держать».
  */
 export function applyPolicyToRecommendation(
   rec: StructuredAIAssetRecommendation,
@@ -720,18 +831,49 @@ export function applyPolicyToRecommendation(
     rationale.changed || entryStrategy.changed || technicalTiming.changed;
 
   const blocked = isSellBlockedByPolicy(asset, policy);
+  const explicitBlocked = isSellBlockedByExplicitTicker(asset, policy);
   const actionBlocked = blocked && isSellAction(rec.recommendedAction);
+
+  // ─── Шаг 2: Для no-sell тикеров удаляем «разрешающие» утверждения ───
+  // Если тикер в noSellTickers, модель не должна писать «продажа допустима»,
+  // «профицит превышает порог» и т.п. — это противоречит императиву no-sell.
+  const sanitizeAllowing = (text: string | null): string | null => {
+    if (!text || !explicitBlocked) return text;
+    // Удалить предложения с «допустим», «разрешен/разрешён», «можно продать»
+    return text
+      .split(/[.!?]+/)
+      .map((s) => {
+        const trimmed = s.trim();
+        if (
+          /допустим[а-яё]*/i.test(trimmed) ||
+          /разрешен[а-яё]*/i.test(trimmed) ||
+          /разрешён[а-яё]*/i.test(trimmed) ||
+          /можно\s+продать/i.test(trimmed)
+        ) {
+          return '';
+        }
+        return trimmed;
+      })
+      .filter(Boolean)
+      .join('. ')
+      .trim();
+  };
 
   if (!actionBlocked && !textBlocked) {
     return {
       ...rec,
-      rationale: rationale.text,
+      rationale: sanitizeAllowing(rationale.text),
       entryStrategy: entryStrategy.text,
       technicalTiming: technicalTiming.text,
+      policyBlocked: false,
     };
   }
 
-  const policyNote = 'Продажа/сокращение заблокированы политикой no-sell';
+  // Метка «заблокированы no-sell» — только для явного списка тикеров.
+  // Для asset-type блокировок (все облигации) — нейтральная формулировка.
+  const explicitPolicyNote = explicitBlocked
+    ? 'Продажа/сокращение заблокированы политикой no-sell'
+    : null;
 
   // Pipeline-префикс добавляется ДО финального dedupe, чтобы строка
   // с provenance=pipeline была защищена от удаления модельных дублей.
@@ -741,9 +883,9 @@ export function applyPolicyToRecommendation(
     ? isPolicyStatement(rationale.text ?? '')
       ? rationale.text
       : `⛔ Заблокировано политикой no-sell: ${rec.recommendedAction}. ${
-          rationale.text ?? ''
+          sanitizeAllowing(rationale.text) ?? ''
         }`.trim()
-    : rationale.text;
+    : sanitizeAllowing(rationale.text);
 
   // Source-based trust: pipeline-строка защищена, модельные дубли удаляются.
   const dedupedRationale = dedupePolicyStatementsWithProvenance(
@@ -751,7 +893,8 @@ export function applyPolicyToRecommendation(
     asset.ticker,
   );
 
-  // policyBlocked/policyNote/policyTextBlocked — ТОЛЬКО для no-sell тикеров.
+  // policyBlocked — true когда продажа заблокирована ПО ЛЮБОМУ правилу
+  // (явный тикер ИЛИ asset-type). policyNote — только для явного списка.
   // Для разрешённых тикеров (SBER) текст санируется, но policyBlocked=false.
   // Для no-sell тикеров: policyTextBlocked=true когда текст был изменён,
   // даже если action не заблокирован (BUY по no-sell).
@@ -768,7 +911,7 @@ export function applyPolicyToRecommendation(
     policyBlocked: actionBlocked || rec.policyBlocked === true,
     policyTextBlocked:
       (blocked && textBlocked) || rec.policyTextBlocked === true,
-    policyNote: actionBlocked ? policyNote : (rec.policyNote ?? null),
+    policyNote: explicitPolicyNote ? (actionBlocked ? explicitPolicyNote : rec.policyNote) : (rec.policyNote ?? null),
   };
 }
 

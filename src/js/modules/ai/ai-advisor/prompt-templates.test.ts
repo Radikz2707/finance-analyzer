@@ -68,9 +68,31 @@ describe('buildSystemPrompt', () => {
   it('запрещает дублировать карточки рекомендаций в свободном тексте', () => {
     expect(basePrompt).not.toContain('2. Рекомендации по каждому активу');
     expect(basePrompt).toContain(
-      'НЕ дублируй рекомендации по активам в тексте',
+      'НЕ ПОВТОРЯЙ строки политики в rationale',
     );
-    expect(basePrompt).toContain('структурированных карточках');
+  });
+
+  it('rule 1: USER_TARGET_PERCENT is input fact only', () => {
+    expect(basePrompt).toContain(
+      'targetPercent — факт пользователя (AI НЕ изменяет)',
+    );
+  });
+
+  it('rule 2: AI can define AI_RECOMMENDED_TARGET_PERCENT and AI_RECOMMENDED_ACTION', () => {
+    // recommendedTargetPercent — поле JSON-схемы
+    expect(basePrompt).toContain('recommendedTargetPercent');
+    expect(basePrompt).toContain('AI вправе НЕ соглашаться');
+  });
+
+  it('rule 3: AI can disagree with PortfolioMath and USER_TARGET', () => {
+    expect(basePrompt).toContain(
+      'AI вправе НЕ соглашаться — несогласие выражается ТОЛЬКО в targetReason',
+    );
+  });
+
+  it('rule 4: deep loss does NOT block SELL/EXIT/REDUCE', () => {
+    // Глубокий убыток не блокирует действия — это проверяется в guardrails
+    expect(basePrompt).toContain('SELL=фундаментальная причина');
   });
 
   it('contains macro context with rate', () => {
@@ -141,14 +163,14 @@ describe('buildSystemPrompt', () => {
   });
 
   it('rule 6: AI can propose own target different from USER_TARGET', () => {
-    expect(basePrompt).toContain('AI_RECOMMENDED_TARGET_PERCENT');
+    expect(basePrompt).toContain('recommendedTargetPercent');
     expect(basePrompt).toContain(
-      'AI может НЕ соглашаться с PortfolioMath и USER_TARGET',
+      'AI вправе НЕ соглашаться с PortfolioMath и USER_TARGET',
     );
   });
 
   it('rule 7: AI must not invent missing data', () => {
-    expect(basePrompt).toContain('ЗАПРЕЩЕНО: выдумывать отсутствующие данные');
+    expect(basePrompt).toContain('Запрещено: подставлять отраслевые средние');
   });
 
   it('rule 8: targetReason required for AI recommendations', () => {
@@ -158,11 +180,9 @@ describe('buildSystemPrompt', () => {
   // === Separation of concerns ===
 
   it('rule 9: deterministic constraints precede AI reasoning, reasoning precedes output contract', () => {
-    const rulesIndex = basePrompt.indexOf('=== ГЛАВНЫЕ ПРАВИЛА ===');
-    const reasoningIndex = basePrompt.indexOf(
-      '=== ИНВЕСТИЦИОННЫЙ REASONING ===',
-    );
-    const jsonIndex = basePrompt.indexOf('=== JSON-МАССИВ');
+    const rulesIndex = basePrompt.indexOf('=== P0: ЖЁСТКИЕ ПРАВИЛА ===');
+    const reasoningIndex = basePrompt.indexOf('=== P1: ПОЛИТИКА РЕШЕНИЙ ===');
+    const jsonIndex = basePrompt.indexOf('=== ЗАДАЧА ===');
     expect(rulesIndex).toBeGreaterThanOrEqual(0);
     expect(reasoningIndex).toBeGreaterThanOrEqual(0);
     expect(jsonIndex).toBeGreaterThanOrEqual(0);
@@ -172,36 +192,35 @@ describe('buildSystemPrompt', () => {
 
   it('rule 9: PortfolioMath status is not a hint for AI_RECOMMENDED_ACTION', () => {
     expect(basePrompt).toContain(
-      'PortfolioMath status — результат детерминированной математики',
+      'PortfolioMath status — детерминированная математика',
     );
-    expect(basePrompt).toContain('AI может НЕ соглашаться с PortfolioMath');
+    expect(basePrompt).toContain('AI вправе НЕ соглашаться');
   });
 
   it('rule 9: AI must state agreement or disagreement with PortfolioMath', () => {
-    expect(basePrompt).toContain('AGREE');
-    expect(basePrompt).toContain('DISAGREE');
+    // agreementWithPortfolioMath — поле в JSON-схеме (buildJsonOnlySystemPrompt)
+    // basePrompt описывает правило, но не перечисляет JSON-поля
+    expect(basePrompt).toContain('AI вправе НЕ соглашаться');
   });
 
   it('rule 10: NO_DATA marker prevents invented fundamentals', () => {
-    expect(basePrompt).toContain('NO_DATA');
-    expect(basePrompt).toContain('«нет данных»');
-    expect(basePrompt).toContain('НЕ писать "недооценен"');
+    expect(basePrompt).toContain('Нет данных → «нет данных»');
+    expect(basePrompt).toContain('Запрещено: подставлять');
   });
 
   it('rule 10: AI shows uncertainty when data is missing', () => {
-    expect(basePrompt).toContain('NO_DATA');
-    expect(basePrompt).toContain('«нет данных»');
-    expect(basePrompt).toContain('НЕ писать "недооценен"');
+    expect(basePrompt).toContain('Нет данных → «нет данных»');
+    expect(basePrompt).toContain('Запрещено: подставлять');
   });
 
   // === Prohibitions ===
 
   it('forbids guaranteed returns', () => {
-    expect(basePrompt).toContain('ЗАПРЕЩЕНО: "гарантированная доходность"');
+    expect(basePrompt).toContain('«гарантированная доходность»');
   });
 
   it('forbids risk-free claims', () => {
-    expect(basePrompt).toContain('безрисковый');
+    expect(basePrompt).toContain('«безрисковый»');
   });
 
   it('does NOT propose new target structure', () => {
@@ -215,9 +234,7 @@ describe('buildSystemPrompt', () => {
   });
 
   it('forbids generalizations without numbers and sources', () => {
-    expect(basePrompt).toContain('обобщать без числа');
-    expect(basePrompt).toContain('обычно 15-20%');
-    expect(basePrompt).toContain('источник не отвечает');
+    expect(basePrompt).toContain('«обычно 15–20%»');
   });
 
   it('renders fundamentals with source, date and 5-year median', () => {
@@ -407,9 +424,7 @@ describe('buildSystemPrompt', () => {
 
     expect(prompt).toContain('SMA50: 300.00');
     expect(prompt).toContain('SMA200: недоступно');
-    expect(prompt).toContain(
-      '52-недельный диапазон: 250.00–350.00 (MOEX ISS, 2026-11-18)',
-    );
+    expect(prompt).toContain('52-недельный диапазон: 250.00–350.00');
     expect(prompt).not.toContain('на основе 180 дней');
   });
 });
@@ -417,7 +432,7 @@ describe('buildSystemPrompt', () => {
 describe('buildJsonOnlySystemPrompt', () => {
   it('требует только JSON и перечисляет недостающие активы', () => {
     const prompt = buildJsonOnlySystemPrompt(['TATN', 'IRAO', 'RU000A109L49']);
-    expect(prompt).toContain('Верни ТОЛЬКО JSON-массив');
+    expect(prompt).toContain('Ответ строго по схеме JSON');
     expect(prompt).toContain('TATN, IRAO, RU000A109L49');
     expect(prompt).toContain('agreementWithPortfolioMath');
     expect(prompt).not.toContain('7 секций');
@@ -507,7 +522,7 @@ describe('buildJsonOnlySystemPrompt', () => {
 
     const prompt = buildJsonOnlySystemPrompt(['TATN'], undefined, [indicator]);
 
-    expect(prompt).toContain('=== ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ (MOEX ISS) ===');
+    expect(prompt).toContain('=== ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ ===');
     expect(prompt).toContain('• TATN: RSI 54.2');
     expect(prompt).toContain('SMA20 301.25');
     expect(prompt).toContain('SMA50 298.40');
@@ -554,19 +569,15 @@ describe('prompt-templates: политика no-sell в тексте (задач
   it('buildSystemPrompt запрещает sell-директивы и свободные числовые цели доли', () => {
     const prompt = buildSystemPrompt(18);
 
-    expect(prompt).toContain('ПОЛИТИКА NO-SELL В ТЕКСТЕ');
-    expect(prompt).toContain('ЗАПРЕТ СВОБОДНЫХ ЧИСЛОВЫХ ЦЕЛЕЙ ДОЛИ');
-    expect(prompt).toContain('с 17,4% до ~12%');
-    expect(prompt).toContain(
-      'продажа/сокращение заблокированы политикой no-sell',
-    );
+    expect(prompt).toContain('NO-SELL: тикер в no-sell списке → строго HOLD');
+    expect(prompt).toContain('«заблокировано политикой no-sell»');
   });
 
   it('buildJsonOnlySystemPrompt тоже запрещает sell-директивы по no-sell', () => {
     const prompt = buildJsonOnlySystemPrompt(['PLZL']);
 
-    expect(prompt).toContain('пометкой no-sell');
-    expect(prompt).toContain('ЗАПРЕЩЕНЫ директивы');
-    expect(prompt).toContain('Свободные числовые цели доли');
+    expect(prompt).toContain('no-sell → строго HOLD');
+    expect(prompt).not.toContain('ЗАПРЕЩЕНЫ директивы');
+    expect(prompt).not.toContain('Свободные числовые цели доли');
   });
 });

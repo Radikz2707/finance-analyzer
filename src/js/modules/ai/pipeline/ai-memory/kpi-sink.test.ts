@@ -11,6 +11,7 @@ import type { PortfolioKpiSnapshot } from './types.js';
 import type { PipelineResult } from '../pipeline-coordinator.js';
 import type { DataAgentOutput } from '../agents/data-agent.js';
 import type { AnalysisAgentOutput } from '../agents/analysis-agent.js';
+import type { MacroGoals } from '../../../data/xlsx-parser/xlsx-parser.js';
 
 // ──────────────────────────────────────────────
 // Helpers
@@ -36,6 +37,8 @@ function makeDataOutput(
     macroGoals: {
       totalBalance: 500000,
       totalLiquidationValue: 480000,
+      cashSource: 'QUIK',
+
       freeCash: 10000,
       stocksPercent: 60,
       bondsPercent: 30,
@@ -78,6 +81,7 @@ function makeDataOutput(
         lastMonthDeposits: 0,
         currentYearDeposits: 0,
         lastYearDeposits: 0,
+        allDeposits: [],
       },
     investedFunds: { totalNet: 500000, totalPurchases: 0, totalSales: 0, totalWithdrawals: 0, totalDeposits: 0, averageMonthlyDeposit: 0, anomalousDepositsTotal: 0, currentMonthDeposits: 0, lastMonthDeposits: 0, currentYearDeposits: 0, lastYearDeposits: 0 },
     news: null,
@@ -102,6 +106,7 @@ function makeDataOutput(
     keyRateDate: '29.10.2024',
     cbrRateData: null,
     bondMarketData: new Map(),
+    xirr: { rate: null, reason: 'тест', cashFlows: [], npv: 0 },
     ...overrides,
   };
 }
@@ -115,10 +120,16 @@ function makeAnalysisOutput(
       macro: {
         totalBalance: 500000,
         totalLiquidationValue: 500000,
+        cashSource: 'QUIK',
         freeCash: 10000,
         stocksDeficitRub: 10000,
         bondsDeficitRub: 5000,
-      },
+        stocksPercent: 40,
+        bondsPercent: 50,
+        iisOrdersSum: 0,
+        brokerOrdersSum: 0,
+        activeOrdersListText: '',
+      } as MacroGoals,
     },
     riskValidation: { isValid: true, errors: [] },
     income: { stocks: [], totalNkd: 0, totalDivs: 12000, totalDivsNet: 10000 },
@@ -253,3 +264,4 @@ describe('KPI Sink', () => {
     expect(ok).toBe(false);
   });
 });
+

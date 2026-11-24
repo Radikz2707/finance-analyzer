@@ -58,6 +58,8 @@ function createMockAnalysis(assets: AssetAnalysis[]): PortfolioReportData {
       bondsPercent: 40,
       totalBalance: 1000000,
       totalLiquidationValue: 950000,
+      cashSource: 'QUIK',
+
       freeCash: 100000,
       stocksDeficitRub: 50000,
       bondsDeficitRub: 30000,
@@ -654,3 +656,4 @@ describe('AI Target Architecture Tests', () => {
     expect(context).toContain('| HOLD | 12.0% |');
   });
 });
+

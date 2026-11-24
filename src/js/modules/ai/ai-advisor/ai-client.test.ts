@@ -1,4 +1,4 @@
-import { PortfolioReportData } from '../../portfolio/portfolio-math/portfolio-math.js';
+﻿import { PortfolioReportData } from '../../portfolio/portfolio-math/portfolio-math.js';
 import { ValidationResult } from '../../portfolio/portfolio-math/portfolio-validator.js';
 import { CalculatedIncome } from './income-calculator.js';
 import { UIOrdersData } from './types.js';
@@ -53,6 +53,8 @@ function createMockAnalysis(assets: AssetAnalysis[]): PortfolioReportData {
       bondsPercent: 40,
       totalBalance: 1000000,
       totalLiquidationValue: 950000,
+      cashSource: 'QUIK',
+
       freeCash: 100000,
       stocksDeficitRub: 50000,
       bondsDeficitRub: 30000,
@@ -237,3 +239,4 @@ describe('extractJsonArrayFromAiResponse', () => {
     expect(result).toHaveLength(0);
   });
 });
+

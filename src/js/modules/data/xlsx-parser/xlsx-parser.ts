@@ -70,6 +70,8 @@ export interface MacroGoals {
   totalBalance: number;
   totalLiquidationValue: number;
   freeCash: number;
+  /** Источник кэша: 'EXCEL' (Отчет по сделкам) или 'QUIK' (лист QUIK) */
+  cashSource: 'EXCEL' | 'QUIK';
   stocksPercent: number;
   bondsPercent: number;
   stocksDeficitRub: number;
@@ -168,7 +170,7 @@ export interface BondReferenceData {
    */
   couponType?: CouponType;
   /** Источник подтверждения типа купона. */
-  couponTypeSource?: 'EXCEL' | 'MOEX_DESCRIPTION';
+  couponTypeSource?: 'EXCEL' | 'MOEX_DESCRIPTION' | 'SMART_LAB';
   /** Сырое значение типа из ISS (например, «ОФЗ-ПК»). */
   couponTypeRaw?: string | null;
   /**
@@ -536,28 +538,55 @@ export class XlsxParserModule {
     // Справочник листа «Облигации» содержит тысячи выпусков: запрос по
     // каждому превращал enrich в бесконечный цикл. Здесь — десятки позиций,
     // а fetchMoexBondQuote кэширует ответ.
-    let couponConfirmed = 0;
-    await Promise.all(
-      Array.from(portfolioBonds).map(async (isin) => {
+    // Fallback: если MOEX недоступен — Smart-Lab.
+      let couponConfirmed = 0;
+      let couponConfirmedSmartLab = 0;
+      const couponPromises = Array.from(portfolioBonds).map(async (isin) => {
         const bond = bondsMap.get(isin);
         if (!bond) return;
         if (bond.couponType && bond.couponType !== 'UNKNOWN') return;
+        // 1. Пробуем MOEX ISS
         try {
           const quote = await fetchMoexBondQuote(isin);
           const info = quote?.couponTypeInfo;
-          if (!info || info.type === 'UNKNOWN') return;
-          bond.couponType = info.type;
-          bond.couponTypeSource = 'MOEX_DESCRIPTION';
-          bond.couponTypeRaw = info.raw;
-          couponConfirmed++;
+          if (info && info.type !== 'UNKNOWN') {
+            bond.couponType = info.type;
+            bond.couponTypeSource = 'MOEX_DESCRIPTION';
+            bond.couponTypeRaw = info.raw;
+            couponConfirmed++;
+            return;
+          }
         } catch {
-          // Ошибка одной бумаги не блокирует разбор остальных.
+          // MOEX недоступен — пробуем Smart-Lab
         }
-      }),
-    );
+        // 2. Fallback: Smart-Lab (bondType из заголовка страницы)
+        try {
+          const { fetchSmartLabBondByIsin } =
+            await import('../../api/smart-lab-api/smart-lab-api.js');
+          const smartlab = await fetchSmartLabBondByIsin(isin);
+          if (smartlab && smartlab.bondType) {
+            const bt = smartlab.bondType.toLowerCase();
+            let couponType: CouponType | null = null;
+            if (bt.includes('фикс')) couponType = 'FIXED';
+            else if (bt.includes('флоат') || bt.includes('плав')) couponType = 'FLOATER';
+            else if (bt.includes('микр')) couponType = 'MICROFIX';
+            else if (bt.includes('беск') || bt.includes('беску')) couponType = 'ZERO_COUPON';
+            if (couponType) {
+              bond.couponType = couponType;
+              bond.couponTypeSource = ('SMART_LAB' as const);
+              bond.couponTypeRaw = smartlab.bondType ?? null;
+              couponConfirmedSmartLab++;
+            }
+          }
+        } catch {
+          // Smart-Lab недоступен — оставляем UNKNOWN
+        }
+      });
+    await Promise.all(couponPromises);
     if (portfolioBonds.size > 0) {
       console.log(
-        `[BondEnrich] тип купона подтверждён ISS: ${couponConfirmed}/${portfolioBonds.size}`,
+        `[BondEnrich] тип купона: ISS=${couponConfirmed}/${portfolioBonds.size} ` +
+          `Smart-Lab=${couponConfirmedSmartLab}/${portfolioBonds.size}`,
       );
     }
 
@@ -1698,27 +1727,43 @@ export class XlsxParserModule {
    *   Q: % измен.закр.
    * Возвращает мапу: тикер -> { currentPrice, dailyDynamicsPercent }
    */
-  public async parseQuotesSheet(): Promise<
-    Record<
-      string,
-      {
-        currentPrice: number;
-        dailyDynamicsPercent: number;
-        shortName: string;
-        volumeTodayRub?: number | null;
-      }
-    >
-  > {
-    await this.loadWorkbook();
-    const quotesMap: Record<
-      string,
-      {
-        currentPrice: number;
-        dailyDynamicsPercent: number;
-        shortName: string;
-        volumeTodayRub?: number | null;
-      }
-    > = {};
+   public async parseQuotesSheet(): Promise<
+     Record<
+       string,
+       {
+         currentPrice: number;
+         dailyDynamicsPercent: number;
+         shortName: string;
+         volumeTodayRub?: number | null;
+         minPrice?: number | null;
+         maxPrice?: number | null;
+         ratingDynamic?: number | null;
+         ratingVolume?: number | null;
+         ratingTotal?: number | null;
+         rangePosition?: number | null;
+         entrySignal?: string | null;
+         inPortfolio?: boolean;
+       }
+     >
+   > {
+     await this.loadWorkbook();
+     const quotesMap: Record<
+       string,
+       {
+         currentPrice: number;
+         dailyDynamicsPercent: number;
+         shortName: string;
+         volumeTodayRub?: number | null;
+         minPrice?: number | null;
+         maxPrice?: number | null;
+         ratingDynamic?: number | null;
+         ratingVolume?: number | null;
+         ratingTotal?: number | null;
+         rangePosition?: number | null;
+         entrySignal?: string | null;
+         inPortfolio?: boolean;
+       }
+     > = {};
     const nameToTicker: Record<string, string> = {};
 
     const sheetName = this.workbook?.SheetNames.find(
@@ -1729,12 +1774,18 @@ export class XlsxParserModule {
     const sheet = this.workbook.Sheets[sheetName];
     if (!sheet || !sheet['!ref']) return quotesMap;
 
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet);
+    // Заголовок в файле пользователя — может быть не на первой строке.
+    // Ищем первую строку с «Код инструмента» в первых 10 строках.
+    const headerRow = this.findQuotesHeaderRow(sheet);
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      range: headerRow,
+    });
     if (rows.length === 0) return quotesMap;
 
     // Guard: проверяем, что это действительно лист «Акции» по наличию ключевых колонок.
     // Иначе моки могут подменить данные (например, QUIK-данные вместо котировок).
     const firstRow = rows[0]!;
+
     const hasQuotesColumns =
       firstRow['Цена послед.'] !== undefined ||
       firstRow['Цена'] !== undefined ||
@@ -1775,22 +1826,63 @@ export class XlsxParserModule {
         rawDynamics > 25 || rawDynamics < -25 ? 0 : rawDynamics;
 
       // Дневной оборот в рублях (из столбца «Оборот»)
-      const volumeTodayRubRaw = this.parseValue(
-        row[config.QUOTES_COLUMN_TURNOVER] ||
-          row[config.QUOTES_COLUMN_TURNOVER_ALT1] ||
-          row[config.QUOTES_COLUMN_TURNOVER_ALT2] ||
-          row[config.QUOTES_COLUMN_TURNOVER_ALT3],
-      );
+      const turnoverKey =
+        config.QUOTES_COLUMN_TURNOVER ||
+        config.QUOTES_COLUMN_TURNOVER_ALT1 ||
+        config.QUOTES_COLUMN_TURNOVER_ALT2 ||
+        config.QUOTES_COLUMN_TURNOVER_ALT3;
+      const rawTurnover = row[turnoverKey];
+      const volumeTodayRubRaw = this.parseValue(rawTurnover);
       const volumeTodayRub =
         volumeTodayRubRaw != null && volumeTodayRubRaw > 0
           ? volumeTodayRubRaw
           : undefined;
+
+      // Дополнительные столбцы: Min/Max цена
+      const minPrice = this.parseValue(row[config.QUOTES_COLUMN_MIN_PRICE]);
+      const maxPrice = this.parseValue(row[config.QUOTES_COLUMN_MAX_PRICE]);
+
+      // Рейтинги
+      const ratingDynamic = this.parseValue(
+        row[config.QUOTES_COLUMN_RATING_DYNAMIC],
+      );
+      const ratingVolume = this.parseValue(
+        row[config.QUOTES_COLUMN_RATING_VOLUME],
+      );
+      const ratingTotal = this.parseValue(
+        row[config.QUOTES_COLUMN_RATING_TOTAL],
+      );
+
+      // Позиция в диапазоне (%)
+      const rangePosition = this.parseValue(
+        row[config.QUOTES_COLUMN_RANGE_POSITION],
+      );
+
+      // Сигнал входа
+      const entrySignal = String(
+        row[config.QUOTES_COLUMN_ENTRY_SIGNAL] || '',
+      ).trim();
+
+      // Портфель
+      const inPortfolio =
+        String(row[config.QUOTES_COLUMN_IN_PORTFOLIO] || '')
+          .trim()
+          .toLowerCase()
+          .includes('в портфеле');
 
       quotesMap[ticker] = {
         currentPrice,
         dailyDynamicsPercent,
         shortName: cleanName,
         volumeTodayRub,
+        minPrice: minPrice > 0 ? minPrice : null,
+        maxPrice: maxPrice > 0 ? maxPrice : null,
+        ratingDynamic: ratingDynamic > 0 ? ratingDynamic : null,
+        ratingVolume: ratingVolume > 0 ? ratingVolume : null,
+        ratingTotal: ratingTotal > 0 ? ratingTotal : null,
+        rangePosition: rangePosition > 0 ? rangePosition : null,
+        entrySignal: entrySignal ? entrySignal : null,
+        inPortfolio,
       };
 
       // Маппим название → тикер для fuzzy-поиска
@@ -1946,6 +2038,31 @@ export class XlsxParserModule {
     return 0;
   }
 
+   /** Найти строку заголовка листа «Акции» (первая строка с «Код инструмента»). */
+  private findQuotesHeaderRow(sheet: Record<string, unknown>): number {
+    const aoa = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      raw: true,
+      blankrows: false,
+    });
+    const limit = Math.min(Array.isArray(aoa) ? aoa.length : 0, 10);
+    for (let index = 0; index < limit; index++) {
+      const row = aoa[index];
+      if (!Array.isArray(row)) continue;
+      if (
+        row.some(
+          (cell) =>
+            String(cell ?? '')
+              .trim()
+              .toUpperCase() === 'КОД ИНСТРУМЕНТА',
+        )
+      ) {
+        return index;
+      }
+    }
+    return 0;
+  }
+
   /** Найти ключ строки по вариантам заголовка (с нормализацией). */
   private resolveRowKey(
     row: Record<string, unknown>,
@@ -1966,52 +2083,112 @@ export class XlsxParserModule {
   }
 
   /**
-   * Парсинг листа «Облигации» — полные рыночные данные по облигационным выпускам.
-   *
-   * Структура таблицы (динамический поиск заголовков):
-   *   A: Инструмент
-   *   B: ISIN / ISIN-код / Код ISIN / ISIN код
-   *   C: Листинг
-   *   D: Цена последняя
-   *   E: Доходность
-   *   F: Оборот
-   *   G: Номинал / Номинальная стоимость / Nominal / Номинал облигации
-   *   H: Размер купона
-   *   I: Длительность купона
-   *   J: Дата выплаты купона
-   *   K: НКД
-   *   L: Дата погашения
-   *   M: Дюрация
-   *
-   * Возвращает Map<ISIN, BondReferenceData>
-   */
-  public async parseBondsSheet(): Promise<Map<string, BondReferenceData>> {
-    await this.loadWorkbook();
-    const bondsMap = new Map<string, BondReferenceData>();
+    * Проверка схемы листа «Облигации»: наличие обязательных колонок.
+    *
+    * Если набор колонок отличается от ожидаемого — выводит громкий лог
+    * [SHEET_SCHEMA] с перечнем фактических заголовков.
+    */
+    private validateBondsSheetSchema(
+      row: Record<string, unknown>,
+    ): void {
+      // Проверяем наличие хотя бы ОДНОЙ из альтернатив для каждой колонки
+      const lastPriceFound =
+        this.resolveRowKey(row, [
+          config.BONDS_COLUMN_LAST_PRICE,
+          config.BONDS_COLUMN_LAST_PRICE_ALT1,
+        ]) !== undefined;
+      const maturityDateFound =
+        this.resolveRowKey(row, [
+          config.BONDS_COLUMN_MATURITY_DATE,
+          config.BONDS_COLUMN_MATURITY_DATE_ALT1,
+          config.BONDS_COLUMN_MATURITY_DATE_ALT2,
+        ]) !== undefined;
 
-    const sheetName = this.workbook?.SheetNames.find(
-      (name) => name === config.BONDS_SHEET_NAME,
-    );
-    if (!sheetName || !this.workbook) {
-      console.warn(
-        '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» не найден',
+      const expectedKeys = [
+        config.BONDS_COLUMN_INSTRUMENT,
+        config.BONDS_COLUMN_ISIN,
+        config.BONDS_COLUMN_YIELD,
+        config.BONDS_COLUMN_NKD,
+      ];
+
+      const actualKeys = Object.keys(row);
+      const missingKeys = expectedKeys.filter(
+        (expected) => !this.resolveRowKey(row, [expected]),
       );
-      return bondsMap;
+      if (!lastPriceFound) missingKeys.push(config.BONDS_COLUMN_LAST_PRICE);
+      if (!maturityDateFound) missingKeys.push(config.BONDS_COLUMN_MATURITY_DATE);
+
+      if (missingKeys.length > 0) {
+        console.warn(
+          '[SHEET_SCHEMA] Ожидаемые колонки не найдены в листе «' +
+            config.BONDS_SHEET_NAME + '»:\n' +
+            '  Ожидаются: ' + expectedKeys.join(', ') + '\n' +
+            '  Фактически: ' + actualKeys.join(', ') + '\n' +
+            '  Отсутствуют: ' + missingKeys.join(', '),
+        );
+      }
     }
 
-    const sheet = this.workbook.Sheets[sheetName];
-    if (!sheet || !sheet['!ref']) {
-      console.warn(
-        '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» пуст',
-      );
-      return bondsMap;
-    }
+   /**
+    * Парсинг листа «Облигации» — полные рыночные данные по облигационным выпускам.
+    *
+    * Структура таблицы (динамический поиск заголовков):
+    *   A: Инструмент
+    *   B: ISIN / ISIN-код / Код ISIN / ISIN код
+    *   C: Код инструмента (QUIK-тикер, у корпоративных = ISIN, у ОФЗ = SU29027RMFS8)
+    *   D: Листинг
+    *   E: Цена последняя
+    *   F: Доходность
+    *   G: Оборот
+    *   H: Номинал / Номинальная стоимость / Nominal / Номинал облигации
+    *   I: Размер купона
+    *   J: Длительность купона
+    *   K: Дата выплаты купона
+    *   L: НКД
+    *   M: Дата погашения
+    *   N: Дюрация
+    *
+    * Возвращает Map<ISIN, BondReferenceData>
+    */
+   public async parseBondsSheet(): Promise<Map<string, BondReferenceData>> {
+      // Кэш: парсим один раз за прогон, enriched данные сохраняются
+      if (this.bondReferenceData.size > 0) {
+        return this.bondReferenceData;
+      }
+      await this.loadWorkbook();
+      const bondsMap = new Map<string, BondReferenceData>();
 
-    // Заголовок в файле пользователя — на второй строке таблицы.
-    const headerRow = this.findBondsHeaderRow(sheet);
-    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-      range: headerRow,
-    });
+     const sheetName = this.workbook?.SheetNames.find(
+       (name) => name === config.BONDS_SHEET_NAME,
+     );
+     if (!sheetName || !this.workbook) {
+       console.warn(
+         '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» не найден',
+       );
+       return bondsMap;
+     }
+
+     const sheet = this.workbook.Sheets[sheetName];
+     if (!sheet || !sheet['!ref']) {
+       console.warn(
+         '⚠️ [BOND_REFERENCE] Лист «' + config.BONDS_SHEET_NAME + '» пуст',
+       );
+       return bondsMap;
+     }
+
+     // Заголовок в файле пользователя — на второй строке таблицы.
+     const headerRow = this.findBondsHeaderRow(sheet);
+     const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+       range: headerRow,
+     });
+
+     // Schema-guard: проверяем первую непустую строку на наличие обязательных колонок.
+     const firstDataRow = rows.find(
+       (r) => r && typeof r === 'object' && Object.keys(r).length > 0,
+     );
+     if (firstDataRow) {
+       this.validateBondsSheetSchema(firstDataRow);
+     }
     let inactiveWithoutDate = 0;
 
     for (const row of rows) {
@@ -2027,37 +2204,73 @@ export class XlsxParserModule {
         .toUpperCase();
       if (!isin || isin.length < 10) continue;
 
+      // P2: тикер QUIK — из колонки «Код инструмента» (если есть).
+      // bondsMap будет доступен по ISIN и по тикеру QUIK (двойной ключ).
+      const tickerKey = this.resolveRowKey(row, [
+        config.BONDS_COLUMN_TICKER,
+        config.BONDS_COLUMN_TICKER_ALT1,
+      ]);
+      const ticker = String(tickerKey ? row[tickerKey] : '')
+        .trim()
+        .toUpperCase();
+
       // Номинал из любой из допустимых колонок
       const nominal = this.parseNominalFromRow(row) ?? 0;
 
       // A: Инструмент
+      const instrumentNameKey = this.resolveRowKey(row, [
+        config.BONDS_COLUMN_INSTRUMENT,
+      ]);
       const instrumentName = String(
-        row[config.BONDS_COLUMN_INSTRUMENT] || '',
+        instrumentNameKey ? row[instrumentNameKey] : '',
       ).trim();
 
       // C: Листинг
+      const listingKey = this.resolveRowKey(row, [
+        config.BONDS_COLUMN_LISTING,
+      ]);
       const listingLevel = String(
-        row[config.BONDS_COLUMN_LISTING] || '',
+        listingKey ? row[listingKey] : '',
       ).trim();
 
-      // D: Цена последняя
-      const lastPrice = this.parseValue(row[config.BONDS_COLUMN_LAST_PRICE]);
+      // D: Цена последняя (QUIK: «Цена послед.»)
+      const lastPriceKey = this.resolveRowKey(row, [
+        config.BONDS_COLUMN_LAST_PRICE,
+        config.BONDS_COLUMN_LAST_PRICE_ALT1,
+      ]);
+      const lastPrice = lastPriceKey
+        ? this.parseValue(row[lastPriceKey]) ?? 0
+        : 0;
 
       // E: Доходность
-      const yield_ = this.parseValue(row[config.BONDS_COLUMN_YIELD]);
+      const yieldKey = this.resolveRowKey(row, [config.BONDS_COLUMN_YIELD]);
+      const yield_ = yieldKey
+        ? this.parseValue(row[yieldKey]) ?? 0
+        : 0;
 
       // F: Оборот
-      const turnover = this.parseValue(row[config.BONDS_COLUMN_TURNOVER]);
+      const turnoverKey = this.resolveRowKey(row, [
+        config.BONDS_COLUMN_TURNOVER,
+      ]);
+      const turnover = turnoverKey
+        ? this.parseValue(row[turnoverKey]) ?? 0
+        : 0;
 
       // H: Размер купона
-      const couponAmount = this.parseValue(
-        row[config.BONDS_COLUMN_COUPON_AMOUNT],
-      );
+      const couponAmountKey = this.resolveRowKey(row, [
+        config.BONDS_COLUMN_COUPON_AMOUNT,
+      ]);
+      const couponAmount = couponAmountKey
+        ? this.parseValue(row[couponAmountKey]) ?? 0
+        : 0;
 
       // I: Длительность купона (дни)
-      const couponPeriodDays = this.parseValue(
-        row[config.BONDS_COLUMN_COUPON_PERIOD],
-      );
+      const couponPeriodKey = this.resolveRowKey(row, [
+        config.BONDS_COLUMN_COUPON_PERIOD,
+      ]);
+      const couponPeriodDays = couponPeriodKey
+        ? this.parseValue(row[couponPeriodKey]) ?? 0
+        : 0;
 
       // J: Дата выплаты купона. Заголовок «Дата выпл. куп.» + вариации,
       // значение — дата Excel или строка ДД.ММ.ГГГГ.
@@ -2097,11 +2310,19 @@ export class XlsxParserModule {
       }
 
       // K: НКД
-      const nkd = this.parseValue(row[config.BONDS_COLUMN_NKD]);
+      const nkdKey = this.resolveRowKey(row, [config.BONDS_COLUMN_NKD]);
+      const nkd = nkdKey ? this.parseValue(row[nkdKey]) ?? 0 : 0;
 
-      // L: Дата погашения
+      // L: Дата погашения (QUIK: «Дата погашеия», «Погашение»)
       let maturityDate: Date | null = null;
-      const rawMaturityDate = row[config.BONDS_COLUMN_MATURITY_DATE];
+      const rawMaturityDateKey = this.resolveRowKey(row, [
+        config.BONDS_COLUMN_MATURITY_DATE,
+        config.BONDS_COLUMN_MATURITY_DATE_ALT1,
+        config.BONDS_COLUMN_MATURITY_DATE_ALT2,
+      ]);
+      const rawMaturityDate = rawMaturityDateKey
+        ? row[rawMaturityDateKey]
+        : undefined;
       if (
         rawMaturityDate !== undefined &&
         rawMaturityDate !== null &&
@@ -2111,7 +2332,12 @@ export class XlsxParserModule {
       }
 
       // M: Дюрация
-      const duration = this.parseValue(row[config.BONDS_COLUMN_DURATION]);
+      const durationKey = this.resolveRowKey(row, [
+        config.BONDS_COLUMN_DURATION,
+      ]);
+      const duration = durationKey
+        ? this.parseValue(row[durationKey]) ?? 0
+        : 0;
 
       // N: Эмитент — ищем столбец по ключу, содержащему «Эмитент» или «Issuer»
       let issuer = '';
@@ -2127,25 +2353,52 @@ export class XlsxParserModule {
         }
       }
 
-      bondsMap.set(isin, {
+      // P1: предупреждение при дублировании ISIN — вторая запись перезапишет первую
+      if (bondsMap.has(isin)) {
+        const existing = bondsMap.get(isin);
+        const hadDate = existing?.nextCouponDate !== null && existing?.nextCouponDate !== undefined;
+        console.warn(
+          `[BOND_CARD] isin=${isin} дубликат в листе «Облигации»: ` +
+            `перезапись (старый: ${existing?.instrumentName ?? '?'}, ` +
+            `новый: ${instrumentName}), ` +
+            `nextCouponDate=${hadDate ? 'была' : 'не было'} → ` +
+            `${nextCouponDate ? 'будет' : 'останется пустой'}`,
+        );
+      }
+
+      // P1: merge вместо перезаписи — non-null/non-empty поля первой записи
+      // не затираются пустыми значениями второй.
+      // Используем ?? для числовых полей (0 — валидное значение).
+      const existingBond = bondsMap.get(isin);
+      const isNew = !existingBond;
+      const merged: BondReferenceData = {
         isin,
-        nominal,
+        nominal: isNew ? nominal : (existingBond!.nominal ?? nominal),
         source: 'EXCEL_BONDS',
-        instrumentName,
-        listingLevel,
-        lastPrice,
-        yield: yield_,
-        turnover,
-        couponAmount,
-        couponPeriodDays,
-        nextCouponDate,
-        nextCouponDateSource: nextCouponDate ? 'EXCEL' : undefined,
-        nkd,
-        maturityDate,
-        duration,
-        issuer,
+        instrumentName: isNew ? instrumentName : (existingBond!.instrumentName || instrumentName),
+        listingLevel: isNew ? listingLevel : (existingBond!.listingLevel || listingLevel),
+        lastPrice: isNew ? lastPrice : (existingBond!.lastPrice ?? lastPrice),
+        yield: isNew ? yield_ : (existingBond!.yield ?? yield_),
+        turnover: isNew ? turnover : (existingBond!.turnover ?? turnover),
+        couponAmount: isNew ? couponAmount : (existingBond!.couponAmount ?? couponAmount),
+        couponPeriodDays: isNew ? couponPeriodDays : (existingBond!.couponPeriodDays ?? couponPeriodDays),
+        nextCouponDate: isNew ? nextCouponDate : (existingBond!.nextCouponDate ?? nextCouponDate),
+        nextCouponDateSource: isNew
+          ? (nextCouponDate ? 'EXCEL' : undefined)
+          : (existingBond!.nextCouponDateSource ?? (nextCouponDate ? 'EXCEL' : undefined)),
+        nkd: isNew ? nkd : (existingBond!.nkd ?? nkd),
+        maturityDate: isNew ? maturityDate : (existingBond!.maturityDate ?? maturityDate),
+        duration: isNew ? duration : (existingBond!.duration ?? duration),
+        issuer: isNew ? issuer : (existingBond!.issuer || issuer),
         asOfDate: null, // Дата актуальности определяется при загрузке книги
-      });
+      };
+
+      bondsMap.set(isin, merged);
+
+      // P2: двойной ключ — дублируем entry по тикеру QUIK, если он отличается от ISIN
+      if (ticker && ticker !== isin) {
+        bondsMap.set(ticker, merged);
+      }
     }
 
     if (inactiveWithoutDate > 0) {
@@ -2168,126 +2421,200 @@ export class XlsxParserModule {
    * Обогащение данных из Excel данными с MOEX ISS API.
    * Загружает эмитентов, типы купонов, частоту выплат и другие поля.
    */
-  private async enrichBondsFromMoex(
-    bondsMap: Map<string, BondReferenceData>,
-  ): Promise<void> {
-    try {
-      const isins = Array.from(bondsMap.keys());
-      if (isins.length === 0) return;
+   private async enrichBondsFromMoex(
+     bondsMap: Map<string, BondReferenceData>,
+   ): Promise<void> {
+     try {
+       const isins = Array.from(bondsMap.keys());
+       if (isins.length === 0) return;
 
-      console.log(
-        `[BondEnrich] Загрузка данных с MOEX для ${isins.length} облигаций...`,
-      );
+       console.log(
+         `[BondEnrich] Загрузка данных с MOEX для ${isins.length} облигаций...`,
+       );
 
-      // Загружаем справочник с MOEX
-      const { fetchBondCatalog } =
-        await import('../../api/moex-api/bond-api.js');
+       // Загружаем справочник с MOEX
+       const { fetchBondCatalog } =
+         await import('../../api/moex-api/bond-api.js');
       const catalog = await fetchBondCatalog();
 
-      if (catalog.length === 0) {
-        console.warn('[BondEnrich] ⚠️ MOEX вернул пустой справочник');
-        return;
-      }
-
-      // Создаём маппинг ISIN → BondInfo
       const moexMap = new Map<
-        string,
-        import('../../api/moex-api/bond-api.js').BondInfo
-      >();
-      for (const bond of catalog) {
-        moexMap.set(bond.isin, bond);
-      }
+         string,
+         import('../../api/moex-api/bond-api.js').BondInfo
+       >();
 
-      // Обогащаем данные
-      let enriched = 0;
-      let matched = 0;
-
-      for (const [isin, bond] of bondsMap) {
-        const moex = moexMap.get(isin);
-        if (moex) {
-          matched++;
-
-          // Обновляем эмитента из MOEX (самое важное)
-          if (!bond.issuer && moex.issuerName) {
-            bond.issuer = moex.issuerName;
-          }
-
-          // Дата купона: приоритет Excel → ISS (NEXTCOUPON из каталога,
-          // он уже запрошен). Excel-дату не перезаписываем.
-          if (!bond.nextCouponDate && moex.nextCouponDate) {
-            const parsed = parseCalendarDate(moex.nextCouponDate);
-            if (parsed) {
-              bond.nextCouponDate = parsed;
-              bond.nextCouponDateSource = 'MOEX_ISS';
-              enriched++;
+       if (catalog.length > 0) {
+         // Основной путь: каталог загрузился — обогащаем все облигации
+         for (const bond of catalog) {
+           moexMap.set(bond.isin, bond);
+         }
+         await this.applyMoexEnrichment(bondsMap, moexMap);
+       } else {
+         // Fallback: каталог пустой (MOEX недоступен) — загружаем каждую
+         // облигацию портфеля по отдельности через fetchBondByIsin
+         console.warn(
+           '[BondEnrich] ⚠️ MOEX каталог пуст — fallback на поштучную загрузку',
+         );
+         let enriched = 0;
+         const portfolioIsins = Array.from(bondsMap.keys()).filter((isin) =>
+          isin.startsWith('RU') || isin.startsWith('BYM'),
+        );
+        for (const isin of portfolioIsins) {
+          try {
+            const { fetchBondByIsin } =
+              await import('../../api/moex-api/bond-api.js');
+            const bondInfo = await fetchBondByIsin(isin);
+            if (bondInfo) {
+              const bond = bondsMap.get(isin);
+              if (bond) {
+                if (bondInfo.issuerName && !bond.issuer) {
+                  bond.issuer = bondInfo.issuerName;
+                }
+                if (bondInfo.icbrrRating && !bond.icbrrRating) {
+                  bond.icbrrRating = bondInfo.icbrrRating;
+                }
+                if (bondInfo.sector && !bond.sector) {
+                  bond.sector = bondInfo.sector;
+                }
+                if (bondInfo.floatSpreadPct != null && bondInfo.floatSpreadPct > 0) {
+                  bond.floatSpreadPct = bondInfo.floatSpreadPct;
+                }
+                if (bondInfo.floatIndex && !bond.floatIndex) {
+                  bond.floatIndex = bondInfo.floatIndex;
+                }
+                if (bondInfo.hasOption && !bond.hasOption) {
+                  bond.hasOption = bondInfo.hasOption;
+                }
+                if (bondInfo.callDate && !bond.callDate) {
+                  bond.callDate = bondInfo.callDate;
+                }
+                if (bondInfo.hasAmortization && !bond.hasAmortization) {
+                  bond.hasAmortization = bondInfo.hasAmortization;
+                }
+                if (bondInfo.couponFrequency && bondInfo.couponFrequency > 0 && !bond.couponFrequency) {
+                  bond.couponFrequency = bondInfo.couponFrequency;
+                }
+                enriched++;
+              }
             }
-          }
-
-          // Тип купона из каталога /securities.json не подтверждён:
-          // COUPONPERIOD — число дней, а не тип. Подтверждение — ниже,
-          // отдельным запросом description /iss/securities/{ISIN}.json.
-
-          // Обновляем рейтинг МОEX
-          if (!bond.icbrrRating && moex.icbrrRating) {
-            bond.icbrrRating = moex.icbrrRating;
-            enriched++;
-          }
-
-          // Обновляем сектор
-          if (!bond.sector && moex.sector) {
-            bond.sector = moex.sector;
-            enriched++;
-          }
-
-          // Обновляем спред к КС (для флоатеров)
-          if (moex.floatSpreadPct != null && moex.floatSpreadPct > 0) {
-            bond.floatSpreadPct = moex.floatSpreadPct;
-            enriched++;
-          }
-
-          // Обновляем базовый индекс
-          if (!bond.floatIndex && moex.floatIndex) {
-            bond.floatIndex = moex.floatIndex;
-            enriched++;
-          }
-
-          // Обновляем опцион
-          if (moex.hasOption && !bond.hasOption) {
-            bond.hasOption = moex.hasOption;
-            enriched++;
-          }
-
-          // Обновляем дату опциона
-          if (moex.callDate && !bond.callDate) {
-            bond.callDate = moex.callDate;
-            enriched++;
-          }
-
-          // Обновляем амортизацию
-          if (moex.hasAmortization && !bond.hasAmortization) {
-            bond.hasAmortization = moex.hasAmortization;
-            enriched++;
-          }
-
-          // Обновляем частоту купонов
-          if (
-            !bond.couponFrequency &&
-            moex.couponFrequency &&
-            moex.couponFrequency > 0
-          ) {
-            bond.couponFrequency = moex.couponFrequency;
-            enriched++;
+          } catch {
+            // Ошибка одной бумаги не блокирует остальные
           }
         }
+        console.log(
+          `[BondEnrich] ✅ Fallback: обогащено ${enriched}/${portfolioIsins.length} облигаций`,
+        );
       }
-
-      console.log(
-        `[BondEnrich] ✅ Совпадений: ${matched}/${isins.length}, обновлено эмитентов: ${enriched}`,
-      );
     } catch (error) {
       console.warn('[BondEnrich] ⚠️ Ошибка обогащения из MOEX:', error);
       // Не блокируем парсинг, если MOEX недоступен
     }
+  }
+
+  /**
+   * Применяет обогащение из каталога MOEX к bondsMap.
+   */
+  private async applyMoexEnrichment(
+    bondsMap: Map<string, BondReferenceData>,
+    moexMap: Map<string, import('../../api/moex-api/bond-api.js').BondInfo>,
+  ): Promise<void> {
+    let enriched = 0;
+    let matched = 0;
+
+    for (const [isin, bond] of bondsMap) {
+      const moex = moexMap.get(isin);
+      if (moex) {
+        matched++;
+
+        // Обновляем эмитента из MOEX (самое важное)
+        if (!bond.issuer && moex.issuerName) {
+          bond.issuer = moex.issuerName;
+        }
+
+        // Дата купона: приоритет MOEX_ISS → EXCEL (NEXTCOUPON из каталога
+        // достовернее Excel, который берётся из QUIK с задержкой).
+        if (moex.nextCouponDate) {
+          const parsed = parseCalendarDate(moex.nextCouponDate);
+          if (parsed) {
+            // Если Excel-даты нет — ставим MOEX_ISS
+            // Если Excel-дата есть — оставляем MOEX_ISS (более свежая)
+            const oldSource = bond.nextCouponDateSource;
+            bond.nextCouponDate = parsed;
+            bond.nextCouponDateSource = 'MOEX_ISS';
+            enriched++;
+            console.log(
+              `[BOND_MOEX] isin=${bond.isin} nextCouponDate=${parsed.toISOString().slice(0,10)} ` +
+                `source: ${oldSource ?? 'none'} → MOEX_ISS`,
+            );
+          }
+        } else if (bond.nextCouponDateSource !== 'MOEX_ISS') {
+          // MOEX ISS не дал дату — логируем для отладки
+          console.log(
+            `[BOND_MOEX] isin=${bond.isin} nextCouponDate=none ` +
+              `excelSource=${bond.nextCouponDateSource ?? 'none'}`,
+          );
+        }
+
+        // Тип купона из каталога /securities.json не подтверждён:
+        // COUPONPERIOD — число дней, а не тип. Подтверждение — ниже,
+        // отдельным запросом description /iss/securities/{ISIN}.json.
+
+        // Обновляем рейтинг МОEX
+        if (!bond.icbrrRating && moex.icbrrRating) {
+          bond.icbrrRating = moex.icbrrRating;
+          enriched++;
+        }
+
+        // Обновляем сектор
+        if (!bond.sector && moex.sector) {
+          bond.sector = moex.sector;
+          enriched++;
+        }
+
+        // Обновляем спред к КС (для флоатеров)
+        if (moex.floatSpreadPct != null && moex.floatSpreadPct > 0) {
+          bond.floatSpreadPct = moex.floatSpreadPct;
+          enriched++;
+        }
+
+        // Обновляем базовый индекс
+        if (!bond.floatIndex && moex.floatIndex) {
+          bond.floatIndex = moex.floatIndex;
+          enriched++;
+        }
+
+        // Обновляем опцион
+        if (moex.hasOption && !bond.hasOption) {
+          bond.hasOption = moex.hasOption;
+          enriched++;
+        }
+
+        // Обновляем дату опциона
+        if (moex.callDate && !bond.callDate) {
+          bond.callDate = moex.callDate;
+          enriched++;
+        }
+
+        // Обновляем амортизацию
+        if (moex.hasAmortization && !bond.hasAmortization) {
+          bond.hasAmortization = moex.hasAmortization;
+          enriched++;
+        }
+
+        // Обновляем частоту купонов
+        if (
+          !bond.couponFrequency &&
+          moex.couponFrequency &&
+          moex.couponFrequency > 0
+        ) {
+          bond.couponFrequency = moex.couponFrequency;
+          enriched++;
+        }
+      }
+    }
+
+    console.log(
+      `[BondEnrich] ✅ Совпадений: ${matched}/${moexMap.size}, обновлено: ${enriched}`,
+    );
   }
 
   /**
@@ -2483,6 +2810,9 @@ export class XlsxParserModule {
 
         if (name.includes('ЛИКВИДН') && name.includes('СРЕДСТВ')) {
           freeCash = value;
+          console.log(
+            `[CASH_SOURCE_PARSE] Found in "Отчет по сделкам": name="${name}" value=${value}`,
+          );
         } else if (
           name.includes('ИТОГО АКТИВ') ||
           name.includes('ВСЕГО АКТИВ')
@@ -2526,9 +2856,17 @@ export class XlsxParserModule {
     }
 
     // Fallback: если не нашли в «Отчете по сделкам», ищем в QUIK
+    let cashSource: 'EXCEL' | 'QUIK' = 'EXCEL';
     if (freeCash === undefined || freeCash === 0) {
       freeCash = this.cachedFreeCashFromQuikSheet;
+      cashSource = 'QUIK';
     }
+
+    // Логируем источник кэша для отладки
+    console.log(
+      `[CASH_SOURCE] source=${cashSource} value=${Math.round(freeCash)}₽ ` +
+        `(freeCash=${freeCash}, cachedQuik=${this.cachedFreeCashFromQuikSheet})`,
+    );
 
     if (totalBalance === undefined || totalBalance === 0) {
       // Считаем как сумму ликвидационных стоимостей всех позиций из QUIK
@@ -2651,8 +2989,9 @@ export class XlsxParserModule {
 
     return {
       totalBalance,
-      totalLiquidationValue: totalLiquidationValue || totalBalance,
+      totalLiquidationValue: totalLiquidationValue ?? 0,
       freeCash,
+      cashSource,
       stocksPercent,
       bondsPercent,
       stocksDeficitRub: 0,
@@ -2809,6 +3148,7 @@ export class XlsxParserModule {
     lastMonthDeposits: number;
     currentYearDeposits: number;
     lastYearDeposits: number;
+    allDeposits: Array<{ value: number; date: Date }>;
   }> {
     await this.loadWorkbook();
 
@@ -3038,6 +3378,7 @@ export class XlsxParserModule {
       lastMonthDeposits,
       currentYearDeposits,
       lastYearDeposits,
+      allDeposits,
     };
   }
 

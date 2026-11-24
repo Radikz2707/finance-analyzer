@@ -1,4 +1,4 @@
-import type { PortfolioReportData } from '../../portfolio/portfolio-math/portfolio-math.js';
+﻿import type { PortfolioReportData } from '../../portfolio/portfolio-math/portfolio-math.js';
 import type { ValidationResult } from '../../portfolio/portfolio-math/portfolio-validator.js';
 import type { CalculatedIncome } from './income-calculator.js';
 import type { UIOrdersData } from './types.js';
@@ -9,6 +9,8 @@ function createAnalysis(): PortfolioReportData {
     macro: {
       totalBalance: 1_000_000,
       totalLiquidationValue: 1_000_000,
+      cashSource: 'QUIK',
+
       freeCash: 100_000,
       stocksPercent: 40,
       bondsPercent: 60,
@@ -164,3 +166,4 @@ describe('buildFallbackReport + no-sell policy', () => {
     expect(report).toContain('РЕКОМЕНДАЦИИ ПО СНИЖЕНИЮ ПОЗИЦИЙ');
   });
 });
+

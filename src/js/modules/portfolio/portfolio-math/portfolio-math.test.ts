@@ -1,4 +1,4 @@
-// ВНИМАНИЕ: используются глобальные API vitest (globals: true),
+﻿// ВНИМАНИЕ: используются глобальные API vitest (globals: true),
 // т.к. явный import из 'vitest' ломает runner (vitest 5.0.x + эта конфигурация).
 import { PortfolioMathModule } from './portfolio-math';
 import { MacroGoals, CurrentAsset } from '../../data/xlsx-parser/xlsx-parser';
@@ -7,6 +7,8 @@ describe('Инвестиционная математика и жесткие л
   const mockMacro: MacroGoals = {
     totalBalance: 100000,
     totalLiquidationValue: 95000,
+    cashSource: 'QUIK',
+
     freeCash: 5000,
     stocksPercent: 52,
     bondsPercent: 48,
@@ -322,6 +324,8 @@ describe('Инвестиционная математика и жесткие л
     const macroWithDifferentBases: MacroGoals = {
       totalBalance: 671139.24, // cost-basis — НЕ используется для rebalance
       totalLiquidationValue: 569341.6, // market-value — используется для rebalance
+      cashSource: 'QUIK',
+
       freeCash: 15143.05,
       stocksPercent: 52,
       bondsPercent: 48,
@@ -372,6 +376,8 @@ describe('Инвестиционная математика и жесткие л
     const macro: MacroGoals = {
       totalBalance: 100000,
       totalLiquidationValue: 100000,
+      cashSource: 'QUIK',
+
       freeCash: 0,
       stocksPercent: 100,
       bondsPercent: 0,
@@ -668,3 +674,4 @@ describe('Инвестиционная математика и жесткие л
     expect(result.assetsAnalysis[0]!.priceUnit).toBe('UNKNOWN');
   });
 });
+

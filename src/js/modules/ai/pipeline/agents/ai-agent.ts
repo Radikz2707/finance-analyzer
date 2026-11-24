@@ -61,6 +61,8 @@ import {
   applyPolicyToNarrative,
   applyPolicyToRecommendation,
   isSellBlockedByPolicy,
+  sanitizePolicyCardText,
+  sanitizeBuyDirectivesForAction,
 } from '../../../ai/ai-advisor/policy-text-guard.js';
 import {
   parsePriceTriggers,
@@ -99,6 +101,8 @@ export interface AiClientResult {
   structuredJson?: unknown;
   /** Массив структурированных JSON (один на каждый актив) */
   structuredJsonArray?: unknown[];
+  /** Общий анализ портфеля из JSON-схемы */
+  portfolioSummary?: string;
   /** Валидация структурированного JSON */
   structuredValidation?: unknown;
 }
@@ -112,6 +116,8 @@ export interface AiAgentOutput {
   thesisResults: Map<string, InvestmentThesisResult>;
   /** AI-рекомендация (текст) */
   aiNarrative: string;
+  /** Общий анализ портфеля из JSON-схемы (portfolioSummary) */
+  portfolioSummary?: string;
   /** Результат AI-клиента */
   aiClientResult: AiClientResult;
   /** Структурированные рекомендации по каждому активу */
@@ -227,11 +233,49 @@ export class AiAgent extends AgentBase {
       accounts,
       anomalies,
       liquidityAnalysis,
+      quotes,
       news,
     } = data;
     const { snapshots = new Map() } = research;
     const { portfolioAnalysis, riskValidation, income } = analysis;
     const userPolicy = loadUserPolicy();
+
+    // Строим lookup-карту ликвидности по тикеру
+    const liquidityMap = new Map<string, { ticker: string; liquidityLevel: string; dailyTurnover: number | null; liquidationDays: number | null }>();
+    if (liquidityAnalysis && liquidityAnalysis.assets) {
+      for (const asset of liquidityAnalysis.assets) {
+        liquidityMap.set(asset.ticker.toUpperCase(), {
+          ticker: asset.ticker,
+          liquidityLevel: asset.liquidityLevel,
+          dailyTurnover: asset.dailyTurnover,
+          liquidationDays: asset.liquidationDays,
+        });
+      }
+    }
+
+    // Строим lookup-карту расширенных данных из Excel по тикеру
+    const extendedDataMap = new Map<string, {
+      minPrice?: number | null;
+      maxPrice?: number | null;
+      ratingDynamic?: number | null;
+      ratingVolume?: number | null;
+      ratingTotal?: number | null;
+      rangePosition?: number | null;
+      entrySignal?: string | null;
+    }>();
+    if (quotes) {
+      for (const [ticker, quote] of Object.entries(quotes)) {
+        extendedDataMap.set(ticker.toUpperCase(), {
+          minPrice: quote.minPrice,
+          maxPrice: quote.maxPrice,
+          ratingDynamic: quote.ratingDynamic,
+          ratingVolume: quote.ratingVolume,
+          ratingTotal: quote.ratingTotal,
+          rangePosition: quote.rangePosition,
+          entrySignal: quote.entrySignal,
+        });
+      }
+    }
 
     // Формируем структурированную сводку новостей для AI
     const newsContext = this.buildNewsContext(news);
@@ -261,12 +305,18 @@ export class AiAgent extends AgentBase {
         asOf: data.cbrRateData?.date ?? new Date().toLocaleDateString('ru-RU'),
         isFresh: data.cbrRateData?.isFresh ?? true,
       };
+      console.log(
+        '[CBR_FETCH] rate=' + dataKeyRate + '% ' +
+          'source=' + freshMacroData.source + ' ' +
+          'asOf=' + freshMacroData.asOf + ' ' +
+          'isFresh=' + freshMacroData.isFresh,
+      );
     }
 
     for (const asset of portfolioAnalysis.assetsAnalysis) {
       const snapshot = snapshots.get(asset.ticker);
       if (!snapshot) {
-        this.log.warn(`[AiAgent] Нет research snapshot для ${asset.ticker}`);
+        // Research snapshots DEPRECATED — не спамим warning
         continue;
       }
 
@@ -388,6 +438,7 @@ export class AiAgent extends AgentBase {
           memoryContext,
           { stocks: actualStocksPct, bonds: actualBondsPct },
           guardrailsContext,
+          data.investorParams, // ← параметры инвестора из листа «Параметры»
           data.bondMarketData as unknown as Map<
             string,
             Record<string, unknown>
@@ -475,8 +526,11 @@ export class AiAgent extends AgentBase {
     const validationWarnings: string[] = [];
 
     if (aiClientResult.success && aiNarrative) {
-      // Санитизация
-      const sanitized = sanitizeAiNarrative(aiNarrative);
+      // Санитизация — передаём noSellTickers для точечного применения no-sell
+      const sanitized = sanitizeAiNarrative(
+        aiNarrative,
+        userPolicy.noSellTickers,
+      );
 
       // Пост-обработка (валидация направлений, исключённых активов)
       const postProcessResult = postProcessAiText(
@@ -618,6 +672,24 @@ export class AiAgent extends AgentBase {
         fallbackReason = 'NO_AI_JSON';
       }
 
+      // Прокладываем данные ликвидности из LiquidityAnalyzer
+      const liq = liquidityMap.get(assetTicker);
+      const liquidityForAsset = liq
+        ? {
+            liquidityLevel: liq.liquidityLevel as 'HIGH' | 'MEDIUM' | 'LOW' | 'CRITICAL' | 'UNKNOWN',
+            dailyTurnover: liq.dailyTurnover,
+            liquidationDays: liq.liquidationDays,
+          }
+        : undefined;
+
+      // Прокладываем расширенные данные из Excel
+      const extData = extendedDataMap.get(assetTicker);
+      const extendedDataForAsset = extData && (
+        extData.minPrice || extData.maxPrice || extData.ratingTotal || extData.entrySignal
+      )
+        ? extData
+        : undefined;
+
       const structured = buildStructuredAIRecommendation(
         det,
         aiJsonForAsset,
@@ -625,6 +697,8 @@ export class AiAgent extends AgentBase {
         fallbackReason,
         fundamentalsForAsset,
         fundamentalSiblings,
+        liquidityForAsset,
+        extendedDataForAsset,
       );
 
       // ИСПРАВЛЕНИЕ Этап 2: НЕ подставляем Math Recommendation вместо отсутствующего AI Recommendation.
@@ -711,15 +785,54 @@ export class AiAgent extends AgentBase {
           structured.deferredBuyRub = deficit;
           structured.monthlyContributionRub =
             monthlyContribution > 0 ? monthlyContribution : null;
-          structured.entryStrategy =
-            `Докупать из ежемесячного взноса (${monthlyLabel.toFixed(0)} ₽/мес): ` +
-            `дефицит ${deficit.toFixed(0)} ₽, свободный кэш ${macroGoals.freeCash.toFixed(0)} ₽.`;
-          structured.technicalTiming =
-            'Покупка отложена до пополнения: свободного кэша недостаточно, ' +
-            'докупать из ежемесячного взноса.';
-          structured.rationale =
-            `BUY отложен: требуется ${deficit.toFixed(0)} ₽, доступно ${macroGoals.freeCash.toFixed(0)} ₽. ` +
-            `Докупать из ежемесячного взноса (${monthlyLabel.toFixed(0)} ₽/мес).`;
+
+          // Финансовый контекст для отображения
+          const financialPrefix = `BUY отложен: требуется ${deficit.toFixed(0)} ₽, доступно ${macroGoals.freeCash.toFixed(0)} ₽. ` +
+            `Докупать из ежемесячного взноса (${monthlyLabel.toFixed(0)} ₽/мес). `;
+
+          // Сохраняем AI-анализ, добавляем финансовый контекст в начало
+          if (structured.rationale && !structured.rationale.startsWith('BUY отложен:')) {
+            structured.rationale = financialPrefix + structured.rationale;
+          } else if (!structured.rationale) {
+            structured.rationale = financialPrefix + 'Рекомендация на основе анализа данных.';
+          }
+
+          // Аналогично для entryStrategy — не перезаписываем AI-текст
+          if (structured.entryStrategy && !structured.entryStrategy.startsWith('Докупать из ежемесячного взноса')) {
+            structured.entryStrategy = financialPrefix.slice(0, -2) + '. ' + structured.entryStrategy;
+          } else if (!structured.entryStrategy) {
+            structured.entryStrategy =
+              `Докупать из ежемесячного взноса (${monthlyLabel.toFixed(0)} ₽/мес): ` +
+              `дефицит ${deficit.toFixed(0)} ₽, свободный кэш ${macroGoals.freeCash.toFixed(0)} ₽.`;
+          }
+
+          // Аналогично для technicalTiming — не перезаписываем AI-анализ
+          if (structured.technicalTiming && !structured.technicalTiming.startsWith('Покупка отложена')) {
+            // Добавляем финансовый контекст перед AI-анализом
+            structured.technicalTiming =
+              'Покупка отложена до пополнения: свободного кэша недостаточно. ' + structured.technicalTiming;
+          } else if (!structured.technicalTiming) {
+            structured.technicalTiming =
+              'Покупка отложена до пополнения: свободного кэша недостаточно, ' +
+              'докупать из ежемесячного взноса.';
+          }
+
+          // ─── Выравнивание текста карточки с действием HOLD ───
+          // При downgrade BUY→HOLD AI-текст может содержать buy-директивы.
+          // Санитизируем per-asset поля, чтобы текст карточки соответствовал
+          // действию HOLD (нейтральный, без торговых директив).
+          const rationaleClean = sanitizePolicyCardText(structured.rationale, asset.ticker);
+          const entryStrategyClean = sanitizePolicyCardText(structured.entryStrategy, asset.ticker);
+          const technicalTimingClean = sanitizePolicyCardText(structured.technicalTiming, asset.ticker);
+          if (rationaleClean.changed) {
+            structured.rationale = rationaleClean.text;
+          }
+          if (entryStrategyClean.changed) {
+            structured.entryStrategy = entryStrategyClean.text;
+          }
+          if (technicalTimingClean.changed) {
+            structured.technicalTiming = technicalTimingClean.text;
+          }
         }
       }
 
@@ -795,6 +908,25 @@ export class AiAgent extends AgentBase {
         );
       }
 
+      // ─── Stale macro guard: AI override отключён при устаревших макро-данных ───
+      // Если CBR rate fetched с fallback (isFresh=false), confidence модели
+      // искусственно занижен ceiling=0.50. Override при confidence < 0.70
+      // не должен происходить — решение на stale-данных ненадёжно.
+      const macroStale = freshMacroData !== null && freshMacroData.isFresh === false;
+      if (agreement.status === 'AI_OVERRIDE' && macroStale) {
+        agreement.finalAction = agreement.mathAction;
+        agreement.conflict = true;
+        agreement.conflictReason = `AI override отключён: макро-данные устарели (CBR ${freshMacroData?.asOf ?? 'n/a'}), confidence=${aiConfidence.toFixed(2)} < порога 0.70`;
+        agreement.requiresReview = true;
+        agreement.executionAllowed = false;
+        agreement.status = 'CONFLICT';
+        this.log.warn(
+          `[STALE_MACRO] ${asset.ticker} AI_OVERRIDE→CONFLICT macroStale=true ` +
+            `mathAction=${agreement.mathAction} aiAction=${agreement.aiAction} ` +
+            `confidence=${aiConfidence.toFixed(2)} finalAction=${agreement.finalAction}`,
+        );
+      }
+
       // Проверяем исполнение с учётом защитных ограничений
       const executionAllowed = isExecutionAllowed(
         agreement,
@@ -845,6 +977,25 @@ export class AiAgent extends AgentBase {
 
       mathAiAgreements.set(asset.ticker, agreement);
 
+      // ─── Нейтрализация buy-директив при HOLD/STABLE (CARD_ACTION_MISMATCH) ───
+      // Финальное действие определено в agreement.finalAction (включая AI_OVERRIDE).
+      // Санитайзер выполняется ПОСЛЕ finalAction — карточка согласована с действием.
+      // Все 3 поля санитайзятся независимо — нет дедупликации через rationale.
+      // При finalAction=BUY — заглушка «ядро: HOLD» НЕ вставляется, поля нейтральны.
+      const finalAction = agreement.finalAction ?? structured.recommendedAction ?? 'HOLD';
+      const rationaleBuyClean = sanitizeBuyDirectivesForAction(structured.rationale, asset.ticker, finalAction, aiVote);
+      if (rationaleBuyClean.changed) {
+        structured.rationale = rationaleBuyClean.text;
+      }
+      const entryStrategyBuyClean = sanitizeBuyDirectivesForAction(structured.entryStrategy, asset.ticker, finalAction, aiVote);
+      if (entryStrategyBuyClean.changed) {
+        structured.entryStrategy = entryStrategyBuyClean.text;
+      }
+      const technicalTimingBuyClean = sanitizeBuyDirectivesForAction(structured.technicalTiming, asset.ticker, finalAction, aiVote);
+      if (technicalTimingBuyClean.changed) {
+        structured.technicalTiming = technicalTimingBuyClean.text;
+      }
+
       // ─── P1-3: Итоговое заключение (7 элементов) ───
       const conclusion = buildFinalConclusion(
         {
@@ -894,9 +1045,24 @@ export class AiAgent extends AgentBase {
         `успех=${aiClientResult.success}, thesis=${thesisResults.size}`,
     );
 
+    // Извлекаем portfolioSummary из aiClientResult
+    const portfolioSummary = aiClientResult.portfolioSummary;
+    console.log('[AiAgent] aiClientResult.portfolioSummary type:', typeof portfolioSummary);
+    console.log('[AiAgent] aiClientResult.portfolioSummary === undefined:', portfolioSummary === undefined);
+    console.log('[AiAgent] aiClientResult.portfolioSummary === "":', portfolioSummary === '');
+    console.log('[AiAgent] portfolioSummary length:', portfolioSummary?.length ?? 0);
+    console.log('[AiAgent] portfolioSummary preview:', portfolioSummary?.substring(0, 100) ?? 'NULL');
+
+    // portfolioSummary — это narrative в новой схеме (JSON-схема).
+    // aiNarrative делаем пустым, чтобы sanitizeNarrativeForDisplay не рендерил
+    // сырой JSON из aiClientResult.text. portfolioSummary рендерится отдельно
+    // в notification-agent.ts со стилями.
+    const aiNarrativeForDisplay = portfolioSummary ? '' : aiNarrative;
+
     return {
       thesisResults,
-      aiNarrative,
+      aiNarrative: aiNarrativeForDisplay,
+      portfolioSummary,
       aiClientResult,
       structuredRecommendations,
       mathAiAgreements,
@@ -1074,6 +1240,12 @@ export class AiAgent extends AgentBase {
     memoryContext: string,
     assetClassPercents: { stocks: number; bonds: number },
     guardrailsContext: string,
+    investorParams?: {
+      horizon: string;
+      goal: string;
+      riskProfile: string;
+      maxDrawdown: number;
+    },
     _bondMarketData?: Map<string, Record<string, unknown>>,
     anomalyData?: Array<{
       ticker: string;
@@ -1142,7 +1314,7 @@ export class AiAgent extends AgentBase {
         accounts.map((a) => ({ name: a.name, value: a.value })),
         memoryContext,
         guardrailsContext,
-        undefined, // investorParams — не используется
+        investorParams, // ← параметры инвестора из листа «Параметры»
         _bondMarketData,
         anomalyData,
         _liquidityAnalysis, // ← анализ ликвидности
@@ -1156,6 +1328,7 @@ export class AiAgent extends AgentBase {
         structuredJson: result.structuredJson,
         structuredJsonArray: result.structuredJsonArray,
         structuredValidation: result.structuredValidation,
+        portfolioSummary: result.portfolioSummary,
         // Без этих двух полей StrategistAgent теряет дивидендный якорь,
         // хотя AiClient уже загрузил fundamentals и посчитал yields.
         fundamentalsDividendYields: result.fundamentalsDividendYields,

@@ -36,6 +36,10 @@ import { positionsRepo, newsRepo } from '../../../db/db-manager/db-manager.js';
 import { getLogger } from '../../../shared/logger/index.js';
 import { MoexQuoteProvider } from '../../../shared/python-engine/moex-quote-provider.js';
 import { fetchSmartLabBondByIsin } from '../../../api/smart-lab-api/smart-lab-api.js';
+import {
+  calculateXirr,
+  type XirrResult,
+} from '../../../shared/xirr.js';
 
 // ──────────────────────────────────────────────
 // 0. Хелперы персиста новостей
@@ -145,6 +149,20 @@ export interface AssetQuote {
   dailyDynamicsPercent: number;
   /** Дневной оборот в рублях (из Excel, MOEX VALTODAY или Smart-Lab) */
   volumeTodayRub?: number;
+  /** Минимальная цена за период (из Excel) */
+  minPrice?: number | null;
+  /** Максимальная цена за период (из Excel) */
+  maxPrice?: number | null;
+  /** Рейтинг по динамике (0-100, из Excel) */
+  ratingDynamic?: number | null;
+  /** Рейтинг по объему (0-100, из Excel) */
+  ratingVolume?: number | null;
+  /** Общий рейтинг (0-100, из Excel) */
+  ratingTotal?: number | null;
+  /** Позиция в диапазоне (%) — % от мин/макс за период (из Excel) */
+  rangePosition?: number | null;
+  /** Сигнал входа из Excel (из Excel) */
+  entrySignal?: string | null;
   /**
    * Источник котировки: MOEX ISS (основной), EXCEL (фолбэк),
    * PYTHON_ISS (резерв для облигаций).
@@ -185,6 +203,8 @@ export interface HistoricalTradesData {
   lastMonthDeposits: number;
   currentYearDeposits: number;
   lastYearDeposits: number;
+  /** Все взносы с датами для расчёта XIRR */
+  allDeposits: Array<{ value: number; date: Date }>;
 }
 
 /**
@@ -245,6 +265,11 @@ export interface DataAgentOutput {
    * облигация без номинала и без ориентира MOEX). Выводятся в отчёте.
    */
   priceWarnings?: string[];
+  /**
+   * XIRR — годовая доходность портфеля по потоку денежных средств.
+   * Рассчитывается из allDeposits + totalWithdrawals + marketValue + cash.
+   */
+  xirr: XirrResult;
 }
 
 // ──────────────────────────────────────────────
@@ -363,6 +388,13 @@ export class DataAgent extends AgentBase {
             currentPrice: value.currentPrice,
             dailyDynamicsPercent: value.dailyDynamicsPercent ?? 0,
             volumeTodayRub: value.volumeTodayRub ?? undefined,
+            minPrice: value.minPrice ?? null,
+            maxPrice: value.maxPrice ?? null,
+            ratingDynamic: value.ratingDynamic ?? null,
+            ratingVolume: value.ratingVolume ?? null,
+            ratingTotal: value.ratingTotal ?? null,
+            rangePosition: value.rangePosition ?? null,
+            entrySignal: value.entrySignal ?? null,
             source: 'EXCEL',
             asOf: null,
           },
@@ -544,29 +576,36 @@ export class DataAgent extends AgentBase {
       }
 
       // 4. Smart-Lab — fallback для тех, у кого нет оборота (null ИЛИ 0)
+      // NOTE: Smart-Lab API для облигаций часто возвращает 404 (страницы
+      // /q/bonds/{TICKER}/ не существуют для корпоративных бумаг).
+      // Оставляем как запасной вариант, но не спамим ошибками.
       const smartlabTickers = missingBondTickers
         .filter(
           (b) => !moexTurnovers[b.ticker] || moexTurnovers[b.ticker] === 0,
         )
-        .slice(0, 50); // максимум 50, чтобы не перегружать
+        .slice(0, 5); // максимум 5, чтобы не перегружать
 
       if (smartlabTickers.length > 0) {
         this.log.info(
-          `[DataAgent] 📊 Smart-Lab: запрашиваем оборот для ${smartlabTickers.length} облигаций`,
+          `[DataAgent] 📊 Smart-Lab: запрашиваем оборот для ${smartlabTickers.length} облигаций (fallback)`,
         );
         try {
           const results = await Promise.allSettled(
             smartlabTickers.map(async (b) => {
-              const data = await fetchSmartLabBondByIsin(b.isin);
-              if (data && data.volume != null && data.volume > 0) {
-                this.log.info(
-                  `[DataAgent] 📊 Smart-Lab: ${b.ticker} volume=${data.volume} млн руб`,
-                );
-                return {
-                  ticker: b.ticker,
-                  isin: b.isin,
-                  volume: data.volume * 1e6,
-                }; // млн → руб
+              try {
+                const data = await fetchSmartLabBondByIsin(b.isin);
+                if (data && data.volume != null && data.volume > 0) {
+                  this.log.info(
+                    `[DataAgent] 📊 Smart-Lab: ${b.ticker} volume=${data.volume} млн руб`,
+                  );
+                  return {
+                    ticker: b.ticker,
+                    isin: b.isin,
+                    volume: data.volume * 1e6,
+                  }; // млн → руб
+                }
+              } catch {
+                // Smart-Lab часто 404 для корпоративных облигаций — не спамим
               }
               return null;
             }),
@@ -817,6 +856,7 @@ export class DataAgent extends AgentBase {
         lastMonthDeposits: historicalTrades.lastMonthDeposits || 0,
         currentYearDeposits: historicalTrades.currentYearDeposits || 0,
         lastYearDeposits: historicalTrades.lastYearDeposits || 0,
+        allDeposits: historicalTrades.allDeposits || [],
       },
       investedFunds: {
         totalNet: investedFunds.totalNet,
@@ -840,7 +880,55 @@ export class DataAgent extends AgentBase {
       bondMarketData,
       liquidityAnalysis,
       priceWarnings,
+      xirr: {
+        rate: null,
+        reason: 'не рассчитан',
+        cashFlows: [],
+        npv: 0,
+      },
     };
+
+    // ─── XIRR: расчёт годовой доходности ───
+    try {
+      const marketValue = assets.reduce(
+        (sum, a) => sum + (a.quantity ?? 0) * (a.currentPrice ?? 0),
+        0,
+      );
+      const cash = macroGoals.freeCash ?? 0;
+      const today = new Date();
+
+      const xirr = calculateXirr(
+        historicalTrades.allDeposits || [],
+        historicalTrades.totalWithdrawalsSum || 0,
+        marketValue,
+        cash,
+        today,
+        undefined, // plzlPurchaseFlows
+        undefined, // plzlCurrentMarketValue
+        false, // withdrawalsHaveDates — выводы агрегированы без дат
+      );
+
+      // Логируем поток CF для отладки
+      const cfSummary = xirr.cashFlows
+        .map((cf) => `${cf.date.toISOString().slice(0, 10)}: ${cf.amount.toFixed(0)}₽`)
+        .join('; ');
+      this.log.info(`[XIRR] Поток CF: ${cfSummary}`);
+      this.log.info(
+        `[XIRR] Доходность: ${xirr.rate !== null ? xirr.rate.toFixed(2) + '%' : 'н/д'}, причина: ${xirr.reason}`,
+      );
+
+      output.xirr = xirr;
+    } catch (err) {
+      this.log.warn(
+        `[DataAgent] ⚠️ Ошибка расчёта XIRR: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      output.xirr = {
+        rate: null,
+        reason: 'Ошибка расчёта',
+        cashFlows: [],
+        npv: 0,
+      };
+    }
 
     // Парсим параметры инвестора (опционально)
     try {

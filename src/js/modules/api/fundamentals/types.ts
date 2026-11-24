@@ -121,6 +121,32 @@ export interface MoexReportRecord {
   assets?: number | null;
 }
 
+/**
+ * Сырая запись купонного графика облигации из MOEX ISS.
+ *
+ * Endpoint: /iss/securities/{SECID}/coupons.json
+ * Возвращает таблицу «coupons» с колонками:
+ *   EVENT_DATE — дата выплаты купона
+ *   EVENT_VALUE — сумма купона (руб.)
+ *   EVENT_TYPE — тип купона (COUPON, INTEREST, etc.)
+ *   COUPON_VALUE — размер купона
+ *   COUPON_TYPE — тип купона (FIXED, FLOATER, MICROFIX, ZERO_COUPON)
+ *   COUPON_DAYS — количество дней в купонном периоде
+ */
+export interface MoexCouponRecord {
+  secid: string;
+  /** Дата выплаты купона (YYYY-MM-DD). */
+  eventDate: string | null;
+  /** Сумма выплаты, руб. */
+  eventValue: number | null;
+  /** Размер купона, руб. */
+  couponValue: number | null;
+  /** Тип купона: FIXED / FLOATER / MICROFIX / ZERO_COUPON. */
+  couponType: string | null;
+  /** Количество дней в купонном периоде. */
+  couponDays: number | null;
+}
+
 /** Снимок котировки MOEX ISS. */
 export interface MoexQuoteSnapshot {
   secid: string;

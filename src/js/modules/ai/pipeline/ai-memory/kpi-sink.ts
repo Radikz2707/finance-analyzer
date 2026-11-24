@@ -180,12 +180,13 @@ export async function savePortfolioKpi(
     AnalysisAgentOutput | undefined;
 
   // DIAG: что пришло в kpi-sink (округлено до копеек)
+  // profitC11 = вложенный капитал − себестоимость (чистая прибыль из Excel).
   const fmt2 = (v: number | undefined) =>
     v != null ? Number(v.toFixed(2)) : 'undefined';
   console.warn(
     '[KpiSink] 🔍 investedFunds.totalNet=' +
       fmt2(dataOutput?.investedFunds?.totalNet) +
-      ', profitC11=' +
+      ', profitC11 (вложенный капитал − себестоимость)=' +
       fmt2(dataOutput?.historicalTrades?.profitC11) +
       ', totalBalance=' +
       fmt2(dataOutput?.macroGoals?.totalBalance),
