@@ -14,6 +14,7 @@ export * from './ai-client.js';
 export {
   postProcessAiText,
   validateDirections,
+  validateNumericComparisons,
   normalizeAiDirection,
 } from './ai-validation.js';
 export {

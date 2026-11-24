@@ -418,8 +418,10 @@ export async function fetchMoexReports(
 /**
  * Купонный график облигации.
  *
- * Endpoint: /iss/securities/{SECID}/coupons.json
- * Возвращает таблицу «coupons» с историей и планом выплат.
+ * Основной endpoint: /iss/securities/{SECID}/bondization.json —
+ * таблица `coupons` с историей и планом выплат.
+ * Резерв: /iss/securities/{SECID}/coupons.json (на части бумаг
+ * публичный подресурс отдаёт только description/boards).
  *
  * Возвращает:
  * - массив записей, если ISS отдал таблицу `coupons`;
@@ -432,12 +434,20 @@ export async function fetchMoexCoupons(
   const ticker = secid.trim().toUpperCase();
   if (!ticker) return null;
 
-  const payload = await fetchIssJson(
-    `securities/${encodeURIComponent(ticker)}/coupons`,
+  // bondization — актуальный публичный источник купонного графика.
+  const bondization = await fetchIssJson(
+    `securities/${encodeURIComponent(ticker)}/bondization`,
   );
-  if (!payload) return null;
+  let table = getIssTable(bondization, 'coupons');
 
-  const table = getIssTable(payload, 'coupons');
+  // Резервный endpoint (исторический формат).
+  if (!table) {
+    const legacy = await fetchIssJson(
+      `securities/${encodeURIComponent(ticker)}/coupons`,
+    );
+    table = getIssTable(legacy, 'coupons');
+  }
+
   if (!table) {
     // Endpoint не отдаёт таблицу coupons — бумага может быть акцией
     // или endpoint недоступен.
@@ -452,10 +462,26 @@ export async function fetchMoexCoupons(
       return key ? row[key] : null;
     };
 
+    // bondization: coupondate + value/value_rub (на одну бумагу).
+    // coupons (legacy): eventdate + eventvalue/couponvalue.
     const eventDateRaw =
-      get('EVENTDATE') ?? get('EVENT_DATE') ?? get('DATE');
-    const eventValue = toNumber(get('EVENTVALUE') ?? get('EVENT_VALUE'));
-    const couponValue = toNumber(get('COUPONVALUE') ?? get('COUPON_VALUE'));
+      get('COUPONDATE') ??
+      get('COUPON_DATE') ??
+      get('EVENTDATE') ??
+      get('EVENT_DATE') ??
+      get('DATE');
+    const eventValue = toNumber(
+      get('VALUE') ??
+        get('VALUE_RUB') ??
+        get('EVENTVALUE') ??
+        get('EVENT_VALUE'),
+    );
+    const couponValue = toNumber(
+      get('COUPONVALUE') ??
+        get('COUPON_VALUE') ??
+        get('VALUE') ??
+        get('VALUE_RUB'),
+    );
     const couponType =
       typeof get('COUPONTYPE') === 'string'
         ? String(get('COUPONTYPE'))

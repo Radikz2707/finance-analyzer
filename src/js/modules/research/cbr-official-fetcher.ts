@@ -14,8 +14,7 @@
 
 import { MacroResearch, ResearchValue } from './types.js';
 
-const CBR_SOAP_URL =
-  'https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx';
+const CBR_SOAP_URL = 'https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx';
 const CBR_HD_URL = 'https://www.cbr.ru/hd_base/KeyRate/';
 const CBR_TIMEOUT_MS = 10_000;
 const CBR_MAX_RETRIES = 2;
@@ -28,8 +27,7 @@ const CBR_RETRY_DELAY_MS = 2_000;
  * При ошибке сервис возвращает 200 OK с пустым <KeyRate><Error />.
  */
 async function fetchCbrKeyRateSoap(): Promise<
-  | { rate: number; date: string; source: string }
-  | { error: string }
+  { rate: number; date: string; source: string } | { error: string }
 > {
   const soapBody = `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -87,9 +85,7 @@ async function fetchCbrKeyRateSoap(): Promise<
     }
 
     // Парсим ставку: <KeyRate>14.0</KeyRate>
-    const rateMatch = xmlText.match(
-      /<KeyRate[^>]*>([\d.,]+)<\/KeyRate>/i,
-    );
+    const rateMatch = xmlText.match(/<KeyRate[^>]*>([\d.,]+)<\/KeyRate>/i);
     if (!rateMatch?.[1]) {
       return { error: 'SOAP XML не содержит <KeyRate>' };
     }
@@ -100,9 +96,7 @@ async function fetchCbrKeyRateSoap(): Promise<
     }
 
     // Парсим дату: <Date>2026-11-24</Date>
-    const dateMatch = xmlText.match(
-      /<Date[^>]*>(\d{4}-\d{2}-\d{2})<\/Date>/i,
-    );
+    const dateMatch = xmlText.match(/<Date[^>]*>(\d{4}-\d{2}-\d{2})<\/Date>/i);
     const date = dateMatch?.[1] ?? new Date().toISOString().slice(0, 10);
 
     return { rate, date, source: 'KeyRateXML (cbr.ru)' };
@@ -127,8 +121,7 @@ function parseCbrDate(raw: string): string {
 
 /** Запрос к cbr.ru hd_base/KeyRate с браузерными заголовками. */
 async function fetchCbrKeyRateHdBase(): Promise<
-  | { rate: number; date: string; source: string }
-  | { error: string }
+  { rate: number; date: string; source: string } | { error: string }
 > {
   const headers: Record<string, string> = {
     'User-Agent':
@@ -168,14 +161,38 @@ async function fetchCbrKeyRateHdBase(): Promise<
 
       const html = await response.text();
 
-      // Парсим: <td>14,0%</td> в строке «Ключевая ставка»
-      const rateMatch = html.match(
-        /Ключевая ставка.*?<td>([\d,]+)%/i,
-      );
+      // cbr.ru отдаёт таблицу <tr><td>17.11.2026</td><td>14,00</td></tr>
+      // без знака «%». Берём все строки и выбираем самую свежую дату.
+      const rowPattern =
+        /<tr[^>]*>\s*<td[^>]*>\s*(\d{2}\.\d{2}\.\d{4})\s*<\/td>\s*<td[^>]*>\s*([\d.,]+)\s*<\/td>\s*<\/tr>/gi;
+      const rows = [...html.matchAll(rowPattern)];
+      let best: { rate: number; date: string; time: number } | null = null;
+      for (const row of rows) {
+        const dateRaw = row[1] ?? '';
+        const rateRaw = row[2] ?? '';
+        const rate = parseFloat(rateRaw.replace(',', '.'));
+        if (!Number.isFinite(rate) || rate <= 0 || rate >= 100) continue;
+        const date = parseCbrDate(dateRaw);
+        const time = new Date(date).getTime();
+        if (!best || (Number.isFinite(time) && time > best.time)) {
+          best = { rate, date, time: Number.isFinite(time) ? time : 0 };
+        }
+      }
+      if (best) {
+        return {
+          rate: best.rate,
+          date: best.date,
+          source: 'hd_base/KeyRate (cbr.ru)',
+        };
+      }
 
-      if (rateMatch?.[1]) {
-        const rate = parseFloat(rateMatch[1].replace(',', '.'));
-        if (!isNaN(rate) && rate > 0 && rate < 100) {
+      // Резервный формат: <td>14,0%</td>.
+      const percentMatch = html.match(
+        /Ключевая ставка.*?<td>\s*([\d.,]+)\s*%/i,
+      );
+      if (percentMatch?.[1]) {
+        const rate = parseFloat(percentMatch[1].replace(',', '.'));
+        if (Number.isFinite(rate) && rate > 0 && rate < 100) {
           const dateMatch = html.match(
             /<meta[^>]*name=["']date["'][^>]*content=["']([^"']+)["']/i,
           );
@@ -204,14 +221,14 @@ async function fetchCbrKeyRateHdBase(): Promise<
 /**
  * Fallback: MOEX ISS — статистика ставок.
  */
-async function fetchMoexRatesFallback(): Promise<
-  | { rate: number; date: string; source: string }
-  | null
-> {
+async function fetchMoexRatesFallback(): Promise<{
+  rate: number;
+  date: string;
+  source: string;
+} | null> {
   try {
     // MOEX ISS: statid=1346 — средневзвешенные ставки по депозитам
-    const url =
-      'https://iss.moex.com/iss/statistics/standart.json?statid=1346';
+    const url = 'https://iss.moex.com/iss/statistics/standart.json?statid=1346';
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), CBR_TIMEOUT_MS);
@@ -221,7 +238,7 @@ async function fetchMoexRatesFallback(): Promise<
 
     if (!response.ok) return null;
 
-    const json = await response.json() as Record<string, unknown>;
+    const json = (await response.json()) as Record<string, unknown>;
     const statistic = json?.statistic as unknown[] | undefined;
     const statItem = statistic?.[0] as Record<string, unknown> | undefined;
     if (!statItem) return null;
@@ -231,13 +248,15 @@ async function fetchMoexRatesFallback(): Promise<
     if (!rows || rows.length === 0 || !columns) return null;
 
     // Ищем колонку со ставкой
-    const rateColIndex = columns.findIndex((c) =>
-      c.name?.toLowerCase().includes('rate') ||
-      c.name?.toLowerCase().includes('ставка'),
+    const rateColIndex = columns.findIndex(
+      (c) =>
+        c.name?.toLowerCase().includes('rate') ||
+        c.name?.toLowerCase().includes('ставка'),
     );
-    const dateColIndex = columns.findIndex((c) =>
-      c.name?.toLowerCase().includes('date') ||
-      c.name?.toLowerCase().includes('дата'),
+    const dateColIndex = columns.findIndex(
+      (c) =>
+        c.name?.toLowerCase().includes('date') ||
+        c.name?.toLowerCase().includes('дата'),
     );
 
     if (rateColIndex < 0) return null;
@@ -288,9 +307,7 @@ export class CbrOfficialFetcher {
         `[CBR_FETCH] SOAP OK: rate=${soapResult.rate} source=${soapResult.source}`,
       );
     } else {
-      console.log(
-        `[CBR_FETCH] SOAP: ${soapResult.error} — фолбэк на hd_base`,
-      );
+      console.log(`[CBR_FETCH] SOAP: ${soapResult.error} — фолбэк на hd_base`);
     }
 
     // 2. hd_base/KeyRate — резерв
@@ -306,9 +323,7 @@ export class CbrOfficialFetcher {
           `[CBR_FETCH] hd_base OK: rate=${hdResult.rate} source=${hdResult.source}`,
         );
       } else {
-        console.log(
-          `[CBR_FETCH] hd_base: ${hdResult.error} — фолбэк на MOEX`,
-        );
+        console.log(`[CBR_FETCH] hd_base: ${hdResult.error} — фолбэк на MOEX`);
       }
     }
 

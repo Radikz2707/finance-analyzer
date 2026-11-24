@@ -10,6 +10,7 @@
 
 import {
   validateDirections,
+  validateNumericComparisons,
   removeHallucinatedData,
   checkExcludedAssets,
   postProcessAiText,
@@ -535,6 +536,44 @@ describe('DIRECTION_CONFLICT: нормализованные предупреж�
     const result = validateDirections(aiText, assets);
 
     expect(result.valid).toBe(false);
+  });
+});
+
+describe('validateNumericComparisons — пары чисел', () => {
+  it('исправляет «2,61 ниже 2,59» → «2,61 выше 2,59»', () => {
+    const result = validateNumericComparisons(
+      'IRAO: цена 2,61 ниже SMA 2,59 — точка входа.',
+    );
+    expect(result.text).toContain('2,61 выше SMA 2,59');
+    expect(result.corrections).toHaveLength(1);
+    expect(result.corrections[0]).toMatchObject({
+      left: 2.61,
+      right: 2.59,
+      claimed: 'ниже',
+      actual: 'выше',
+    });
+  });
+
+  it('не трогает корректное сравнение', () => {
+    const text = 'SBER: цена 300,10 выше SMA 298,40.';
+    const result = validateNumericComparisons(text);
+    expect(result.text).toBe(text);
+    expect(result.corrections).toHaveLength(0);
+  });
+
+  it('сохраняет единицы измерения при исправлении', () => {
+    const result = validateNumericComparisons(
+      'Цена 115,2% ниже 110,0% — ошибка.',
+    );
+    expect(result.text).toContain('115,2% выше 110,0%');
+  });
+
+  it('postProcessAiText применяет проверку и пишет [FACT_CHECK] в warnings', () => {
+    const result = postProcessAiText('IRAO: цена 2,61 ниже 2,59.', [
+      createMockAsset({ ticker: 'IRAO', name: 'ИРАО' }),
+    ]);
+    expect(result.cleanedText).toContain('2,61 выше 2,59');
+    expect(result.warnings.join(' ')).toContain('[FACT_CHECK]');
   });
 });
 

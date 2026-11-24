@@ -8,6 +8,7 @@ import {
   detectSellDirective,
   isPolicyStatement,
   isSellBlockedByPolicy,
+  sanitizeBuyDirectivesForAction,
   sanitizePolicyCardText,
   sanitizePolicyText,
 } from './policy-text-guard.js';
@@ -552,7 +553,9 @@ describe('policy-text-guard: аргументные фразы карточек 
     expect(sanitized.text).not.toContain('поsell');
     expect(sanitized.text).toContain('no-sell');
     // applyPolicyToNarrative тоже чистит
-    expect(applyPolicyToNarrative(line, [createAsset()], POLICY)).not.toContain('поsell');
+    expect(applyPolicyToNarrative(line, [createAsset()], POLICY)).not.toContain(
+      'поsell',
+    );
   });
 
   it('BUY по no-sell: действие не меняется, баннер не выставляется', () => {
@@ -618,7 +621,10 @@ describe('policy-text-guard: аргументные фразы карточек 
 describe('policy-text-guard: контр-тесты provenance', () => {
   it('dedupePolicyStatementsWithProvenance: pipeline-строка защищена, model-дубль удалён', () => {
     const statements = [
-      { text: '⛔ Заблокировано политикой no-sell: HOLD.', provenance: 'pipeline' as const },
+      {
+        text: '⛔ Заблокировано политикой no-sell: HOLD.',
+        provenance: 'pipeline' as const,
+      },
       { text: 'Продавайте PLZL в 1-2 партии.', provenance: 'model' as const },
     ];
 
@@ -637,7 +643,10 @@ describe('policy-text-guard: контр-тесты provenance', () => {
     // поэтому model-строка выигрывала, а pipeline-префикс удалялся.
     const statements = [
       { text: 'Продавайте PLZL в 1-2 партии.', provenance: 'model' as const },
-      { text: '⛔ Заблокировано политикой no-sell: HOLD.', provenance: 'pipeline' as const },
+      {
+        text: '⛔ Заблокировано политикой no-sell: HOLD.',
+        provenance: 'pipeline' as const,
+      },
     ];
 
     const result = dedupePolicyStatementsWithProvenance(statements, 'PLZL');
@@ -665,8 +674,14 @@ describe('policy-text-guard: контр-тесты provenance', () => {
     // pipeline-строк (вторая pipeline-строка удаляется).
 
     const statements = [
-      { text: '⛔ Заблокировано политикой no-sell: HOLD.', provenance: 'pipeline' as const },
-      { text: 'Держать — продажа/сокращение заблокированы политикой поsell.', provenance: 'pipeline' as const },
+      {
+        text: '⛔ Заблокировано политикой no-sell: HOLD.',
+        provenance: 'pipeline' as const,
+      },
+      {
+        text: 'Держать — продажа/сокращение заблокированы политикой поsell.',
+        provenance: 'pipeline' as const,
+      },
     ];
 
     const result = dedupePolicyStatementsWithProvenance(statements, 'PLZL');
@@ -760,5 +775,42 @@ describe('policy-text-guard: контр-тесты provenance', () => {
     expect(result.entryStrategy).not.toMatch(/продавайте|продайте|продажи/gi);
     // technicalTiming — чистый
     expect(result.technicalTiming).not.toMatch(/продавайте|продайте|продажи/gi);
+  });
+});
+
+describe('sanitizeBuyDirectivesForAction: шаблон только для no-sell', () => {
+  it('finalAction=BUY убирает ошибочную заглушку «ядро: HOLD»', () => {
+    const result = sanitizeBuyDirectivesForAction(
+      'IRAO: ядро: HOLD, мнение ИИ: BUY — покупка отложена.',
+      'IRAO',
+      'BUY',
+      'BUY',
+      ['PLZL', 'RU000A10EC22'],
+    );
+    expect(result.changed).toBe(true);
+    expect(result.text).not.toContain('ядро: HOLD');
+  });
+
+  it('IRAO (не no-sell) при HOLD получает нейтральный текст без «ядро: HOLD»', () => {
+    const result = sanitizeBuyDirectivesForAction(
+      'IRAO: рекомендуется покупка по текущей цене.',
+      'IRAO',
+      'HOLD',
+      'BUY',
+      ['PLZL', 'RU000A10EC22'],
+    );
+    expect(result.text).not.toContain('ядро: HOLD');
+    expect(result.text).toContain('покупка отложена');
+  });
+
+  it('PLZL (no-sell) при HOLD сохраняет шаблон политики', () => {
+    const result = sanitizeBuyDirectivesForAction(
+      'PLZL: рекомендуется докупить.',
+      'PLZL',
+      'HOLD',
+      'BUY',
+      ['PLZL', 'RU000A10EC22'],
+    );
+    expect(result.text).toContain('ядро: HOLD');
   });
 });

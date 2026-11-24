@@ -36,6 +36,7 @@ import { restoreLostPercentRanges } from '../../../ai/ai-advisor/text-fixes.js';
 import {
   applyPolicyToNarrative,
   isSellBlockedByPolicy,
+  sanitizeBuyDirectivesForAction,
   sanitizePolicyCardText,
   normalizeLatexMarkup,
 } from '../../../ai/ai-advisor/policy-text-guard.js';
@@ -695,6 +696,8 @@ export class NotificationAgent extends AgentBase {
     ticker: string,
     _asset: AssetAnalysis | undefined,
     field: string,
+    action?: string | null,
+    aiVote?: string | null,
   ): string | null {
     if (!text) return text ?? null;
 
@@ -715,7 +718,30 @@ export class NotificationAgent extends AgentBase {
         `[POLICY_TEXT] section=card ticker=${ticker} field=${field}`,
       );
     }
-    return repaired(result.text);
+
+    // Финальная сверка с действием, которое реально видит пользователь.
+    // Действие карточки на рендере = resolveCardAction(strategist → math),
+    // поэтому заглушка «ядро: HOLD» не должна оставаться при BUY, а
+    // no-sell-шаблон допустим только для явного списка политики.
+    let output = result.text;
+    if (action) {
+      const policy = loadUserPolicy();
+      const buyClean = sanitizeBuyDirectivesForAction(
+        output,
+        ticker,
+        action,
+        aiVote ?? null,
+        policy.noSellTickers,
+      );
+      if (buyClean.changed) {
+        console.warn(
+          `[POLICY_TEXT] section=card ticker=${ticker} field=${field} ` +
+            `action=${action} rule=buy-directives`,
+        );
+        output = buyClean.text;
+      }
+    }
+    return repaired(output);
   }
 
   private buildRecommendationsWithFeedback(
@@ -787,7 +813,9 @@ export class NotificationAgent extends AgentBase {
         cardAction !== null &&
         aiAction !== cardAction;
       // confidence от модели — НЕ вероятность. Показываем raw + clamped.
-      const confidenceRaw = (rec as unknown as Record<string, unknown>).confidenceRaw as number | undefined ?? rec.confidence;
+      const confidenceRaw =
+        ((rec as unknown as Record<string, unknown>).confidenceRaw as
+          number | undefined) ?? rec.confidence;
       const confidenceClamped = rec.confidence;
       const confidenceClampedApplied =
         confidenceRaw !== null &&
@@ -799,8 +827,7 @@ export class NotificationAgent extends AgentBase {
         const clampedPercent = Math.round(confidenceClamped * 100);
         if (confidenceClampedApplied) {
           const rawPercent = Math.round(confidenceRaw * 100);
-          confidenceDisplay =
-            ` · оценка модели: ${clampedPercent}% (raw: ${rawPercent}%, макро устарело)`;
+          confidenceDisplay = ` · оценка модели: ${clampedPercent}% (raw: ${rawPercent}%, макро устарело)`;
         } else {
           confidenceDisplay = ` · оценка модели: ${clampedPercent}% (не вероятность)`;
         }
@@ -827,7 +854,14 @@ export class NotificationAgent extends AgentBase {
       // покупка политикой не запрещена.
       const policyBlocked = rec.policyBlocked === true;
       const displayRationale = normalizeLatexMarkup(
-        this.sanitizeCardField(rec.rationale, ticker, asset, 'rationale'),
+        this.sanitizeCardField(
+          rec.rationale,
+          ticker,
+          asset,
+          'rationale',
+          action,
+          aiAction,
+        ),
       );
 
       html +=
@@ -842,10 +876,16 @@ export class NotificationAgent extends AgentBase {
       html +=
         '<div style="font-weight: 700; color: #e6edf3; font-size: 16px; line-height: 1.3;">' +
         ticker +
-        (rec.name ? ' <span style="color: #8b949e; font-weight: 400;">— ' + rec.name + '</span>' : '') +
+        (rec.name
+          ? ' <span style="color: #8b949e; font-weight: 400;">— ' +
+            rec.name +
+            '</span>'
+          : '') +
         '</div>\n';
       html +=
-        '<div style="color: ' + actionColor + '; font-size: 14px; font-weight: 600; margin-top: 4px;">' +
+        '<div style="color: ' +
+        actionColor +
+        '; font-size: 14px; font-weight: 600; margin-top: 4px;">' +
         actionLabel +
         '</div>\n';
       if (actionMismatch && asset) {
@@ -922,6 +962,8 @@ export class NotificationAgent extends AgentBase {
           ticker,
           asset,
           'fundamentalAnalysis',
+          action,
+          aiAction,
         ),
       );
       if (displayFundamentalAnalysis) {
@@ -937,9 +979,12 @@ export class NotificationAgent extends AgentBase {
       }
 
       // ─── Ликвидность (для акций и облигаций, детерминированно) ───
-      const liquidityLevel = (rec as { liquidityLevel?: string }).liquidityLevel;
-      const dailyTurnover = (rec as { dailyTurnover?: number | null }).dailyTurnover;
-      const liquidationDays = (rec as { liquidationDays?: number | null }).liquidationDays;
+      const liquidityLevel = (rec as { liquidityLevel?: string })
+        .liquidityLevel;
+      const dailyTurnover = (rec as { dailyTurnover?: number | null })
+        .dailyTurnover;
+      const liquidationDays = (rec as { liquidationDays?: number | null })
+        .liquidationDays;
       if (liquidityLevel && liquidityLevel !== 'UNKNOWN') {
         const levelEmoji: Record<string, string> = {
           HIGH: '🟢',
@@ -957,11 +1002,12 @@ export class NotificationAgent extends AgentBase {
         const label = levelLabel[liquidityLevel] || liquidityLevel;
         let liquidityText = `${emoji} Ликвидность: ${label}`;
         if (dailyTurnover != null && dailyTurnover > 0) {
-          const turnoverFormatted = dailyTurnover >= 1e9
-            ? `${(dailyTurnover / 1e9).toFixed(1)} млрд ₽`
-            : dailyTurnover >= 1e6
-              ? `${(dailyTurnover / 1e6).toFixed(0)} млн ₽`
-              : `${dailyTurnover.toLocaleString('ru-RU')} ₽`;
+          const turnoverFormatted =
+            dailyTurnover >= 1e9
+              ? `${(dailyTurnover / 1e9).toFixed(1)} млрд ₽`
+              : dailyTurnover >= 1e6
+                ? `${(dailyTurnover / 1e6).toFixed(0)} млн ₽`
+                : `${dailyTurnover.toLocaleString('ru-RU')} ₽`;
           liquidityText += ` — оборот ${turnoverFormatted}/день`;
         }
         if (liquidationDays != null && liquidationDays > 0) {
@@ -1080,12 +1126,16 @@ export class NotificationAgent extends AgentBase {
                 : 'недоступна'
             }. YTM — проекция при предположении неизменной ставки ` +
             `(методика: ${bondCard.ytmMethod ?? 'FLOATER_ASSUMED_CONSTANT_RATE'}), ` +
-            'не доходность к погашению.' + yieldSourceLabel
-          : bondCard.dataQuality === 'MISSING' || (isUnknownCoupon && bondCard.dataQuality === 'PARTIAL')
+            'не доходность к погашению.' +
+            yieldSourceLabel
+          : bondCard.dataQuality === 'MISSING' ||
+              (isUnknownCoupon && bondCard.dataQuality === 'PARTIAL')
             ? 'Нет подтверждённых данных по доходности'
             : bondCard.ytm != null
               ? `Доходность к погашению: ${bondCard.ytm.toFixed(2)}%` +
-                (bondCard.ytmMethod ? ` (методика: ${bondCard.ytmMethod})` : '') +
+                (bondCard.ytmMethod
+                  ? ` (методика: ${bondCard.ytmMethod})`
+                  : '') +
                 yieldSourceLabel
               : 'Доходность к погашению: недоступна';
         const ratingLine = bondCard.creditRating
@@ -1121,7 +1171,10 @@ export class NotificationAgent extends AgentBase {
         }
         // Поле ликвидности
         const liquidityLine = (() => {
-          if (bondCard.turnoverFromSmartLab != null && bondCard.turnoverFromSmartLab > 0) {
+          if (
+            bondCard.turnoverFromSmartLab != null &&
+            bondCard.turnoverFromSmartLab > 0
+          ) {
             return `Ликвидность: оборот ${bondCard.turnoverFromSmartLab.toLocaleString('ru-RU')} млн руб./день`;
           }
           return 'Ликвидность: нет данных по обороту';
@@ -1150,21 +1203,32 @@ export class NotificationAgent extends AgentBase {
       const minPrice = (rec as { minPrice?: number | null }).minPrice;
       const maxPrice = (rec as { maxPrice?: number | null }).maxPrice;
       const ratingTotal = (rec as { ratingTotal?: number | null }).ratingTotal;
-      const rangePosition = (rec as { rangePosition?: number | null }).rangePosition;
+      const rangePosition = (rec as { rangePosition?: number | null })
+        .rangePosition;
       const entrySignal = (rec as { entrySignal?: string | null }).entrySignal;
-      const ratingDynamic = (rec as { ratingDynamic?: number | null }).ratingDynamic;
-      const ratingVolume = (rec as { ratingVolume?: number | null }).ratingVolume;
+      const ratingDynamic = (rec as { ratingDynamic?: number | null })
+        .ratingDynamic;
+      const ratingVolume = (rec as { ratingVolume?: number | null })
+        .ratingVolume;
 
-      if (minPrice != null || maxPrice != null || ratingTotal != null || entrySignal != null) {
+      if (
+        minPrice != null ||
+        maxPrice != null ||
+        ratingTotal != null ||
+        entrySignal != null
+      ) {
         html +=
           '<div style="margin-bottom: 14px; padding: 12px 14px; background: rgba(139,148,158,0.04); border: 1px solid rgba(139,148,158,0.12); border-radius: 7px;">\n';
         html +=
           '<div style="color: #58a6ff; font-weight: 600; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">📋 Данные Excel</div>\n';
-        html += '<div style="color: #c9d1d9; font-size: 13px; line-height: 1.65;">';
+        html +=
+          '<div style="color: #c9d1d9; font-size: 13px; line-height: 1.65;">';
 
         const parts: string[] = [];
         if (minPrice != null && maxPrice != null) {
-          parts.push(`Диапазон: ${minPrice.toFixed(2)}–${maxPrice.toFixed(2)} ₽`);
+          parts.push(
+            `Диапазон: ${minPrice.toFixed(2)}–${maxPrice.toFixed(2)} ₽`,
+          );
         }
         if (rangePosition != null && rangePosition > 0) {
           parts.push(`Позиция в диапазоне: ${rangePosition.toFixed(0)}%`);
@@ -1184,7 +1248,9 @@ export class NotificationAgent extends AgentBase {
             : entrySignal.toLowerCase().includes('нейтрал')
               ? '#ffd166'
               : '#c9d1d9';
-          parts.push(`<span style="color: ${signalColor}; font-weight: 600;">Сигнал входа: ${entrySignal}</span>`);
+          parts.push(
+            `<span style="color: ${signalColor}; font-weight: 600;">Сигнал входа: ${entrySignal}</span>`,
+          );
         }
 
         if (parts.length > 0) {
@@ -1209,6 +1275,8 @@ export class NotificationAgent extends AgentBase {
             ticker,
             asset,
             'technicalTiming',
+            action,
+            aiAction,
           ) ?? technicalTiming,
         );
         html +=
@@ -1234,6 +1302,8 @@ export class NotificationAgent extends AgentBase {
             ticker,
             asset,
             'entryStrategy',
+            action,
+            aiAction,
           ) ?? entryStrategy,
         );
         html +=
@@ -1251,7 +1321,14 @@ export class NotificationAgent extends AgentBase {
       const issuerContext = (rec as { issuerContext?: string | null })
         .issuerContext;
       const displayIssuerContext = normalizeLatexMarkup(
-        this.sanitizeCardField(issuerContext, ticker, asset, 'issuerContext'),
+        this.sanitizeCardField(
+          issuerContext,
+          ticker,
+          asset,
+          'issuerContext',
+          action,
+          aiAction,
+        ),
       );
       if (displayIssuerContext) {
         html +=

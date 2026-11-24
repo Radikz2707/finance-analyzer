@@ -205,6 +205,9 @@ function mergeRebalancePositions(
   assetsAnalysis: AssetAnalysis[],
   strategySteps?: RebalanceStep[],
 ): RebalancePosition[] {
+  const assetByTicker = new Map(
+    assetsAnalysis.map((asset) => [asset.ticker.toUpperCase(), asset]),
+  );
   const buyAssets = assetsAnalysis.filter(
     (asset) =>
       (asset.status === 'BUY' || asset.status === 'NEW') &&
@@ -220,18 +223,44 @@ function mergeRebalancePositions(
     });
   }
 
+  const skippedSurplus: string[] = [];
   for (const step of strategySteps ?? []) {
     const ticker = (step.ticker ?? '').trim();
     if (!ticker) continue;
-    const isBuy = step.action ? /куп/i.test(step.action) : true;
+    // Плитка «Приоритет покупок» — только покупки. Шаг без действия
+    // больше не считается покупкой: раньше default=true затаскивал
+    // в список профицитные позиции (Новотр, ФосАгро, ДелПорт, sГТЛК,
+    // Селигдар) и плитка называла их приоритетом покупок.
+    const isBuy = step.action ? /куп/i.test(step.action) : false;
     if (!isBuy || !(step.amountRub > 0)) continue;
+
     const key = ticker.toUpperCase();
     if (positions.has(key)) continue;
+
+    // Сверка с PortfolioMath: профицит (REDUCE/EXIT) и нулевой дефицит
+    // в список покупок не попадают, даже если шаг пришёл из стратегии.
+    const asset = assetByTicker.get(key);
+    const isMathBuy =
+      asset !== undefined &&
+      (asset.status === 'BUY' || asset.status === 'NEW') &&
+      asset.deficitRub > 0;
+    if (asset && !isMathBuy) {
+      skippedSurplus.push(`${ticker}(${asset.status},${asset.deficitRub})`);
+      continue;
+    }
+
     positions.set(key, {
       name: step.name ?? ticker,
       ticker,
       amountRub: step.amountRub,
     });
+  }
+
+  if (skippedSurplus.length > 0) {
+    console.log(
+      `[PRIORITY_TILE] excluded_non_buy=${skippedSurplus.join(',')} ` +
+        `included=${[...positions.keys()].join(',') || 'none'}`,
+    );
   }
 
   return [...positions.values()];
@@ -578,7 +607,7 @@ export function buildAssetsTablesAndBars(
   if (rebalancePositions.length > 0) {
     priorityBlock =
       "<div class='priority-section'>" +
-      "<h3 class='section-title section-title--blue'>🎯 Приоритет покупок (по дефициту)</h3>" +
+      "<h3 class='section-title section-title--blue'>🎯 Приоритет покупок (только дефицит к цели)</h3>" +
       "<div class='priority-list'>";
     rebalancePositions.forEach((item, index) => {
       const rank = index + 1;

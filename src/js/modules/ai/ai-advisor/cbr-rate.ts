@@ -25,8 +25,7 @@ const CACHE_TTL_MS = 5 * 60 * 1000; // 5 минут
 
 // ─── 1. SOAP KeyRateXML ──────────────────────────────────────────────────
 
-const CBR_SOAP_URL =
-  'https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx';
+const CBR_SOAP_URL = 'https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx';
 
 /**
  * SOAP-запрос для получения ключевой ставки.
@@ -35,8 +34,7 @@ const CBR_SOAP_URL =
  * При ошибке сервис возвращает 200 OK с пустым <KeyRate><Error />.
  */
 async function fetchCbrKeyRateSoap(): Promise<
-  | { rate: number; date: string }
-  | { error: string }
+  { rate: number; date: string } | { error: string }
 > {
   const soapBody = `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -67,6 +65,10 @@ async function fetchCbrKeyRateSoap(): Promise<
 
     clearTimeout(timeoutId);
 
+    console.log(
+      `[CBR_FETCH] SOAP status=${response.status} url=${CBR_SOAP_URL}`,
+    );
+
     if (!response.ok) {
       return { error: `SOAP HTTP ${response.status} ${response.statusText}` };
     }
@@ -85,17 +87,13 @@ async function fetchCbrKeyRateSoap(): Promise<
     }
 
     // Валидация: проверяем наличие <Error /> — значит сервис вернул ошибку
-    const errorMatch = xmlText.match(
-      /<Error[^>]*>([^<]*)<\/Error>/i,
-    );
+    const errorMatch = xmlText.match(/<Error[^>]*>([^<]*)<\/Error>/i);
     if (errorMatch?.[1]?.trim()) {
       return { error: `SOAP Error: ${errorMatch[1].trim()}` };
     }
 
     // Парсим ставку: <KeyRate>14.0</KeyRate>
-    const rateMatch = xmlText.match(
-      /<KeyRate[^>]*>([\d.,]+)<\/KeyRate>/i,
-    );
+    const rateMatch = xmlText.match(/<KeyRate[^>]*>([\d.,]+)<\/KeyRate>/i);
     if (!rateMatch?.[1]) {
       return { error: 'SOAP XML не содержит <KeyRate>' };
     }
@@ -106,9 +104,7 @@ async function fetchCbrKeyRateSoap(): Promise<
     }
 
     // Парсим дату: <Date>2026-11-24</Date>
-    const dateMatch = xmlText.match(
-      /<Date[^>]*>(\d{4}-\d{2}-\d{2})<\/Date>/i,
-    );
+    const dateMatch = xmlText.match(/<Date[^>]*>(\d{4}-\d{2}-\d{2})<\/Date>/i);
     const date = dateMatch?.[1] ?? new Date().toISOString().slice(0, 10);
 
     return { rate, date };
@@ -123,8 +119,7 @@ async function fetchCbrKeyRateSoap(): Promise<
 const CBR_HD_URL = 'https://www.cbr.ru/hd_base/KeyRate/';
 
 async function fetchCbrKeyRateHdBase(): Promise<
-  | { rate: number; date: string }
-  | { error: string }
+  { rate: number; date: string } | { error: string }
 > {
   const headers: Record<string, string> = {
     'User-Agent':
@@ -146,6 +141,11 @@ async function fetchCbrKeyRateHdBase(): Promise<
 
       clearTimeout(timeoutId);
 
+      console.log(
+        `[CBR_FETCH] hd_base attempt=${attempt} status=${response.status} ` +
+          `url=${CBR_HD_URL}`,
+      );
+
       if (!response.ok) {
         if (response.status === 403 || response.status === 429) {
           if (attempt < 2) {
@@ -159,14 +159,34 @@ async function fetchCbrKeyRateHdBase(): Promise<
 
       const html = await response.text();
 
-      // Парсим: <td>14,0%</td> в строке «Ключевая ставка»
-      const rateMatch = html.match(
-        /Ключевая ставка.*?<td>([\d,]+)%/i,
-      );
+      // cbr.ru отдаёт таблицу <tr><td>17.11.2026</td><td>14,00</td></tr>
+      // без знака «%». Берём все строки и выбираем самую свежую дату.
+      const rowPattern =
+        /<tr[^>]*>\s*<td[^>]*>\s*(\d{2}\.\d{2}\.\d{4})\s*<\/td>\s*<td[^>]*>\s*([\d.,]+)\s*<\/td>\s*<\/tr>/gi;
+      const rows = [...html.matchAll(rowPattern)];
+      let best: { rate: number; date: string; time: number } | null = null;
+      for (const row of rows) {
+        const dateRaw = row[1] ?? '';
+        const rateRaw = row[2] ?? '';
+        const rate = parseFloat(rateRaw.replace(',', '.'));
+        if (!Number.isFinite(rate) || rate <= 0 || rate >= 100) continue;
+        const date = parseCbrDate(dateRaw);
+        const time = new Date(date).getTime();
+        if (!best || (Number.isFinite(time) && time > best.time)) {
+          best = { rate, date, time: Number.isFinite(time) ? time : 0 };
+        }
+      }
+      if (best) {
+        return { rate: best.rate, date: best.date };
+      }
 
-      if (rateMatch?.[1]) {
-        const rate = parseFloat(rateMatch[1].replace(',', '.'));
-        if (!isNaN(rate) && rate > 0 && rate < 100) {
+      // Резервный формат: <td>14,0%</td>.
+      const percentMatch = html.match(
+        /Ключевая ставка.*?<td>\s*([\d.,]+)\s*%/i,
+      );
+      if (percentMatch?.[1]) {
+        const rate = parseFloat(percentMatch[1].replace(',', '.'));
+        if (Number.isFinite(rate) && rate > 0 && rate < 100) {
           const dateMatch = html.match(
             /<meta[^>]*name=["']date["'][^>]*content=["']([^"']+)["']/i,
           );
@@ -174,7 +194,7 @@ async function fetchCbrKeyRateHdBase(): Promise<
           const date = dateRaw
             ? parseCbrDate(dateRaw)
             : new Date().toISOString().slice(0, 10);
-          return { rate, date: date ?? new Date().toISOString().slice(0, 10) };
+          return { rate, date };
         }
       }
 
@@ -250,6 +270,10 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
     cachedRate &&
     Date.now() - new Date(cachedRate.lastUpdated).getTime() < CACHE_TTL_MS
   ) {
+    console.log(
+      `[CBR_FETCH] final source=${cachedRate.source} rate=${cachedRate.rate} ` +
+        `isFresh=${cachedRate.isFresh} cache=hit`,
+    );
     return cachedRate;
   }
 
@@ -267,6 +291,10 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
       '[ЦБ-СТАВКА] rate=' +
         cachedRate.rate.toFixed(2) +
         ' fresh=true source=KeyRateXML',
+    );
+    console.log(
+      `[CBR_FETCH] final source=${cachedRate.source} rate=${cachedRate.rate} ` +
+        `isFresh=${cachedRate.isFresh}`,
     );
     return cachedRate;
   }
@@ -290,6 +318,10 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
         cachedRate.rate.toFixed(2) +
         ' fresh=true source=hd_base',
     );
+    console.log(
+      `[CBR_FETCH] final source=${cachedRate.source} rate=${cachedRate.rate} ` +
+        `isFresh=${cachedRate.isFresh}`,
+    );
     return cachedRate;
   }
 
@@ -306,6 +338,10 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
         cachedRate.rate.toFixed(2) +
         ' fresh=true source=CBK_RATE_OVERRIDE',
     );
+    console.log(
+      `[CBR_FETCH] final source=${cachedRate.source} rate=${cachedRate.rate} ` +
+        `isFresh=${cachedRate.isFresh}`,
+    );
     return cachedRate;
   }
 
@@ -321,6 +357,10 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
   console.warn(
     '[ЦБ-СТАВКА] ⚠️ Fallback: ставка 14.0% от 2026-09-08 — данные устарели, ' +
       `cbr.ru недоступен. lastUpdated=${cachedRate.lastUpdated}`,
+  );
+  console.log(
+    `[CBR_FETCH] final source=${cachedRate.source} rate=${cachedRate.rate} ` +
+      `isFresh=${cachedRate.isFresh}`,
   );
   return cachedRate;
 }

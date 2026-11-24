@@ -224,8 +224,7 @@ export async function fetchBondCouponLtm(
 
   const computed = computeLtmCoupons(records, now);
 
-  const status: CouponLtmStatus =
-    computed.ltmPerBond !== null ? 'OK' : 'EMPTY';
+  const status: CouponLtmStatus = computed.ltmPerBond !== null ? 'OK' : 'EMPTY';
 
   console.log(
     `[BOND_COUPON_LTM] ticker=${normalized} ` +
@@ -267,9 +266,15 @@ export async function fetchPortfolioBondCouponsLtm(
   const ndflRate = PortfolioConfig.tax.dividendNdflRate;
   const warnings: string[] = [];
 
-  for (const result of results) {
+  // Сумма купонов на ПОЗИЦИЮ, а не на одну бумагу.
+  // Раньше здесь складывался ltmPerBond без умножения на quantity,
+  // из-за чего плитка купонов занижала доход в разы относительно
+  // per-bond лога и якоря сценариев.
+  for (let index = 0; index < results.length; index++) {
+    const result = results[index]!;
     if (result.ltmPerBond !== null && result.ltmPerBond > 0) {
-      totalGross += result.ltmPerBond;
+      const quantity = bonds[index]?.quantity ?? 1;
+      totalGross += result.ltmPerBond * quantity;
     }
 
     if (result.isFloaterEstimate && result.status === 'OK') {
@@ -291,7 +296,11 @@ export async function fetchPortfolioBondCouponsLtm(
 
   const totalNet = totalGross * (1 - ndflRate);
   const hasOk = results.some((r) => r.status === 'OK');
-  const status: CouponLtmStatus = hasOk ? 'OK' : results.length > 0 ? 'EMPTY' : 'UNAVAILABLE';
+  const status: CouponLtmStatus = hasOk
+    ? 'OK'
+    : results.length > 0
+      ? 'EMPTY'
+      : 'UNAVAILABLE';
 
   console.log(
     `[BOND_COUPON_LTM_SUMMARY] gross=${totalGross.toFixed(2)} net=${totalNet.toFixed(2)} ` +

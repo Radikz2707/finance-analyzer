@@ -518,3 +518,37 @@ describe('5b: реальный прогон 15:12 — шаги стратега 
     expect(result.priorityBlock).toContain('ОФЗ 29027');
   });
 });
+
+describe('Приоритет покупок: профициты не попадают в плитку', () => {
+  it('шаг без действия по профицитной позиции не считается покупкой', () => {
+    const result = buildAssetsTablesAndBars(
+      [
+        createAsset({
+          ticker: 'IRAO',
+          name: 'Интер РАО',
+          status: 'BUY',
+          currentPercent: 5.6,
+          targetPercent: 15,
+          deficitRub: 57_202,
+        }),
+        createAsset({
+          ticker: 'NVTK',
+          name: 'Новатэк',
+          status: 'REDUCE',
+          currentPercent: 15,
+          targetPercent: 10,
+          deficitRub: -30_000,
+        }),
+      ],
+      [
+        { ticker: 'IRAO', action: 'Купить', amountRub: 57_202 },
+        // Раньше отсутствие action трактовалось как покупка и
+        // затаскивало профицит в «Приоритет покупок».
+        { ticker: 'NVTK', amountRub: 30_000, name: 'Новатэк' },
+      ],
+    );
+
+    expect(result.priorityBlock).toContain('Интер РАО');
+    expect(result.priorityBlock).not.toContain('Новатэк');
+  });
+});

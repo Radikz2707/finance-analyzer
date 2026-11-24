@@ -241,7 +241,15 @@ export class AiAgent extends AgentBase {
     const userPolicy = loadUserPolicy();
 
     // Строим lookup-карту ликвидности по тикеру
-    const liquidityMap = new Map<string, { ticker: string; liquidityLevel: string; dailyTurnover: number | null; liquidationDays: number | null }>();
+    const liquidityMap = new Map<
+      string,
+      {
+        ticker: string;
+        liquidityLevel: string;
+        dailyTurnover: number | null;
+        liquidationDays: number | null;
+      }
+    >();
     if (liquidityAnalysis && liquidityAnalysis.assets) {
       for (const asset of liquidityAnalysis.assets) {
         liquidityMap.set(asset.ticker.toUpperCase(), {
@@ -254,15 +262,18 @@ export class AiAgent extends AgentBase {
     }
 
     // Строим lookup-карту расширенных данных из Excel по тикеру
-    const extendedDataMap = new Map<string, {
-      minPrice?: number | null;
-      maxPrice?: number | null;
-      ratingDynamic?: number | null;
-      ratingVolume?: number | null;
-      ratingTotal?: number | null;
-      rangePosition?: number | null;
-      entrySignal?: string | null;
-    }>();
+    const extendedDataMap = new Map<
+      string,
+      {
+        minPrice?: number | null;
+        maxPrice?: number | null;
+        ratingDynamic?: number | null;
+        ratingVolume?: number | null;
+        ratingTotal?: number | null;
+        rangePosition?: number | null;
+        entrySignal?: string | null;
+      }
+    >();
     if (quotes) {
       for (const [ticker, quote] of Object.entries(quotes)) {
         extendedDataMap.set(ticker.toUpperCase(), {
@@ -306,10 +317,17 @@ export class AiAgent extends AgentBase {
         isFresh: data.cbrRateData?.isFresh ?? true,
       };
       console.log(
-        '[CBR_FETCH] rate=' + dataKeyRate + '% ' +
-          'source=' + freshMacroData.source + ' ' +
-          'asOf=' + freshMacroData.asOf + ' ' +
-          'isFresh=' + freshMacroData.isFresh,
+        '[CBR_FETCH] rate=' +
+          dataKeyRate +
+          '% ' +
+          'source=' +
+          freshMacroData.source +
+          ' ' +
+          'asOf=' +
+          freshMacroData.asOf +
+          ' ' +
+          'isFresh=' +
+          freshMacroData.isFresh,
       );
     }
 
@@ -676,7 +694,8 @@ export class AiAgent extends AgentBase {
       const liq = liquidityMap.get(assetTicker);
       const liquidityForAsset = liq
         ? {
-            liquidityLevel: liq.liquidityLevel as 'HIGH' | 'MEDIUM' | 'LOW' | 'CRITICAL' | 'UNKNOWN',
+            liquidityLevel: liq.liquidityLevel as
+              'HIGH' | 'MEDIUM' | 'LOW' | 'CRITICAL' | 'UNKNOWN',
             dailyTurnover: liq.dailyTurnover,
             liquidationDays: liq.liquidationDays,
           }
@@ -684,11 +703,14 @@ export class AiAgent extends AgentBase {
 
       // Прокладываем расширенные данные из Excel
       const extData = extendedDataMap.get(assetTicker);
-      const extendedDataForAsset = extData && (
-        extData.minPrice || extData.maxPrice || extData.ratingTotal || extData.entrySignal
-      )
-        ? extData
-        : undefined;
+      const extendedDataForAsset =
+        extData &&
+        (extData.minPrice ||
+          extData.maxPrice ||
+          extData.ratingTotal ||
+          extData.entrySignal)
+          ? extData
+          : undefined;
 
       const structured = buildStructuredAIRecommendation(
         det,
@@ -787,19 +809,30 @@ export class AiAgent extends AgentBase {
             monthlyContribution > 0 ? monthlyContribution : null;
 
           // Финансовый контекст для отображения
-          const financialPrefix = `BUY отложен: требуется ${deficit.toFixed(0)} ₽, доступно ${macroGoals.freeCash.toFixed(0)} ₽. ` +
+          const financialPrefix =
+            `BUY отложен: требуется ${deficit.toFixed(0)} ₽, доступно ${macroGoals.freeCash.toFixed(0)} ₽. ` +
             `Докупать из ежемесячного взноса (${monthlyLabel.toFixed(0)} ₽/мес). `;
 
           // Сохраняем AI-анализ, добавляем финансовый контекст в начало
-          if (structured.rationale && !structured.rationale.startsWith('BUY отложен:')) {
+          if (
+            structured.rationale &&
+            !structured.rationale.startsWith('BUY отложен:')
+          ) {
             structured.rationale = financialPrefix + structured.rationale;
           } else if (!structured.rationale) {
-            structured.rationale = financialPrefix + 'Рекомендация на основе анализа данных.';
+            structured.rationale =
+              financialPrefix + 'Рекомендация на основе анализа данных.';
           }
 
           // Аналогично для entryStrategy — не перезаписываем AI-текст
-          if (structured.entryStrategy && !structured.entryStrategy.startsWith('Докупать из ежемесячного взноса')) {
-            structured.entryStrategy = financialPrefix.slice(0, -2) + '. ' + structured.entryStrategy;
+          if (
+            structured.entryStrategy &&
+            !structured.entryStrategy.startsWith(
+              'Докупать из ежемесячного взноса',
+            )
+          ) {
+            structured.entryStrategy =
+              financialPrefix.slice(0, -2) + '. ' + structured.entryStrategy;
           } else if (!structured.entryStrategy) {
             structured.entryStrategy =
               `Докупать из ежемесячного взноса (${monthlyLabel.toFixed(0)} ₽/мес): ` +
@@ -807,10 +840,14 @@ export class AiAgent extends AgentBase {
           }
 
           // Аналогично для technicalTiming — не перезаписываем AI-анализ
-          if (structured.technicalTiming && !structured.technicalTiming.startsWith('Покупка отложена')) {
+          if (
+            structured.technicalTiming &&
+            !structured.technicalTiming.startsWith('Покупка отложена')
+          ) {
             // Добавляем финансовый контекст перед AI-анализом
             structured.technicalTiming =
-              'Покупка отложена до пополнения: свободного кэша недостаточно. ' + structured.technicalTiming;
+              'Покупка отложена до пополнения: свободного кэша недостаточно. ' +
+              structured.technicalTiming;
           } else if (!structured.technicalTiming) {
             structured.technicalTiming =
               'Покупка отложена до пополнения: свободного кэша недостаточно, ' +
@@ -821,9 +858,18 @@ export class AiAgent extends AgentBase {
           // При downgrade BUY→HOLD AI-текст может содержать buy-директивы.
           // Санитизируем per-asset поля, чтобы текст карточки соответствовал
           // действию HOLD (нейтральный, без торговых директив).
-          const rationaleClean = sanitizePolicyCardText(structured.rationale, asset.ticker);
-          const entryStrategyClean = sanitizePolicyCardText(structured.entryStrategy, asset.ticker);
-          const technicalTimingClean = sanitizePolicyCardText(structured.technicalTiming, asset.ticker);
+          const rationaleClean = sanitizePolicyCardText(
+            structured.rationale,
+            asset.ticker,
+          );
+          const entryStrategyClean = sanitizePolicyCardText(
+            structured.entryStrategy,
+            asset.ticker,
+          );
+          const technicalTimingClean = sanitizePolicyCardText(
+            structured.technicalTiming,
+            asset.ticker,
+          );
           if (rationaleClean.changed) {
             structured.rationale = rationaleClean.text;
           }
@@ -912,7 +958,8 @@ export class AiAgent extends AgentBase {
       // Если CBR rate fetched с fallback (isFresh=false), confidence модели
       // искусственно занижен ceiling=0.50. Override при confidence < 0.70
       // не должен происходить — решение на stale-данных ненадёжно.
-      const macroStale = freshMacroData !== null && freshMacroData.isFresh === false;
+      const macroStale =
+        freshMacroData !== null && freshMacroData.isFresh === false;
       if (agreement.status === 'AI_OVERRIDE' && macroStale) {
         agreement.finalAction = agreement.mathAction;
         agreement.conflict = true;
@@ -982,16 +1029,35 @@ export class AiAgent extends AgentBase {
       // Санитайзер выполняется ПОСЛЕ finalAction — карточка согласована с действием.
       // Все 3 поля санитайзятся независимо — нет дедупликации через rationale.
       // При finalAction=BUY — заглушка «ядро: HOLD» НЕ вставляется, поля нейтральны.
-      const finalAction = agreement.finalAction ?? structured.recommendedAction ?? 'HOLD';
-      const rationaleBuyClean = sanitizeBuyDirectivesForAction(structured.rationale, asset.ticker, finalAction, aiVote);
+      const finalAction =
+        agreement.finalAction ?? structured.recommendedAction ?? 'HOLD';
+      const rationaleBuyClean = sanitizeBuyDirectivesForAction(
+        structured.rationale,
+        asset.ticker,
+        finalAction,
+        aiVote,
+        userPolicy.noSellTickers,
+      );
       if (rationaleBuyClean.changed) {
         structured.rationale = rationaleBuyClean.text;
       }
-      const entryStrategyBuyClean = sanitizeBuyDirectivesForAction(structured.entryStrategy, asset.ticker, finalAction, aiVote);
+      const entryStrategyBuyClean = sanitizeBuyDirectivesForAction(
+        structured.entryStrategy,
+        asset.ticker,
+        finalAction,
+        aiVote,
+        userPolicy.noSellTickers,
+      );
       if (entryStrategyBuyClean.changed) {
         structured.entryStrategy = entryStrategyBuyClean.text;
       }
-      const technicalTimingBuyClean = sanitizeBuyDirectivesForAction(structured.technicalTiming, asset.ticker, finalAction, aiVote);
+      const technicalTimingBuyClean = sanitizeBuyDirectivesForAction(
+        structured.technicalTiming,
+        asset.ticker,
+        finalAction,
+        aiVote,
+        userPolicy.noSellTickers,
+      );
       if (technicalTimingBuyClean.changed) {
         structured.technicalTiming = technicalTimingBuyClean.text;
       }
@@ -1047,11 +1113,26 @@ export class AiAgent extends AgentBase {
 
     // Извлекаем portfolioSummary из aiClientResult
     const portfolioSummary = aiClientResult.portfolioSummary;
-    console.log('[AiAgent] aiClientResult.portfolioSummary type:', typeof portfolioSummary);
-    console.log('[AiAgent] aiClientResult.portfolioSummary === undefined:', portfolioSummary === undefined);
-    console.log('[AiAgent] aiClientResult.portfolioSummary === "":', portfolioSummary === '');
-    console.log('[AiAgent] portfolioSummary length:', portfolioSummary?.length ?? 0);
-    console.log('[AiAgent] portfolioSummary preview:', portfolioSummary?.substring(0, 100) ?? 'NULL');
+    console.log(
+      '[AiAgent] aiClientResult.portfolioSummary type:',
+      typeof portfolioSummary,
+    );
+    console.log(
+      '[AiAgent] aiClientResult.portfolioSummary === undefined:',
+      portfolioSummary === undefined,
+    );
+    console.log(
+      '[AiAgent] aiClientResult.portfolioSummary === "":',
+      portfolioSummary === '',
+    );
+    console.log(
+      '[AiAgent] portfolioSummary length:',
+      portfolioSummary?.length ?? 0,
+    );
+    console.log(
+      '[AiAgent] portfolioSummary preview:',
+      portfolioSummary?.substring(0, 100) ?? 'NULL',
+    );
 
     // portfolioSummary — это narrative в новой схеме (JSON-схема).
     // aiNarrative делаем пустым, чтобы sanitizeNarrativeForDisplay не рендерил

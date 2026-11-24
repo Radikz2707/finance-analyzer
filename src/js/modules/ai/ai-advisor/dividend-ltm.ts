@@ -292,6 +292,26 @@ export async function fetchDividendLtm(
           if (smartLabComputed.ltmPerShare !== null) {
             computed = smartLabComputed;
             source = 'SMARTLAB';
+          } else if (
+            parsed.annualDividend !== null &&
+            Number.isFinite(parsed.annualDividend) &&
+            parsed.annualDividend > 0
+          ) {
+            // В таблице smart-lab может быть только будущая отсечка
+            // (TATN: 25.12.2026), а суммарная LTM-выплата есть в сводке
+            // «выплатила дивиденды в размере 34.09 руб.». Используем её:
+            // иначе купонно-дивидендный якорь теряет дивиденды TATN.
+            const asOf = parsed.asOf.slice(0, 10);
+            computed = {
+              ltmPerShare: Math.round(parsed.annualDividend * 100) / 100,
+              count: 1,
+              asOf,
+            };
+            source = 'SMARTLAB';
+            console.log(
+              `[DIVIDENDS_LTM_SUMMARY_FALLBACK] ticker=${normalized} ` +
+                `perShare=${computed.ltmPerShare} asOf=${asOf} source=SMARTLAB`,
+            );
           } else if (smartLabProbe === 'EMPTY') {
             // EMPTY при smartlab=OK — предупреждение в лог
             console.warn(

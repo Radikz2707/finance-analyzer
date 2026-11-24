@@ -79,7 +79,9 @@ export function normalizePolicySpelling(value: string): string {
  * - `$1.6 < 3.5$` → `1,6 < 3,5` (замена точки на запятую, удаление $)
  * - `$...$` → содержимое с заменой точек на запятые (русская нотация)
  */
-export function normalizeLatexMarkup(text: string | null | undefined): string | null {
+export function normalizeLatexMarkup(
+  text: string | null | undefined,
+): string | null {
   if (!text) return text ?? null;
 
   return text.replace(/\$([^$]+)\$/g, (_match, content: string) => {
@@ -727,18 +729,50 @@ export function sanitizeBuyDirectivesForAction(
   ticker: string,
   action: string,
   aiVote?: string | null,
+  noSellTickers?: string[],
 ): { text: string | null; changed: boolean } {
   if (!text || !text.length) return { text: text ?? null, changed: false };
 
-  // Только для HOLD/STABLE — BUY/REDUCE/EXIT не трогаем
+  const tickerUpper = (ticker ?? '').trim().toUpperCase();
+  // Шаблон «ядро: HOLD» — наследие ранней санации. Он допустим ТОЛЬКО
+  // для бумаг из явного no-sell списка (PLZL, RU000A10EC22) и только
+  // когда финальное действие действительно HOLD/STABLE.
+  const legacyStubPattern = new RegExp(
+    `${escapeRegExp(tickerUpper)}\\s*:\\s*ядро\\s*:\\s*HOLD[^.]*\\.?`,
+    'gi',
+  );
+
+  // Только для HOLD/STABLE — BUY/REDUCE/EXIT не трогаем, но обязан
+  // убрать ошибочную заглушку «ядро: HOLD» при BUY.
   if (action !== 'HOLD' && action !== 'STABLE') {
-    return { text, changed: false };
+    const cleaned = text
+      .replace(legacyStubPattern, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    return cleaned === text
+      ? { text, changed: false }
+      : { text: cleaned, changed: true };
   }
 
-  const tickerUpper = (ticker ?? '').trim().toUpperCase();
+  const isExplicitNoSell =
+    noSellTickers === undefined ||
+    noSellTickers
+      .map((value) => (value ?? '').trim().toUpperCase())
+      .includes(tickerUpper);
   // Фактический aiVote: если не передан — HOLD (по умолчанию)
   const vote = (aiVote ?? 'HOLD').toUpperCase();
-  const neutralTemplate = `${tickerUpper}: ядро: HOLD, мнение ИИ: ${vote} — покупка отложена.`;
+  const neutralTemplate = isExplicitNoSell
+    ? `${tickerUpper}: ядро: HOLD, мнение ИИ: ${vote} — покупка отложена.`
+    : `${tickerUpper}: покупка отложена — свободного кэша недостаточно.`;
+
+  // Для НЕ-no-sell бумаг заглушка «ядро: HOLD» недопустима даже при HOLD:
+  // это шаблон политики no-sell, а не состояние математики.
+  let source = text;
+  let changed = false;
+  if (!isExplicitNoSell && source.match(legacyStubPattern) !== null) {
+    source = source.replace(legacyStubPattern, neutralTemplate);
+    changed = true;
+  }
 
   const buyPatterns = [
     /рекомендуется\s+покупк[а-яё]/i,
@@ -754,8 +788,7 @@ export function sanitizeBuyDirectivesForAction(
     /закупать/i,
   ];
 
-  const lines = text.split('\n');
-  let changed = false;
+  const lines = source.split('\n');
   const replaced: string[] = [];
 
   for (const line of lines) {
@@ -911,7 +944,11 @@ export function applyPolicyToRecommendation(
     policyBlocked: actionBlocked || rec.policyBlocked === true,
     policyTextBlocked:
       (blocked && textBlocked) || rec.policyTextBlocked === true,
-    policyNote: explicitPolicyNote ? (actionBlocked ? explicitPolicyNote : rec.policyNote) : (rec.policyNote ?? null),
+    policyNote: explicitPolicyNote
+      ? actionBlocked
+        ? explicitPolicyNote
+        : rec.policyNote
+      : (rec.policyNote ?? null),
   };
 }
 
@@ -1006,7 +1043,11 @@ export function applyPolicyToNarrative(
     // normalizePolicySpelling нормализует «поsell» → «no-sell»,
     // поэтому isPolicyStatement распознаёт как pipeline и пропускает.
     // Контекст тикера не важен: «поsell» — артефакт модели, чистим везде.
-    if (line.includes('поsell') || line.includes('посell') || line.includes('по-sell')) {
+    if (
+      line.includes('поsell') ||
+      line.includes('посell') ||
+      line.includes('по-sell')
+    ) {
       const fixed = line
         .replace(/поsell/gi, 'no-sell')
         .replace(/посell/gi, 'no-sell')

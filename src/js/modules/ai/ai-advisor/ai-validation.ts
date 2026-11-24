@@ -59,6 +59,28 @@ export interface ExcludedAssetsCheckResult {
   }>;
 }
 
+/** Исправленное сравнение пары чисел. */
+export interface NumericComparisonCorrection {
+  /** Первое число в исходной формулировке. */
+  left: number;
+  /** Второе число в исходной формулировке. */
+  right: number;
+  /** Заявленное отношение: «ниже»/«выше»/«меньше»/«больше». */
+  claimed: string;
+  /** Фактическое отношение по числам. */
+  actual: 'ниже' | 'выше' | 'равно';
+  /** Исходный фрагмент. */
+  raw: string;
+}
+
+/** Результат проверки числовых сравнений. */
+export interface NumericComparisonValidationResult {
+  /** Текст с исправленными направлениями сравнений. */
+  text: string;
+  /** Найденные и исправленные пары. */
+  corrections: NumericComparisonCorrection[];
+}
+
 /** Результат полной пост-обработки AI-текста */
 export interface PostProcessResult {
   /** Очищенный AI-текст */
@@ -67,6 +89,8 @@ export interface PostProcessResult {
   directionValidation: DirectionValidationResult;
   /** Результаты удаления галлюцинаций */
   hallucinationRemoval: HallucinationRemovalResult;
+  /** Результаты проверки числовых сравнений */
+  numericComparisonValidation: NumericComparisonValidationResult;
   /** Общие предупреждения */
   warnings: string[];
 }
@@ -605,7 +629,8 @@ function removePatterns(
         type: hallucinationType,
         raw: match[0],
         ticker,
-        replacedWith: replacement !== '[ДАННЫЕ_УДАЛЕНЫ]' ? replacement : undefined,
+        replacedWith:
+          replacement !== '[ДАННЫЕ_УДАЛЕНЫ]' ? replacement : undefined,
       });
 
       result = result.replace(match[0], replacement);
@@ -662,14 +687,83 @@ export function checkExcludedAssets(text: string): ExcludedAssetsCheckResult {
 }
 
 // ============================================================================
-// 4. Полная пост-обработка
+// 4. Проверка пар чисел в сравнениях
+// ============================================================================
+
+/**
+ * Проверяет формулировки «X ниже Y» / «X выше Y» по самим числам.
+ *
+ * Модель регулярно пишет «2,61 ниже 2,59», хотя 2,61 > 2,59. Такую
+ * ошибку нельзя оставлять в отчёте: это фактическое утверждение.
+ * Функция находит пары чисел с отношением, сверяет их и при
+ * необходимости меняет слово на корректное, логируя `[FACT_CHECK]`.
+ */
+export function validateNumericComparisons(
+  text: string,
+): NumericComparisonValidationResult {
+  if (!text) return { text, corrections: [] };
+
+  const corrections: NumericComparisonCorrection[] = [];
+  // Число + короткий текстовый мостик (единица, «SMA», «чем») +
+  // отношение + мостик + второе число. Мостики ограничены и не
+  // пересекают границы предложений, чтобы не склеить далёкие числа.
+  const pairPattern =
+    /(-?\d+(?:[.,]\d+)?)([^0-9.!?;:\n]{0,24}?)(ниже|выше|меньше|больше)([^0-9.!?;:\n]{0,24}?)(-?\d+(?:[.,]\d+)?)/gi;
+
+  const corrected = text.replace(
+    pairPattern,
+    (
+      raw,
+      leftRaw: string,
+      unit: string,
+      claim: string,
+      sep: string,
+      rightRaw: string,
+    ) => {
+      const left = Number.parseFloat(leftRaw.replace(',', '.'));
+      const right = Number.parseFloat(rightRaw.replace(',', '.'));
+      if (!Number.isFinite(left) || !Number.isFinite(right)) return raw;
+
+      const actual: NumericComparisonCorrection['actual'] =
+        left < right ? 'ниже' : left > right ? 'выше' : 'равно';
+      const claimed: 'ниже' | 'выше' = /ниже|меньше/i.test(claim)
+        ? 'ниже'
+        : 'выше';
+
+      if (actual === 'равно') {
+        corrections.push({ left, right, claimed: claim, actual, raw });
+        console.warn(
+          `[FACT_CHECK] pair=${leftRaw}/${rightRaw} claim=${claim} ` +
+            'actual=равно status=MISMATCH',
+        );
+        return raw;
+      }
+
+      if (actual === claimed) return raw;
+
+      const replacement = `${leftRaw}${unit}${actual}${sep}${rightRaw}`;
+      corrections.push({ left, right, claimed: claim, actual, raw });
+      console.warn(
+        `[FACT_CHECK] pair=${leftRaw}/${rightRaw} claim=${claim} ` +
+          `actual=${actual} status=CORRECTED`,
+      );
+      return replacement;
+    },
+  );
+
+  return { text: corrected, corrections };
+}
+
+// ============================================================================
+// 5. Полная пост-обработка
 // ============================================================================
 
 /**
  * Выполняет полную пост-обработку AI-текста:
  *  1. Валидация направлений против PortfolioMath
- *  2. Удаление галлюцинированных данных
- *  3. Проверка исключённых активов
+ *  2. Проверка и исправление числовых сравнений
+ *  3. Удаление галлюцинированных данных
+ *  4. Проверка исключённых активов
  *
  * @param aiText — исходный AI-текст
  * @param assetsAnalysis — данные анализа активов из PortfolioMath
@@ -686,9 +780,21 @@ export function postProcessAiText(
   // иначе «Продавайте <тикер>» остаётся в отчёте и порождает ложный конфликт.
   const policySafeText = applyPolicyToNarrative(aiText, assetsAnalysis, policy);
 
+  // 0.1. Пары чисел: «2,61 ниже 2,59» → «2,61 выше 2,59».
+  const numericComparisonValidation =
+    validateNumericComparisons(policySafeText);
+  if (numericComparisonValidation.corrections.length > 0) {
+    warnings.push(
+      `[FACT_CHECK] Исправлено числовых сравнений: ${numericComparisonValidation.corrections.length} ` +
+        numericComparisonValidation.corrections
+          .map((c) => `(${c.left} ${c.claimed} ${c.right} → ${c.actual})`)
+          .join(', '),
+    );
+  }
+
   // 1. Валидация направлений
   const directionValidation = validateDirections(
-    policySafeText,
+    numericComparisonValidation.text,
     assetsAnalysis,
     policy,
   );
@@ -708,7 +814,7 @@ export function postProcessAiText(
 
   // 2. Удаление галлюцинированных данных (с подстановкой реальных значений)
   const hallucinationRemoval = removeHallucinatedData(
-    policySafeText,
+    numericComparisonValidation.text,
     assetsAnalysis,
   );
   if (hallucinationRemoval.removedHallucinations.length > 0) {
@@ -728,6 +834,7 @@ export function postProcessAiText(
     cleanedText: hallucinationRemoval.cleanedText,
     directionValidation,
     hallucinationRemoval,
+    numericComparisonValidation,
     warnings,
   };
 }
