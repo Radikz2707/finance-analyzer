@@ -47,6 +47,7 @@ import { resetPortfolioFundamentalsOnce } from '../../api/fundamentals-api.js';
 import { isBondAssetType } from './agents/strategy-validator.js';
 import { SelfImprovementLoop } from './self-improvement/self-improvement-loop.js';
 import { LearningAgent } from './agents/learning-agent.js';
+import { DecisionLogger } from './decision-logger.js';
 import { fetchHistoricalBatch } from '../../data/data-fetcher/index.js';
 import { installRunLogger } from '../../shared/run-logger.js';
 
@@ -246,6 +247,9 @@ export class PipelineCoordinator {
   private readonly maxAiRecommendations =
     PortfolioConfig.pipelineConfig.maxAiRecommendations;
 
+  /** Логгер инвестиционных решений (опционально, подключается через config) */
+  private readonly decisionLogger: DecisionLogger | null;
+
   /** Подписаться на завершение стадии конвейера */
   onStageComplete(
     callback: (stage: PipelineStage, durationMs: number) => void,
@@ -328,6 +332,10 @@ export class PipelineCoordinator {
     this.learningAgent = new LearningAgent({
       historySource: () => [],
     });
+    // DecisionLogger — опционально, подключается через флаг в конфиге
+    this.decisionLogger = PortfolioConfig.pipelineConfig.decisionLoggerEnabled
+      ? new DecisionLogger()
+      : null;
 
     this.watchdog = options.watchdog ?? new Watchdog({ verbose: false });
     this.memorySink = options.memorySink;
@@ -635,6 +643,32 @@ export class PipelineCoordinator {
         JSON.stringify(assetsAnalysisList),
       );
       const macroGoalsJson = JSON.parse(JSON.stringify(macroGoalsData));
+
+      // ── Логирование инвестиционных решений через DecisionLogger ──
+      if (this.decisionLogger) {
+        for (const [ticker, rec] of aiOutput.structuredRecommendations) {
+          const action =
+            (rec.recommendedAction as
+              | 'BUY'
+              | 'SELL'
+              | 'HOLD'
+              | 'REDUCE'
+              | 'EXIT') ?? 'HOLD';
+          const asset = assetsAnalysisList.find(
+            (a) => a.ticker === ticker,
+          );
+          const price = asset?.currentPrice ?? 0;
+          this.decisionLogger.saveDecision(
+            ticker,
+            rec.name ?? ticker,
+            action,
+            rec.recommendedAction === 'BUY' ? price : 0,
+            price,
+            rec.rationale ?? '',
+            { pipelineId: this._state.pipelineId },
+          );
+        }
+      }
 
       // ── Stage 4.5: Scenario Agent (сценарии "что если") ──
       const scenarioResult = await this.runStage<

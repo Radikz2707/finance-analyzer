@@ -20,6 +20,25 @@ import type { AgentConfig } from '../../agent/types.js';
 import * as dataFetcherModule from '../../../../data/data-fetcher/index.js';
 
 // ═══════════════════════════════════════════════
+// Result types — mirror internal executeInternal return shapes
+// ═══════════════════════════════════════════════
+
+interface CrossCheckResultPayload {
+  crossChecks: CrossCheckResult[];
+}
+
+interface HistoricalAnalysisPayload {
+  historical: HistoricalAnalysis;
+}
+
+interface ExportResultPayload {
+  success: boolean;
+  exportResult?: {
+    content: string;
+  };
+}
+
+// ═══════════════════════════════════════════════
 // Testable subclass — для доступа к protected executeInternal
 // ═══════════════════════════════════════════════
 
@@ -54,7 +73,8 @@ describe('performCrossChecks — honest-output', () => {
       params: { tickers: ['SBER'] },
     });
 
-    const crossChecks: CrossCheckResult[] = (result as any).crossChecks;
+    const payload = result as CrossCheckResultPayload;
+    const crossChecks = payload.crossChecks;
 
     expect(crossChecks.length).toBeGreaterThan(0);
     for (const cc of crossChecks) {
@@ -70,7 +90,8 @@ describe('performCrossChecks — honest-output', () => {
       params: { tickers: ['SBER', 'GAZP'] },
     });
 
-    const crossChecks: CrossCheckResult[] = (result as any).crossChecks;
+    const payload = result as CrossCheckResultPayload;
+    const crossChecks = payload.crossChecks;
 
     const highConfidence = crossChecks.filter(
       (c) => c.confidence === 'high' && c.available === false,
@@ -84,7 +105,8 @@ describe('performCrossChecks — honest-output', () => {
       params: { tickers: ['SBER'], types: ['price', 'volume', 'fundamentals'] },
     });
 
-    const crossChecks: CrossCheckResult[] = (result as any).crossChecks;
+    const payload = result as CrossCheckResultPayload;
+    const crossChecks = payload.crossChecks;
 
     const types = crossChecks.map((c) => c.type);
     expect(types).toContain('price');
@@ -110,7 +132,8 @@ describe('simulateHistoricalAnalysis — honest-output', () => {
       params: { ticker: 'NONEXISTENT_TICKER_XYZ' },
     });
 
-    const analysis: HistoricalAnalysis = (result as any).historical;
+    const payload = result as HistoricalAnalysisPayload;
+    const analysis = payload.historical;
 
     expect(analysis.ticker).toBe('NONEXISTENT_TICKER_XYZ');
     expect(analysis.available).toBe(false);
@@ -138,7 +161,8 @@ describe('simulateHistoricalAnalysis — honest-output', () => {
         params: { ticker: 'SBER' },
       });
 
-      const analysis: HistoricalAnalysis = (result as any).historical;
+      const payload = result as HistoricalAnalysisPayload;
+      const analysis = payload.historical;
 
       expect(analysis.available).toBe(true);
       expect(analysis.volatility).toBeGreaterThan(0);
@@ -187,11 +211,12 @@ describe('exportResearch — honest-output rendering', () => {
       params: { tickers: ['SBER'], format: 'csv' } as ExportParams,
     });
 
-    expect((result as any).success).toBe(true);
-    const exportResult = (result as any).exportResult;
+    const payload = result as ExportResultPayload;
+    expect(payload.success).toBe(true);
+    const exportResult = payload.exportResult;
     expect(typeof exportResult?.content).toBe('string');
 
-    const header = exportResult.content.split('\n')[0];
+    const header = exportResult!.content.split('\n')[0];
     expect(header).toContain('historical_available');
   });
 
@@ -222,8 +247,9 @@ describe('exportResearch — honest-output rendering', () => {
       params: { tickers: ['SBER'], format: 'markdown' } as ExportParams,
     });
 
-    expect((result as any).success).toBe(true);
-    const content = (result as any).exportResult.content;
+    const payload = result as ExportResultPayload;
+    expect(payload.success).toBe(true);
+    const content = payload.exportResult!.content;
     expect(content).toContain('**Historical**:');
     expect(content).toContain('unavailable');
   });
@@ -255,7 +281,8 @@ describe('exportResearch — honest-output rendering', () => {
       params: { tickers: ['GAZP'], format: 'markdown' } as ExportParams,
     });
 
-    const content = (result as any).exportResult.content;
+    const payload = result as ExportResultPayload;
+    const content = payload.exportResult!.content;
 
     expect(content).toContain('**Historical**: available');
     expect(content).toContain('**Trend**: up');

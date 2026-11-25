@@ -52,6 +52,9 @@ import { installRunLogger } from '../src/js/modules/shared/run-logger.js';
 import { PipelineScheduler } from '../src/js/modules/ai/pipeline/infrastructure/pipeline-scheduler.js';
 import { savePortfolioKpi } from '../src/js/modules/ai/pipeline/ai-memory/kpi-sink.js';
 import { aiMemoryImpl } from '../src/js/modules/ai/pipeline/ai-memory/index.js';
+import { NotificationEngine } from '../src/js/modules/ui/notifications/notifications.js';
+import { AlertManager } from '../src/js/modules/research/news/events/alert-manager.js';
+import { PortfolioConfig } from '../src/js/config/portfolio-config.js';
 
 /** Обёртка для KPI sink: aiMemoryImpl + PipelineResult */
 const kpiSink = async (
@@ -74,6 +77,55 @@ const kpiSink = async (
 async function runPipeline(): Promise<void> {
   installRunLogger({ quiet: true });
   console.log('[PIPELINE] Запуск мультиагентного конвейера');
+
+  // ── Telegram wiring: NotificationEngine → AlertManager ──
+  // NotificationEngine создаётся один раз и передаётся AlertManager
+  // через withTelegramSender(). Это минимальное решение без DI-контейнера:
+  // NotificationEngine живёт в scope pipeline.ts, AlertManager получает
+  // только метод sendToTelegram (TelegramSender).
+  let alertManager: AlertManager | null = null;
+  if (PortfolioConfig.notifications.telegramEnabled) {
+    const telegramToken = process.env.TELEGRAM_BOT_TOKEN ?? '';
+    const adminChatIdsRaw = process.env.TELEGRAM_ADMIN_CHAT_IDS ?? '';
+    const adminChatIds = adminChatIdsRaw
+      ? adminChatIdsRaw.split(',').map((id) => parseInt(id.trim(), 10)).filter((n) => !isNaN(n))
+      : [];
+
+    if (telegramToken && adminChatIds.length > 0) {
+      const notificationEngine = new NotificationEngine({
+        telegramToken,
+        adminChatIds,
+        enableAlerts: true,
+        enableDigests: false,
+        morningDigestHour: 9,
+        eveningDigestHour: 21,
+      });
+
+      alertManager = AlertManager.withTelegramSender(
+        (message: string, title?: string) =>
+          notificationEngine.sendToTelegram({
+            id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            type: 'alert',
+            severity: 'high',
+            title: title ?? 'Алерт',
+            message,
+            timestamp: new Date().toISOString(),
+            sent: false,
+          }),
+      );
+
+      console.log(
+        '[PIPELINE] ✅ Telegram-уведомления подключены: ' +
+          `${adminChatIds.length} чат(ов)`,
+      );
+    } else {
+      console.log(
+        '[PIPELINE] ⚠️ TELEGRAM_BOT_TOKEN или TELEGRAM_ADMIN_CHAT_IDS не настроены — Telegram отключён',
+      );
+    }
+  } else {
+    console.log('[PIPELINE] ℹ️ Telegram-уведомления отключены (notifications.telegramEnabled=false)');
+  }
 
   const coordinator = new PipelineCoordinator(
     {
@@ -107,6 +159,34 @@ async function runPipeline(): Promise<void> {
   );
 
   const result = await coordinator.run();
+
+  // ── Отправка алертов через AlertManager (если подключён) ──
+  if (alertManager) {
+    for (const [stage, stageResult] of Object.entries(result.stages)) {
+      if (stageResult && stageResult.result.success === false) {
+        await alertManager.sendAlert({
+          id: `pipeline-error-${stage}-${Date.now()}`,
+          title: `Ошибка этапа ${stage}`,
+          description: stageResult.result.error?.message ?? 'Неизвестная ошибка',
+          priority: 'CRITICAL' as import('../src/js/modules/research/news/events/event-bus.js').EventPriority,
+          ticker: '',
+          timestamp: new Date().toISOString(),
+          type: 'PIPELINE_ERROR' as import('../src/js/modules/research/news/events/event-bus.js').MarketEventType,
+        });
+      }
+    }
+    if (result.error) {
+      await alertManager.sendAlert({
+        id: `pipeline-fatal-${Date.now()}`,
+        title: 'Фатальная ошибка pipeline',
+        description: result.error.message,
+        priority: 'CRITICAL' as import('../src/js/modules/research/news/events/event-bus.js').EventPriority,
+        ticker: '',
+        timestamp: new Date().toISOString(),
+        type: 'PIPELINE_ERROR' as import('../src/js/modules/research/news/events/event-bus.js').MarketEventType,
+      });
+    }
+  }
 
   console.log('='.repeat(60));
   console.log('[PIPELINE] Результаты:');

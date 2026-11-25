@@ -1017,12 +1017,17 @@ ISC
 
 ## Техдолг (актуально на 2026-11-25)
 
-- [ ] Подключить к пайплайну модули, перенесённые из storm-seagull
-  (decision-logger, agent-cache, sentiment-detector, summary-generator) —
-  с адаптацией импортов и написанием тестов. Сейчас файлы лежат в корне,
-  но не импортируются и не покрыты тестами.
-- [ ] Довести wiring Telegram: AlertManager ждёт TelegramSender
-  (NotificationEngine.sendToTelegram) через withTelegramSender() —
-  подключить в месте создания AlertManager в production-коде.
+- [x] **Telegram wiring** — подключён в `scripts/pipeline.ts` через
+  `AlertManager.withTelegramSender()`, флаг `notifications.telegramEnabled`
+  в `portfolio-config.ts`, по умолчанию `false`.
+- [x] **decision-logger** — подключён в `PipelineCoordinator` после
+  AI-рекомендаций, флаг `pipelineConfig.decisionLoggerEnabled`, по умолчанию
+  `false`. Покрыт тестами (8 тестов).
+- [ ] **agent-cache** — отложен: Director Agent не активен в пайплайне,
+  `research-agent-v2` имеет собственный кэш (`DeepAssetSnapshot` с TTL).
+- [ ] **sentiment-detector** — отложен: анализирует эмоции пользователя
+  в чате, потребитель — Director Agent, а не news-агент.
+- [ ] **summary-generator** — не подключается: предназначен для Director
+  Agent (чат). Резюме отчёта генерирует LLM (YandexGPT/Ollama).
 
 © 2026 Радик Залалов. Все права защищены.

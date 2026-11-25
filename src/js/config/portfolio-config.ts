@@ -310,5 +310,13 @@ export const PortfolioConfig = {
     defaultPeriodDays: 90,
     /** InvestmentThesisEngine — заглушка; по умолчанию отключён */
     thesisEnabled: false,
+    /** DecisionLogger — логирование инвестиционных решений; по умолчанию отключён */
+    decisionLoggerEnabled: false,
+  } as const,
+
+  /** Параметры уведомлений */
+  notifications: {
+    /** Telegram-уведомления через AlertManager + NotificationEngine; по умолчанию отключён */
+    telegramEnabled: false,
   } as const,
 } as const;
