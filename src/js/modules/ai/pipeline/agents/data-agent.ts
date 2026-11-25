@@ -40,6 +40,7 @@ import {
   calculateXirr,
   type XirrResult,
 } from '../../../shared/xirr.js';
+import { DataOrchestrator } from '../../../data/data-orchestrator/data-orchestrator.js';
 
 // ──────────────────────────────────────────────
 // 0. Хелперы персиста новостей
@@ -302,6 +303,20 @@ export class DataAgent extends AgentBase {
 
   protected async executeInternal(_input: unknown): Promise<DataAgentOutput> {
     this.log.info('[DataAgent] >>> Начало парсинга Excel/QUIK');
+
+    // ── Шаг 0: DataOrchestrator (если включён) ──────────────────────
+    if (PortfolioConfig.orchestrator.enabled) {
+      const orchestrator = new DataOrchestrator();
+      const runResult = await orchestrator.execute();
+      if (!runResult.skipped) {
+        this.log.info(
+          '[DataAgent] DataOrchestrator: ' +
+          'ok=' + runResult.snapshot.okData.size + '/' + runResult.snapshot.sources.length + ' ' +
+          'unavailable=' + runResult.snapshot.unavailableSources.length + ' ' +
+          'duration=' + runResult.totalDurationMs + 'ms',
+        );
+      }
+    }
 
     // Шаг 1: Синхронизация новых сделок
     await this.parser.syncNewTrades();

@@ -319,4 +319,28 @@ export const PortfolioConfig = {
     /** Telegram-уведомления через AlertManager + NotificationEngine; по умолчанию отключён */
     telegramEnabled: false,
   } as const,
+
+  /**
+   * DataOrchestrator — единая точка сбора данных перед AI-этапом.
+   *
+   * enabled: false — бит-в-бит прежнее поведение, DataAgent идёт
+   * по старому пути без обёртки оркестратора.
+   *
+   * defaultTimeoutMs: 15000 — таймаут ответа одного источника.
+   * cacheTtlMs: 60000 — TTL кэша результата в реестре.
+   * НЕ привязан к таймауту: таймаут = "сколько ждать",
+   * TTL = "сколько данные валидны".
+   *
+   * mode: 'stop' — прерывание при плохом качестве;
+   * 'degrade' — продолжение с метками проблемных секций.
+   *
+   * minQualityScore: 50 — порог для DataQualityValidator (0-100).
+   */
+  orchestrator: {
+    enabled: false,
+    defaultTimeoutMs: 15_000,
+    cacheTtlMs: 60_000,
+    mode: 'stop' as const,
+    minQualityScore: 50,
+  } as const,
 } as const;

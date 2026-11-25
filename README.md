@@ -1029,5 +1029,36 @@ ISC
   в чате, потребитель — Director Agent, а не news-агент.
 - [ ] **summary-generator** — не подключается: предназначен для Director
   Agent (чат). Резюме отчёта генерирует LLM (YandexGPT/Ollama).
+- [ ] **слияние дублирующих источников (Phase 2)** — в Phase 1
+  DataOrchestrator не трогает дубликаты, но гарантирует что каждый
+  модуль-источник вызывается ровно один раз через SourceRegistry.
+  Дублирующиеся модули:
+  - **CBR x2**: `ai/ai-advisor/cbr-rate.ts` + `research/cbr-official-fetcher.ts`
+  - **QUIK News x2**: `api/quik-gateway/quik-news-source.ts` +
+    `research/news/sources/quik-source.ts`
+  - **MOEX News x2**: `ai/pipeline/gatekeeper/moex-source.ts` +
+    `research/news/sources/moex-source.ts`
+  Цель Phase 2: объединить дубликаты в единые модули, обновить всех
+  потребителей, удалить устаревшие файлы.
+- [ ] **интеграция DataQualityValidator (Phase 2)** — валидатор
+  `data/data-quality/validation.ts` работает по **активам**
+  (`AssetResearchSnapshot` с marketResearch, issuerResearch, evidence),
+  а снапшот оркестратора — по **источникам** (`SourceResult` с id,
+  status, data). Нужен слой маппинга:
+  1. Собрать из ok-источников данные по каждому активу
+     (мокс-мап `moex-iss → dividends[isin]`, `cbr-rate → macroData`)
+  2. Для unavailable-источников пометить соответствующие поля активов
+     как `null`
+  3. Сформировать массив `{ ticker, snapshot, lastFetchedAt }`
+  4. Вызвать `validator.validateMultiple(assets)`
+  В Phase 1 лог `[ORCHESTRATOR] sourcesOk=X/Y` — это прокси-метрика
+  ok/total источников, НЕ qualityScore из валидатора. qualityScore
+  зарезервировано для реальной метрики Phase 2.
+- [ ] **проводка потребителей через кэш реестра (Phase 2)** —
+  потребители `income-calculator`, `ai-client`, `xlsx-parser` пока
+  вызывают клиенты MOEX ISS / Smart-Lab напрямую, мимо SourceRegistry.
+  При `orchestrator.enabled=true` это порождает **повторные HTTP-запросы**
+  к уже опрошенным источникам. Проводка потребителей через кэш реестра
+  (результат `registry.fetch()` → внедрение в consumers) — задача Phase 2.
 
 © 2026 Радик Залалов. Все права защищены.
