@@ -304,11 +304,40 @@ export class DataAgent extends AgentBase {
   protected async executeInternal(_input: unknown): Promise<DataAgentOutput> {
     this.log.info('[DataAgent] >>> Начало парсинга Excel/QUIK');
 
+    // Шаг 2: Агрегация портфеля — ДО orchestrator (нужны тикеры для execute)
+    const aggregated = await this.parser.parseAggregatedPortfolio();
+    const assets = this.parser.aggregatedToCurrentAssets(aggregated);
+
     // ── Шаг 0: DataOrchestrator (если включён) ──────────────────────
     if (PortfolioConfig.orchestrator.enabled) {
       const orchestrator = new DataOrchestrator();
-      const runResult = await orchestrator.execute();
-      if (!runResult.skipped) {
+      const runResult = await orchestrator.execute(
+        assets.map((a) => ({ ticker: a.ticker, assetType: a.assetType })),
+      );
+
+      if (runResult.skipped) {
+        if (runResult.skipReason === 'flag-off') {
+          this.log.info('[DataAgent] Orchestrator disabled (flag-off), legacy path');
+        } else if (runResult.skipReason === 'empty-registry') {
+          this.log.error(
+            '[DataAgent] Orchestrator skipped: empty registry — ' +
+            'no quality validation! Registration wiring not implemented.',
+          );
+        }
+      } else if (runResult.gateDecision === 'stop') {
+        this.log.error(
+          '[DataAgent] ✗ PIPELINE STOP: gateDecision=stop, ' +
+          `qualityScore=${runResult.qualityReport?.averageQualityScore ?? 'N/A'}%`,
+        );
+        throw new Error(
+          `Orchestrator gate: stop (qualityScore=${runResult.qualityReport?.averageQualityScore ?? 0}%)`,
+        );
+      } else if (runResult.gateDecision === 'degrade') {
+        this.log.warn(
+          `[DataAgent] ⚠ DEGRADE: qualityScore=${runResult.qualityReport?.averageQualityScore ?? 'N/A'}%`,
+        );
+      } else {
+        // pass — продолжаем
         this.log.info(
           '[DataAgent] DataOrchestrator: ' +
           'ok=' + runResult.snapshot.okData.size + '/' + runResult.snapshot.sources.length + ' ' +
@@ -320,10 +349,6 @@ export class DataAgent extends AgentBase {
 
     // Шаг 1: Синхронизация новых сделок
     await this.parser.syncNewTrades();
-
-    // Шаг 2: Агрегация портфеля
-    const aggregated = await this.parser.parseAggregatedPortfolio();
-    const assets = this.parser.aggregatedToCurrentAssets(aggregated);
 
     // Предупреждения о ценах, которые не удалось нормализовать.
     const priceWarnings = Array.from(
@@ -489,15 +514,17 @@ export class DataAgent extends AgentBase {
         let added = 0;
         for (const [ticker, quote] of Object.entries(boardQuotes)) {
           const key = ticker.toUpperCase();
-          if (quote.price > 0) {
+          const price = quote.price;
+          const changePct = quote.changePct;
+          if (price !== null && price > 0) {
             if (!quotes[key]) {
               quotes[key] = {
                 ticker: key,
                 name: key,
                 shortName: key,
-                currentPrice: quote.price,
-                dailyDynamicsPercent: quote.changePct,
-                volumeTodayRub: quote.volumeTodayRub,
+                currentPrice: price,
+                dailyDynamicsPercent: changePct ?? 0,
+                volumeTodayRub: quote.volumeTodayRub ?? undefined,
                 source: 'PYTHON_ISS',
                 asOf: new Date().toISOString(),
               };

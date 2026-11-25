@@ -410,3 +410,299 @@ describe('DataQualityValidator.validateMultiple', () => {
     expect(report.summary).toContain('❌ GAZP: Нет данных для актива');
   });
 });
+
+// ═══════════════════════════════════════════════
+// 6. DataQualityValidator — evidenceMode
+// ═══════════════════════════════════════════════
+
+describe('DataQualityValidator — evidenceMode', () => {
+  it('evidenceMode=error (дефолт): evidence влияет на qualityScore', () => {
+    const validator = new DataQualityValidator(); // дефолт 'error'
+    const report = validator.validateAsset(
+      'SBER',
+      createSnapshot({ evidence: [] }),
+      null,
+    );
+
+    // evidenceCount в fields → invalid → qualityScore падает
+    const evidenceField = findField(report, 'evidenceCount');
+    expect(evidenceField).toBeDefined();
+    expect(evidenceField?.valid).toBe(false);
+    expect(report.qualityScore).toBeLessThan(100);
+  });
+
+  it('evidenceMode=warning: evidence не влияет на qualityScore', () => {
+    const validator = new DataQualityValidator({ evidenceMode: 'warning' });
+    const report = validator.validateAsset(
+      'SBER',
+      createSnapshot({ evidence: [] }),
+      null,
+    );
+
+    // evidenceCount НЕ в fields
+    expect(findField(report, 'evidenceCount')).toBeUndefined();
+    // qualityScore 100% (marketResearch currentPrice + volume валидны)
+    expect(report.qualityScore).toBe(100);
+    // Но warning есть
+    expect(report.warnings).toContain('Нет evidence для актива');
+  });
+
+  it('evidenceMode=warning: с evidence — score 100%, без warnings', () => {
+    const validator = new DataQualityValidator({ evidenceMode: 'warning' });
+    const report = validator.validateAsset(
+      'SBER',
+      createSnapshot(), // evidence: [createEvidence()]
+      null,
+    );
+
+    expect(report.qualityScore).toBe(100);
+    expect(report.warnings).toEqual([]);
+  });
+
+  it('evidenceMode=error: с evidence — score 100%', () => {
+    const validator = new DataQualityValidator({ evidenceMode: 'error' });
+    const report = validator.validateAsset(
+      'SBER',
+      createSnapshot(),
+      null,
+    );
+
+    expect(report.qualityScore).toBe(100);
+  });
+
+  it('бит-в-бит: без evidenceMode — прежнее поведение (error)', () => {
+    const validator = new DataQualityValidator();
+    const reportWithEvidence = validator.validateAsset(
+      'SBER',
+      createSnapshot(),
+      null,
+    );
+    const reportWithoutEvidence = validator.validateAsset(
+      'SBER',
+      createSnapshot({ evidence: [] }),
+      null,
+    );
+
+    // С evidence — 100%, без — < 100%
+    expect(reportWithEvidence.qualityScore).toBe(100);
+    expect(reportWithoutEvidence.qualityScore).toBeLessThan(100);
+  });
+});
+
+// ═══════════════════════════════════════════════
+// 7. DataQualityValidator — noDataMode
+// ═══════════════════════════════════════════════
+
+describe('DataQualityValidator — noDataMode', () => {
+  it('noDataMode=skip (дефолт): NO_DATA не влияет на score', () => {
+    const validator = new DataQualityValidator({ noDataMode: 'skip' });
+    const snapshot = createSnapshot({
+      marketResearch: createMarketResearch({
+        currentPrice: noData(),
+        volume: noData(),
+      }),
+      issuerResearch: createIssuerResearch(), // revenue = NO_DATA
+    });
+    const report = validator.validateAsset(
+      'SBER',
+      snapshot,
+      null,
+      'STOCK',
+    );
+
+    // NO_DATA считается валидным → score 100%
+    expect(report.qualityScore).toBe(100);
+    expect(report.errors).toEqual([]);
+  });
+
+  it('noDataMode=penalize: NO_DATA критичных полей снижает score', () => {
+    const validator = new DataQualityValidator({ noDataMode: 'penalize' });
+    const snapshot = createSnapshot({
+      marketResearch: createMarketResearch({
+        currentPrice: noData(),
+        volume: noData(),
+      }),
+      issuerResearch: createIssuerResearch(), // revenue = NO_DATA
+    });
+    const report = validator.validateAsset(
+      'SBER',
+      snapshot,
+      null,
+      'STOCK',
+    );
+
+    // currentPrice, volume, revenue — критичные STOCK поля, все NO_DATA
+    const criticalErrors = report.errors.filter((e) =>
+      e.includes('NO_DATA') && e.includes('Критичное поле'),
+    );
+    expect(criticalErrors.length).toBeGreaterThanOrEqual(1);
+    expect(report.qualityScore).toBeLessThan(100);
+  });
+
+  it('noDataMode=penalize: STOCK с полными данными → 100%', () => {
+    const validator = new DataQualityValidator({ noDataMode: 'penalize' });
+    const snapshot = createSnapshot(); // все поля VALUE
+    const report = validator.validateAsset(
+      'SBER',
+      snapshot,
+      null,
+      'STOCK',
+    );
+
+    expect(report.qualityScore).toBe(100);
+    const penalizeErrors = report.errors.filter((e) =>
+      e.includes('NO_DATA') && e.includes('Критичное поле'),
+    );
+    expect(penalizeErrors.length).toBe(0);
+  });
+
+  it('noDataMode=penalize: BOND с sector=NO_DATA снижает score', () => {
+    const validator = new DataQualityValidator({ noDataMode: 'penalize' });
+    const snapshot = createSnapshot({
+      marketResearch: createMarketResearch(),
+      issuerResearch: createIssuerResearch(),
+    });
+    const report = validator.validateAsset(
+      'RU000A10GC20',
+      snapshot,
+      null,
+      'BOND',
+    );
+
+    // sector — критичное BOND поле, NO_DATA → penalty
+    const sectorPenalty = report.errors.find((e) =>
+      e.includes('sector') && e.includes('NO_DATA'),
+    );
+    expect(sectorPenalty).toBeDefined();
+    expect(report.qualityScore).toBeLessThan(100);
+  });
+
+  it('noDataMode=penalize: BOND с sector+lastDividend=VALUE → 100%', () => {
+    const validator = new DataQualityValidator({ noDataMode: 'penalize' });
+    const snapshot = createSnapshot({
+      issuerResearch: {
+        ...createIssuerResearch(),
+        sector: { status: 'VALUE', value: 'Корпорации', evidenceIds: [] },
+        dividend: {
+          lastDividend: { status: 'VALUE', value: 15.5, evidenceIds: [] },
+          dividendYield: noData(),
+          payoutRatio: noData(),
+        },
+      },
+    });
+    const report = validator.validateAsset(
+      'RU000A10GC20',
+      snapshot,
+      null,
+      'BOND',
+    );
+
+    expect(report.qualityScore).toBe(100);
+  });
+
+  it('noDataMode=penalize: BOND с lastDividend=NO_DATA снижает score', () => {
+    const validator = new DataQualityValidator({ noDataMode: 'penalize' });
+    const snapshot = createSnapshot({
+      marketResearch: createMarketResearch(),
+      issuerResearch: createIssuerResearch(),
+    });
+    const report = validator.validateAsset(
+      'RU000A10GC20',
+      snapshot,
+      null,
+      'BOND',
+    );
+
+    // lastDividend — критичное BOND поле, NO_DATA → penalty
+    const lastDivPenalty = report.errors.find((e) =>
+      e.includes('lastDividend') && e.includes('NO_DATA'),
+    );
+    expect(lastDivPenalty).toBeDefined();
+    expect(report.qualityScore).toBeLessThan(100);
+  });
+
+  it('noDataMode=penalize: BOND с lastDividend=VALUE → 100%', () => {
+    const validator = new DataQualityValidator({ noDataMode: 'penalize' });
+    const snapshot = createSnapshot({
+      marketResearch: createMarketResearch(),
+      issuerResearch: {
+        ...createIssuerResearch(),
+        sector: { status: 'VALUE', value: 'Корпорации', evidenceIds: [] },
+        dividend: {
+          lastDividend: { status: 'VALUE', value: 15.5, evidenceIds: [] },
+          dividendYield: noData(),
+          payoutRatio: noData(),
+        },
+      },
+    });
+    const report = validator.validateAsset(
+      'RU000A10GC20',
+      snapshot,
+      null,
+      'BOND',
+    );
+
+    expect(report.qualityScore).toBe(100);
+  });
+
+  it('noDataMode=skip: бит-в-бит с дефолтом', () => {
+    const defaultValidator = new DataQualityValidator();
+    const skipValidator = new DataQualityValidator({ noDataMode: 'skip' });
+
+    const snapshot = createSnapshot({
+      marketResearch: createMarketResearch({
+        currentPrice: noData(),
+      }),
+      issuerResearch: createIssuerResearch(),
+    });
+
+    const defaultReport = defaultValidator.validateAsset(
+      'SBER',
+      snapshot,
+      null,
+      'STOCK',
+    );
+    const skipReport = skipValidator.validateAsset(
+      'SBER',
+      snapshot,
+      null,
+      'STOCK',
+    );
+
+    // skip и дефолт должны давать одинаковый результат
+    expect(skipReport.qualityScore).toBe(defaultReport.qualityScore);
+  });
+
+  it('validateMultiple передаёт assetType в validateAsset', () => {
+    const validator = new DataQualityValidator({ noDataMode: 'penalize' });
+    const report = validator.validateMultiple([
+      {
+        ticker: 'SBER',
+        snapshot: createSnapshot({
+          marketResearch: createMarketResearch({
+            currentPrice: noData(),
+          }),
+        }),
+        lastFetchedAt: null,
+        assetType: 'STOCK',
+      },
+      {
+        ticker: 'RU000A10GC20',
+        snapshot: createSnapshot({
+          issuerResearch: {
+            ...createIssuerResearch(),
+            sector: { status: 'VALUE', value: 'ОФЗ', evidenceIds: [] },
+          },
+        }),
+        lastFetchedAt: null,
+        assetType: 'BOND',
+      },
+    ]);
+
+    expect(report.totalAssets).toBe(2);
+    // SBER: STOCK с currentPrice=NO_DATA → penalty
+    expect(report.assetReports[0]?.qualityScore).toBeLessThan(100);
+    // GAZP: BOND с sector=VALUE → без penalty за sector
+    expect(report.assetReports[1]?.qualityScore).toBeGreaterThanOrEqual(50);
+  });
+});

@@ -57,19 +57,51 @@ export interface DataQualityReport {
 }
 
 // ──────────────────────────────────────────────
+// 2. Матрица применимости полей по assetType
+// ──────────────────────────────────────────────
+
+/**
+ * Матрица: какие поля критичны для каждого типа актива.
+ * При noDataMode='penalize' — NO_DATA в этих полях снижает qualityScore.
+ */
+const FIELD_MATRIX: Record<string, string[]> = {
+  STOCK: [
+    'currentPrice',
+    'volume',
+    'revenue',
+    'roe',
+    'pe',
+    'dividendYield',
+  ],
+  BOND: ['currentPrice', 'sector', 'lastDividend', 'volume'],
+};
+
+// ──────────────────────────────────────────────
 // 2. DataQuality Validator
 // ──────────────────────────────────────────────
+
+/** Режим валидации evidence: 'error' влияет на score, 'warning' — только предупреждение. */
+export type EvidenceMode = 'error' | 'warning';
+
+/** Режим обработки NO_DATA: 'skip' — не влияет на score, 'penalize' — снижает. */
+export type NoDataMode = 'skip' | 'penalize';
 
 /**
  * DataQualityValidator — проверка качества research-данных.
  */
 export class DataQualityValidator {
   private maxAgeHours: number;
+  private evidenceMode: EvidenceMode;
+  private noDataMode: NoDataMode;
 
   constructor(options?: {
     maxAgeHours?: number;
+    evidenceMode?: EvidenceMode;
+    noDataMode?: NoDataMode;
   }) {
     this.maxAgeHours = options?.maxAgeHours ?? 24;
+    this.evidenceMode = options?.evidenceMode ?? 'error';
+    this.noDataMode = options?.noDataMode ?? 'skip';
   }
 
   /**
@@ -79,6 +111,7 @@ export class DataQualityValidator {
     ticker: string,
     snapshot: AssetResearchSnapshot | null,
     lastFetchedAt: string | null,
+    assetType?: string,
   ): AssetQualityReport {
     const fields: FieldValidation[] = [];
     const errors: string[] = [];
@@ -150,12 +183,16 @@ export class DataQualityValidator {
 
     // 4. Проверка evidence
     const evidenceCount = Object.keys(snapshot.evidence || {}).length;
-    fields.push({
-      fieldName: 'evidenceCount',
-      valid: evidenceCount > 0,
-      value: evidenceCount,
-      error: evidenceCount === 0 ? 'Нет evidence' : undefined,
-    });
+
+    if (this.evidenceMode === 'error') {
+      // Прежнее поведение: evidence влияет на qualityScore
+      fields.push({
+        fieldName: 'evidenceCount',
+        valid: evidenceCount > 0,
+        value: evidenceCount,
+        error: evidenceCount === 0 ? 'Нет evidence' : undefined,
+      });
+    }
 
     if (evidenceCount === 0) {
       warnings.push('Нет evidence для актива');
@@ -173,6 +210,67 @@ export class DataQualityValidator {
             error: 'Цена <= 0',
           });
           errors.push('Аномальная цена: <= 0');
+        }
+      }
+    }
+
+    // 5b. noDataMode='penalize' — проверяем критичные поля из матрицы
+    if (this.noDataMode === 'penalize' && snapshot && assetType) {
+      const criticalFields = FIELD_MATRIX[assetType.toUpperCase()]
+        ?? FIELD_MATRIX['STOCK'] ?? [];
+
+      // marketResearch поля
+      for (const fieldName of criticalFields) {
+        if (['currentPrice', 'volume'].includes(fieldName) && snapshot.marketResearch) {
+          const mrValue = snapshot.marketResearch as unknown as Record<string, unknown>;
+          const value = mrValue[fieldName] as { status?: string } | undefined;
+          if (value?.status === 'NO_DATA') {
+            fields.push({
+              fieldName: `marketResearch.${fieldName}`,
+              valid: false,
+              value: 'NO_DATA',
+              error: `Критичное поле ${fieldName} = NO_DATA (assetType=${assetType})`,
+            });
+            errors.push(`Критичное поле ${fieldName} = NO_DATA (assetType=${assetType})`);
+          }
+        }
+      }
+
+      // issuerResearch поля
+      if (snapshot.issuerResearch) {
+        const issuerResearch = snapshot.issuerResearch as unknown as Record<string, unknown>;
+        const issuerCritical = criticalFields.filter(
+          (f) => !['currentPrice', 'volume'].includes(f),
+        );
+        for (const fieldName of issuerCritical) {
+          let value: { status?: string } | undefined;
+          if (fieldName === 'revenue') {
+            const financials = issuerResearch.financials as unknown as Record<string, unknown> | undefined;
+            value = financials?.revenue as { status?: string } | undefined;
+          } else if (fieldName === 'roe') {
+            const financials = issuerResearch.financials as unknown as Record<string, unknown> | undefined;
+            value = financials?.roe as { status?: string } | undefined;
+          } else if (fieldName === 'pe') {
+            const valuation = issuerResearch.valuation as unknown as Record<string, unknown> | undefined;
+            value = valuation?.pe as { status?: string } | undefined;
+          } else if (fieldName === 'dividendYield') {
+            const dividend = issuerResearch.dividend as unknown as Record<string, unknown> | undefined;
+            value = dividend?.dividendYield as { status?: string } | undefined;
+          } else if (fieldName === 'lastDividend') {
+            const dividend = issuerResearch.dividend as unknown as Record<string, unknown> | undefined;
+            value = dividend?.lastDividend as { status?: string } | undefined;
+          } else if (fieldName === 'sector') {
+            value = issuerResearch.sector as { status?: string } | undefined;
+          }
+          if (value?.status === 'NO_DATA') {
+            fields.push({
+              fieldName: `issuerResearch.${fieldName}`,
+              valid: false,
+              value: 'NO_DATA',
+              error: `Критичное поле ${fieldName} = NO_DATA (assetType=${assetType})`,
+            });
+            errors.push(`Критичное поле ${fieldName} = NO_DATA (assetType=${assetType})`);
+          }
         }
       }
     }
@@ -235,7 +333,7 @@ export class DataQualityValidator {
    * Проверить качество данных для множества активов.
    */
   validateMultiple(
-    assets: Array<{ ticker: string; snapshot: AssetResearchSnapshot | null; lastFetchedAt: string | null }>,
+    assets: Array<{ ticker: string; snapshot: AssetResearchSnapshot | null; lastFetchedAt: string | null; assetType?: string }>,
   ): DataQualityReport {
     const assetReports: AssetQualityReport[] = [];
     const globalWarnings: string[] = [];
@@ -243,7 +341,7 @@ export class DataQualityValidator {
     let totalScore = 0;
 
     for (const asset of assets) {
-      const report = this.validateAsset(asset.ticker, asset.snapshot, asset.lastFetchedAt);
+      const report = this.validateAsset(asset.ticker, asset.snapshot, asset.lastFetchedAt, asset.assetType);
       assetReports.push(report);
       totalScore += report.qualityScore;
 

@@ -332,15 +332,19 @@ export const PortfolioConfig = {
    * TTL = "сколько данные валидны".
    *
    * mode: 'stop' — прерывание при плохом качестве;
-   * 'degrade' — продолжение с метками проблемных секций.
-   *
-   * minQualityScore: 50 — порог для DataQualityValidator (0-100).
-   */
-  orchestrator: {
-    enabled: false,
-    defaultTimeoutMs: 15_000,
-    cacheTtlMs: 60_000,
-    mode: 'stop' as const,
-    minQualityScore: 50,
-  } as const,
+    * 'degrade' — продолжение с метками проблемных секций.
+    *
+    * minQualityScore: 50 — порог для DataQualityValidator (0-100).
+    * minSourcesOkRatio: 0.5 — минимальная доля ok-источников.
+    * poorAssetsRatio: 0.5 — доля активов с qualityScore < minQualityScore → stop.
+    */
+   orchestrator: {
+     enabled: false,
+     defaultTimeoutMs: 15_000,
+     cacheTtlMs: 60_000,
+     mode: 'stop' as const,
+     minQualityScore: 50,
+     minSourcesOkRatio: 0.5,
+     poorAssetsRatio: 0.5,
+   } as const,
 } as const;

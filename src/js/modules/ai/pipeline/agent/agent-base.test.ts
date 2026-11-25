@@ -183,4 +183,20 @@ describe('AgentBase', () => {
     expect(summary.lastExecution).toBeDefined();
     expect(summary.lastExecution?.success).toBe(true);
   });
+
+  it('throw в executeInternal → success=false, error.message доступен для pipeline stop', async () => {
+    class StopAgent extends AgentBase {
+      protected async executeInternal(_input: unknown): Promise<unknown> {
+        throw new Error('PIPELINE STOP: quality validation failed');
+      }
+    }
+    const stopAgent = new StopAgent({ name: 'StopAgent', retries: 0 });
+    const result = await stopAgent.execute(null);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.message).toBe('PIPELINE STOP: quality validation failed');
+    expect(result.data).toBeUndefined();
+    expect(stopAgent.state).toBe('error');
+    expect(stopAgent.totalFailures).toBe(1);
+  });
 });

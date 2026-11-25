@@ -1,12 +1,133 @@
 # 📊 Finance Analyzer — AI-анализатор инвестиционного портфеля
 
 <!-- актуализировано 2026-11-25: путь ai-advisor переименован в ai/ai-advisor, добавлены перенесённые модули -->
+<!-- актуализировано 2026-11-25: DataOrchestrator Phase 2 — 9 источников, batch moex-quotes, noDataMode, degradeSourcesOkRatio=0.7 -->
 
 [![CI](https://github.com/Radikz2707/finance-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/Radikz2707/finance-analyzer/actions/workflows/ci.yml)
 
 Интеллектуальная система анализа российского фондового рынка (Московская биржа). Автоматически парсит данные из Excel-таблицы QUIK, рассчитывает дивиденды, купоны и целевые доли портфеля, а также генерирует экспертные рекомендации от ИИ-советника.
 
 ---
+
+## 📊 DataOrchestrator (Phase 2)
+
+**DataOrchestrator** — ядро оркестрации источников данных. Запускает все источники параллельно через `Promise.allSettled`, маппит результаты в `AssetResearchSnapshot`, валидирует качество через `DataQualityValidator`.
+
+### Реестр источников: 9
+
+| # | ID | Тип | Конкурентность | API |
+|---|---|---|---|---|
+| 1 | `moex-quotes` | batch `MoexQuotesClient.fetchCurrentQuotes` | 1 | MOEX ISS (boards, marketdata) |
+| 2 | `cbr-rate` | batch | 1 | `getCbrKeyRate` |
+| 3 | `moex-iss-security` | per-ticker | 5 | MOEX ISS |
+| 4 | `moex-iss-dividends` | per-ticker | 5 | MOEX ISS |
+| 5 | `moex-iss-reports` | per-ticker | 5 | MOEX ISS |
+| 6 | `moex-iss-coupons` | per-ticker (только облигации) | 5 | MOEX ISS |
+| 7 | `smartlab-bonds` | batch + findBondByTicker | 1 | SmartLab |
+| 8 | `smart-lab-financials` | per-ticker | 1 | SmartLab |
+| 9 | `smart-lab-dividends` | per-ticker | 1 | SmartLab |
+
+**Хронология:** 11 → 10 (moex-bond-api слит в smartlab-bonds) → 9 (финальный реестр).
+
+### Хронология Phase 2
+
+```
+11 источников → 10 → 9 (реестр стабилизирован)
+1725 passed → 1734 (+9 noDataMode/d/e) → 1736 (+2 BOND) → 1737 (+1 progn d) → 1737 (e rename) → 1738 (+1 progn g)
+minQualityScore: 50 → 85 (penalize-путь покрывается)
+moex-quotes: per-ticker fetchMoexQuote → batch MoexQuotesClient
+116 test files → 115 (дубль удалён)
+```
+
+### Конфигурация (дефолты)
+
+```typescript
+{
+  enabled: false,
+  minQualityScore: 85,           // < 85% → stop/degrade (покрытие penalize-пути)
+  minSourcesOkRatio: 0.5,        // < 50% → STOP
+  degradeSourcesOkRatio: 0.7,    // 50% ≤ x < 70% → DEGRADE + warning
+  poorAssetsRatio: 0.5,          // poorAssets ≥ 50% → stop/degrade
+  mode: 'stop',
+}
+```
+
+- `noDataMode: 'penalize'` — NO_DATA в критичных полях снижает qualityScore
+  - STOCK: `currentPrice, volume, revenue, roe, pe, dividendYield`
+  - BOND: `currentPrice, sector`
+- `degradeSourcesOkRatio` — окно degrade: при `minSourcesOkRatio ≤ sourcesOk < degradeSourcesOkRatio` → `gateDecision: 'degrade'`
+- `moex-quotes` — batch через `MoexQuotesClient.fetchCurrentQuotes(stockTickers[])`, возвращает `{ asOf, quotes: Record<string, MoexCurrentQuote>, unavailable }`
+- Progn b enriched: reports→revenue, financials→roe/pe, dividends→dividendYield → qualityScore=100% (было 50% на разреженных моках)
+- Порог 85 + poorAssetsRatio 0.5: одноактивный портфель, любой poor-актив (qualityScore < 85) → poorAssets=1/1 ≥ 0.5 → stop
+
+### Счётчики
+
+```
+npm run lint                      → 0 errors, 0 warnings               (2026-11-25 10:40)
+npx vitest run                    → 1738 passed, 10 skipped, 0 failed    (2026-11-25 10:40)
+node node_modules/typescript/lib/tsc.js --noEmit  → 0 errors            (2026-11-25 10:40)
+```
+
+**Разложение:**
+- 1725 (предыдущий счёт) → 1734 (+9): validation +7 noDataMode, progn d/e (предыдущая сессия)
+- 1734 → 1736 (+2): validation +2 BOND lastDividend/sector
+- 1736 → 1737 (+1): progn d добавлен (6/9 degrade)
+- 1737 → 1737: progn f → progn e (переименование, без изменений в количестве)
+- 1737 → 1738 (+1): progn g добавлен (ISS-провал, продакшн-дефолты → stop)
+- **116 → 115 test files:** удалён дубль теста в validation.test.ts при рефакторинге noDataMode
+
+### Фактические логи [ORCHESTRATOR]
+
+**Progn a — enabled=false:**
+```
+[PROGN A] enabled=false -> skipped=true, skipReason=flag-off
+```
+
+**Progn b — enabled=true, 9/9 ok (reports→revenue VALUE, financials→roe/pe VALUE, dividends→dividendYield VALUE):**
+```
+[ORCHESTRATOR] sourcesOk=9/9 qualityScore=100% poorAssets=0/1 gateDecision=pass
+```
+
+**Progn c — 1 source failure (moex-iss-reports, 8/9 ok):**
+```
+[ORCHESTRATOR] sourcesOk=8/9 qualityScore=80% poorAssets=1/1 gateDecision=stop
+```
+> Конфиг: minQualityScore=85. reports fail → revenue NO_DATA → penalize → qualityScore=80% < 85 → poorAssets=1/1 → stop
+
+**Progn d — degrade (security+dividends+coupons fail, 6/9=66.7%):**
+```
+[ORCHESTRATOR] ⚠️ DEGRADE: sourcesOk=6/9 (67%) < degrade threshold 70%
+[ORCHESTRATOR] sourcesOk=6/9 qualityScore=100% poorAssets=0/1 gateDecision=degrade
+```
+> Конфиг: minQualityScore=55. 3 ISS fail, smart-lab ok → qualityScore=100% >= 55 → poorAssets=0/1, но sourcesOk=66.7% < 70% → degrade
+
+**Progn e (1) — ISS-провал в degrade-режиме (minQualityScore=55, poorAssetsRatio=0.5):**
+```
+[ORCHESTRATOR] ⚠️ DEGRADE: sourcesOk=5/9 (56%) < degrade threshold 70%
+[ORCHESTRATOR] sourcesOk=5/9 qualityScore=80% poorAssets=0/1 gateDecision=degrade
+```
+> Конфиг: minQualityScore=55 (не 85!). 4 ISS fail (вкл. reports → revenue NO_DATA), smart-lab ok → qualityScore=80% >= 55 → poorAssets=0/1, но sourcesOk=55.6% < 70% → degrade
+> **Не путать с progn c:** poorAssets=0/1 при minQualityScore=55, poorAssets=1/1 при minQualityScore=85
+
+**Progn e (2) — пустое окно (degradeSourcesOkRatio = minSourcesOkRatio=55):**
+```
+[ORCHESTRATOR] sourcesOk=9/9 qualityScore=100% poorAssets=0/1 gateDecision=pass
+```
+> Конфиг: minQualityScore=55, degradeSourcesOkRatio=55 (пустое окно). qualityScore=100% >= 55 → pass
+
+**Progn g — полный провал ISS, продакшн-дефолты (minQualityScore=85, minSourcesOkRatio=0.5, degradeSourcesOkRatio=0.7, poorAssetsRatio=0.5):**
+```
+[ORCHESTRATOR] ⚠️ DEGRADE: sourcesOk=5/9 (56%) < degrade threshold 70%
+[ORCHESTRATOR] sourcesOk=5/9 qualityScore=80% poorAssets=1/1 gateDecision=stop
+```
+> Конфиг: minQualityScore=85. 4 ISS fail (вкл. reports → revenue NO_DATA), smart-lab ok → qualityScore=80% < 85 → poorAssets=1/1 ≥ 0.5 → stop
+
+### Семантика гейтов
+
+- **Прогноз c:** 1 fail (moex-iss-reports → revenue NO_DATA) при minQualityScore=85 → qualityScore=80% < 85 → poorAssets=1/1 → stop
+- **Прогноз g:** полный провал ISS (4/9 fail) при продакшн-пороге 85 → revenue NO_DATA → penalize → qualityScore=80% < 85 → poorAssets=1/1 → stop
+- **Degrade-окно (0.5–0.7 sourcesOk)** достижимо при qualityScore ≥ 85 (progn d: 6/9=66.7%, qualityScore=100%)
+- **Phase 3 tech debt:** severity-взвешивание полей (currentPrice критичнее revenue; сейчас весят одинаково)
 
 ## 📚 Документация
 
@@ -1030,35 +1151,91 @@ ISC
 - [ ] **summary-generator** — не подключается: предназначен для Director
   Agent (чат). Резюме отчёта генерирует LLM (YandexGPT/Ollama).
 - [ ] **слияние дублирующих источников (Phase 2)** — в Phase 1
-  DataOrchestrator не трогает дубликаты, но гарантирует что каждый
-  модуль-источник вызывается ровно один раз через SourceRegistry.
-  Дублирующиеся модули:
-  - **CBR x2**: `ai/ai-advisor/cbr-rate.ts` + `research/cbr-official-fetcher.ts`
-  - **QUIK News x2**: `api/quik-gateway/quik-news-source.ts` +
-    `research/news/sources/quik-source.ts`
-  - **MOEX News x2**: `ai/pipeline/gatekeeper/moex-source.ts` +
-    `research/news/sources/moex-source.ts`
-  Цель Phase 2: объединить дубликаты в единые модули, обновить всех
-  потребителей, удалить устаревшие файлы.
+   DataOrchestrator не трогает дубликаты, но гарантирует что каждый
+   модуль-источник вызывается ровно один раз через SourceRegistry.
+   Дублирующиеся модули:
+   - **CBR x2**: `ai/ai-advisor/cbr-rate.ts` + `research/cbr-official-fetcher.ts`
+   - **QUIK News x2**: `api/quik-gateway/quik-news-source.ts` +
+     `research/news/sources/quik-source.ts`
+   - **MOEX News x2**: `ai/pipeline/gatekeeper/moex-source.ts` +
+     `research/news/sources/moex-source.ts`
+   Цель Phase 2: объединить дубликаты в единые модули, обновить всех
+   потребителей, удалить устаревшие файлы.
+
+- [x] **расхождение Phase 1: заявленное vs фактическое поведение** —
+   финальный отчёт Phase 1 описывал поведение при `enabled=true`:
+   "8 источников параллельно, ровно один вызов". **Этого поведения
+   не существует** — регистрация источников не реализована.
+   `DataOrchestrator.execute()` при `enabled=true` и пустом реестре
+   всегда возвращает `skipped: true` (источники не зарегистрированы).
+
+- [x] **список реестра Phase 1 пересмотрен в Phase 2** — moex-iss-quote и
+   moex-eqob-quotes консолидированы в moex-quotes (одинаковые данные:
+   price + volume), ISS разбит на 4 источника (security, dividends, reports,
+   coupons) для параллельного опроса. Причина: moex-quotes поддерживает
+   batch-вызов fetchCurrentQuotes(secids[]), moex-eqob-quotes дублирует данные
+   через Python Bridge, moex-iss-quote — per-ticker обёртка над тем же ISS.
+   Зафиксировано выше в пункте «регистрация 8 источников в реестре».
+   **Правило впредь:** заявленное поведение при включённом флаге —
+   либо прогон, либо явная пометка "не реализовано".
+- [ ] **регистрация 8 источников в реестре (Phase 2)** —
+   **БЛОКЕР.** В production-коде нет ни одного вызова `registry.register()`
+   для `SourceRegistry`. `DataOrchestrator` создаёт пустой реестр
+   (`data-orchestrator.ts:31–37`), `getActiveSourceIds()` возвращает `[]`,
+   `execute()` всегда `skipped: true` (строка 71–81).
+   Фактическое поведение при `enabled=true` **не соответствует**
+   описанию в Phase 1 ("8 источников параллельно, ровно один вызов").
+   Заявленное поведение не реализовано.
+   
+   **Что нужно:** создать wiring-модуль (например `data-orchestrator/wiring.ts`),
+   который регистрирует 8 источников в `SourceRegistry` и передаёт его
+   в конструктор `DataOrchestrator`. Точка вызова — в `DataAgent.executeInternal()`
+   перед `orchestrator.execute()`.
+   
+   **8 источников:**
+   1. `moex-iss-security` — `fetchMoexSecurityInfo(ticker)` → name, sector
+   2. `moex-iss-quote` — `fetchMoexQuote(ticker)` → цена, оборот
+   3. `moex-iss-dividends` — `fetchMoexDividends(ticker)` → дивидендный календарь
+   4. `moex-iss-reports` — `fetchMoexReports(ticker)` → отчётность (revenue)
+   5. `smart-lab-financials` — `fetchSmartLabFinancials(ticker)` → P/E, ROE
+   6. `smart-lab-dividends` — `fetchSmartLabDividends(ticker)` → дивдоходность
+   7. `cbr-rate` — `getCbrKeyRate()` → ключевая ставка
+   8. `moex-eqob-quotes` — `fetchBoardQuotes(tickers, 'EQOB')` → облигации
+
 - [ ] **интеграция DataQualityValidator (Phase 2)** — валидатор
-  `data/data-quality/validation.ts` работает по **активам**
-  (`AssetResearchSnapshot` с marketResearch, issuerResearch, evidence),
-  а снапшот оркестратора — по **источникам** (`SourceResult` с id,
-  status, data). Нужен слой маппинга:
-  1. Собрать из ok-источников данные по каждому активу
-     (мокс-мап `moex-iss → dividends[isin]`, `cbr-rate → macroData`)
-  2. Для unavailable-источников пометить соответствующие поля активов
-     как `null`
-  3. Сформировать массив `{ ticker, snapshot, lastFetchedAt }`
-  4. Вызвать `validator.validateMultiple(assets)`
-  В Phase 1 лог `[ORCHESTRATOR] sourcesOk=X/Y` — это прокси-метрика
-  ok/total источников, НЕ qualityScore из валидатора. qualityScore
-  зарезервировано для реальной метрики Phase 2.
+   `data/data-quality/validation.ts` работает по **активам**
+   (`AssetResearchSnapshot` с marketResearch, issuerResearch, evidence),
+   а снапшот оркестратора — по **источникам** (`SourceResult` с id,
+   status, data). Нужен слой маппинга:
+   1. Собрать из ok-источников данные по каждому активу
+      (мокс-мап `moex-iss → dividends[isin]`, `cbr-rate → macroData`)
+   2. Для unavailable-источников пометить соответствующие поля активов
+      как `null`
+   3. Сформировать массив `{ ticker, snapshot, lastFetchedAt }`
+   4. Вызвать `validator.validateMultiple(assets)`
+   В Phase 1 лог `[ORCHESTRATOR] sourcesOk=X/Y` — это прокси-метрика
+   ok/total источников, НЕ qualityScore из валидатора. qualityScore
+   зарезервировано для реальной метрики Phase 2.
+
 - [ ] **проводка потребителей через кэш реестра (Phase 2)** —
-  потребители `income-calculator`, `ai-client`, `xlsx-parser` пока
-  вызывают клиенты MOEX ISS / Smart-Lab напрямую, мимо SourceRegistry.
-  При `orchestrator.enabled=true` это порождает **повторные HTTP-запросы**
-  к уже опрошенным источникам. Проводка потребителей через кэш реестра
-  (результат `registry.fetch()` → внедрение в consumers) — задача Phase 2.
+   потребители `income-calculator`, `ai-client`, `xlsx-parser` пока
+   вызывают клиенты MOEX ISS / Smart-Lab напрямую, мимо SourceRegistry.
+   При `orchestrator.enabled=true` это порождает **повторные HTTP-запросы**
+   к уже опрошенным источникам. Проводка потребителей через кэш реестра
+   (результат `registry.fetch()` → внедрение в consumers) — задача Phase 2.
+
+- [ ] **ResearchProviderRegistry — мёртвый код** —
+   `research/providers/registry.ts` (строки 27–78) + 4 stub-провайдера
+   (`types.ts:31–111`, `market-provider.ts:1–18`,
+   `issuer-fundamentals-provider.ts:1–18`, `news-provider.ts`,
+   `macro-provider.ts`) возвращают пустой `AssetResearchSnapshot`
+   (все поля null/[]). `buildAssetResearchSnapshot()`
+   (`ai-advisor/snapshot-builder.ts:177–210`) при наличии `researchContext`
+   вызывает `registry.researchAll()` → mergeSnapshots() → пустой снапшот.
+   Все 4 провайдера — заглушки. `createResearchRegistry()`
+   (snapshot-builder.ts:112–123) регистрирует эти stub-провайдеры.
+   **Рекомендация:** удалить или реализовать реальных провайдеров.
+   Для Phase 2 маппинг «источники → активы» — новый тонкий слой,
+   не использующий ResearchProviderRegistry.
 
 © 2026 Радик Залалов. Все права защищены.

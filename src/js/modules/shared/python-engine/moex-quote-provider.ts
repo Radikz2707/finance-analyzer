@@ -51,11 +51,12 @@ export interface MoexBoardQuotesResponse {
   error?: string;
 }
 
-/** Котировка, понятная DataAgent: цена + дневная динамика + оборот */
+/** Котировка, понятная DataAgent: цена + дневная динамика + оборот.
+ * null = значение невозможно распарсить (не ноль, а отсутствие данных). */
 export interface MoexFetchedQuote {
-  price: number;
-  changePct: number;
-  volumeTodayRub?: number;
+  price: number | null;
+  changePct: number | null;
+  volumeTodayRub?: number | null;
 }
 
 /** Конфигурация провайдера */
@@ -64,10 +65,10 @@ export interface MoexQuoteProviderConfig {
   bridge?: IPythonBridge;
 }
 
-/** Безопасное число из значения ISS (NaN/пусто → 0) */
-function toFiniteNumber(value: unknown): number {
+/** Безопасное число: NaN/пусто → null (не 0 — 0 маскирует отсутствие данных). */
+function toFiniteNumber(value: unknown): number | null {
   const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -131,7 +132,7 @@ export class MoexQuoteProvider {
         continue;
       }
       const price = toFiniteNumber(quote.LAST);
-      if (price <= 0) {
+      if (price === null || price <= 0) {
         continue;
       }
       result[quote.SECID] = {
@@ -196,7 +197,7 @@ export class MoexQuoteProvider {
         continue;
       }
       const price = toFiniteNumber(quote.LAST);
-      if (price <= 0) {
+      if (price === null || price <= 0) {
         continue;
       }
       result[quote.SECID] = {

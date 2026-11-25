@@ -21,6 +21,12 @@ import {
   buildFallbackSnapshot,
 } from './build-snapshot.js';
 import type { SourceResult } from './source-result.js';
+import type { AssetInput } from './data-orchestrator.js';
+
+const mockAssets: AssetInput[] = [
+  { ticker: 'SBER', assetType: 'STOCK' },
+  { ticker: 'GAZP', assetType: 'STOCK' },
+];
 
 // ──────────────────────────────────────────────
 // Хелперы
@@ -75,11 +81,11 @@ describe('DataOrchestrator', () => {
     });
 
     const orchestrator = new DataOrchestrator(
-      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50 },
+      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
       registry,
     );
 
-    const result = await orchestrator.execute();
+    const result = await orchestrator.execute(mockAssets);
 
     expect(result.skipped).toBe(false);
     expect(result.snapshot.sources.length).toBe(3);
@@ -100,11 +106,11 @@ describe('DataOrchestrator', () => {
     });
 
     const orchestrator = new DataOrchestrator(
-      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50 },
+      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
       registry,
     );
 
-    const result = await orchestrator.execute();
+    const result = await orchestrator.execute(mockAssets);
 
     expect(result.skipped).toBe(false);
     expect(result.snapshot.okData.size).toBe(2);
@@ -136,11 +142,11 @@ describe('DataOrchestrator', () => {
     });
 
     const orchestrator = new DataOrchestrator(
-      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50 },
+      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
       registry,
     );
 
-    const result = await orchestrator.execute();
+    const result = await orchestrator.execute(mockAssets);
 
     expect(result.skipped).toBe(false);
     expect(result.snapshot.okData.size).toBe(1); // cbr-rate ok
@@ -163,11 +169,11 @@ describe('DataOrchestrator', () => {
     });
 
     const orchestrator = new DataOrchestrator(
-      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50 },
+      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
       registry,
     );
 
-    const result = await orchestrator.execute();
+    const result = await orchestrator.execute(mockAssets);
 
     expect(result.skipped).toBe(false);
     expect(result.snapshot.okData.size).toBe(0);
@@ -195,11 +201,11 @@ describe('DataOrchestrator', () => {
     });
 
     const orchestrator = new DataOrchestrator(
-      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50 },
+      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
       registry,
     );
 
-    const result = await orchestrator.execute();
+    const result = await orchestrator.execute(mockAssets);
 
     expect(result.skipped).toBe(false);
     expect(result.snapshot.okData.size).toBe(1);
@@ -220,11 +226,11 @@ describe('DataOrchestrator', () => {
     });
 
     const orchestrator = new DataOrchestrator(
-      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'degrade', minQualityScore: 50 },
+      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'degrade', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
       registry,
     );
 
-    const result = await orchestrator.execute();
+    const result = await orchestrator.execute(mockAssets);
 
     expect(result.skipped).toBe(false);
     expect(result.snapshot.okData.size).toBe(1);
@@ -243,11 +249,11 @@ describe('DataOrchestrator', () => {
     });
 
     const orchestrator = new DataOrchestrator(
-      { enabled: false, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50 },
+      { enabled: false, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
       registry,
     );
 
-    const result = await orchestrator.execute();
+    const result = await orchestrator.execute(mockAssets);
 
     expect(result.skipped).toBe(true);
     expect(result.snapshot.sources.length).toBe(0);
@@ -267,7 +273,7 @@ describe('DataOrchestrator', () => {
     });
 
     const orchestrator = new DataOrchestrator(
-      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50 },
+      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
       registry,
     );
 
@@ -329,6 +335,70 @@ describe('DataOrchestrator', () => {
     expect(allIds).toContain('moex-news');
     expect(allIds).toContain('rss-news');
     expect(allIds).toContain('telegram-news');
+  });
+
+  // ── Тест 10: пустые тикеры → stop с корректным DataQualityReport ──
+
+  it('пустые тикеры → skipped=false, gateDecision=stop, qualityReport корректен', async () => {
+    const registry = createMockRegistry({
+      'moex-iss': async () => ({ data: 'ok' }),
+    });
+
+    const orchestrator = new DataOrchestrator(
+      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
+      registry,
+    );
+
+    const result = await orchestrator.execute([]);
+
+    expect(result.skipped).toBe(false);
+    expect(result.gateDecision).toBe('stop');
+    expect(result.qualityReport).toBeDefined();
+    expect(result.qualityReport?.totalAssets).toBe(0);
+    expect(result.qualityReport?.averageQualityScore).toBe(0);
+    expect(result.qualityReport?.assetReports).toEqual([]);
+    expect(result.qualityReport?.globalWarnings).toContain('Нет тикеров для валидации');
+  });
+
+  // ── Тест 11: пустой реестр → skipped=true, skipReason=empty-registry ──
+
+  it('пустой реестр + enabled=true → skipped=true, skipReason=empty-registry', async () => {
+    const registry = new SourceRegistry({ cacheTtlMs: 60_000 });
+    // Ничего не зарегистрировано
+
+    const orchestrator = new DataOrchestrator(
+      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
+      registry,
+    );
+
+    const result = await orchestrator.execute(mockAssets);
+
+    expect(result.skipped).toBe(true);
+    expect(result.skipReason).toBe('empty-registry');
+    expect(result.snapshot.sources).toEqual([]);
+    expect(result.snapshot.unavailableSources).toHaveLength(1);
+    expect(result.snapshot.unavailableSources[0]!.id).toBe('_empty_registry');
+    expect(result.snapshot.unavailableSources[0]!.reason).toContain('no sources registered');
+  });
+
+  // ── Тест 12: sourcesOk < minSourcesOkRatio → immediate stop ──
+
+  it('sourcesOk < minSourcesOkRatio → immediate stop без маппинга', async () => {
+    const registry = createMockRegistry({
+      'moex-iss': async () => ({ data: 'ok' }),
+    });
+    // 1 ok из 1 = 100% > 50% → pass gate 1, но нет маппинга
+
+    const orchestrator = new DataOrchestrator(
+      { enabled: true, defaultTimeoutMs: 15_000, cacheTtlMs: 60_000, mode: 'stop', minQualityScore: 50, minSourcesOkRatio: 0.5, poorAssetsRatio: 0.5 },
+      registry,
+    );
+
+    const result = await orchestrator.execute(mockAssets);
+
+    // Gate 1 pass (100% > 50%), gate 2 зависит от quality
+    expect(result.skipped).toBe(false);
+    expect(result.snapshot.okData.size).toBe(1);
   });
 });
 

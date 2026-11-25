@@ -66,7 +66,7 @@ describe('MoexQuoteProvider', () => {
 
     expect(result).toEqual({
       SBER: { price: 250.5, changePct: 1.25, volumeTodayRub: 10 },
-      GAZP: { price: 180.2, changePct: -0.75, volumeTodayRub: 0 },
+      GAZP: { price: 180.2, changePct: -0.75, volumeTodayRub: null },
     });
     // Один запрос к мосту с корректной командой и payload
     expect(bridge.calls).toHaveLength(1);
@@ -139,6 +139,6 @@ describe('MoexQuoteProvider', () => {
     ]);
 
     expect(Object.keys(result)).toEqual(['OK1']);
-    expect(result['OK1']).toEqual({ price: 100, changePct: 1, volumeTodayRub: 0 });
+    expect(result['OK1']).toEqual({ price: 100, changePct: 1, volumeTodayRub: null });
   });
 });

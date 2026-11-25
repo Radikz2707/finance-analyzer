@@ -57,15 +57,46 @@ export interface PipelineSnapshot {
 }
 
 // ──────────────────────────────────────────────
-// 4. Результат прогона оркестратора
+// 4. Решение гейта
 // ──────────────────────────────────────────────
 
-/** Результат одного прогона DataOrchestrator. */
+/** Решение гейта оркестратора: pass / degrade / stop. */
+export type GateDecision = 'pass' | 'degrade' | 'stop';
+
+// ──────────────────────────────────────────────
+// 5. Причина пропуска оркестратора
+// ──────────────────────────────────────────────
+
+/** Причина пропуска оркестратора. */
+export type OrchestratorSkipReason = 'flag-off' | 'empty-registry';
+
+// ──────────────────────────────────────────────
+// 6. Результат прогона оркестратора
+// ──────────────────────────────────────────────
+
+/**
+ * Результат одного прогона DataOrchestrator.
+ *
+ * empty-registry → skipped: true — оркестратор не запускался (нет источников).
+ * DataAgent идёт по legacy-пути с предупреждением (skipReason='empty-registry').
+ *
+ * empty-tickers → skipped: false, gateDecision: 'stop' — оркестратор запустился,
+ * источники опросились, но валидировать нечего. Это результат прогона с ошибкой,
+ * а не отказ от запуска. DataAgent бросает ошибку → pipeline прерывается.
+ *
+ * Разное поведение: "не запустился" vs "запустился, но данные невалидны".
+ */
 export interface OrchestratorRunResult {
   /** Снапшот всех источников. */
   snapshot: PipelineSnapshot;
-  /** Пропущен ли оркестратор (enabled=false). */
+  /** Пропущен ли оркестратор (enabled=false или empty-registry). */
   skipped: boolean;
+  /** Причина пропуска: 'flag-off' (enabled=false) | 'empty-registry' (нет источников). */
+  skipReason?: OrchestratorSkipReason;
+  /** Решение гейта: pass / degrade / stop. undefined только при skipped=true. */
+  gateDecision?: GateDecision;
+  /** Результат валидации качества (при skipped=false и успешном маппинге). */
+  qualityReport?: import('../data-quality/validation.js').DataQualityReport;
   /** Общее время прогона в мс. */
   totalDurationMs?: number;
 }
