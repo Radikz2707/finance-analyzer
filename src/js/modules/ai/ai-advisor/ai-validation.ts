@@ -697,6 +697,11 @@ export function checkExcludedAssets(text: string): ExcludedAssetsCheckResult {
  * ошибку нельзя оставлять в отчёте: это фактическое утверждение.
  * Функция находит пары чисел с отношением, сверяет их и при
  * необходимости меняет слово на корректное, логируя `[FACT_CHECK]`.
+ *
+ * ВАЖНО (фикс ложных срабатываний): если правое число — это период/срок
+ * (например, «медиана 5 лет», «SMA 200»), а не порог сравнения —
+ * пропускать. Критерий: правое число не стоит в скобках и не является
+ * явным порогом (без контекста «ниже/выше»).
  */
 export function validateNumericComparisons(
   text: string,
@@ -709,6 +714,17 @@ export function validateNumericComparisons(
   // пересекают границы предложений, чтобы не склеить далёкие числа.
   const pairPattern =
     /(-?\d+(?:[.,]\d+)?)([^0-9.!?;:\n]{0,24}?)(ниже|выше|меньше|больше)([^0-9.!?;:\n]{0,24}?)(-?\d+(?:[.,]\d+)?)/gi;
+
+  // Слова, которые означают период/срок, а не порог сравнения.
+  // Если правое число стоит рядом с такими словами — это не сравнение.
+  const PERIOD_WORDS =
+    /\b(лет|года|год|мес|месяц|месяца|дней|день|недели|неделя|неделю|период|срок|лето|зима|осень|весна)\b/i;
+
+  // Идентификаторы теханализа (SMA50, EMA200, RSI и т.д.).
+  // Если правое число стоит ДО такого идентификатора — это не порог,
+  // а часть имени индикатора. Пропускаем.
+  const TA_INDICATOR_PATTERN =
+    /(?:SMA|EMA|WMA|RSI|MACD|BB|ADX|STOCH|CCI|OBV|VWAP|BOLL|ADX|ATR|MFI)[A-Z0-9]*/i;
 
   const corrected = text.replace(
     pairPattern,
@@ -723,6 +739,24 @@ export function validateNumericComparisons(
       const left = Number.parseFloat(leftRaw.replace(',', '.'));
       const right = Number.parseFloat(rightRaw.replace(',', '.'));
       if (!Number.isFinite(left) || !Number.isFinite(right)) return raw;
+
+      // Пропускаем, если правое число — это период (не порог сравнения).
+      // Пример: «6.75 ниже 5» где 5 = «медиана 5 лет» → ложное срабатывание.
+      const contextMatch = raw.match(
+        /(?:ниже|выше|меньше|больше)[^0-9]{0,30}(\d+(?:[.,]\d+)?)([^0-9]{0,30})/,
+      );
+      if (contextMatch) {
+        const afterRight = contextMatch[2] ?? '';
+        if (PERIOD_WORDS.test(afterRight)) {
+          return raw; // Пропускаем — это период, а не порог
+        }
+        // Пропускаем, если правое число — часть идентификатора теханализа.
+        // Пример: «544.7 ниже SMA50» → 50 — часть имени, не порог.
+        const taMatch = afterRight.match(TA_INDICATOR_PATTERN);
+        if (taMatch) {
+          return raw; // Пропускаем — это идентификатор, не порог
+        }
+      }
 
       const actual: NumericComparisonCorrection['actual'] =
         left < right ? 'ниже' : left > right ? 'выше' : 'равно';

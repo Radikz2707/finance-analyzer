@@ -821,6 +821,10 @@ export class ScenarioAgent extends AgentBase {
 
     const noSell = new Set(noSellTickers.map((t) => t.toUpperCase()));
 
+    // Тикеры, которые не продаются в «Гибком» сценарии — долгосрочные якоря.
+    // SBER исключён: пользователь держит его долгосрочно, продажа нецелесообразна.
+    const NO_SELL_FLEX = new Set(['SBER']);
+
     // Прибыльные активы с перевесом — кандидаты на частичную продажу.
     // No-sell политика исключает их из финансирования: продажа запрещена.
     // Статус уже ограничен до REDUCE/STABLE — BUY не попадёт.
@@ -829,7 +833,8 @@ export class ScenarioAgent extends AgentBase {
         (a) =>
           a.unrealizedProfitRub > 0 &&
           (a.status === 'REDUCE' || a.status === 'STABLE') &&
-          !noSell.has(a.ticker.toUpperCase()),
+          !noSell.has(a.ticker.toUpperCase()) &&
+          !NO_SELL_FLEX.has(a.ticker.toUpperCase()),
       )
       .sort((a, b) => b.unrealizedProfitRub - a.unrealizedProfitRub);
 

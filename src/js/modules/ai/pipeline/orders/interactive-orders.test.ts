@@ -116,7 +116,12 @@ describe('InteractiveOrders: политика no-sell пользователя',
         currentPercent: 5,
         targetPercent: 8,
       }),
-    ], [], new Map([['PLZL', makeAgreement({ ticker: 'PLZL' })]]));
+    ], [], new Map([['PLZL', makeAgreement({
+      ticker: 'PLZL',
+      mathAction: 'BUY',
+      aiAction: 'BUY',
+      finalAction: 'BUY',
+    })]]));
     const order = firstOrder(orders);
     expect(order.action).toBe('BUY');
     expect(order.recommendedQuantity).toBeGreaterThan(0);
@@ -186,7 +191,12 @@ describe('InteractiveOrders: дедупликация по тикеру и сч�
       }),
     ];
 
-    const agreements = new Map([['SBER', makeAgreement()]]);
+    const agreements = new Map([['SBER', makeAgreement({
+      ticker: 'SBER',
+      mathAction: 'BUY',
+      aiAction: 'BUY',
+      finalAction: 'BUY',
+    })]]);
 
     const orders = buildInteractiveOrders(assets, existingOrders, agreements);
 

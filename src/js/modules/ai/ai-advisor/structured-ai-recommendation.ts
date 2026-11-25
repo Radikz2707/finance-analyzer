@@ -21,6 +21,7 @@ import type {
   PortfolioMathStatus,
   MathAgreement,
 } from '../../research/types.js';
+import { append } from './diagnostic-log-collector.js';
 
 // ──────────────────────────────────────────────
 // 1. AI JSON — то, что возвращает AI-модель
@@ -869,8 +870,9 @@ export function validateStructuredAIJson(
     // Клампинг: если макро-данные устарели — потолок 0.5
     if (!macroCtx?.isFresh && json.confidence > 0.5) {
       const clamped = 0.5;
-      console.log(
-        `[CONFIDENCE_CLAMP] ticker=${json.ticker} raw=${rawConfidence} → ${clamped} reason=macro_stale`,
+      append(
+        'CONFIDENCE_CLAMP',
+        `ticker=${json.ticker} raw=${rawConfidence} → ${clamped} reason=macro_stale`,
       );
       json.confidence = clamped;
       // Сохраняем raw-значение для отображения

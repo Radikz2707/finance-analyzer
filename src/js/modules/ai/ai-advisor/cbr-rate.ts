@@ -8,6 +8,8 @@
  * 3. CBK_RATE_OVERRIDE — env-переменная, последний уровень.
  */
 
+import { append } from './diagnostic-log-collector.js';
+
 // ─── Типы ────────────────────────────────────────────────────────────────
 
 export interface CbrRateData {
@@ -270,9 +272,9 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
     cachedRate &&
     Date.now() - new Date(cachedRate.lastUpdated).getTime() < CACHE_TTL_MS
   ) {
-    console.log(
-      `[CBR_FETCH] final source=${cachedRate.source} rate=${cachedRate.rate} ` +
-        `isFresh=${cachedRate.isFresh} cache=hit`,
+    append(
+      'CBR_FETCH',
+      `final source=${cachedRate.source} rate=${cachedRate.rate} isFresh=${cachedRate.isFresh} cache=hit`,
     );
     return cachedRate;
   }
@@ -292,9 +294,9 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
         cachedRate.rate.toFixed(2) +
         ' fresh=true source=KeyRateXML',
     );
-    console.log(
-      `[CBR_FETCH] final source=${cachedRate.source} rate=${cachedRate.rate} ` +
-        `isFresh=${cachedRate.isFresh}`,
+    append(
+      'CBR_FETCH',
+      `final source=${cachedRate.source} rate=${cachedRate.rate} isFresh=${cachedRate.isFresh}`,
     );
     return cachedRate;
   }
@@ -318,9 +320,9 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
         cachedRate.rate.toFixed(2) +
         ' fresh=true source=hd_base',
     );
-    console.log(
-      `[CBR_FETCH] final source=${cachedRate.source} rate=${cachedRate.rate} ` +
-        `isFresh=${cachedRate.isFresh}`,
+    append(
+      'CBR_FETCH',
+      `final source=${cachedRate.source} rate=${cachedRate.rate} isFresh=${cachedRate.isFresh}`,
     );
     return cachedRate;
   }
@@ -338,9 +340,9 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
         cachedRate.rate.toFixed(2) +
         ' fresh=true source=CBK_RATE_OVERRIDE',
     );
-    console.log(
-      `[CBR_FETCH] final source=${cachedRate.source} rate=${cachedRate.rate} ` +
-        `isFresh=${cachedRate.isFresh}`,
+    append(
+      'CBR_FETCH',
+      `final source=${cachedRate.source} rate=${cachedRate.rate} isFresh=${cachedRate.isFresh}`,
     );
     return cachedRate;
   }
@@ -358,9 +360,9 @@ export async function getCbrKeyRate(): Promise<CbrRateData> {
     '[ЦБ-СТАВКА] ⚠️ Fallback: ставка 14.0% от 2026-09-08 — данные устарели, ' +
       `cbr.ru недоступен. lastUpdated=${cachedRate.lastUpdated}`,
   );
-  console.log(
-    `[CBR_FETCH] final source=${cachedRate.source} rate=${cachedRate.rate} ` +
-      `isFresh=${cachedRate.isFresh}`,
+  append(
+    'CBR_FETCH',
+    `final source=${cachedRate.source} rate=${cachedRate.rate} isFresh=${cachedRate.isFresh}`,
   );
   return cachedRate;
 }

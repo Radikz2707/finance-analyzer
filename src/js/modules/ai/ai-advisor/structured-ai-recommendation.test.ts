@@ -183,7 +183,7 @@ describe('StructuredAIRecommendation', () => {
     it('combines deterministic + AI correctly', () => {
       const det = createDet();
       const aiJson = createValidAIJson();
-      const validation = validateStructuredAIJson(aiJson, ['SBER']);
+      const validation = validateStructuredAIJson(aiJson, ['SBER'], { isFresh: true });
       const result = buildStructuredAIRecommendation(det, aiJson, validation);
 
       // Deterministic fields preserved

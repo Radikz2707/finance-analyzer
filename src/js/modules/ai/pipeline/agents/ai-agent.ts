@@ -2,6 +2,7 @@ import type { DataAgentOutput } from './data-agent.js';
 // research-agent.ts удалён — используем research-agent-v2
 import type { ResearchV1Output } from './research-agent-v2/types.js';
 import type { AnalysisAgentOutput } from './analysis-agent.js';
+import { PortfolioConfig } from '../../../../config/portfolio-config.js';
 import type {
   AssetAnalysis,
   PortfolioReportData,
@@ -296,10 +297,6 @@ export class AiAgent extends AgentBase {
       return this.emptyResult();
     }
 
-    // Шаг 2: Генерация InvestmentThesis для каждого актива
-    const thesisEngine = new InvestmentThesisEngine();
-    const thesisResults = new Map<string, InvestmentThesisResult>();
-
     // Ключевая ставка: приоритет — data-agent (надёжный источник), fallback — research snapshot
     const dataKeyRate = data.keyRate ?? 0;
     let freshMacroData: {
@@ -309,12 +306,12 @@ export class AiAgent extends AgentBase {
       isFresh: boolean;
     } | null = null;
 
-    if (dataKeyRate > 0) {
+    if (dataKeyRate > 0 && data.cbrRateData != null) {
       freshMacroData = {
         keyRate: dataKeyRate,
-        source: data.cbrRateData?.source ?? 'CBR (из data-agent)',
-        asOf: data.cbrRateData?.date ?? new Date().toLocaleDateString('ru-RU'),
-        isFresh: data.cbrRateData?.isFresh ?? true,
+        source: data.cbrRateData.source,
+        asOf: data.cbrRateData.date,
+        isFresh: data.cbrRateData.isFresh,
       };
       console.log(
         '[CBR_FETCH] rate=' +
@@ -331,52 +328,39 @@ export class AiAgent extends AgentBase {
       );
     }
 
-    for (const asset of portfolioAnalysis.assetsAnalysis) {
-      const snapshot = snapshots.get(asset.ticker);
-      if (!snapshot) {
-        // Research snapshots DEPRECATED — не спамим warning
-        continue;
-      }
+    // Шаг 2: Генерация InvestmentThesis для каждого актива
+    // InvestmentThesisEngine — заглушка, не влияет на решения;
+    // по умолчанию отключён через thesisEnabled=false в pipelineConfig
+    const thesisEnabled = PortfolioConfig.pipelineConfig.thesisEnabled;
+    const thesisResults = new Map<string, InvestmentThesisResult>();
 
-      const portfolioCtx = buildPortfolioAssetContext(asset, {
-        totalPortfolioValue: macroGoals.totalBalance,
-      });
+    if (thesisEnabled) {
+      const thesisEngine = new InvestmentThesisEngine();
 
-      try {
-        // InvestmentThesisEngine работает синхронно
-        const result = await thesisEngine.generateFromSnapshot({
-          snapshot: snapshot.snapshot,
-          portfolioContext: portfolioCtx,
+      for (const asset of portfolioAnalysis.assetsAnalysis) {
+        const snapshot = snapshots.get(asset.ticker);
+        if (!snapshot) {
+          continue;
+        }
+
+        const portfolioCtx = buildPortfolioAssetContext(asset, {
+          totalPortfolioValue: macroGoals.totalBalance,
         });
-        thesisResults.set(asset.ticker, result);
 
-        // Извлекаем свежие макро-данные из первого snapshot
-        if (!freshMacroData && snapshot.snapshot.macroResearch) {
-          freshMacroData = this.extractMacroDataContext(
-            snapshot.snapshot.macroResearch,
+        try {
+          const result = thesisEngine.generateFromSnapshot({
+            snapshot: snapshot.snapshot,
+            portfolioContext: portfolioCtx,
+          });
+          thesisResults.set(asset.ticker, result);
+        } catch (err) {
+          this.log.error(
+            `[AiAgent] Ошибка thesis для ${asset.ticker}:`,
+            err instanceof Error ? err.message : err,
           );
         }
-      } catch (err) {
-        this.log.error(
-          `[AiAgent] Ошибка thesis для ${asset.ticker}:`,
-          err instanceof Error ? err.message : err,
-        );
       }
-    }
 
-    if (
-      thesisResults.size === 0 &&
-      portfolioAnalysis.assetsAnalysis.length > 0
-    ) {
-      console.warn(
-        '[AiAgent] thesis=0 из ' +
-          portfolioAnalysis.assetsAnalysis.length +
-          ' reason=research_snapshots_empty. ' +
-          'ResearchAgentV2 action=facts DEPRECATED: snapshots не строятся, ' +
-          'потому что этап идёт до AnalysisAgent (нет assetsAnalysis). ' +
-          'InvestmentThesisEngine — заглушка; thesis не влияет на решения.',
-      );
-    } else {
       console.log(
         '[AiAgent] Сформировано thesis для ' +
           thesisResults.size +
@@ -384,6 +368,19 @@ export class AiAgent extends AgentBase {
           portfolioAnalysis.assetsAnalysis.length +
           ' активов',
       );
+    }
+
+    // Извлекаем свежие макро-данные из первого snapshot (не зависит от thesis)
+    if (!freshMacroData) {
+      for (const asset of portfolioAnalysis.assetsAnalysis) {
+        const snapshot = snapshots.get(asset.ticker);
+        if (snapshot?.snapshot.macroResearch) {
+          freshMacroData = this.extractMacroDataContext(
+            snapshot.snapshot.macroResearch,
+          );
+          if (freshMacroData) break;
+        }
+      }
     }
 
     console.log('[AiAgent] DEBUG: thesis готово, Guardrails');
@@ -663,6 +660,7 @@ export class AiAgent extends AgentBase {
         assetValidation = validateStructuredAIJson(
           aiJsonForAsset,
           assetTickers,
+          freshMacroData ?? { isFresh: true },
         );
       }
 

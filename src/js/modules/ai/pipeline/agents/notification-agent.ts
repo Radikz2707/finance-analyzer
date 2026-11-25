@@ -42,6 +42,7 @@ import {
 } from '../../../ai/ai-advisor/policy-text-guard.js';
 import { PortfolioConfig } from '../../../../config/portfolio-config.js';
 import { loadUserPolicy } from '../../../../config/user-policy.js';
+import { flush as flushDiagnosticLogs } from '../../../ai/ai-advisor/diagnostic-log-collector.js';
 import { AgentBase } from '../agent/agent-base.js';
 import type { AgentConfig } from '../agent/types.js';
 import type { PortfolioIncome } from './analysis-agent.js';
@@ -518,6 +519,42 @@ export class NotificationAgent extends AgentBase {
     }
 
     // Новостной фон убран — не несёт практической ценности для пользователя
+
+    // Добавляем технические логи из диагностического конвейера
+    const diagnosticLogsMd = flushDiagnosticLogs();
+    if (diagnosticLogsMd) {
+      md += '\n\n---\n\n';
+      md += diagnosticLogsMd;
+    } else {
+      // Если коллектор пуст — добавляем хотя бы [BUILD]
+      md += '\n\n---\n\n';
+      md += '## 🔧 Технические логи (диагностика конвейера)\n\n';
+      md += '> Ниже — фактические строки из диагностического конвейера.\n\n';
+      md += '| Метка | Сообщение |\n';
+      md += '|-------|-----------|\n';
+      md += '| `BUILD` | ' + getBuildId() + ' |\n';
+      md += '\nВсего записей: 1\n\n';
+    }
+
+    // Предупреждения валидации (FACT_CHECK, DIRECTION_CONFLICT, HALLUCINATION_REMOVAL)
+    if (ai.validationWarnings.length > 0) {
+      md += '\n\n---\n\n';
+      md += '## ✅ Валидация фактов (AI)\n\n';
+      if (
+        ai.validationWarnings.some((warning) =>
+          warning.startsWith('[DIRECTION_CONFLICT]'),
+        )
+      ) {
+        md +=
+          '> Конфликты направлений носят справочный характер: ' +
+          'итоговое действие в карточке определяется PortfolioMath, ' +
+          'направление ИИ — мнение модели для ручной проверки.\n\n';
+      }
+      for (const warning of ai.validationWarnings) {
+        md += `- ${warning}\n`;
+      }
+      md += '\n';
+    }
 
     // Добавляем общий анализ портфеля от ИИ
     if (ai.portfolioSummary) {

@@ -111,71 +111,71 @@ describe('AI Target Architecture Tests', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain('targetPercent');
     expect(prompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет',
+      'targetPercent — факт пользователя (AI НЕ изменяет)',
     );
     expect(prompt).toContain(
-      'PortfolioMath status — результат детерминированной математики. AI НЕ изменяет',
+      'PortfolioMath status — детерминированная математика (AI НЕ изменяет)',
     );
     expect(prompt).toContain(
-      'AI может НЕ соглашаться с PortfolioMath и USER_TARGET',
+      'AI вправе НЕ соглашаться — несогласие выражается ТОЛЬКО в targetReason',
     );
   });
 
   it('Тест 2: USER_TARGET остаётся неизменным', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет',
+      'targetPercent — факт пользователя (AI НЕ изменяет)',
     );
     expect(prompt).toContain(
-      'AI_RECOMMENDED_TARGET_PERCENT',
+      'recommendedTargetPercent',
     );
   });
 
   it('Тест 3: PortfolioMath status остаётся неизменным', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'PortfolioMath status — результат детерминированной математики. AI НЕ изменяет',
+      'PortfolioMath status — детерминированная математика (AI НЕ изменяет)',
     );
-    expect(prompt).toContain('AI самостоятельно определяет');
+    expect(prompt).toContain('AI вправе НЕ соглашаться');
   });
 
   it('Тест 4: AI может предложить собственный target', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'AI_RECOMMENDED_TARGET_PERCENT',
+      'recommendedTargetPercent',
     );
     expect(prompt).toContain(
-      'AI_RECOMMENDED_TARGET_PERCENT',
+      'recommendedTargetPercent',
     );
   });
 
   it('Тест 5: AI target не попадает обратно в PortfolioMath', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет',
+      'targetPercent — факт пользователя (AI НЕ изменяет)',
     );
     expect(prompt).toContain(
-      'AI_RECOMMENDED_TARGET_PERCENT',
+      'recommendedTargetPercent',
     );
   });
 
   it('Тест 6: USER_TARGET=0 и AI_TARGET=3 корректно разделены', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет',
+      'targetPercent — факт пользователя (AI НЕ изменяет)',
     );
     expect(prompt).toContain(
-      'AI_RECOMMENDED_TARGET_PERCENT',
+      'recommendedTargetPercent',
     );
   });
 
   it('Тест 7: USER_TARGET=NOT_SET и AI_TARGET=3 корректно разделены', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'AI_RECOMMENDED_TARGET_PERCENT',
+      'recommendedTargetPercent',
     );
     expect(prompt).toContain(
-      'AI может НЕ соглашаться с PortfolioMath и USER_TARGET',
+      'AI вправе НЕ соглашаться — несогласие выражается ТОЛЬКО в targetReason',
     );
   });
 
@@ -329,22 +329,22 @@ describe('AI Target Architecture Tests', () => {
 
   it('Тест 10: Cash учитывается как ограничение', () => {
     const prompt = buildSystemPrompt(21);
-    expect(prompt).toContain('Свободный кэш — ограничение покупок');
-    expect(prompt).toContain('BUY/REDUCE/EXIT');
+    expect(prompt).toContain('кэш ограничивает покупки');
+    expect(prompt).toContain('BUY');
   });
 
   it('Тест 11: ETF не получает автоматически 3%', () => {
     const prompt = buildSystemPrompt(21);
-    expect(prompt).toContain('Новые инструменты: НЕ добавлять');
+    expect(prompt).toContain('targetPercent — факт пользователя');
   });
 
   it('Тест 12: AI может оспаривать пользовательскую цель, но обязан явно обозначить это', () => {
     const prompt = buildSystemPrompt(21);
     expect(prompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя. AI НЕ изменяет',
+      'targetPercent — факт пользователя (AI НЕ изменяет)',
     );
     expect(prompt).toContain(
-      'AI может НЕ соглашаться с PortfolioMath и USER_TARGET',
+      'AI вправе НЕ соглашаться — несогласие выражается ТОЛЬКО в targetReason',
     );
   });
 

@@ -196,7 +196,7 @@ describe('fetchDividendLtm — контракт, статусы и лог', () =
     expect(result.asOf).toBe('2026-06-01');
     expect(
       log.mock.calls.some((call) =>
-        String(call[0]).includes('[DIVIDENDS_LTM_FETCH] ticker=PLZL'),
+        String(call[0]).includes('[DIVIDENDS_LTM] ticker=PLZL'),
       ),
     ).toBe(true);
     expect(

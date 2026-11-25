@@ -2578,7 +2578,8 @@ describe('XlsxParserModule', () => {
 
       expect(bond).toBeDefined();
       expect(bond?.nextCouponDate).not.toBeNull();
-      expect(bond?.nextCouponDateSource).toBe('EXCEL');
+      // MOEX ISS приоритетнее EXCEL — источник MOEX_ISS
+      expect(bond?.nextCouponDateSource).toBe('MOEX_ISS');
       expect(bond?.nextCouponDate?.toISOString().slice(0, 10)).toBe(
         '2026-12-08',
       );

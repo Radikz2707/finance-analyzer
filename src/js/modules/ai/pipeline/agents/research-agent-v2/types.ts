@@ -33,6 +33,9 @@ export type CrossCheckType = 'price' | 'volume' | 'fundamentals' | 'news_sentime
 export interface CrossCheckResult {
   type: CrossCheckType;
   ticker: string;
+  /** Доступна ли кросс-проверка (false = данные/логика не реализованы) */
+  available: boolean;
+  /** Истинна, если данные согласованы (действительно проверено, а не заглушка) */
   isConsistent: boolean;
   discrepancies: string[];
   confidence: DataConfidence;
@@ -55,6 +58,8 @@ export interface HistoricalAnalysis {
   trend: 'up' | 'down' | 'neutral';
   maxDrawdown: number;
   sharpeRatio?: number;
+  /** Доступен ли анализ (false = данные/логика не реализованы, нули — не вычисленные значения) */
+  available: boolean;
 }
 
 /** Результат анализа настроений */

@@ -145,6 +145,11 @@ export function loadUserPolicyWithMeta(): UserPolicyLoadResult {
 
   const filePath = policyFilePath();
   const parsedFile = parsePolicyFile();
+  console.log(
+    `[UserPolicy] load path=${filePath} exists=${parsedFile.exists} ` +
+      `noSellTickers=${(parsedFile.values.noSellTickers ?? []).join(',')} ` +
+      `noSellAssetTypes=${(parsedFile.values.noSellAssetTypes ?? []).join(',')}`,
+  );
   const warnings: string[] = [];
 
   if (parsedFile.error) {

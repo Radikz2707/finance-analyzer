@@ -29,6 +29,7 @@ import { isSmartLabEnabled } from '../../api/fundamentals/config.js';
 import { fetchMoexDividends } from '../../api/fundamentals/moex-iss-client.js';
 import { fetchSmartLabDividends } from '../../api/fundamentals/smart-lab-client.js';
 import { parseCalendarDate } from '../../shared/date-utils.js';
+import { append } from './diagnostic-log-collector.js';
 import type {
   MoexDividendRecord,
   SmartLabDividendRecord,
@@ -308,9 +309,9 @@ export async function fetchDividendLtm(
               asOf,
             };
             source = 'SMARTLAB';
-            console.log(
-              `[DIVIDENDS_LTM_SUMMARY_FALLBACK] ticker=${normalized} ` +
-                `perShare=${computed.ltmPerShare} asOf=${asOf} source=SMARTLAB`,
+            append(
+              'DIVIDENDS_LTM',
+              `ticker=${normalized} perShare=${computed.ltmPerShare} asOf=${asOf} source=SMARTLAB [FALLBACK annualDividend]`,
             );
           } else if (smartLabProbe === 'EMPTY') {
             // EMPTY при smartlab=OK — предупреждение в лог
@@ -335,14 +336,9 @@ export async function fetchDividendLtm(
   const status: DividendLtmStatus =
     source !== 'UNAVAILABLE' ? 'OK' : answered ? 'EMPTY' : 'UNAVAILABLE';
 
-  console.log(
-    `[DIVIDENDS_LTM_FETCH] ticker=${normalized || 'n/a'} ` +
-      `secid=${secid || 'n/a'} status=${status} source=${source} ` +
-      `ltmPerShare=${computed.ltmPerShare ?? 'null'} ` +
-      `count=${computed.count} asOf=${computed.asOf ?? 'n/a'} ` +
-      `iss=${issProbe} smartlab=${smartLabProbe} ` +
-      `slSecid=${smartLabSecid ?? 'n/a'} ` +
-      `windowMonths=${DIVIDEND_LTM_WINDOW_MONTHS}`,
+  append(
+    'DIVIDENDS_LTM',
+    `ticker=${normalized || 'n/a'} secid=${secid || 'n/a'} status=${status} source=${source} ltmPerShare=${computed.ltmPerShare ?? 'null'} count=${computed.count} asOf=${computed.asOf ?? 'n/a'} iss=${issProbe} smartlab=${smartLabProbe} slSecid=${smartLabSecid ?? 'n/a'} windowMonths=${DIVIDEND_LTM_WINDOW_MONTHS}`,
   );
 
   return {

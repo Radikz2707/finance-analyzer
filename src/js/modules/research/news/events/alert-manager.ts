@@ -2,6 +2,8 @@
  * Alert Manager — управление алертами и уведомлениями.
  *
  * Отправляет алерты через настроенные каналы (Telegram, UI, Log).
+ * Для Telegram-отправки использует внешний отправитель (TelegramSender),
+ * чтобы не дублировать логику NotificationEngine.
  */
 
 import { config as newsConfig } from '../news-config.js';
@@ -9,6 +11,11 @@ import type { MarketEvent, EventPriority } from './event-bus.js';
 
 /** Канал уведомлений */
 export type AlertChannel = (typeof newsConfig.ALERTS_CHANNELS)[number];
+
+/** Интерфейс отправителя в Telegram (инъекция зависимости) */
+export interface TelegramSender {
+  (message: string, title?: string): Promise<boolean>;
+}
 
 /** Конфигурация алерта */
 export interface AlertConfig {
@@ -18,6 +25,8 @@ export interface AlertConfig {
   channels: AlertChannel[];
   /** Минимальный приоритет для отправки */
   minPriority: EventPriority;
+  /** Отправитель в Telegram (необязательно) */
+  telegramSender?: TelegramSender;
 }
 
 /** Alert Manager */
@@ -32,6 +41,17 @@ export class AlertManager {
       minPriority: 'HIGH' as EventPriority,
       ...config,
     };
+  }
+
+  /**
+   * Создать AlertManager с готовым Telegram-отправителем
+   * из NotificationEngine.
+   */
+  static withTelegramSender(
+    telegramSender: TelegramSender,
+    config?: Partial<AlertConfig>,
+  ): AlertManager {
+    return new AlertManager({ ...config, telegramSender });
   }
 
   /**
@@ -97,12 +117,20 @@ export class AlertManager {
   }
 
   /**
-   * Отправка в Telegram.
-   */
-  private async sendToTelegram(_event: MarketEvent): Promise<void> {
-    // TODO: Интеграция с Telegram Bot API
-    console.log('[AlertManager] Telegram: отправка алерта');
-  }
+    * Отправка в Telegram через инъектированный отправитель.
+    * Если отправитель не настроен — логирование без отправки.
+    */
+   private async sendToTelegram(event: MarketEvent): Promise<void> {
+     const message = `🔔 ${event.title}\n${event.description}`;
+     if (this.config.telegramSender) {
+       const ok = await this.config.telegramSender(message, event.title);
+       if (!ok) {
+         console.error('[AlertManager] Не удалось отправить в Telegram');
+       }
+     } else {
+       console.log('[AlertManager] Telegram-отправитель не настроен, пропуск: ' + event.title);
+     }
+   }
 
   /**
    * Отправка в UI.

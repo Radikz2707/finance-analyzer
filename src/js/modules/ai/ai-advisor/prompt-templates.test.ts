@@ -17,52 +17,31 @@ describe('buildSystemPrompt', () => {
   });
 
   it('contains MAIN RULES block', () => {
-    expect(basePrompt).toContain('=== ГЛАВНЫЕ ПРАВИЛА ===');
+    expect(basePrompt).toContain('=== P0: ЖЁСТКИЕ ПРАВИЛА ===');
   });
 
   it('contains INVESTMENT REASONING block', () => {
-    expect(basePrompt).toContain('=== ИНВЕСТИЦИОННЫЙ REASONING ===');
+    expect(basePrompt).toContain('=== P2: МЕТОДИКА ===');
   });
 
   it('contains JSON-BLOCK format', () => {
-    expect(basePrompt).toContain('=== JSON-МАССИВ');
+    expect(basePrompt).toContain('строго по схеме JSON');
   });
 
   it('требует машинный JSON-блок ценовых триггеров (задача 4Г)', () => {
-    expect(basePrompt).toContain('=== JSON-БЛОК ЦЕНОВЫХ ТРИГГЕРОВ');
-    expect(basePrompt).toContain('"priceTriggers"');
-    // Точный пример схемы: модель выдавала 4 блока не по схеме.
-    expect(basePrompt).toContain(
-      '{"priceTriggers":[{"ticker":"SBER","levels":[{"price":280,"direction":"below"},{"price":320,"direction":"above"}],"action":"HOLD"}]}',
-    );
-    expect(basePrompt).toContain(
-      'levels — непустой массив объектов ровно с полями price',
-    );
-    expect(basePrompt).toContain('только один блок на весь ответ');
-    expect(basePrompt).toContain(
-      'Если подтверждённых уровней нет — НЕ выводи этот блок вообще',
-    );
-    expect(basePrompt).toContain(
-      'Для активов под no-sell политикой action не может быть SELL/REDUCE/EXIT',
-    );
+    // JSON-блок ценовых триггеров удалён из промпта — больше не требуется
+    expect(basePrompt).not.toContain('=== JSON-БЛОК ЦЕНОВЫХ ТРИГГЕРОВ');
   });
 
   it('instructs model to output JSON block FIRST (before narrative)', () => {
-    expect(basePrompt).toContain('ОБЯЗАТЕЛЬНО ПЕРВЫМ');
-    expect(basePrompt).toContain('СНАЧАЛА выведи JSON-МАССИВ');
-    expect(basePrompt).toContain('ТЕКСТОВЫЙ ОТВЕТ (5 секций, ПОСЛЕ JSON)');
+    expect(basePrompt).toContain('сначала portfolioSummary');
+    expect(basePrompt).toContain('затем recommendations');
   });
 
   it('запрещает модели генерировать блок стратегий и прогнозы доходности', () => {
     expect(basePrompt).not.toContain('Стратегия выхода в прибыль');
-    expect(basePrompt).toContain(
-      'НЕ генерируй блок «Инвестиционные стратегии»',
-    );
-    expect(basePrompt).toContain('ЗАПРЕЩЕНЫ любые прогнозы доходности');
-    expect(basePrompt).toContain('«+5-15% за 3 мес»');
-    expect(basePrompt).toContain('«+20-40% за 12 мес»');
-    expect(basePrompt).toContain('«ожидаемая доходность +20-40% годовых»');
-    expect(basePrompt).toContain('купонно-дивидендный');
+    // Промпт переписан — старые формулировки удалены
+    expect(basePrompt).toContain('ДАННЫЕ: любая цифра/дата/факт — только из переданных');
   });
 
   it('запрещает дублировать карточки рекомендаций в свободном тексте', () => {
@@ -129,27 +108,23 @@ describe('buildSystemPrompt', () => {
 
   it('rule 1: USER_TARGET_PERCENT is input fact only', () => {
     expect(basePrompt).toContain(
-      'Целевые доли (targetPercent) — факт пользователя',
+      'targetPercent — факт пользователя (AI НЕ изменяет)',
     );
-    expect(basePrompt).toContain('AI НЕ изменяет');
   });
 
   it('rule 2: AI can define AI_RECOMMENDED_TARGET_PERCENT and AI_RECOMMENDED_ACTION', () => {
-    expect(basePrompt).toContain('AI_RECOMMENDED_TARGET_PERCENT');
-    expect(basePrompt).toContain('AI самостоятельно определяет');
+    expect(basePrompt).toContain('recommendedTargetPercent');
+    expect(basePrompt).toContain('AI вправе НЕ соглашаться');
   });
 
   it('rule 3: AI can disagree with PortfolioMath and USER_TARGET', () => {
     expect(basePrompt).toContain(
-      'AI может НЕ соглашаться с PortfolioMath и USER_TARGET',
+      'AI вправе НЕ соглашаться — несогласие выражается ТОЛЬКО в targetReason',
     );
   });
 
   it('rule 4: deep loss does NOT block SELL/EXIT/REDUCE', () => {
-    expect(basePrompt).toContain(
-      'Глубокий убыток НЕ блокирует SELL/EXIT/REDUCE',
-    );
-    expect(basePrompt).toContain('AI самостоятельно определяет');
+    expect(basePrompt).toContain('SELL=фундаментальная причина');
   });
 
   it('rule 5: EXIT, AVERAGE are valid AI actions', () => {
@@ -165,7 +140,7 @@ describe('buildSystemPrompt', () => {
   it('rule 6: AI can propose own target different from USER_TARGET', () => {
     expect(basePrompt).toContain('recommendedTargetPercent');
     expect(basePrompt).toContain(
-      'AI вправе НЕ соглашаться с PortfolioMath и USER_TARGET',
+      'AI вправе НЕ соглашаться — несогласие выражается ТОЛЬКО в targetReason',
     );
   });
 

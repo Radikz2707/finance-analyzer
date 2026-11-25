@@ -308,5 +308,7 @@ export const PortfolioConfig = {
     cacheTtlMs: 3600000,
     defaultDepth: 5,
     defaultPeriodDays: 90,
+    /** InvestmentThesisEngine — заглушка; по умолчанию отключён */
+    thesisEnabled: false,
   } as const,
 } as const;

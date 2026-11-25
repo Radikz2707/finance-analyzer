@@ -352,12 +352,15 @@ export class ResearchAgentV2 extends AgentBase {
     for (const ticker of tickers) {
       for (const type of checkTypes) {
         // TODO: реализовать реальные кросс-чеки с данными из DataAgent
+        // Пока кросс-проверка недоступна — fail-closed (следует семантике
+        // crossCheckQuotes: нет цены → сверка не выполняется)
         results.push({
           type: type as CrossCheckResult['type'],
           ticker,
-          isConsistent: true,
+          available: false,
+          isConsistent: false,
           discrepancies: [],
-          confidence: 'high',
+          confidence: 'low',
         });
       }
     }
@@ -402,6 +405,7 @@ export class ResearchAgentV2 extends AgentBase {
       const bars = history.get(ticker.toUpperCase()) ?? [];
 
       if (bars.length < 10) {
+        // Недостаточно данных для расчёта — явный статус недоступности
         return {
           ticker,
           dataPoints: bars.map((b: { date: string; close: number }) => ({
@@ -415,6 +419,7 @@ export class ResearchAgentV2 extends AgentBase {
           trend: 'neutral',
           maxDrawdown: 0,
           sharpeRatio: 0,
+          available: false,
         };
       }
 
@@ -482,13 +487,14 @@ export class ResearchAgentV2 extends AgentBase {
         trend,
         maxDrawdown: Math.round(maxDrawdown * 100) / 100,
         sharpeRatio: Math.round(sharpeRatio * 100) / 100,
+        available: true,
       };
     } catch (error) {
       console.warn(
         `[ResearchAgentV2] Ошибка исторического анализа ${ticker}:`,
         error,
       );
-      // Fallback на заглушку
+      // Явный статус недоступности при ошибке — не путать с вычисленным нулём
       return {
         ticker,
         dataPoints: [],
@@ -497,6 +503,7 @@ export class ResearchAgentV2 extends AgentBase {
         trend: 'neutral',
         maxDrawdown: 0,
         sharpeRatio: 0,
+        available: false,
       };
     }
   }
@@ -830,6 +837,7 @@ export class ResearchAgentV2 extends AgentBase {
       const h = [
         'ticker',
         'depth',
+        'historical_available',
         'trend',
         'volatility',
         'sentiment_score',
@@ -840,6 +848,7 @@ export class ResearchAgentV2 extends AgentBase {
         [
           s.ticker,
           s.researchDepth,
+          s.historicalAnalysis?.available ?? false,
           s.historicalAnalysis?.trend ?? '',
           s.historicalAnalysis?.volatility ?? '',
           s.sentimentAnalysis?.score ?? '',
@@ -864,7 +873,10 @@ export class ResearchAgentV2 extends AgentBase {
       md += '## ' + s.ticker + '\n\n';
       md += '- **Depth**: ' + s.researchDepth + '\n';
       if (s.historicalAnalysis) {
-        md += '- **Trend**: ' + s.historicalAnalysis.trend + '\n';
+        md += '- **Historical**: ' + (s.historicalAnalysis.available ? 'available' : 'unavailable') + '\n';
+        if (s.historicalAnalysis.available) {
+          md += '- **Trend**: ' + s.historicalAnalysis.trend + '\n';
+        }
       }
       if (s.sentimentAnalysis) {
         md +=

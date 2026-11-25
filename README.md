@@ -1,5 +1,7 @@
 # 📊 Finance Analyzer — AI-анализатор инвестиционного портфеля
 
+<!-- актуализировано 2026-11-25: путь ai-advisor переименован в ai/ai-advisor, добавлены перенесённые модули -->
+
 [![CI](https://github.com/Radikz2707/finance-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/Radikz2707/finance-analyzer/actions/workflows/ci.yml)
 
 Интеллектуальная система анализа российского фондового рынка (Московская биржа). Автоматически парсит данные из Excel-таблицы QUIK, рассчитывает дивиденды, купоны и целевые доли портфеля, а также генерирует экспертные рекомендации от ИИ-советника.
@@ -390,7 +392,7 @@ finance-analyzer/
 - `xlsx-parser.ts` — парсинг листа QUIK, макроцелей, истории сделок
 - `quik-orders-parser.ts` — парсинг заявок из CSV-файла QUIK
 
-### AI Advisor (`src/js/modules/ai-advisor/`)
+### AI Advisor (`src/js/modules/ai/ai-advisor/`)
 
 - `income-calculator.ts` — расчёт дивидендов и купонов
 - `ai-client.ts` — запрос к GigaChat API через ProxyAPI
@@ -900,7 +902,7 @@ CI на GitHub Actions, строгая типизация и индикатор 
 
 ### 1. Восстановлены все тесты (0 skipped)
 
-- [`prompt-templates.test.ts`](src/js/modules/ai-advisor/prompt-templates.test.ts) —
+- [`prompt-templates.test.ts`](src/js/modules/ai/ai-advisor/prompt-templates.test.ts) —
   3 `it.skip`, проверявших удалённые при сжатии промпта блоки («ОСОБЫЕ ПРАВИЛА ДЛЯ
   ТЕСТИРОВАНИЯ», универсальные аллокации SUR 20–30%, INVESTMENT FACTS /
   DETERMINISTIC PORTFOLIO RESULT), переписаны под актуальные гарантии сжатой
@@ -1010,5 +1012,17 @@ push в `main` и на каждый pull request:
 ## 📝 Лицензия
 
 ISC
+
+---
+
+## Техдолг (актуально на 2026-11-25)
+
+- [ ] Подключить к пайплайну модули, перенесённые из storm-seagull
+  (decision-logger, agent-cache, sentiment-detector, summary-generator) —
+  с адаптацией импортов и написанием тестов. Сейчас файлы лежат в корне,
+  но не импортируются и не покрыты тестами.
+- [ ] Довести wiring Telegram: AlertManager ждёт TelegramSender
+  (NotificationEngine.sendToTelegram) через withTelegramSender() —
+  подключить в месте создания AlertManager в production-коде.
 
 © 2026 Радик Залалов. Все права защищены.

@@ -21,6 +21,7 @@
 import { PortfolioConfig } from '../../../config/portfolio-config.js';
 import { fetchMoexCoupons } from '../../api/fundamentals/moex-iss-client.js';
 import { parseCalendarDate } from '../../shared/date-utils.js';
+import { append } from './diagnostic-log-collector.js';
 
 /** Окно LTM для купонов: 365 дней. */
 export const COUPON_LTM_WINDOW_DAYS = 365;
@@ -203,9 +204,9 @@ export async function fetchBondCouponLtm(
   const issRecordsCount = records?.length ?? 0;
 
   if (!records || records.length === 0) {
-    console.log(
-      `[BOND_COUPON_LTM] ticker=${normalized} status=UNAVAILABLE ` +
-        `source=MOEX_ISS reason=no_coupons_table issRecordsCount=${issRecordsCount}`,
+    append(
+      'BOND_COUPON_LTM',
+      `ticker=${normalized} status=UNAVAILABLE source=MOEX_ISS reason=no_coupons_table issRecordsCount=${issRecordsCount}`,
     );
     return {
       ticker: normalized,
@@ -226,14 +227,9 @@ export async function fetchBondCouponLtm(
 
   const status: CouponLtmStatus = computed.ltmPerBond !== null ? 'OK' : 'EMPTY';
 
-  console.log(
-    `[BOND_COUPON_LTM] ticker=${normalized} ` +
-      `status=${status} source=MOEX_ISS ` +
-      `ltmPerBond=${computed.ltmPerBond ?? 'null'} ` +
-      `qty=${quantity} gross=${computed.ltmPerBond !== null ? (computed.ltmPerBond * quantity).toFixed(2) : 'N/A'} ` +
-      `count=${computed.count} asOf=${computed.asOf ?? 'n/a'} ` +
-      `isFloater=${computed.isFloaterEstimate} ` +
-      `issRecordsCount=${issRecordsCount}`,
+  append(
+    'BOND_COUPON_LTM',
+    `ticker=${normalized} status=${status} source=MOEX_ISS ltmPerBond=${computed.ltmPerBond ?? 'null'} qty=${quantity} gross=${computed.ltmPerBond !== null ? (computed.ltmPerBond * quantity).toFixed(2) : 'N/A'} count=${computed.count} asOf=${computed.asOf ?? 'n/a'} isFloater=${computed.isFloaterEstimate} issRecordsCount=${issRecordsCount}`,
   );
 
   return {
@@ -302,10 +298,9 @@ export async function fetchPortfolioBondCouponsLtm(
       ? 'EMPTY'
       : 'UNAVAILABLE';
 
-  console.log(
-    `[BOND_COUPON_LTM_SUMMARY] gross=${totalGross.toFixed(2)} net=${totalNet.toFixed(2)} ` +
-      `bonds=${results.length} ok=${results.filter((r) => r.status === 'OK').length} ` +
-      `status=${status} ndflRate=${(ndflRate * 100).toFixed(0)}%`,
+  append(
+    'BOND_COUPON_LTM_SUMMARY',
+    `gross=${totalGross.toFixed(2)} net=${totalNet.toFixed(2)} bonds=${results.length} ok=${results.filter((r) => r.status === 'OK').length} status=${status} ndflRate=${(ndflRate * 100).toFixed(0)}%`,
   );
 
   return {

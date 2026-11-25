@@ -9,7 +9,7 @@ __pycache__/
 
 # 🔐 Секреты и переменные окружения
 .env*
-!.env.example
+!.env.template
 src/js/env-config.js
 
 # 🏗 Скомпилированный код и сборки (Web & Electron)
@@ -46,6 +46,7 @@ coverage/
 .vitest/
 
 # 🧰 Кэши, временные файлы и инструменты разработки
+data/cache/
 .audit/
 archives/
 .cache/
@@ -64,7 +65,4 @@ Thumbs.db
 /nul
 
 # 🔧 Локальные модули, скрипты и автогенерируемый исходный код
-create-modules.js
-src/js/modules/telegram-bot/
-src/js/app-integration.ts
-src/scss/dashboard.scss
+
